@@ -24,8 +24,8 @@ use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScr
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
-use crate::ui::network_chooser_screen::NetworkChooserScreen;
-use crate::ui::theme::{ThemeMode, network_label};
+use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
+use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
@@ -87,6 +87,14 @@ fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
         MigrationState::Ready
             | MigrationState::Success
             | MigrationState::SucceededWithUnreadableData { .. }
+    )
+}
+
+pub(crate) fn scheduled_vote_sweep_is_quiet(error: &TaskError) -> bool {
+    matches!(
+        error,
+        TaskError::ScheduledVoteSweepFailed { source, .. }
+            if matches!(source.as_ref(), TaskError::NoVotingIdentity { .. })
     )
 }
 
@@ -286,6 +294,39 @@ mod backend_task_join_tests {
                 ..
             } if correlated == request_id
                 && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
+        ));
+    }
+
+    #[test]
+    fn only_missing_local_identity_sweep_errors_are_quiet() {
+        let missing_identity = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::NoVotingIdentity {
+                identity_id: "voter-id".to_string(),
+            }),
+        };
+        assert!(scheduled_vote_sweep_is_quiet(&missing_identity));
+
+        let unavailable_result = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::ScheduledVoteResultUnavailable),
+        };
+        assert!(!scheduled_vote_sweep_is_quiet(&unavailable_result));
+
+        let nested_sweep = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::ScheduledVoteSweepFailed {
+                network: Network::Regtest,
+                source: Box::new(TaskError::NoVotingIdentity {
+                    identity_id: "voter-id".to_string(),
+                }),
+            }),
+        };
+        assert!(!scheduled_vote_sweep_is_quiet(&nested_sweep));
+        assert!(!scheduled_vote_sweep_is_quiet(
+            &TaskError::NoVotingIdentity {
+                identity_id: "voter-id".to_string(),
+            }
         ));
     }
 }
@@ -1882,7 +1923,7 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         BackendTaskSuccessResult::NetworkDatabaseCleared { network } => {
-                            let network_label = network_label(network);
+                            let network_label = chooser_network_label(network);
                             MessageBanner::set_global(
                                 ctx,
                                 format!(
@@ -2087,7 +2128,8 @@ impl App for AppState {
                     self.scheduled_vote_sweeps_in_progress.remove(&network);
                     self.visible_screen_mut()
                         .display_backend_task_error(&context, &err);
-                    if !self.visible_screen_mut().display_task_error(&err) {
+                    let handled = self.visible_screen_mut().display_task_error(&err);
+                    if !handled && !scheduled_vote_sweep_is_quiet(&err) {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                         handle.disable_auto_dismiss();

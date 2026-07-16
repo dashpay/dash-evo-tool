@@ -10,16 +10,21 @@
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use zeroize::Zeroizing;
 
-/// Encode `body` as `[version || bincode(body)]`.
+/// Encode `body` as `[version || bincode(body)]` in a zeroizing allocation.
 pub(crate) fn encode_tagged<T: Serialize>(
     version: u8,
     body: &T,
-) -> Result<Vec<u8>, bincode::error::EncodeError> {
-    let body = bincode::serde::encode_to_vec(body, bincode::config::standard())?;
-    let mut out = Vec::with_capacity(body.len() + 1);
-    out.push(version);
-    out.extend_from_slice(&body);
+) -> Result<Zeroizing<Vec<u8>>, bincode::error::EncodeError> {
+    let config = bincode::config::standard();
+    let mut size_writer = bincode::enc::write::SizeWriter::default();
+    bincode::serde::encode_into_writer(body, &mut size_writer, config)?;
+
+    let mut out = Zeroizing::new(vec![0; size_writer.bytes_written + 1]);
+    out[0] = version;
+    let written = bincode::serde::encode_into_slice(body, &mut out[1..], config)?;
+    out.truncate(written + 1);
     Ok(out)
 }
 
@@ -69,6 +74,22 @@ mod tests {
         let got: Sample =
             decode_tagged_or(&bytes, VERSION, |_| Err::<Sample, ()>(())).expect("decode");
         assert_eq!(got, s);
+    }
+
+    #[test]
+    fn tagged_encoding_is_zeroizing_and_wire_compatible() {
+        let sample = Sample {
+            a: 42,
+            b: "hi".into(),
+        };
+        let body = bincode::serde::encode_to_vec(&sample, bincode::config::standard())
+            .expect("reference encode");
+        let mut expected = vec![VERSION];
+        expected.extend_from_slice(&body);
+
+        let actual: zeroize::Zeroizing<Vec<u8>> = encode_tagged(VERSION, &sample).expect("encode");
+
+        assert_eq!(&*actual, &expected);
     }
 
     #[test]

@@ -55,7 +55,7 @@ pub(crate) const ENVELOPE_LABEL: &str = "envelope.v1";
 /// realistic envelope shape — the version-byte test below covers the
 /// boundary case and the reader falls back to legacy decoding when the
 /// tag prefix doesn't match.
-fn encode_with_version(envelope: &StoredSeedEnvelope) -> Result<Vec<u8>, TaskError> {
+fn encode_with_version(envelope: &StoredSeedEnvelope) -> Result<Zeroizing<Vec<u8>>, TaskError> {
     encode_tagged(STORED_SEED_ENVELOPE_VERSION, envelope).map_err(|_| {
         TaskError::WalletSeedStorage {
             source: Box::new(SecretStoreError::MalformedVault),
@@ -119,8 +119,8 @@ impl<'a> WalletSeedView<'a> {
         seed_hash: &WalletSeedHash,
         envelope: &StoredSeedEnvelope,
     ) -> Result<(), TaskError> {
-        let bytes = encode_with_version(envelope)?;
-        let value = SecretBytes::from_slice(&bytes);
+        let mut bytes = encode_with_version(envelope)?;
+        let value = SecretBytes::new(std::mem::take(&mut *bytes));
         self.secret_store
             .set(&scope_for(seed_hash), ENVELOPE_LABEL, &value)
             .map_err(map_err)

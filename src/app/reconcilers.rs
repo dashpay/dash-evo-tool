@@ -17,14 +17,19 @@ use std::time::Instant;
 use dash_sdk::dpp::dashcore::Network;
 use eframe::egui;
 
-use crate::backend_task::migration::MigrationTask;
+use crate::backend_task::error::TaskError;
+use crate::backend_task::migration::{MigrationTask, migration_task_error};
 use crate::backend_task::{BackendTask, platform_info};
 use crate::context::AppContext;
 use crate::context::connection_status::{
     OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step, spv_progress_token,
 };
 use crate::context::migration_status::MigrationState;
+use crate::model::wallet::WalletSeedHash;
 use crate::ui::MessageType;
+use crate::ui::components::wallet_unlock_popup::{
+    MigrationWalletUnlockResult, WalletUnlockPopup, wallet_needs_unlock,
+};
 use crate::ui::components::{
     BannerHandle, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
@@ -351,6 +356,10 @@ pub(super) struct MigrationReconciler {
     backend_wait_since: BTreeMap<Network, Instant>,
     /// Networks whose stuck-preparation timeout was already logged (dedupe).
     timeout_signaled: BTreeSet<Network>,
+    /// Reused password-entry component for the current migrated wallet.
+    wallet_unlock_popup: WalletUnlockPopup,
+    /// Migrated wallet currently shown in the password prompt.
+    prompt_wallet: Option<WalletSeedHash>,
 }
 
 impl MigrationReconciler {
@@ -361,6 +370,8 @@ impl MigrationReconciler {
             dispatched: BTreeSet::new(),
             backend_wait_since: BTreeMap::new(),
             timeout_signaled: BTreeSet::new(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            prompt_wallet: None,
         }
     }
 
@@ -372,6 +383,13 @@ impl MigrationReconciler {
             handle.clear();
         }
         self.last_state = None;
+        self.wallet_unlock_popup.close();
+        self.prompt_wallet = None;
+    }
+
+    /// Whether migration currently owns a blocking wallet-password prompt.
+    pub(super) fn is_prompting(state: &MigrationState) -> bool {
+        matches!(state, MigrationState::AwaitingWalletPasswords { .. })
     }
 
     /// Dispatch the cold-start migration once per network, gated on the wallet
@@ -447,10 +465,16 @@ impl MigrationReconciler {
     }
 
     /// Update the migration banner to reflect the current [`MigrationState`].
-    /// Each step / outcome surfaces a single i18n-ready sentence; `Failed` gets
-    /// a "Retry now" action button.
-    pub(super) fn update_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
-        let state = (*app_context.migration_status().state()).clone();
+    /// Each step / outcome surfaces a single i18n-ready sentence. Retryable
+    /// failures get a "Retry now" action button.
+    pub(super) fn update_banner(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+        frame_state: &MigrationState,
+    ) {
+        let state = frame_state.clone();
+        self.update_password_prompt(ctx, app_context, &state);
         if self.last_state.as_ref() == Some(&state) {
             return;
         }
@@ -466,6 +490,15 @@ impl MigrationReconciler {
             MigrationState::Running { step } => {
                 let text = migration_running_text(step);
                 let handle = MessageBanner::set_global(ctx, text, MessageType::Info);
+                handle.with_elapsed();
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::AwaitingWalletPasswords { .. } => {
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    "Enter your wallet password to continue the storage update.",
+                    MessageType::Info,
+                );
                 handle.with_elapsed();
                 self.banner_handle = Some(handle);
             }
@@ -563,18 +596,89 @@ impl MigrationReconciler {
                     self.last_state = Some(MigrationState::Idle);
                     return;
                 }
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    "Storage update could not complete. Your data is safe.",
-                    MessageType::Error,
-                );
+                let task_error = migration_task_error(Arc::clone(&error));
+                let retryable = matches!(&task_error, TaskError::MigrationFailed { .. });
+                let message = if retryable {
+                    "Storage update could not complete. Your data is safe.".to_string()
+                } else {
+                    task_error.to_string()
+                };
+                let handle = MessageBanner::set_global(ctx, message, MessageType::Error);
                 handle.disable_auto_dismiss();
                 // The collapsed details panel + log line get the full typed
                 // `MigrationError` chain rather than a lossy `to_string()`.
                 handle.with_details(error.as_ref());
-                handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
+                if retryable {
+                    handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
+                }
                 self.banner_handle = Some(handle);
             }
+        }
+    }
+
+    fn update_password_prompt(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+        state: &MigrationState,
+    ) {
+        let MigrationState::AwaitingWalletPasswords { wallets } = state else {
+            self.wallet_unlock_popup.close();
+            self.prompt_wallet = None;
+            return;
+        };
+
+        if let Some(seed_hash) = self.prompt_wallet {
+            let still_locked = wallets.contains(&seed_hash)
+                && app_context
+                    .wallet_arc(&seed_hash)
+                    .is_ok_and(|wallet| wallet_needs_unlock(&wallet));
+            if !still_locked {
+                self.wallet_unlock_popup.close();
+                self.prompt_wallet = None;
+            }
+        }
+
+        if self.prompt_wallet.is_none() {
+            self.prompt_wallet = wallets.iter().copied().find(|seed_hash| {
+                app_context
+                    .wallet_arc(seed_hash)
+                    .is_ok_and(|wallet| wallet_needs_unlock(&wallet))
+            });
+            if self.prompt_wallet.is_some() {
+                self.wallet_unlock_popup.open();
+            } else {
+                app_context
+                    .migration_status()
+                    .notify_wallet_password_submitted();
+                return;
+            }
+        }
+
+        let Some(seed_hash) = self.prompt_wallet else {
+            return;
+        };
+        let Ok(wallet) = app_context.wallet_arc(&seed_hash) else {
+            app_context
+                .migration_status()
+                .notify_wallet_password_submitted();
+            return;
+        };
+        match self
+            .wallet_unlock_popup
+            .show_for_migration(ctx, &wallet, app_context)
+        {
+            MigrationWalletUnlockResult::Unlocked => {
+                self.prompt_wallet = None;
+                app_context
+                    .migration_status()
+                    .notify_wallet_password_submitted();
+            }
+            MigrationWalletUnlockResult::Skipped => {
+                self.prompt_wallet = None;
+                app_context.migration_status().skip_wallet(seed_hash);
+            }
+            MigrationWalletUnlockResult::Pending => {}
         }
     }
 
@@ -585,10 +689,11 @@ impl MigrationReconciler {
         if !esc_pressed {
             return;
         }
-        if matches!(
-            self.last_state.as_ref(),
-            Some(MigrationState::Running { .. })
-        ) {
+        if self
+            .last_state
+            .as_ref()
+            .is_some_and(MigrationState::is_executing)
+        {
             return;
         }
         if let Some(handle) = self.banner_handle.take() {
@@ -703,12 +808,38 @@ mod tests {
             .with_size(egui::vec2(600.0, 260.0))
             .build_ui(MessageBanner::show_global);
 
-        reconciler.update_banner(&harness.ctx, &app_context);
+        let frame_state = app_context.migration_status().state();
+        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref());
         harness.run();
         harness.get_by_label(label).click();
         harness.run();
 
         reconciler.drain_actions(&harness.ctx, app_context.network)
+    }
+
+    #[test]
+    fn too_old_data_banner_shows_step_upgrade_without_retry() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let mut reconciler = MigrationReconciler::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 260.0))
+            .build_ui(MessageBanner::show_global);
+        let message = "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version.";
+        let state = MigrationState::Failed {
+            error: Arc::new(
+                crate::backend_task::migration::MigrationError::LegacyDataTooOld {
+                    found: 10,
+                    minimum_supported: 11,
+                },
+            ),
+        };
+
+        reconciler.update_banner(&harness.ctx, &app_context, &state);
+        harness.run();
+
+        assert!(harness.query_by_label(message).is_some());
+        assert!(harness.query_by_label("Retry now").is_none());
     }
 
     /// The unreadable-identity warning is acknowledgeable. It used to render as a

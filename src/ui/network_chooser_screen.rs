@@ -7,7 +7,6 @@ use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use crate::model::user_role::UserRole;
-use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
@@ -75,6 +74,7 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_message: Option<DatabaseClearMessage>,
+    wipe_platform_data_dialog: Option<ConfirmationDialog>,
     auto_start_spv: bool,
     discovery_in_progress: bool,
     fetch_confirmation_dialog: Option<ConfirmationDialog>,
@@ -114,6 +114,7 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_message: None,
+            wipe_platform_data_dialog: None,
             auto_start_spv,
             discovery_in_progress: false,
             fetch_confirmation_dialog: None,
@@ -635,59 +636,14 @@ impl NetworkChooserScreen {
                     ui.add_space(6.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("Clear Platform Addresses").clicked() {
-                            // TODO(C10): consolidate wallet_addresses + per-wallet k/v
-                            // clearing once the wallet table itself migrates out of data.db.
-                            let current_context = self.current_app_context();
-                            let wallet_hashes: Vec<_> = current_context
-                                .wallets
-                                .read()
-                                .map(|guard| guard.keys().copied().collect())
-                                .unwrap_or_default();
-                            // Drop each wallet's pushed sync cursor so the
-                            // "Addresses synced" label reverts to "never synced"
-                            // until the next coordinator pass repopulates it.
-                            for hash in &wallet_hashes {
-                                current_context.clear_platform_sync_info(hash);
-                            }
-                            // Clear the in-memory wallet maps so the UI never
-                            // stays inconsistent with a half-completed clear.
-                            if let Ok(wallets) = current_context.wallets.read() {
-                                for wallet_arc in wallets.values() {
-                                    if let Ok(mut wallet) = wallet_arc.write() {
-                                        wallet.platform_address_info.clear();
-                                        wallet.known_addresses.retain(|_, path| {
-                                            !path.is_platform_payment(current_context.network)
-                                        });
-                                        wallet.watched_addresses.retain(|path, _| {
-                                            !path.is_platform_payment(current_context.network)
-                                        });
-                                    }
-                                }
-                            }
-
-                            match current_context
-                                .db
-                                .clear_all_platform_addresses(&current_context.network)
-                            {
-                                Ok(count) => {
-                                    tracing::info!(
-                                        "Cleared {} platform addresses from database",
-                                        count
-                                    );
-                                }
-                                Err(e) => {
-                                    MessageBanner::set_global(
-                                        ui.ctx(),
-                                        "Could not clear the saved Platform addresses. Restart the application and try again.",
-                                        MessageType::Error,
-                                    )
-                                    .with_details(e);
-                                }
-                            }
-                        }
+                        // The reason is carried by the always-visible label beside the
+                        // button, not by a tooltip on a disabled control that is easy to
+                        // miss — and it is one string, so it stays one translation unit.
+                        ui.add_enabled(false, egui::Button::new("Clear Platform Addresses"));
                         ui.label(
-                            egui::RichText::new("Removes all Platform addresses for testing sync")
+                            egui::RichText::new(
+                                "This tool is unavailable because earlier-version recovery data is kept read-only.",
+                            )
                                 .color(DashColors::TEXT_SECONDARY)
                                 .italics(),
                         );
@@ -768,7 +724,7 @@ impl NetworkChooserScreen {
 
                 if ui.add(clear_button).clicked() {
                     let message = format!(
-                        "This permanently deletes all local database entries for {}. This includes wallets, tokens, contacts, and cached identity data. This cannot be undone.",
+                        "This removes the data used by this version for {}, including wallets, tokens, contacts, and cached identity data. If you updated from an earlier version, its read-only recovery database stays on this device and may still contain wallet recovery data. Continue?",
                         self.current_network_label()
                     );
                     self.db_clear_dialog = Some(
@@ -805,6 +761,43 @@ impl NetworkChooserScreen {
 
                 if self.db_clear_dialog.is_some() {
                     app_action |= self.show_database_clear_confirmation(ui);
+                }
+
+                if wipe_platform_data_available(self.selected_role, self.current_network) {
+                    ui.add_space(8.0);
+                    let wipe_button = egui::Button::new(
+                        egui::RichText::new("Wipe Platform Data").color(DashColors::WHITE),
+                    )
+                    .fill(DashColors::ERROR)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(Shape::RADIUS_MD)
+                    .min_size(egui::vec2(0.0, 36.0));
+
+                    if ui
+                        .add(wipe_button)
+                        .clickable_tooltip(
+                            "Permanently remove identities, keys, tokens, and custom data stored by this app for your development network.",
+                        )
+                        .clicked()
+                    {
+                        self.wipe_platform_data_dialog = Some(
+                            ConfirmationDialog::new(
+                                "Wipe Platform Data?",
+                                "This permanently removes every identity and its locally stored keys, along with tokens and custom Platform data, from this app's development network. Make sure you can recover any identity you still need. You cannot undo this action.",
+                            )
+                            .confirm_text(Some("Wipe Platform Data"))
+                            .cancel_text(Some("Keep Data"))
+                            .danger_mode(true)
+                            .require_confirmation_text(
+                                "WIPE",
+                                "Type WIPE to confirm this action.",
+                            ),
+                        );
+                    }
+                }
+
+                if self.wipe_platform_data_dialog.is_some() {
+                    app_action |= self.show_wipe_platform_data_confirmation(ui);
                 }
 
                 // SPV maintenance (clear data, rescan) is Expert-only — these are
@@ -1190,6 +1183,24 @@ impl NetworkChooserScreen {
         AppAction::None
     }
 
+    fn show_wipe_platform_data_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        if !wipe_platform_data_available(self.selected_role, self.current_network) {
+            self.wipe_platform_data_dialog = None;
+            return AppAction::None;
+        }
+
+        if let Some(dialog) = self.wipe_platform_data_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.wipe_platform_data_dialog = None;
+                if matches!(result, ConfirmationStatus::Confirmed) {
+                    return wipe_platform_data_action(self.selected_role, self.current_network);
+                }
+            }
+        }
+        AppAction::None
+    }
+
     fn current_network_label(&self) -> &'static str {
         match self.current_network {
             Network::Mainnet => "Mainnet",
@@ -1395,6 +1406,18 @@ impl NetworkChooserScreen {
     }
 }
 
+fn wipe_platform_data_available(role: UserRole, network: Network) -> bool {
+    role.at_least(UserRole::Developer) && network == Network::Devnet
+}
+
+fn wipe_platform_data_action(role: UserRole, network: Network) -> AppAction {
+    if wipe_platform_data_available(role, network) {
+        AppAction::BackendTask(BackendTask::SystemTask(SystemTask::WipePlatformData))
+    } else {
+        AppAction::None
+    }
+}
+
 impl ScreenLike for NetworkChooserScreen {
     fn refresh_on_arrival(&mut self) {
         // Reset collapsing states when arriving at this screen
@@ -1512,5 +1535,54 @@ impl ScreenLike for NetworkChooserScreen {
         if matches!(msg_type, MessageType::Error) && self.discovery_in_progress {
             self.discovery_in_progress = false;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wipe_platform_data_is_available_only_to_developers_on_devnet() {
+        assert!(!wipe_platform_data_available(
+            UserRole::Everyday,
+            Network::Devnet
+        ));
+        assert!(!wipe_platform_data_available(
+            UserRole::Power,
+            Network::Devnet
+        ));
+        assert!(!wipe_platform_data_available(
+            UserRole::Developer,
+            Network::Mainnet
+        ));
+        assert!(!wipe_platform_data_available(
+            UserRole::Developer,
+            Network::Testnet
+        ));
+        assert!(!wipe_platform_data_available(
+            UserRole::Developer,
+            Network::Regtest
+        ));
+        assert!(wipe_platform_data_available(
+            UserRole::Developer,
+            Network::Devnet
+        ));
+    }
+
+    #[test]
+    fn wipe_platform_data_dispatches_the_existing_system_task() {
+        assert!(matches!(
+            wipe_platform_data_action(UserRole::Developer, Network::Devnet),
+            AppAction::BackendTask(BackendTask::SystemTask(SystemTask::WipePlatformData))
+        ));
+        assert!(matches!(
+            wipe_platform_data_action(UserRole::Power, Network::Devnet),
+            AppAction::None
+        ));
+        assert!(matches!(
+            wipe_platform_data_action(UserRole::Developer, Network::Testnet),
+            AppAction::None
+        ));
     }
 }

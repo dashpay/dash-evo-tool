@@ -14,6 +14,7 @@ mod identity_hub_switcher;
 mod identity_selector;
 mod import_single_key;
 mod info_popup;
+mod keys_screen;
 mod masternode_tab;
 mod message_banner;
 mod migration_banner;

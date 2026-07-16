@@ -21,28 +21,31 @@ impl AppContext {
     }
 
     pub fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
-        self.db.clear_network_data(self.network)?;
+        let backend = self
+            .wallet_backend()
+            .map_err(|_| TaskError::WalletDataClearUnavailable)?;
 
         // F60: permanently delete every wallet's secret-bearing state so the
         // "delete all local data" promise holds — wallets must NOT rehydrate
         // on next launch and encrypted seeds must NOT persist. Clear the
         // persisted state (seed-envelope vault, wallet-meta + single-key
         // sidecars, shielded notes, session cache) BEFORE the in-memory maps
-        // below, so a mid-failure crash cannot strand a recoverable seed. The
+        // below, so a mid-failure crash cannot strand current state. The
+        // pre-update database remains a read-only recovery artifact. The
         // upstream (watch-only) persistor rows have no seed and are removed
-        // asynchronously off the main thread. Best-effort when the backend is
-        // not wired yet — there is no such state in that case.
-        if let Ok(backend) = self.wallet_backend() {
-            let upstream_ids = backend.forget_all_wallets_local();
-            for wallet_id in upstream_ids {
-                let backend = Arc::clone(&backend);
-                self.subtasks
-                    .spawn_sync("wallet_upstream_removal", async move {
-                        if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
-                            tracing::warn!(%error, "Upstream wallet removal failed during clear");
-                        }
-                    });
-            }
+        // asynchronously off the main thread.
+        let ClearAllOutcome {
+            upstream_ids,
+            mut failures,
+        } = backend.forget_all_wallets_local();
+        for wallet_id in upstream_ids {
+            let backend = Arc::clone(&backend);
+            self.subtasks
+                .spawn_sync("wallet_upstream_removal", async move {
+                    if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
+                        tracing::warn!(%error, "Upstream wallet removal failed during clear");
+                    }
+                });
         }
 
         // D4d: drain the DashPay k/v sidecar. The Global-scoped overlays
@@ -51,37 +54,50 @@ impl AppContext {
         // per-contact private memos and address-index cursors now live in
         // each owner's `DetScope::Identity` scope (Wave 2 promotion), which
         // the Global sweep cannot reach — so fan the per-owner clear out
-        // over the identity index. Best-effort when the wallet backend has
-        // not been wired yet (clear at first run before any wallet exists)
-        // — there is nothing to drain in that case.
-        if let Ok(backend) = self.wallet_backend() {
-            let kv = backend.kv();
-            match kv.list(DetScope::Global, Some("det:dashpay:")) {
-                Ok(keys) => {
-                    for k in keys {
-                        if let Err(e) = kv.delete(DetScope::Global, &k) {
-                            tracing::warn!(key = %k, "DashPay sidecar delete failed: {e:?}");
-                        }
+        // over the identity index.
+        let kv = backend.kv();
+        match kv.list(DetScope::Global, Some("det:dashpay:")) {
+            Ok(keys) => {
+                for k in keys {
+                    if let Err(source) = kv.delete(DetScope::Global, &k) {
+                        tracing::warn!(key = %k, error = ?source, "DashPay sidecar delete failed");
+                        failures.push(TaskError::DashpaySidecarStorage { source });
                     }
-                }
-                Err(e) => {
-                    tracing::warn!("DashPay sidecar listing failed: {e:?}");
                 }
             }
-            match self.local_identity_ids() {
-                Ok(owners) => {
-                    for owner in owners {
-                        if let Err(e) = backend.dashpay_clear_owner_overlays(&owner) {
-                            tracing::warn!(
-                                owner = %owner,
-                                "DashPay per-owner overlay clear failed: {e:?}"
-                            );
-                        }
+            Err(source) => {
+                tracing::warn!(error = ?source, "DashPay sidecar listing failed");
+                failures.push(TaskError::DashpaySidecarStorage { source });
+            }
+        }
+        match self.local_identity_ids() {
+            Ok(owners) => {
+                for owner in owners {
+                    if let Err(e) = backend.dashpay_clear_owner_overlays(&owner) {
+                        tracing::warn!(
+                            owner = %owner,
+                            "DashPay per-owner overlay clear failed: {e:?}"
+                        );
+                        failures.push(e);
+                    }
+                    // Wipe each identity's vault keys and det:identity:* records too —
+                    // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)
+                    // are plaintext-recoverable, so a full wipe must remove them as well.
+                    if let Err(e) = self.delete_local_qualified_identity(&owner) {
+                        tracing::warn!(
+                            owner = %owner,
+                            "Identity private-key wipe failed during clear: {e:?}"
+                        );
+                        failures.push(e);
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("Identity index listing for DashPay clear failed: {e:?}");
-                }
+            }
+            Err(e) => {
+                // A listing failure skips every per-identity key wipe, so it must
+                // surface as an incomplete clear — never a silent success that
+                // leaves identity private keys on disk.
+                tracing::warn!("Identity index listing for DashPay clear failed: {e:?}");
+                failures.push(e);
             }
         }
 
@@ -90,19 +106,15 @@ impl AppContext {
         // shielded files. The coordinator reset is async, so it runs off-thread
         // as a best-effort subtask; the legacy-file unlinks are synchronous and
         // scoped strictly to THIS network's spv directory.
-        if let Ok(backend) = self.wallet_backend() {
-            cleanup_legacy_shielded_files(backend.spv_storage_dir())?;
+        cleanup_legacy_shielded_files(backend.spv_storage_dir())?;
 
-            let ctx = Arc::clone(self);
-            self.subtasks
-                .spawn_sync("shielded_coordinator_clear", async move {
-                    if let Ok(backend) = ctx.wallet_backend()
-                        && let Err(error) = backend.clear_shielded().await
-                    {
-                        tracing::warn!(%error, "Shielded coordinator reset failed during clear");
-                    }
-                });
-        }
+        let backend = Arc::clone(&backend);
+        self.subtasks
+            .spawn_sync("shielded_coordinator_clear", async move {
+                if let Err(error) = backend.clear_shielded().await {
+                    tracing::warn!(%error, "Shielded coordinator reset failed during clear");
+                }
+            });
 
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
@@ -113,6 +125,18 @@ impl AppContext {
         }
 
         self.has_wallet.store(false, Ordering::Relaxed);
+
+        // Any secret-bearing delete that failed above means data may survive on
+        // disk, so never report a clean wipe. The in-memory maps are still
+        // cleared; the typed error tells the user to restart and retry.
+        if !failures.is_empty() {
+            let failed = failures.len();
+            let first_error = Box::new(failures.into_iter().next().expect("failures is non-empty"));
+            return Err(TaskError::WalletDataClearIncomplete {
+                failed,
+                first_error,
+            });
+        }
 
         Ok(())
     }

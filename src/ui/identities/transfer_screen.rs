@@ -47,6 +47,10 @@ pub enum TransferDestinationType {
     PlatformAddress,
 }
 
+fn key_info_when_available<T>(has_keys: bool, key: Option<T>) -> Option<T> {
+    has_keys.then_some(key).flatten()
+}
+
 #[derive(PartialEq)]
 pub enum TransferCreditsStatus {
     NotStarted,
@@ -614,6 +618,16 @@ impl ScreenLike for TransferScreen {
                 !self.identity.available_transfer_keys().is_empty()
             };
 
+            let key_for_info = key_info_when_available(
+                has_keys,
+                self.identity.identity.get_first_public_key_matching(
+                    Purpose::TRANSFER,
+                    SecurityLevel::full_range().into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                ),
+            );
+
             if !has_keys {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
@@ -624,15 +638,15 @@ impl ScreenLike for TransferScreen {
                 );
                 ui.add_space(10.0);
 
-                let key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::TRANSFER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
-
-                if let Some(key) = key {
-                    if ui.button("Check Transfer Key").clicked() {
+                if ui.button("Add key").clicked() {
+                    inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                        self.identity.clone(),
+                        &self.app_context,
+                    )));
+                }
+            } else {
+                if let Some(key) = key_for_info {
+                    if ui.button("Manage Transfer Key").clicked() {
                         inner_action |=
                             AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                 self.identity.clone(),
@@ -644,13 +658,6 @@ impl ScreenLike for TransferScreen {
                     ui.add_space(5.0);
                 }
 
-                if ui.button("Add key").clicked() {
-                    inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
-                        &self.app_context,
-                    )));
-                }
-            } else {
                 if self.selected_wallet.is_some()
                     && let Some(wallet) = &self.selected_wallet
                 {
@@ -845,5 +852,17 @@ impl ScreenLike for TransferScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::key_info_when_available;
+
+    #[test]
+    fn key_info_is_offered_only_when_a_key_exists() {
+        assert_eq!(key_info_when_available(true, Some("key")), Some("key"));
+        assert_eq!(key_info_when_available(false, Some("key")), None);
+        assert_eq!(key_info_when_available::<&str>(true, None), None);
     }
 }

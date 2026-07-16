@@ -10,8 +10,11 @@ use crate::backend_task::dashpay::auto_accept_proof::{
 };
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dashpay::contact_request_recipient;
+use crate::model::dashpay::{
+    ContactInfoUpdate, UnreadableContactInfoPolicy, contact_request_recipient,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::wallet_backend::{ContactRequestActionKind, ContactRequestActionPhase};
 // Upstream contact-request type: used to record the sent request in the
 // local wallet-manager so dashpay_sync can auto-establish the contact.
 use bip39::rand::{SeedableRng, rngs::StdRng};
@@ -317,7 +320,9 @@ pub async fn send_contact_request_with_proof(
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingEncryptionKey))?;
 
     // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
-    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
+    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys.
+    // This key belongs to the RECIPIENT (`to_identity`); its absence means the
+    // recipient is not set up for DashPay contacts — not a sender-side fault.
     let recipient_key = to_identity
         .get_first_public_key_matching(
             Purpose::DECRYPTION,
@@ -325,7 +330,7 @@ pub async fn send_contact_request_with_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingDecryptionKey))?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::RecipientMissingDecryptionKey))?;
 
     // Step 4: Generate ECDH shared key and encrypt data.
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
@@ -694,6 +699,12 @@ pub async fn accept_contact_request(
     identity: QualifiedIdentity,
     request_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    let owner_id = identity.identity.id();
+    let _action_guard = app_context
+        .wallet_backend()?
+        .dashpay_lock_contact_request_action(&owner_id, &request_id)
+        .await;
+
     // According to DashPay DIP, accepting means sending a contact request back
     // First, we need to fetch the incoming contact request to get the sender's identity
 
@@ -728,9 +739,10 @@ pub async fn accept_contact_request(
     let existing = Document::fetch_many(sdk, existing_query).await?;
 
     if !existing.is_empty() {
-        return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(
-            from_identity_id,
-        ));
+        return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
+            request_id,
+            contact_id: from_identity_id,
+        });
     }
 
     // Get an AUTHENTICATION key for signing the state transition
@@ -826,6 +838,7 @@ pub async fn reject_contact_request(
     sdk: &Sdk,
     identity: QualifiedIdentity,
     request_id: Identifier,
+    unreadable: UnreadableContactInfoPolicy,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     // According to DashPay DIP, rejecting doesn't delete the request (they're immutable)
     // Instead, we should update our contactInfo document to mark this contact as hidden
@@ -845,41 +858,172 @@ pub async fn reject_contact_request(
     // Verify the request was addressed to us before declining it.
     let from_identity_id = sender_of_received_request(&doc, &owner_id)?;
 
-    // Create or update contactInfo to mark this contact as hidden
-    use super::contact_info::create_or_update_contact_info;
-
-    let _ = create_or_update_contact_info(
+    let ops = PlatformRejectOps {
         app_context,
         sdk,
         identity,
+        owner_id,
         from_identity_id,
-        None,       // No nickname
-        None,       // No note
-        true,       // display_hidden = true for rejected contacts
-        Vec::new(), // No accepted accounts
-    )
-    .await?;
+        request_id,
+    };
+    reject_flow(&ops, unreadable).await
+}
 
-    // Mirror the decline into the DET-local sidecar so `DashpayView` surfaces
-    // the request as "rejected" until a fresh outgoing/incoming pair
-    // establishes a contact. DashPay has no on-chain "rejected" flag, so the
-    // sidecar is the source of truth here.
-    //
-    // The reader keys on the counterparty's identity id under the acting
-    // identity's own scope (see `DashpayView::contact_requests`), so we pass
-    // both `owner_id` and the original sender identity, not the request
-    // document id. The marker is incoming-only: it must not silence a request
-    // we later send to that same person.
-    if let Ok(backend) = app_context.wallet_backend()
-        && let Err(e) = backend.dashpay_mark_declined(&owner_id, &from_identity_id)
-    {
-        tracing::debug!(
-            from = %from_identity_id.to_string(Encoding::Base58),
-            error = ?e,
-            "DashPay decline sidecar write failed; request will still display as pending"
-        );
+trait RejectOps {
+    fn lock_action(
+        &self,
+    ) -> impl Future<Output = Result<tokio::sync::OwnedMutexGuard<()>, TaskError>> + Send;
+    fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError>;
+    fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError>;
+    fn clear_phase(&self) -> Result<(), TaskError>;
+    fn contact_is_hidden(
+        &self,
+        unreadable: UnreadableContactInfoPolicy,
+    ) -> impl Future<Output = Result<bool, TaskError>> + Send;
+    fn update_contact_info(
+        &self,
+        update: ContactInfoUpdate,
+    ) -> impl Future<Output = Result<(), TaskError>> + Send;
+    fn mark_declined(&self) -> Result<(), TaskError>;
+    fn request_id(&self) -> Identifier;
+}
+
+async fn reject_flow<O: RejectOps>(
+    ops: &O,
+    unreadable: UnreadableContactInfoPolicy,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let _action_guard = ops.lock_action().await?;
+    let phase = match ops.phase()? {
+        Some(phase) => phase,
+        None => {
+            ops.set_phase(ContactRequestActionPhase::HideIntent)?;
+            ContactRequestActionPhase::HideIntent
+        }
+    };
+
+    if phase == ContactRequestActionPhase::HideIntent {
+        if !ops.contact_is_hidden(unreadable).await? {
+            ops.update_contact_info(hidden_contact_update(true, unreadable))
+                .await?;
+        }
+        ops.set_phase(ContactRequestActionPhase::MarkerPending)?;
     }
 
+    let result = complete_rejection(ops.request_id(), || ops.mark_declined())?;
+    ops.clear_phase()?;
+    Ok(result)
+}
+
+struct PlatformRejectOps<'a> {
+    app_context: &'a Arc<AppContext>,
+    sdk: &'a Sdk,
+    identity: QualifiedIdentity,
+    owner_id: Identifier,
+    from_identity_id: Identifier,
+    request_id: Identifier,
+}
+
+impl RejectOps for PlatformRejectOps<'_> {
+    async fn lock_action(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, TaskError> {
+        Ok(self
+            .app_context
+            .wallet_backend()?
+            .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
+            .await)
+    }
+
+    fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_contact_request_action_phase(
+                &self.owner_id,
+                &self.request_id,
+                ContactRequestActionKind::Decline,
+            )
+    }
+
+    fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_set_contact_request_action_phase(
+                &self.owner_id,
+                &self.request_id,
+                ContactRequestActionKind::Decline,
+                phase,
+            )
+    }
+
+    fn clear_phase(&self) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_clear_contact_request_action(
+                &self.owner_id,
+                &self.request_id,
+                ContactRequestActionKind::Decline,
+            )
+    }
+
+    async fn contact_is_hidden(
+        &self,
+        unreadable: UnreadableContactInfoPolicy,
+    ) -> Result<bool, TaskError> {
+        super::contact_info::contact_info_is_hidden(
+            self.app_context,
+            self.sdk,
+            &self.identity,
+            self.from_identity_id,
+            unreadable,
+        )
+        .await
+    }
+
+    async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
+        super::contact_info::create_or_update_contact_info(
+            self.app_context,
+            self.sdk,
+            self.identity.clone(),
+            self.from_identity_id,
+            update,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    fn mark_declined(&self) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_mark_declined(&self.owner_id, &self.from_identity_id)
+    }
+
+    fn request_id(&self) -> Identifier {
+        self.request_id
+    }
+}
+
+/// The visibility flip that declining and withdrawing both write. Every other
+/// stored detail is preserved: these actions hide a contact, they do not edit it.
+fn hidden_contact_update(
+    hidden: bool,
+    unreadable: UnreadableContactInfoPolicy,
+) -> ContactInfoUpdate {
+    let mut update = ContactInfoUpdate::visibility(hidden);
+    update.unreadable = unreadable;
+    update
+}
+
+/// Return rejection success only after storing the local marker that retires the row.
+/// The closure seam keeps the failure path deterministic in tests.
+///
+/// # Errors
+///
+/// The marker is the only thing that retires the row — Platform keeps the
+/// `contactRequest` document forever — so a failed write must surface rather
+/// than be reported as a completed rejection.
+fn complete_rejection(
+    request_id: Identifier,
+    mark_declined: impl FnOnce() -> Result<(), TaskError>,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    mark_declined()?;
     Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
         request_id,
     ))
@@ -900,14 +1044,26 @@ enum CancelOutcome {
 /// the reciprocal check and the hide broadcast — can be driven deterministically
 /// in tests, which is impossible against a live Platform.
 trait CancelOps {
+    fn lock_action(
+        &self,
+    ) -> impl Future<Output = Result<tokio::sync::OwnedMutexGuard<()>, TaskError>> + Send;
+    fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError>;
+    fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError>;
+    fn clear_phase(&self) -> Result<(), TaskError>;
+
     /// `true` when the recipient has already sent a contact request back, which
     /// makes the pending request an established contact instead.
     fn reciprocal_request_exists(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
 
-    /// Broadcast a `contactInfo` document carrying `hidden` for the recipient.
-    fn set_contact_hidden(
+    fn contact_is_hidden(
         &self,
-        hidden: bool,
+        unreadable: UnreadableContactInfoPolicy,
+    ) -> impl Future<Output = Result<bool, TaskError>> + Send;
+
+    /// Broadcast the complete visibility update for the recipient.
+    fn update_contact_info(
+        &self,
+        update: ContactInfoUpdate,
     ) -> impl Future<Output = Result<(), TaskError>> + Send;
 
     /// Record the withdrawal in the DET sidecar so the request stops being
@@ -937,19 +1093,57 @@ trait CancelOps {
 /// leaves the contact hidden. It is not detectable from here at any window
 /// width; recovery is the Contacts tab's hidden-contacts section, which can
 /// unhide the contact.
-async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> {
-    if ops.reciprocal_request_exists().await? {
-        return Ok(CancelOutcome::AlreadyEstablished);
+async fn cancel_flow<O: CancelOps>(
+    ops: &O,
+    unreadable: UnreadableContactInfoPolicy,
+) -> Result<CancelOutcome, TaskError> {
+    let _action_guard = ops.lock_action().await?;
+    let mut phase = match ops.phase()? {
+        Some(phase) => phase,
+        None => {
+            if ops.reciprocal_request_exists().await? {
+                return Ok(CancelOutcome::AlreadyEstablished);
+            }
+            ops.set_phase(ContactRequestActionPhase::HideIntent)?;
+            ContactRequestActionPhase::HideIntent
+        }
+    };
+
+    if phase == ContactRequestActionPhase::HideIntent {
+        if !ops.contact_is_hidden(unreadable).await? {
+            ops.update_contact_info(hidden_contact_update(true, unreadable))
+                .await?;
+        }
+        ops.set_phase(ContactRequestActionPhase::HideCommitted)?;
+        phase = ContactRequestActionPhase::HideCommitted;
     }
 
-    ops.set_contact_hidden(true).await?;
+    if phase == ContactRequestActionPhase::HideCommitted {
+        if ops.reciprocal_request_exists().await? {
+            ops.set_phase(ContactRequestActionPhase::CorrectiveUnhideIntent)?;
+            phase = ContactRequestActionPhase::CorrectiveUnhideIntent;
+        } else {
+            ops.set_phase(ContactRequestActionPhase::MarkerPending)?;
+            phase = ContactRequestActionPhase::MarkerPending;
+        }
+    }
 
-    if ops.reciprocal_request_exists().await? {
-        ops.set_contact_hidden(false).await?;
+    if phase == ContactRequestActionPhase::CorrectiveUnhideIntent {
+        if ops.contact_is_hidden(unreadable).await? {
+            ops.update_contact_info(hidden_contact_update(false, unreadable))
+                .await?;
+        }
+        ops.set_phase(ContactRequestActionPhase::CorrectiveUnhideComplete)?;
+        phase = ContactRequestActionPhase::CorrectiveUnhideComplete;
+    }
+
+    if phase == ContactRequestActionPhase::CorrectiveUnhideComplete {
+        ops.clear_phase()?;
         return Ok(CancelOutcome::AlreadyEstablished);
     }
 
     ops.mark_withdrawn()?;
+    ops.clear_phase()?;
     Ok(CancelOutcome::Withdrawn)
 }
 
@@ -962,9 +1156,49 @@ struct PlatformCancelOps<'a> {
     owner_id: Identifier,
     /// The recipient of the request being withdrawn.
     to_identity_id: Identifier,
+    request_id: Identifier,
 }
 
 impl CancelOps for PlatformCancelOps<'_> {
+    async fn lock_action(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, TaskError> {
+        Ok(self
+            .app_context
+            .wallet_backend()?
+            .dashpay_lock_contact_request_action(&self.owner_id, &self.request_id)
+            .await)
+    }
+
+    fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_contact_request_action_phase(
+                &self.owner_id,
+                &self.request_id,
+                ContactRequestActionKind::Cancel,
+            )
+    }
+
+    fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_set_contact_request_action_phase(
+                &self.owner_id,
+                &self.request_id,
+                ContactRequestActionKind::Cancel,
+                phase,
+            )
+    }
+
+    fn clear_phase(&self) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_clear_contact_request_action(
+                &self.owner_id,
+                &self.request_id,
+                ContactRequestActionKind::Cancel,
+            )
+    }
+
     async fn reciprocal_request_exists(&self) -> Result<bool, TaskError> {
         let mut query = contact_request_query(self.app_context)?;
         query = query
@@ -983,19 +1217,30 @@ impl CancelOps for PlatformCancelOps<'_> {
         Ok(!Document::fetch_many(self.sdk, query).await?.is_empty())
     }
 
-    async fn set_contact_hidden(&self, hidden: bool) -> Result<(), TaskError> {
+    async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
         super::contact_info::create_or_update_contact_info(
             self.app_context,
             self.sdk,
             self.identity.clone(),
             self.to_identity_id,
-            None,       // No nickname
-            None,       // No note
-            hidden,     // display_hidden
-            Vec::new(), // No accepted accounts
+            update,
         )
         .await
         .map(|_| ())
+    }
+
+    async fn contact_is_hidden(
+        &self,
+        unreadable: UnreadableContactInfoPolicy,
+    ) -> Result<bool, TaskError> {
+        super::contact_info::contact_info_is_hidden(
+            self.app_context,
+            self.sdk,
+            &self.identity,
+            self.to_identity_id,
+            unreadable,
+        )
+        .await
     }
 
     fn mark_withdrawn(&self) -> Result<(), TaskError> {
@@ -1023,6 +1268,7 @@ pub async fn cancel_contact_request(
     sdk: &Sdk,
     identity: QualifiedIdentity,
     request_id: Identifier,
+    unreadable: UnreadableContactInfoPolicy,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let owner_id = identity.identity.id();
 
@@ -1044,17 +1290,21 @@ pub async fn cancel_contact_request(
         identity,
         owner_id,
         to_identity_id,
+        request_id,
     };
 
-    match cancel_flow(&ops).await? {
+    match cancel_flow(&ops, unreadable).await? {
         CancelOutcome::Withdrawn => Ok(BackendTaskSuccessResult::DashPayContactRequestCancelled(
             request_id,
         )),
         // The recipient answered: the pair is a contact now, so report the real
         // state and let the UI refresh into it.
-        CancelOutcome::AlreadyEstablished => Ok(
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(to_identity_id),
-        ),
+        CancelOutcome::AlreadyEstablished => {
+            Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished {
+                request_id,
+                contact_id: to_identity_id,
+            })
+        }
     }
 }
 
@@ -1245,26 +1495,47 @@ mod tests {
     /// the hide landed".
     #[derive(Default)]
     struct ScriptedOps {
-        reciprocal: Mutex<VecDeque<bool>>,
-        /// Every `set_contact_hidden` argument, in call order.
-        hidden_writes: Mutex<Vec<bool>>,
+        action_lock: Arc<tokio::sync::Mutex<()>>,
+        reciprocal: Mutex<VecDeque<Result<bool, TaskError>>>,
+        /// Every contact-info update, in call order.
+        contact_updates: Mutex<Vec<ContactInfoUpdate>>,
+        contact_hidden: Mutex<bool>,
+        phase: Mutex<Option<ContactRequestActionPhase>>,
         withdrawn: Mutex<bool>,
         /// When set, the first hide broadcast fails.
         hide_fails: bool,
         /// When set, recording the withdrawal in the sidecar fails.
-        withdraw_fails: bool,
+        withdraw_failures: Mutex<usize>,
     }
 
     impl ScriptedOps {
         fn with_reciprocal(answers: [bool; 2]) -> Self {
             Self {
-                reciprocal: Mutex::new(answers.into()),
+                reciprocal: Mutex::new(answers.map(Ok).into()),
+                ..Default::default()
+            }
+        }
+
+        fn with_reciprocal_results(
+            answers: impl IntoIterator<Item = Result<bool, TaskError>>,
+        ) -> Self {
+            Self {
+                reciprocal: Mutex::new(answers.into_iter().collect()),
                 ..Default::default()
             }
         }
 
         fn hidden_writes(&self) -> Vec<bool> {
-            self.hidden_writes.lock().expect("not poisoned").clone()
+            self.contact_updates
+                .lock()
+                .expect("not poisoned")
+                .iter()
+                .map(|update| update.display_hidden)
+                .collect()
+        }
+
+        fn contact_updates(&self) -> Vec<ContactInfoUpdate> {
+            self.contact_updates.lock().expect("not poisoned").clone()
         }
 
         fn was_withdrawn(&self) -> bool {
@@ -1273,28 +1544,57 @@ mod tests {
     }
 
     impl CancelOps for ScriptedOps {
+        async fn lock_action(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, TaskError> {
+            Ok(self.action_lock.clone().lock_owned().await)
+        }
+
+        fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
+            Ok(*self.phase.lock().expect("not poisoned"))
+        }
+
+        fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError> {
+            *self.phase.lock().expect("not poisoned") = Some(phase);
+            Ok(())
+        }
+
+        fn clear_phase(&self) -> Result<(), TaskError> {
+            *self.phase.lock().expect("not poisoned") = None;
+            Ok(())
+        }
+
         async fn reciprocal_request_exists(&self) -> Result<bool, TaskError> {
-            Ok(self
-                .reciprocal
+            self.reciprocal
                 .lock()
                 .expect("not poisoned")
                 .pop_front()
-                .unwrap_or(false))
+                .unwrap_or(Ok(false))
         }
 
-        async fn set_contact_hidden(&self, hidden: bool) -> Result<(), TaskError> {
+        async fn contact_is_hidden(
+            &self,
+            _unreadable: UnreadableContactInfoPolicy,
+        ) -> Result<bool, TaskError> {
+            let hidden = *self.contact_hidden.lock().expect("not poisoned");
+            tokio::task::yield_now().await;
+            Ok(hidden)
+        }
+
+        async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
             if self.hide_fails {
                 return Err(TaskError::DocumentNotFound);
             }
-            self.hidden_writes
+            self.contact_updates
                 .lock()
                 .expect("not poisoned")
-                .push(hidden);
+                .push(update.clone());
+            *self.contact_hidden.lock().expect("not poisoned") = update.display_hidden;
             Ok(())
         }
 
         fn mark_withdrawn(&self) -> Result<(), TaskError> {
-            if self.withdraw_fails {
+            let mut failures = self.withdraw_failures.lock().expect("not poisoned");
+            if *failures > 0 {
+                *failures -= 1;
                 return Err(TaskError::WalletBackendNotYetWired);
             }
             *self.withdrawn.lock().expect("not poisoned") = true;
@@ -1302,11 +1602,22 @@ mod tests {
         }
     }
 
+    fn assert_preserving_visibility_update(update: &ContactInfoUpdate, hidden: bool) {
+        use crate::model::dashpay::{AcceptedAccounts, ContactInfoField};
+
+        assert_eq!(update.nickname, ContactInfoField::Preserve);
+        assert_eq!(update.note, ContactInfoField::Preserve);
+        assert_eq!(update.accepted_accounts, AcceptedAccounts::Preserve);
+        assert_eq!(update.display_hidden, hidden);
+    }
+
     #[tokio::test]
-    async fn cancelling_a_pending_request_hides_it_and_records_the_withdrawal() {
+    async fn cancelling_a_pending_request_preserves_unrelated_contact_details() {
         let ops = ScriptedOps::with_reciprocal([false, false]);
 
-        let outcome = cancel_flow(&ops).await.expect("cancellation succeeds");
+        let outcome = cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+            .await
+            .expect("cancellation succeeds");
 
         assert_eq!(outcome, CancelOutcome::Withdrawn);
         assert_eq!(
@@ -1314,6 +1625,7 @@ mod tests {
             vec![true],
             "a pending request must be hidden exactly once"
         );
+        assert_preserving_visibility_update(&ops.contact_updates()[0], true);
         assert!(
             ops.was_withdrawn(),
             "the withdrawal must be recorded so the row stops being listed"
@@ -1325,7 +1637,9 @@ mod tests {
         // The recipient answered before the user clicked Cancel.
         let ops = ScriptedOps::with_reciprocal([true, true]);
 
-        let outcome = cancel_flow(&ops).await.expect("cancellation succeeds");
+        let outcome = cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+            .await
+            .expect("cancellation succeeds");
 
         assert_eq!(outcome, CancelOutcome::AlreadyEstablished);
         assert!(
@@ -1341,7 +1655,9 @@ mod tests {
         // landed — the exact race the check-then-write ordering cannot prevent.
         let ops = ScriptedOps::with_reciprocal([false, true]);
 
-        let outcome = cancel_flow(&ops).await.expect("cancellation succeeds");
+        let outcome = cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+            .await
+            .expect("cancellation succeeds");
 
         assert_eq!(
             outcome,
@@ -1368,7 +1684,9 @@ mod tests {
         };
 
         assert!(
-            cancel_flow(&ops).await.is_err(),
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .is_err(),
             "a failed broadcast must surface, not be swallowed"
         );
         assert!(
@@ -1383,13 +1701,239 @@ mod tests {
         // request comes back as pending on the next reload, so announcing a
         // successful cancellation would be a lie.
         let ops = ScriptedOps {
-            withdraw_fails: true,
+            withdraw_failures: Mutex::new(1),
             ..ScriptedOps::with_reciprocal([false, false])
         };
 
         assert!(
-            cancel_flow(&ops).await.is_err(),
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .is_err(),
             "a withdrawal the sidecar refused must surface as an error, not as success"
+        );
+    }
+
+    #[test]
+    fn failed_mark_declined_write_surfaces_error_instead_of_rejected() {
+        let result = complete_rejection(id(7), || {
+            Err(TaskError::DashpaySidecarStorage {
+                source: crate::wallet_backend::KvAdapterError::Truncated,
+            })
+        });
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashpaySidecarStorage { .. })
+        ));
+    }
+
+    #[derive(Default)]
+    struct ScriptedRejectOps {
+        action_lock: Arc<tokio::sync::Mutex<()>>,
+        phase: Mutex<Option<ContactRequestActionPhase>>,
+        hidden: Mutex<bool>,
+        hidden_writes: Mutex<usize>,
+        mark_attempts: Mutex<usize>,
+        mark_failures: Mutex<usize>,
+    }
+
+    impl RejectOps for ScriptedRejectOps {
+        async fn lock_action(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, TaskError> {
+            Ok(self.action_lock.clone().lock_owned().await)
+        }
+
+        fn phase(&self) -> Result<Option<ContactRequestActionPhase>, TaskError> {
+            Ok(*self.phase.lock().expect("not poisoned"))
+        }
+
+        fn set_phase(&self, phase: ContactRequestActionPhase) -> Result<(), TaskError> {
+            *self.phase.lock().expect("not poisoned") = Some(phase);
+            Ok(())
+        }
+
+        fn clear_phase(&self) -> Result<(), TaskError> {
+            *self.phase.lock().expect("not poisoned") = None;
+            Ok(())
+        }
+
+        async fn contact_is_hidden(
+            &self,
+            _unreadable: UnreadableContactInfoPolicy,
+        ) -> Result<bool, TaskError> {
+            let hidden = *self.hidden.lock().expect("not poisoned");
+            tokio::task::yield_now().await;
+            Ok(hidden)
+        }
+
+        async fn update_contact_info(&self, update: ContactInfoUpdate) -> Result<(), TaskError> {
+            assert!(update.display_hidden);
+            *self.hidden.lock().expect("not poisoned") = true;
+            *self.hidden_writes.lock().expect("not poisoned") += 1;
+            Ok(())
+        }
+
+        fn mark_declined(&self) -> Result<(), TaskError> {
+            *self.mark_attempts.lock().expect("not poisoned") += 1;
+            let mut failures = self.mark_failures.lock().expect("not poisoned");
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(TaskError::WalletBackendNotYetWired);
+            }
+            Ok(())
+        }
+
+        fn request_id(&self) -> Identifier {
+            id(7)
+        }
+    }
+
+    #[tokio::test]
+    async fn decline_retry_after_marker_failure_does_not_rebroadcast_hide() {
+        let ops = ScriptedRejectOps {
+            mark_failures: Mutex::new(1),
+            ..Default::default()
+        };
+
+        assert!(
+            reject_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .is_err()
+        );
+        assert!(
+            reject_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .is_ok()
+        );
+        assert_eq!(*ops.hidden_writes.lock().expect("not poisoned"), 1);
+        assert_eq!(*ops.mark_attempts.lock().expect("not poisoned"), 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_declines_share_one_paid_hide() {
+        let ops = ScriptedRejectOps::default();
+
+        let (first, second) = tokio::join!(
+            reject_flow(&ops, UnreadableContactInfoPolicy::Abort),
+            reject_flow(&ops, UnreadableContactInfoPolicy::Abort),
+        );
+
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+        assert_eq!(
+            *ops.hidden_writes.lock().expect("not poisoned"),
+            1,
+            "backend serialization must permit only one paid hide"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_retry_after_marker_failure_does_not_rebroadcast_hide() {
+        let ops = ScriptedOps {
+            withdraw_failures: Mutex::new(1),
+            ..ScriptedOps::with_reciprocal([false, false])
+        };
+
+        assert!(
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .expect("marker repair succeeds"),
+            CancelOutcome::Withdrawn
+        );
+        assert_eq!(ops.hidden_writes(), vec![true]);
+        assert!(ops.reciprocal.lock().expect("not poisoned").is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_cancellations_share_one_paid_hide() {
+        let ops = ScriptedOps::with_reciprocal([false, false]);
+
+        let (first, second) = tokio::join!(
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort),
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort),
+        );
+
+        assert_eq!(first.expect("first cancellation"), CancelOutcome::Withdrawn);
+        assert_eq!(
+            second.expect("second cancellation"),
+            CancelOutcome::Withdrawn
+        );
+        assert_eq!(
+            ops.hidden_writes(),
+            vec![true],
+            "backend serialization must permit only one paid hide"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_retry_after_post_hide_probe_failure_does_not_rehide() {
+        let ops = ScriptedOps::with_reciprocal_results([
+            Ok(false),
+            Err(TaskError::DocumentNotFound),
+            Ok(false),
+        ]);
+
+        assert!(
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .expect("post-hide probe resumes"),
+            CancelOutcome::Withdrawn
+        );
+        assert_eq!(ops.hidden_writes(), vec![true]);
+    }
+
+    #[tokio::test]
+    async fn cancel_retry_that_discovers_reciprocal_unhides_once() {
+        let ops = ScriptedOps::with_reciprocal_results([
+            Ok(false),
+            Err(TaskError::DocumentNotFound),
+            Ok(true),
+        ]);
+
+        assert!(
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            cancel_flow(&ops, UnreadableContactInfoPolicy::Abort)
+                .await
+                .expect("reciprocal retry succeeds"),
+            CancelOutcome::AlreadyEstablished
+        );
+        assert_eq!(ops.hidden_writes(), vec![true, false]);
+        assert!(!ops.was_withdrawn());
+    }
+
+    #[test]
+    fn declining_preserves_unrelated_contact_details() {
+        // The write `reject_contact_request` broadcasts. Declining hides the
+        // sender; it must not volunteer empty details over what they stored.
+        let update = hidden_contact_update(true, UnreadableContactInfoPolicy::Abort);
+
+        assert_preserving_visibility_update(&update, true);
+    }
+
+    #[test]
+    fn a_confirmed_overwrite_carries_the_users_choice_into_the_write() {
+        use crate::model::dashpay::AcceptedAccounts;
+
+        let update = hidden_contact_update(true, UnreadableContactInfoPolicy::Overwrite);
+
+        assert_eq!(update.unreadable, UnreadableContactInfoPolicy::Overwrite);
+        assert_eq!(
+            update.accepted_accounts,
+            AcceptedAccounts::Preserve,
+            "confirming an overwrite of unreadable data must not also volunteer an empty account list"
         );
     }
 }

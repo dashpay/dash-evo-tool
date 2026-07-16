@@ -16,8 +16,15 @@ impl ScreenLike for KeysScreen {
     fn refresh(&mut self) {}
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Identity Keys");
+            ui.horizontal(|ui| {
+                if ui.button("Back").clicked() {
+                    action = AppAction::PopScreen;
+                }
+                ui.heading("Identity Keys");
+            });
+            ui.separator();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -38,7 +45,7 @@ impl ScreenLike for KeysScreen {
                 }
             });
         });
-        AppAction::None
+        action
     }
 }
 

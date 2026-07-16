@@ -36,6 +36,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::Wallet;
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::platform::Identifier;
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use platform_wallet::wallet::identity::types::dashpay::contact_request::ContactRequest;
@@ -232,6 +233,9 @@ const KV_PREFIX_DECLINED: &str = "det:dashpay:declined:";
 /// opposite directions: withdrawing our request to Bob says nothing about a
 /// request Bob later sends us, and a single marker would silently hide it.
 const KV_PREFIX_WITHDRAWN: &str = "det:dashpay:withdrawn:";
+/// Durable recovery journal for paid decline/cancel visibility transitions.
+/// Value: [`ContactRequestActionPhase`]. Scope: the acting identity.
+const KV_PREFIX_REQUEST_ACTION: &str = "det:dashpay:request_action:";
 /// DET-local `(created_at, updated_at)` timestamps for an entity (contact, request).
 /// Value: `(i64, i64)` encoded by the [`DetKv`] schema. Scope: [`DetScope::Global`].
 const KV_PREFIX_TIMESTAMPS: &str = "det:dashpay:timestamps:";
@@ -248,6 +252,79 @@ const KV_PREFIX_ADDRESS_INDEX: &str = "det:dashpay:address_index:";
 /// [`Identifier`] (the owner is already embedded in the key).
 /// Key shape: `det:dashpay:addr_map:<owner_b58>:<address>`.
 const KV_PREFIX_ADDR_MAP: &str = "det:dashpay:addr_map:";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContactRequestActionKind {
+    Decline,
+    Cancel,
+}
+
+impl ContactRequestActionKind {
+    fn key_token(self) -> &'static str {
+        match self {
+            Self::Decline => "decline",
+            Self::Cancel => "cancel",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ContactRequestActionPhase {
+    HideIntent,
+    HideCommitted,
+    MarkerPending,
+    CorrectiveUnhideIntent,
+    CorrectiveUnhideComplete,
+}
+
+fn request_action_key(kind: ContactRequestActionKind, request_id: &Identifier) -> String {
+    format!(
+        "{KV_PREFIX_REQUEST_ACTION}{}:{}",
+        kind.key_token(),
+        request_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+    )
+}
+
+fn request_action_lock_key(owner: &Identifier, request_id: &Identifier) -> String {
+    format!(
+        "{}:{}",
+        owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+        request_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+    )
+}
+
+#[derive(Default)]
+pub(crate) struct ContactRequestActionLocks {
+    locks: std::sync::Mutex<
+        std::collections::BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
+}
+
+impl ContactRequestActionLocks {
+    async fn lock(
+        &self,
+        owner: &Identifier,
+        request_id: &Identifier,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = request_action_lock_key(owner, request_id);
+        let action_lock = {
+            let mut locks = self
+                .locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            match locks.get(&key).and_then(std::sync::Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+                    locks.insert(key, std::sync::Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        action_lock.lock_owned().await
+    }
+}
 
 /// Contact-request expiry threshold. A pending outgoing request older
 /// than this is surfaced as `"expired"` rather than `"pending"`. DET
@@ -947,6 +1024,64 @@ impl WalletBackend {
         self.delete_marker(owner, KV_PREFIX_WITHDRAWN, counterparty_id)
     }
 
+    pub(crate) fn dashpay_contact_request_action_phase(
+        &self,
+        owner: &Identifier,
+        request_id: &Identifier,
+        kind: ContactRequestActionKind,
+    ) -> Result<Option<ContactRequestActionPhase>, TaskError> {
+        let owner_buf = owner.to_buffer();
+        self.kv()
+            .get(
+                DetScope::Identity(&owner_buf),
+                &request_action_key(kind, request_id),
+            )
+            .map_err(|source| TaskError::DashpaySidecarStorage { source })
+    }
+
+    pub(crate) async fn dashpay_lock_contact_request_action(
+        &self,
+        owner: &Identifier,
+        request_id: &Identifier,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.inner
+            .dashpay_request_action_locks
+            .lock(owner, request_id)
+            .await
+    }
+
+    pub(crate) fn dashpay_set_contact_request_action_phase(
+        &self,
+        owner: &Identifier,
+        request_id: &Identifier,
+        kind: ContactRequestActionKind,
+        phase: ContactRequestActionPhase,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        self.kv()
+            .put(
+                DetScope::Identity(&owner_buf),
+                &request_action_key(kind, request_id),
+                &phase,
+            )
+            .map_err(|source| TaskError::DashpaySidecarStorage { source })
+    }
+
+    pub(crate) fn dashpay_clear_contact_request_action(
+        &self,
+        owner: &Identifier,
+        request_id: &Identifier,
+        kind: ContactRequestActionKind,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        self.kv()
+            .delete(
+                DetScope::Identity(&owner_buf),
+                &request_action_key(kind, request_id),
+            )
+            .map_err(|source| TaskError::DashpaySidecarStorage { source })
+    }
+
     /// Write a presence-only marker keyed on `counterparty_id` under `owner`'s
     /// Identity scope.
     fn put_marker(
@@ -1136,8 +1271,8 @@ impl WalletBackend {
     }
 
     /// Drop every Identity-scoped DashPay overlay for `owner` — the
-    /// per-contact private memos, address-index cursors, and the blocked /
-    /// declined / withdrawn markers.
+    /// per-contact private memos, address-index cursors, the blocked / declined /
+    /// withdrawn markers, and paid-action recovery journals.
     ///
     /// The remaining Global-scoped overlays (timestamps, reverse address map)
     /// are not owner-scoped and are swept by the `det:dashpay:` Global prefix in
@@ -1154,6 +1289,7 @@ impl WalletBackend {
             KV_PREFIX_BLOCKED,
             KV_PREFIX_DECLINED,
             KV_PREFIX_WITHDRAWN,
+            KV_PREFIX_REQUEST_ACTION,
         ] {
             let keys = kv
                 .list(scope, Some(prefix))
@@ -1208,6 +1344,76 @@ mod tests {
 
     fn id_from_byte(b: u8) -> Identifier {
         Identifier::from([b; 32])
+    }
+
+    #[test]
+    fn paid_request_action_journal_roundtrips_by_owner_request_and_kind() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let other_owner = id_from_byte(2);
+        let request_id = id_from_byte(3);
+        let owner_bytes = owner.to_buffer();
+        let other_owner_bytes = other_owner.to_buffer();
+        let decline_key = request_action_key(ContactRequestActionKind::Decline, &request_id);
+        let cancel_key = request_action_key(ContactRequestActionKind::Cancel, &request_id);
+
+        kv.put(
+            DetScope::Identity(&owner_bytes),
+            &decline_key,
+            &ContactRequestActionPhase::MarkerPending,
+        )
+        .expect("store recovery phase");
+
+        assert_eq!(
+            kv.get::<ContactRequestActionPhase>(DetScope::Identity(&owner_bytes), &decline_key)
+                .expect("read recovery phase"),
+            Some(ContactRequestActionPhase::MarkerPending)
+        );
+        assert_eq!(
+            kv.get::<ContactRequestActionPhase>(DetScope::Identity(&owner_bytes), &cancel_key)
+                .expect("read other action kind"),
+            None
+        );
+        assert_eq!(
+            kv.get::<ContactRequestActionPhase>(
+                DetScope::Identity(&other_owner_bytes),
+                &decline_key,
+            )
+            .expect("read other owner"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn paid_request_action_lock_is_request_wide() {
+        let locks = Arc::new(ContactRequestActionLocks::default());
+        let owner = id_from_byte(1);
+        let request = id_from_byte(2);
+        let other_request = id_from_byte(3);
+        let first = locks.lock(&owner, &request).await;
+
+        let waiting_locks = locks.clone();
+        let waiter = tokio::spawn(async move {
+            waiting_locks.lock(&owner, &request).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "the same owner/request must wait for the active paid action"
+        );
+
+        let independent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            locks.lock(&owner, &other_request),
+        )
+        .await;
+        assert!(
+            independent.is_ok(),
+            "a different request must not share the lock"
+        );
+
+        drop(first);
+        waiter.await.expect("same-request waiter completes");
     }
 
     fn mk_request(sender: u8, recipient: u8, created_at: u64) -> ContactRequest {
@@ -2112,10 +2318,10 @@ mod tests {
     // -------------------------------------------------------------------
 
     /// D4d-Sweep1: the three Global overlays share the `det:dashpay:`
-    /// prefix and come out of one Global sweep; the four Identity-scoped
-    /// overlays do NOT (they live under the owner scope). Wave 2 + F40 moved
-    /// the blocked / rejected markers into the owner scope alongside the
-    /// private memo and address-index cursors.
+    /// prefix and come out of one Global sweep; the six Identity-scoped
+    /// overlays do NOT (they live under the owner scope). The owner-scoped set
+    /// includes private data, address cursors, three decision markers, and the
+    /// paid-action recovery journal.
     #[test]
     fn d4d_global_overlays_share_prefix_identity_overlays_do_not() {
         let kv = empty_kv();
@@ -2144,7 +2350,7 @@ mod tests {
         )
         .unwrap();
 
-        // Five Identity-scoped overlays under the owner.
+        // Six Identity-scoped overlays under the owner.
         kv.put::<ContactPrivateInfo>(
             DetScope::Identity(&owner),
             &sidecar_key(KV_PREFIX_PRIVATE, &contact),
@@ -2181,6 +2387,12 @@ mod tests {
             &(),
         )
         .unwrap();
+        kv.put::<ContactRequestActionPhase>(
+            DetScope::Identity(&owner),
+            &request_action_key(ContactRequestActionKind::Decline, &contact),
+            &ContactRequestActionPhase::MarkerPending,
+        )
+        .unwrap();
 
         let global = kv
             .list(DetScope::Global, Some("det:dashpay:"))
@@ -2199,7 +2411,7 @@ mod tests {
         let owned = kv
             .list(DetScope::Identity(&owner), Some("det:dashpay:"))
             .expect("owner sidecar listing must succeed");
-        assert_eq!(owned.len(), 5, "five owner-scoped overlays: {owned:?}");
+        assert_eq!(owned.len(), 6, "six owner-scoped overlays: {owned:?}");
     }
 
     /// D4d-Sweep2: the combined clear (Global prefix sweep + per-owner
@@ -2211,7 +2423,7 @@ mod tests {
         let owner = id_from_byte(1).to_buffer();
         let contact = id_from_byte(2);
 
-        // A Global overlay (timestamps) plus the five owner-scoped overlays.
+        // A Global overlay (timestamps) plus the six owner-scoped overlays.
         kv.put::<(i64, i64)>(
             DetScope::Global,
             &sidecar_key(KV_PREFIX_TIMESTAMPS, &contact),
@@ -2258,6 +2470,12 @@ mod tests {
             },
         )
         .unwrap();
+        kv.put::<ContactRequestActionPhase>(
+            DetScope::Identity(&owner),
+            &request_action_key(ContactRequestActionKind::Cancel, &contact),
+            &ContactRequestActionPhase::HideCommitted,
+        )
+        .unwrap();
         // Drop one unrelated global key to confirm the sweep is scoped.
         kv.put::<u32>(DetScope::Global, "mainnet:scheduled_votes:1", &7)
             .unwrap();
@@ -2273,6 +2491,7 @@ mod tests {
             KV_PREFIX_BLOCKED,
             KV_PREFIX_DECLINED,
             KV_PREFIX_WITHDRAWN,
+            KV_PREFIX_REQUEST_ACTION,
         ] {
             for k in kv.list(DetScope::Identity(&owner), Some(prefix)).unwrap() {
                 kv.delete(DetScope::Identity(&owner), &k).unwrap();

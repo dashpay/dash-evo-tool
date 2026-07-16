@@ -23,7 +23,7 @@ use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::{
-    DetScope, WalletBackend, WalletMetaView, WalletSeedView, network_prefix,
+    ClearAllOutcome, DetScope, WalletBackend, WalletMetaView, WalletSeedView, network_prefix,
 };
 use dash_sdk::dpp::dashcore::Network;
 use std::path::{Path, PathBuf};
@@ -48,6 +48,21 @@ const SPV_CHAIN_STORAGE_ENTRIES: [&str; 7] = [
     "masternodestate",
     "peers.dat",
 ];
+
+/// How long an explicitly unlocked wallet may remain in the secret session cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletUnlockRetention {
+    /// Keep the seed only until unlock-triggered registration finishes.
+    OperationOnly,
+    /// Keep the seed until the storage update finishes. The update's own
+    /// bootstrap pass re-enters the seed scope for the wallet it just prompted
+    /// for, so the unlock's reconciliation subtask must not be the sole owner of
+    /// the seed's lifetime — whichever of the two finishes first would otherwise
+    /// evict the seed the other still needs, and the loser re-prompts.
+    UntilStorageUpdateComplete,
+    /// Keep the seed available until the application closes.
+    UntilAppClose,
+}
 
 /// Per-network SPV storage directory: `<data_dir>/spv/<network>/`. Mirrors
 /// `WalletBackend::resolve_spv_storage_dir` so the path resolves identically

@@ -194,6 +194,7 @@ impl WalletsBalancesScreen {
         if let Some((out_point, platform_addresses)) = open_fund_dialog_for_op {
             self.fund_platform_dialog.selected_asset_lock_out_point = Some(out_point);
             self.fund_platform_dialog.is_open = true;
+            self.fund_platform_dialog.opening_guard.arm();
             self.fund_platform_dialog.platform_addresses = platform_addresses;
             self.fund_platform_dialog.selected_platform_address = None;
             self.fund_platform_dialog.status = None;

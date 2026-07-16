@@ -44,9 +44,9 @@ impl AppContext {
 
         // Update UI
         sender
-            .send(TaskResult::Success(Box::new(
+            .send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::FetchedNonce,
-            )))
+            ))
             .await
             .map_err(|_| TaskError::InternalSendError)?;
 

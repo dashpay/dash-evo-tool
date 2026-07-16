@@ -152,6 +152,7 @@ impl SingleKeyEntry {
             &self.ciphertext,
             &self.salt,
             &self.nonce,
+            32,
             passphrase,
             "single_key_entry::decrypt",
         )

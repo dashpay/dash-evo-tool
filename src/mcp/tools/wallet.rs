@@ -64,6 +64,7 @@ impl AsyncTool<DashMcpService> for GenerateReceiveAddress {
     ) -> Result<GenerateReceiveAddressOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -128,6 +129,7 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
     ) -> Result<WalletBalancesOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -228,6 +230,7 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
         resolve::validate_positive_amount(param.amount_duffs, "duffs")?;
         resolve::validate_address(&param.address)?;
 
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -322,6 +325,7 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
     ) -> Result<PlatformBalancesOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         // SPV is required: DAPI proof verification needs quorum/masternode list
@@ -485,7 +489,7 @@ impl AsyncTool<DashMcpService> for ImportWallet {
 // ListWalletsTool
 // ---------------------------------------------------------------------------
 
-/// List wallet names currently loaded in the application.
+/// List wallets saved for the active network.
 pub struct ListWalletsTool;
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -509,7 +513,7 @@ impl ToolBase for ListWalletsTool {
     }
 
     fn description() -> Option<Cow<'static, str>> {
-        Some("List wallet names currently loaded in the application".into())
+        Some("List wallets saved for the active network".into())
     }
 
     fn annotations() -> Option<ToolAnnotations> {
@@ -524,6 +528,7 @@ impl AsyncTool<DashMcpService> for ListWalletsTool {
     ) -> Result<ListWalletsOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
         let entries: Vec<WalletEntry> = wallets
             .iter()

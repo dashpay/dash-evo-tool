@@ -488,7 +488,9 @@ impl ConnectionStatus {
 
     /// Updates internal connection state from a task result.
     pub fn handle_task_result(&self, task_result: &TaskResult, active_network: Network) {
-        if let TaskResult::Success(message) = task_result
+        if let TaskResult::Success {
+            result: message, ..
+        } = task_result
             && let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) =
                 message.as_ref()
             && *network == active_network

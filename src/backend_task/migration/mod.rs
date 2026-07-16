@@ -58,8 +58,8 @@ impl AppContext {
     /// re-poll affected screens once the migration finishes. On
     /// failure, publishes [`MigrationState::Failed`] so the per-frame
     /// banner reconciliation in `AppState` can surface the error
-    /// variant with a "Retry now" action — without it the banner
-    /// would be stuck in `Running` forever, and `run_backend_task`
+    /// variant with its recovery action when retrying can help — without it
+    /// the banner would be stuck in `Running` forever, and `run_backend_task`
     /// would keep rejecting every wallet-touching task with
     /// `WalletStorageNotReady` until the app is restarted.
     pub async fn run_migration_task(
@@ -67,31 +67,47 @@ impl AppContext {
         task: MigrationTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            MigrationTask::FinishUnwire => match finish_unwire::run(self).await {
-                // Every `Ok` path of `finish_unwire::run` publishes its own
-                // terminal state — including the one that reports a *failure*
-                // the user must still act on
-                // (`FailedWithUnreadableIdentities`). Re-publishing here would
-                // overwrite it.
-                Ok(_did_work) => Ok(BackendTaskSuccessResult::Refresh),
-                Err(task_error) => {
-                    // Publish `Failed` for *every* error, carrying the typed
-                    // `MigrationError` chain so the banner can `Display::fmt` it
-                    // at render time and surface the source in the details panel
-                    // — no stringification on the writer side. Coercing rather
-                    // than matching one variant is what makes this total: an
-                    // error that published nothing would leave the status on
-                    // `Running` and wedge the whole wallet surface.
-                    let source = finish_unwire::migration_error_chain(task_error);
-                    // `Arc::clone` is a cheap refcount bump — both the returned
-                    // `Err` and the published `Failed` state observe the same
-                    // typed error chain.
-                    self.migration_status().set_state(MigrationState::Failed {
-                        error: Arc::clone(&source),
-                    });
-                    Err(TaskError::MigrationFailed { source })
+            MigrationTask::FinishUnwire => {
+                let _run_guard = match self.migration_run.try_lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        let guard = self.migration_run.lock().await;
+                        let result = match self.migration_status().state().as_ref() {
+                            MigrationState::Failed { error } => {
+                                Err(migration_task_error(Arc::clone(error)))
+                            }
+                            _ => Ok(BackendTaskSuccessResult::Refresh),
+                        };
+                        drop(guard);
+                        return result;
+                    }
+                };
+                match finish_unwire::run(self).await {
+                    // Every `Ok` path of `finish_unwire::run` publishes its own
+                    // terminal state — including the one that reports a *failure*
+                    // the user must still act on
+                    // (`FailedWithUnreadableIdentities`). Re-publishing here would
+                    // overwrite it.
+                    Ok(_did_work) => Ok(BackendTaskSuccessResult::Refresh),
+                    Err(task_error) => {
+                        // Publish `Failed` for *every* error, carrying the typed
+                        // `MigrationError` chain so the banner can `Display::fmt` it
+                        // at render time and surface the source in the details panel
+                        // — no stringification on the writer side. Coercing rather
+                        // than matching one variant is what makes this total: an
+                        // error that published nothing would leave the status on
+                        // `Running` and wedge the whole wallet surface.
+                        let source = finish_unwire::migration_error_chain(task_error);
+                        // `Arc::clone` is a cheap refcount bump — both the returned
+                        // `Err` and the published `Failed` state observe the same
+                        // typed error chain.
+                        self.migration_status().set_state(MigrationState::Failed {
+                            error: Arc::clone(&source),
+                        });
+                        Err(migration_task_error(source))
+                    }
                 }
-            },
+            }
             MigrationTask::AcknowledgeUnreadableVotes => {
                 finish_unwire::acknowledge_unreadable_votes(self)?;
                 Ok(BackendTaskSuccessResult::Refresh)
@@ -106,5 +122,16 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::Refresh)
             }
         }
+    }
+}
+
+pub(crate) fn migration_task_error(source: Arc<MigrationError>) -> TaskError {
+    match source.as_ref() {
+        MigrationError::InteractivePromptUnavailable => {
+            TaskError::StorageUpdateNeedsDesktop { source }
+        }
+        MigrationError::LegacyDataTooOld { .. } => TaskError::SavedDataTooOld { source },
+        MigrationError::LegacyDataTooNew { .. } => TaskError::SavedDataTooNew { source },
+        _ => TaskError::MigrationFailed { source },
     }
 }

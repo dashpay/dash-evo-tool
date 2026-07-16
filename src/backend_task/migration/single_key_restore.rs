@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
@@ -93,10 +93,13 @@ pub fn list_pending_protected_restores(
         .map(|k| k.address)
         .collect();
 
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path.to_string_lossy().to_string(),
-        source: e,
-    })?;
+    let conn =
+        Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+            MigrationError::LegacyDbOpen {
+                path: path.to_string_lossy().to_string(),
+                source: e,
+            }
+        })?;
     let rows = read_pending_protected_rows(&conn, app_context.network)?;
     Ok(rows
         .into_iter()
@@ -106,7 +109,7 @@ pub fn list_pending_protected_restores(
 
 /// Pure read of protected pending rows from `conn` for `network`. Returns
 /// only the non-secret display descriptor. A missing table is not an
-/// error (fresh install / already cleaned up).
+/// error (fresh install or an older schema without this table).
 fn read_pending_protected_rows(
     conn: &Connection,
     network: Network,
@@ -181,10 +184,13 @@ pub fn restore_protected_single_key(
     if !path.exists() {
         return Err(TaskError::ProtectedSingleKeyRestoreTargetMissing);
     }
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path.to_string_lossy().to_string(),
-        source: e,
-    })?;
+    let conn =
+        Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+            MigrationError::LegacyDbOpen {
+                path: path.to_string_lossy().to_string(),
+                source: e,
+            }
+        })?;
 
     let network = app_context.network;
     let blob = read_protected_blob(&conn, address, network)?
@@ -321,7 +327,7 @@ fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String, TaskError
 }
 
 /// Table-existence probe. Missing table is not an error — fresh install /
-/// already cleaned up. Wraps the shared probe so a read failure keeps the
+/// absent on older installations. Wraps the shared probe so a read failure keeps the
 /// typed `single_key_wallet` attribution this module's errors carry.
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, MigrationError> {
     crate::database::table_exists(conn, name).map_err(|e| MigrationError::LegacyDbRead {

@@ -156,12 +156,14 @@ Source: `src/context/platform_address_db.rs`, `src/wallet_backend/platform_addre
 
 ## DashPay sidecar
 
-Most sidecar keys use **global scope** (`DetScope::Global`); the per-network `platform-wallet.sqlite` already partitions by network, so no `<network>:` prefix is needed within the key. The two **owner-scoped** overlays (`private`, `address_index`) moved to `DetScope::Identity(&owner)` in Wave 2 — the owner id is carried by the scope, so the key drops the `<owner>:` prefix and the upstream soft-cascade reaps them when the owner identity row is deleted.
+The per-network `platform-wallet.sqlite` already partitions DashPay data by network, so no `<network>:` prefix is needed within a key. Owner-specific decisions and recovery state use `DetScope::Identity(&owner)`; the owner id is carried by the scope and the upstream soft-cascade reaps those values when the owner identity row is deleted.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:dashpay:blocked:<base58_contact_id>` | `None` | `platform-wallet.sqlite` | `()` | Presence-only flag: contact is blocked |
-| `det:dashpay:rejected:<base58_counterparty_id>` | `None` | `platform-wallet.sqlite` | `()` | Presence-only flag: contact request rejected |
+| `det:dashpay:blocked:<base58_contact_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `()` | Presence-only flag: contact is blocked |
+| `det:dashpay:declined:<base58_counterparty_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `()` | Presence-only flag: incoming contact request declined |
+| `det:dashpay:withdrawn:<base58_counterparty_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `()` | Presence-only flag: outgoing contact request withdrawn |
+| `det:dashpay:request_action:<decline|cancel>:<base58_request_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactRequestActionPhase` | Durable recovery phase for a paid hide/corrective-unhide followed by a local marker write |
 | `det:dashpay:timestamps:<base58_entity_id>` | `None` | `platform-wallet.sqlite` | `(i64, i64)` | DET-local `(created_at_ms, updated_at_ms)` |
 | `det:dashpay:private:<base58_contact>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactPrivateInfo` | Fields: `nickname: String`, `notes: String`, `is_hidden: bool` |
 | `det:dashpay:address_index:<base58_contact>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactAddressIndex` | Fields: `owner_identity_id: Vec<u8>`, `contact_identity_id: Vec<u8>`, `next_send_index: u32`, `highest_receive_index: u32`, `bloom_registered_count: u32` |
@@ -202,8 +204,8 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 | Store | Key count |
 |-------|-----------|
 | `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `platform-wallet.sqlite` | 19 (across 8 domains) |
+| `platform-wallet.sqlite` | 21 (across 8 domains) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
-| **Total** | **25** |
+| **Total** | **27** |
 
 Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

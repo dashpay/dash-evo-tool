@@ -59,14 +59,10 @@ pub async fn process_auto_accept_requests(
                 );
 
                 // Extract accountReference for message construction (default to 0 if missing)
-                let account_reference = match props.get("accountReference") {
-                    Some(Value::U32(v)) => *v,
-                    Some(Value::U64(v)) => *v as u32,
-                    Some(Value::I64(v)) => *v as u32,
-                    Some(Value::U128(v)) => *v as u32,
-                    Some(Value::I128(v)) => *v as u32,
-                    _ => 0u32,
-                };
+                let account_reference = props
+                    .get("accountReference")
+                    .and_then(|value| value.to_integer::<u32>().ok())
+                    .unwrap_or_default();
 
                 // Verify the proof per DIP-0015
                 match verify_auto_accept_proof(

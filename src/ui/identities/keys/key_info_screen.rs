@@ -642,7 +642,11 @@ impl ScreenLike for KeyInfoScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup = InfoPopup::new("Sign Message Info", &show_pop_up_info_text);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("identity_key_sign_message_info_popup"),
+                        "Sign Message Info",
+                        &show_pop_up_info_text,
+                    );
                     if popup.show(ui).inner {
                         self.show_pop_up_info = None;
                     }

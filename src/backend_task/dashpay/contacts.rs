@@ -235,10 +235,13 @@ pub async fn load_contacts(
             let props = doc.properties();
 
             // Get the derivation index used for this document
-            if let Some(Value::U32(deriv_idx)) = props.get("derivationEncryptionKeyIndex") {
+            if let Some(deriv_idx) = props
+                .get("derivationEncryptionKeyIndex")
+                .and_then(|value| value.to_integer::<u32>().ok())
+            {
                 // Derive keys for this document
                 let (enc_user_id_key, private_data_key) =
-                    match derive_contact_info_keys(app_context, &identity, *deriv_idx).await {
+                    match derive_contact_info_keys(app_context, &identity, deriv_idx).await {
                         Ok(keys) => keys,
                         Err(_) => continue,
                     };

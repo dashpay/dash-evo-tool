@@ -9,8 +9,8 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
+use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -39,6 +39,7 @@ pub(super) enum ReceiveAddressType {
 #[derive(Default)]
 pub(super) struct ReceiveDialogState {
     pub is_open: bool,
+    opening_guard: ModalOpeningGuard,
     /// Selected address type (Core or Platform)
     pub address_type: ReceiveAddressType,
     /// Core addresses with balances: (address, balance_duffs)
@@ -65,10 +66,18 @@ pub(super) struct ReceiveDialogState {
     pub pending_core_address_request: Option<WalletSeedHash>,
 }
 
+impl ReceiveDialogState {
+    pub(super) fn open(&mut self) {
+        self.is_open = true;
+        self.opening_guard.arm();
+    }
+}
+
 /// State for the Fund Platform Address from Asset Lock dialog
 #[derive(Default)]
 pub(super) struct FundPlatformAddressDialogState {
     pub is_open: bool,
+    pub(super) opening_guard: ModalOpeningGuard,
     /// Outpoint of the upstream-tracked asset lock chosen to fund a Platform
     /// address. `None` until the user clicks "Fund" on a row in the asset-
     /// locks table.
@@ -89,6 +98,7 @@ pub(super) struct FundPlatformAddressDialogState {
 #[derive(Default)]
 pub(super) struct MineDialogState {
     pub is_open: bool,
+    opening_guard: ModalOpeningGuard,
     pub address_input: Option<AddressInput>,
     pub validated_address: Option<ValidatedAddress>,
     pub block_count_str: String,
@@ -506,7 +516,11 @@ impl WalletsBalancesScreen {
             });
 
         if let Some(ref resp) = window_response
-            && clicked_outside_window(ctx, resp.response.rect)
+            && clicked_outside_window_after_open(
+                ctx,
+                resp.response.rect,
+                &mut self.receive_dialog.opening_guard,
+            )
         {
             open = false;
         }
@@ -719,7 +733,11 @@ impl WalletsBalancesScreen {
             });
 
         if let Some(ref resp) = window_response
-            && clicked_outside_window(ctx, resp.response.rect)
+            && clicked_outside_window_after_open(
+                ctx,
+                resp.response.rect,
+                &mut self.fund_platform_dialog.opening_guard,
+            )
         {
             open = false;
         }
@@ -963,11 +981,11 @@ impl WalletsBalancesScreen {
             self.receive_dialog.platform_addresses.clear();
             self.receive_dialog.qr_texture = None;
             self.receive_dialog.qr_address = None;
-            self.receive_dialog.is_open = true;
+            self.receive_dialog.open();
             return AppAction::None;
         };
 
-        self.receive_dialog.is_open = true;
+        self.receive_dialog.open();
         self.receive_dialog.qr_texture = None;
         self.receive_dialog.qr_address = None;
 
@@ -1127,6 +1145,7 @@ impl WalletsBalancesScreen {
 
         self.mine_dialog = MineDialogState {
             is_open: true,
+            opening_guard: ModalOpeningGuard::armed(),
             address_input: Some(address_input),
             validated_address: None,
             block_count_str: "1".to_string(),
@@ -1263,7 +1282,11 @@ impl WalletsBalancesScreen {
             });
 
         if let Some(ref resp) = window_response
-            && clicked_outside_window(ctx, resp.response.rect)
+            && clicked_outside_window_after_open(
+                ctx,
+                resp.response.rect,
+                &mut self.mine_dialog.opening_guard,
+            )
         {
             open = false;
         }

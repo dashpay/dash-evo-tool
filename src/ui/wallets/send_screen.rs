@@ -10,9 +10,9 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::{
     MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
     allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
-    estimate_address_funding_fee_from_transition, estimate_platform_fee,
-    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
-    shield_from_balance_fee_headroom,
+    estimate_address_funding_fee_from_transition, estimate_core_l1_send_fee_duffs,
+    estimate_platform_fee, estimate_withdrawal_fee_from_transition, format_credits_as_dash,
+    format_duffs_as_dash, shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -196,6 +196,66 @@ pub struct AdvancedOutput {
     pub address: String,
     /// Amount to send to this address (as string for input field)
     pub amount: String,
+}
+
+/// A pre-send fee/total estimate for the current source, destination, and
+/// amount, all expressed in credits (the unit `Amount::value()` stores).
+///
+/// Surfaced before the Send button so the user sees the network fee and the
+/// total that will leave their balance *before* committing (SND-005). The fee
+/// itself comes from `model::fee_estimation` — this type only arranges the
+/// already-estimated numbers for display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FeePreview {
+    /// Estimated network fee, in credits.
+    fee_credits: u64,
+    /// Total that leaves the source balance, in credits.
+    total_debit_credits: u64,
+    /// What the recipient receives, in credits, when the fee is taken out of
+    /// the entered amount so it differs from that amount. `None` when the
+    /// recipient receives exactly the amount entered (fee paid on top).
+    recipient_receives_credits: Option<u64>,
+}
+
+impl FeePreview {
+    /// The fee is paid on top of the amount: the recipient receives the full
+    /// amount and the balance is debited amount + fee.
+    fn on_top(amount_credits: u64, fee_credits: u64) -> Self {
+        Self {
+            fee_credits,
+            total_debit_credits: amount_credits.saturating_add(fee_credits),
+            recipient_receives_credits: None,
+        }
+    }
+
+    /// The fee is deducted from the amount: the balance is debited exactly the
+    /// amount and the recipient receives amount − fee.
+    fn deducted_from_amount(amount_credits: u64, fee_credits: u64) -> Self {
+        Self {
+            fee_credits,
+            total_debit_credits: amount_credits,
+            recipient_receives_credits: Some(amount_credits.saturating_sub(fee_credits)),
+        }
+    }
+}
+
+/// Render one "label   ≈ value" row inside a fee-summary grid. `strong`
+/// emphasises the value (used for the fee and total, not the derived
+/// recipient-receives line).
+fn fee_summary_row(ui: &mut Ui, dark_mode: bool, label: &str, value_credits: u64, strong: bool) {
+    ui.label(
+        RichText::new(label)
+            .color(DashColors::text_secondary(dark_mode))
+            .size(13.0),
+    );
+    let mut value = RichText::new(format!("≈ {}", format_credits_as_dash(value_credits)))
+        .color(DashColors::text_primary(dark_mode))
+        .size(13.0);
+    if strong {
+        value = value.strong();
+    }
+    ui.label(value);
+    ui.end_row();
 }
 
 pub struct WalletSendScreen {
@@ -1181,6 +1241,11 @@ impl WalletSendScreen {
         self.render_platform_source_breakdown(ui);
 
         ui.add_space(10.0);
+
+        // Fee estimate + total, shown before the Send button (SND-005).
+        self.render_fee_summary(ui);
+
+        ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
 
@@ -1338,6 +1403,11 @@ impl WalletSendScreen {
         }
 
         self.render_amount_input(ui);
+
+        ui.add_space(10.0);
+
+        // Fee estimate + total, shown before the Send button (SND-005).
+        self.render_fee_summary(ui);
 
         ui.add_space(10.0);
         ui.separator();
@@ -2538,6 +2608,277 @@ impl WalletSendScreen {
             });
     }
 
+    /// Estimate the network fee and total for the current simple-mode
+    /// selection (source + destination + amount), in credits.
+    ///
+    /// All fee numbers come from `model::fee_estimation` — the same estimators
+    /// the amount field's "Max" reserve uses — so the preview and the reserve
+    /// agree. Returns `None` for a combination whose fee cannot be estimated
+    /// before send (identity top-ups and shielded spends, where the fee depends
+    /// on inputs the backend selects at dispatch time); the caller then shows a
+    /// neutral "calculated when you send" note instead of a wrong number.
+    fn current_fee_preview(&self) -> Option<FeePreview> {
+        let amount_credits = self.amount.as_ref().map(|a| a.value()).filter(|v| *v > 0)?;
+        let dest_kind = self.destination_kind()?;
+        let fee_estimator = self.app_context.fee_estimator();
+
+        match (self.selected_source.as_ref()?, dest_kind) {
+            // Core → Core: L1 network fee, paid on top (reserved from balance).
+            (SourceSelection::CoreWallet, AddressKind::Core) => {
+                let seed_hash = self.selected_wallet_seed_hash?;
+                let utxo_count = self.app_context.snapshot_utxo_count(&seed_hash);
+                let fee_duffs = estimate_core_l1_send_fee_duffs(utxo_count.max(1), 1);
+                let fee_credits = fee_duffs.saturating_mul(CREDITS_PER_DUFF);
+                Some(FeePreview::on_top(amount_credits, fee_credits))
+            }
+            // Core → Platform: address-funding fee, deducted from the amount.
+            (SourceSelection::CoreWallet, AddressKind::Platform) => {
+                let destination = self
+                    .validated_destination
+                    .as_ref()
+                    .and_then(|v| v.as_platform().copied())?;
+                let fee_credits = estimate_address_funding_fee_from_transition(
+                    self.app_context.platform_version(),
+                    &destination,
+                );
+                Some(FeePreview::deducted_from_amount(
+                    amount_credits,
+                    fee_credits,
+                ))
+            }
+            // Core → Shielded: platform + L1 shield fees, paid on top.
+            (SourceSelection::CoreWallet, AddressKind::Shielded) => {
+                let (platform_fee_duffs, l1_tx_fee_duffs) =
+                    fee_estimator.estimate_shield_from_core_fees_duffs();
+                let fee_credits = platform_fee_duffs
+                    .saturating_add(l1_tx_fee_duffs)
+                    .saturating_mul(CREDITS_PER_DUFF);
+                Some(FeePreview::on_top(amount_credits, fee_credits))
+            }
+            // Platform → Platform: credit-transfer fee, paid on top.
+            (SourceSelection::PlatformAddresses(addresses), AddressKind::Platform) => {
+                let destination = self
+                    .validated_destination
+                    .as_ref()
+                    .and_then(|v| v.as_platform().copied());
+                let allocation = allocate_platform_addresses(
+                    &fee_estimator,
+                    addresses,
+                    amount_credits,
+                    destination.as_ref(),
+                );
+                Some(FeePreview::on_top(amount_credits, allocation.estimated_fee))
+            }
+            // Platform → Core: withdrawal fee, paid on top.
+            (SourceSelection::PlatformAddresses(addresses), AddressKind::Core) => {
+                let dest = self
+                    .validated_destination
+                    .as_ref()
+                    .and_then(|v| v.as_core())?;
+                let output_script = CoreScript::new(dest.script_pubkey());
+                let platform_version = self.app_context.platform_version();
+                let allocation = allocate_platform_addresses_with_fee(
+                    addresses,
+                    amount_credits,
+                    None,
+                    |inputs| {
+                        estimate_withdrawal_fee_from_transition(
+                            platform_version,
+                            inputs,
+                            &output_script,
+                        )
+                    },
+                );
+                Some(FeePreview::on_top(amount_credits, allocation.estimated_fee))
+            }
+            // Platform → Shielded: two-action shield fee headroom, paid on top.
+            (SourceSelection::PlatformAddresses(_), AddressKind::Shielded) => {
+                let fee_credits = shield_from_balance_fee_headroom(
+                    self.app_context.platform_version(),
+                    self.app_context.fee_multiplier_permille(),
+                );
+                Some(FeePreview::on_top(amount_credits, fee_credits))
+            }
+            // Identity → Core: credit-withdrawal fee, paid on top.
+            (SourceSelection::Identity(_), AddressKind::Core) => {
+                let fee_credits = fee_estimator.estimate_address_credit_withdrawal();
+                Some(FeePreview::on_top(amount_credits, fee_credits))
+            }
+            // Identity → Platform / Identity: credit-transfer fee, paid on top.
+            (SourceSelection::Identity(_), AddressKind::Platform | AddressKind::Identity) => {
+                let fee_credits = fee_estimator.estimate_credit_transfer();
+                Some(FeePreview::on_top(amount_credits, fee_credits))
+            }
+            // Identity → Shielded, Shielded → anything, Core → Identity: the fee
+            // depends on inputs the backend selects at send time.
+            _ => None,
+        }
+    }
+
+    /// Render the fee/total summary shown above the simple-mode Send button.
+    ///
+    /// Only rendered once a destination and a positive amount are set, so the
+    /// numbers reflect a concrete send. Shows the estimated network fee, the
+    /// total debited from the balance, and (when the fee is taken out of the
+    /// amount) what the recipient actually receives.
+    fn render_fee_summary(&self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
+        if !has_amount || self.validated_destination.is_none() {
+            return;
+        }
+
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(12, 10))
+            .corner_radius(5.0)
+            .show(ui, |ui| match self.current_fee_preview() {
+                Some(preview) => {
+                    egui::Grid::new("send_fee_summary_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            fee_summary_row(
+                                ui,
+                                dark_mode,
+                                "Estimated network fee:",
+                                preview.fee_credits,
+                                true,
+                            );
+                            if let Some(recipient_receives) = preview.recipient_receives_credits {
+                                fee_summary_row(
+                                    ui,
+                                    dark_mode,
+                                    "Recipient receives:",
+                                    recipient_receives,
+                                    false,
+                                );
+                            }
+                            fee_summary_row(
+                                ui,
+                                dark_mode,
+                                "Total deducted:",
+                                preview.total_debit_credits,
+                                true,
+                            );
+                        });
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(
+                            "Fees are estimated; the exact amount is confirmed when you send.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode))
+                        .italics()
+                        .size(11.0),
+                    );
+                }
+                None => {
+                    ui.label(
+                        RichText::new("The network fee is calculated when you send.")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .italics()
+                            .size(12.0),
+                    );
+                }
+            });
+    }
+
+    /// Estimate the advanced-mode network fee, in credits, from the entered
+    /// input and output counts.
+    ///
+    /// Covers the two advanced paths whose fee scales with input/output count
+    /// alone — Core → Core and Platform → Platform. Returns `None` for mixed or
+    /// cross-network output sets, where the fee model differs; the caller then
+    /// shows the neutral "calculated when you send" note.
+    fn advanced_fee_estimate_credits(&self) -> Option<u64> {
+        let num_outputs = self
+            .advanced_outputs
+            .iter()
+            .filter(|o| !o.address.trim().is_empty())
+            .count();
+        if num_outputs == 0 {
+            return None;
+        }
+        let has_core_out = self
+            .advanced_outputs
+            .iter()
+            .any(|o| self.detect_address_kind(&o.address) == Some(AddressKind::Core));
+        let has_platform_out = self
+            .advanced_outputs
+            .iter()
+            .any(|o| self.detect_address_kind(&o.address) == Some(AddressKind::Platform));
+
+        match self.advanced_source_type {
+            AdvancedSourceType::Core if has_core_out && !has_platform_out => {
+                let num_inputs = self
+                    .core_inputs
+                    .iter()
+                    .filter(|i| !i.amount.trim().is_empty())
+                    .count()
+                    .max(1);
+                let fee_duffs = estimate_core_l1_send_fee_duffs(num_inputs, num_outputs);
+                Some(fee_duffs.saturating_mul(CREDITS_PER_DUFF))
+            }
+            AdvancedSourceType::Platform if has_platform_out && !has_core_out => {
+                let num_inputs = self
+                    .platform_inputs
+                    .iter()
+                    .filter(|i| !i.amount.trim().is_empty())
+                    .count()
+                    .max(1);
+                Some(estimate_platform_fee(
+                    &self.app_context.fee_estimator(),
+                    num_inputs,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Render the estimated-fee line shown above the advanced-mode Send button.
+    fn render_advanced_fee_summary(&self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(12, 10))
+            .corner_radius(5.0)
+            .show(ui, |ui| match self.advanced_fee_estimate_credits() {
+                Some(fee_credits) => {
+                    egui::Grid::new("advanced_send_fee_summary_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            fee_summary_row(
+                                ui,
+                                dark_mode,
+                                "Estimated network fee:",
+                                fee_credits,
+                                true,
+                            );
+                        });
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(
+                            "Fees are estimated and added on top of your output amounts.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode))
+                        .italics()
+                        .size(11.0),
+                    );
+                }
+                None => {
+                    ui.label(
+                        RichText::new("The network fee is calculated when you send.")
+                            .color(DashColors::text_secondary(dark_mode))
+                            .italics()
+                            .size(12.0),
+                    );
+                }
+            });
+    }
+
     fn render_send_button(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -2755,6 +3096,13 @@ impl WalletSendScreen {
             ui.separator();
             ui.add_space(10.0);
         }
+
+        // Fee estimate, shown before the Send button (SND-005).
+        self.render_advanced_fee_summary(ui);
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
 
         // ========== SEND BUTTON ==========
         action |= self.render_advanced_send_button(ui);
@@ -3753,5 +4101,36 @@ mod tests {
                 "description is a complete sentence: {description}"
             );
         }
+    }
+
+    #[test]
+    fn fee_preview_on_top_adds_fee_to_the_total() {
+        // Fee paid on top: the recipient gets the full amount and the balance is
+        // debited amount + fee.
+        let preview = FeePreview::on_top(1_000, 30);
+        assert_eq!(preview.fee_credits, 30);
+        assert_eq!(preview.total_debit_credits, 1_030);
+        assert_eq!(preview.recipient_receives_credits, None);
+    }
+
+    #[test]
+    fn fee_preview_deducted_takes_fee_from_the_amount() {
+        // Fee deducted from the amount: the balance is debited exactly the
+        // amount and the recipient receives amount − fee.
+        let preview = FeePreview::deducted_from_amount(1_000, 30);
+        assert_eq!(preview.fee_credits, 30);
+        assert_eq!(preview.total_debit_credits, 1_000);
+        assert_eq!(preview.recipient_receives_credits, Some(970));
+    }
+
+    #[test]
+    fn fee_preview_saturates_instead_of_overflowing() {
+        // A fee larger than the amount must not underflow the recipient figure,
+        // and an on-top total must not overflow.
+        let deducted = FeePreview::deducted_from_amount(10, 25);
+        assert_eq!(deducted.recipient_receives_credits, Some(0));
+
+        let on_top = FeePreview::on_top(u64::MAX, 5);
+        assert_eq!(on_top.total_debit_credits, u64::MAX);
     }
 }

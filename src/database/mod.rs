@@ -1,4 +1,6 @@
 mod initialization;
+#[cfg(test)]
+pub(crate) use initialization::DEFAULT_DB_VERSION;
 pub(crate) mod legacy_import;
 mod settings;
 mod single_key_wallet;
@@ -9,7 +11,7 @@ mod wallet;
 pub use wallet::WalletError;
 
 use dash_sdk::dpp::dashcore::Network;
-use rusqlite::{Connection, Params};
+use rusqlite::{Connection, OpenFlags, Params};
 use std::sync::{Arc, Mutex};
 
 /// Error indicating a corrupted data blob in the database.
@@ -79,6 +81,20 @@ impl Database {
         })
     }
 
+    /// Open an existing pre-update database with SQLite write operations
+    /// disabled. The storage update treats this file as a recovery artifact;
+    /// all current state is written to the dedicated store and vault files.
+    pub(crate) fn open_legacy_read_only<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> rusqlite::Result<Self> {
+        let path_ref = path.as_ref();
+        let conn = Connection::open_with_flags(path_ref, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: Some(path_ref.to_path_buf()),
+        })
+    }
+
     /// On-disk DB file path, if this is a file-backed database.
     pub(crate) fn db_file_path(&self) -> Option<std::path::PathBuf> {
         self.path.clone()
@@ -103,7 +119,10 @@ impl Database {
         conn.execute(sql, params)
     }
 
-    /// Removes all application data tied to a specific Dash network.
+    /// Legacy-database writer retained only for isolated compatibility tests.
+    ///
+    /// Production opens a pre-update `data.db` read-only and must never call
+    /// this method; current network data is cleared through its owning stores.
     pub fn clear_network_data(&self, network: Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
 

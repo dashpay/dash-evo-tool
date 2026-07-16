@@ -55,7 +55,7 @@ use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::BackendTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
@@ -74,6 +74,7 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::helpers::ModalOpeningGuard;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
@@ -187,10 +188,59 @@ impl TokensSubscreen {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum RefreshingStatus {
     Refreshing,
     NotRefreshing,
+}
+
+impl RefreshingStatus {
+    fn stop_on_failure(
+        &mut self,
+        expected: Option<&BackendTaskContext>,
+        failed: &BackendTaskContext,
+    ) {
+        if *self == Self::Refreshing && expected == Some(failed) {
+            *self = Self::NotRefreshing;
+        }
+    }
+}
+
+fn is_duplicate_balance_refresh(
+    status: &RefreshingStatus,
+    pending_context: Option<&BackendTaskContext>,
+    action: &AppAction,
+) -> bool {
+    *status == RefreshingStatus::Refreshing
+        && pending_context == Some(&BackendTaskContext::TokenBalanceRefresh)
+        && matches!(
+            action,
+            AppAction::BackendTask(BackendTask::TokenTask(task))
+                if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances)
+        )
+}
+
+fn completes_pending_operation(
+    pending_context: Option<&BackendTaskContext>,
+    result_context: &BackendTaskContext,
+    result: &BackendTaskSuccessResult,
+) -> bool {
+    if pending_context != Some(result_context) {
+        return false;
+    }
+
+    match result {
+        BackendTaskSuccessResult::FetchedTokenBalances => {
+            *result_context == BackendTaskContext::TokenBalanceRefresh
+        }
+        BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
+            identity_token_id,
+            ..
+        ) => {
+            *result_context == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
+        }
+        _ => false,
+    }
 }
 
 /// Represents the status of the user's search
@@ -1012,6 +1062,7 @@ pub struct TokensScreen {
     pricing_loading_state: IndexMap<Identifier, bool>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
+    pending_operation_context: Option<BackendTaskContext>,
     should_reset_collapsing_states: bool,
     // Token Creator expanded sections
     token_creator_advanced_expanded: bool,
@@ -1104,6 +1155,9 @@ pub struct TokensScreen {
     cached_build_args: Option<TokenBuildArgs>,
     show_json_popup: bool,
     json_popup_text: String,
+    json_popup_opening_guard: ModalOpeningGuard,
+    token_info_popup_opening_guard: ModalOpeningGuard,
+    explanation_popup_opening_guard: ModalOpeningGuard,
     allow_transfers_to_frozen_identities: bool,
 
     // Action Rules
@@ -1413,6 +1467,7 @@ impl TokensScreen {
             pending_backend_task: None,
             tokens_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
+            pending_operation_context: None,
 
             // Remove token
             confirm_remove_identity_token_balance_popup: false,
@@ -1464,6 +1519,9 @@ impl TokensScreen {
             cached_build_args: None,
             show_json_popup: false,
             json_popup_text: String::new(),
+            json_popup_opening_guard: ModalOpeningGuard::default(),
+            token_info_popup_opening_guard: ModalOpeningGuard::default(),
+            explanation_popup_opening_guard: ModalOpeningGuard::default(),
 
             // Action rules
             allow_transfers_to_frozen_identities: true,
@@ -2783,7 +2841,11 @@ impl ScreenLike for TokensScreen {
 
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
-                        let mut popup = InfoPopup::new("Information", &info_text);
+                        let mut popup = InfoPopup::new(
+                            egui::Id::new("tokens_screen_info_popup"),
+                            "Information",
+                            &info_text,
+                        );
                         if popup.show(ui).inner {
                             self.show_pop_up_info = None;
                         }
@@ -2793,6 +2855,24 @@ impl ScreenLike for TokensScreen {
                 })
                 .inner
         });
+
+        let duplicate_balance_refresh = is_duplicate_balance_refresh(
+            &self.refreshing_status,
+            self.pending_operation_context.as_ref(),
+            &action,
+        );
+        if duplicate_balance_refresh {
+            action = AppAction::None;
+        } else if let AppAction::BackendTask(task) = &action {
+            let context = BackendTaskContext::from(task);
+            if matches!(
+                context,
+                BackendTaskContext::TokenBalanceRefresh
+                    | BackendTaskContext::TokenRewardEstimate(_)
+            ) {
+                self.pending_operation_context = Some(context);
+            }
+        }
 
         // Post-processing on user actions
         match action {
@@ -2808,6 +2888,7 @@ impl ScreenLike for TokensScreen {
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
+                self.pending_operation_context = None;
 
                 // should put these in a fn
                 self.contract_search_status = ContractSearchStatus::NotStarted;
@@ -2857,8 +2938,10 @@ impl ScreenLike for TokensScreen {
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
 
-        // Clear the operation banner only on Error/Warning (task failed).
-        if matches!(msg_type, MessageType::Error | MessageType::Warning) {
+        // Uncorrelated failures must not clear a genuine token refresh banner.
+        if matches!(msg_type, MessageType::Error | MessageType::Warning)
+            && self.refreshing_status != RefreshingStatus::Refreshing
+        {
             self.operation_banner.take_and_clear();
         }
 
@@ -2878,23 +2961,11 @@ impl ScreenLike for TokensScreen {
                 }
             }
             TokensSubscreen::MyTokens => {
-                if msg.contains("Successfully fetched token balances")
-                    || msg.contains("Failed to fetch token balances")
-                    || msg.contains("Failed to get estimated rewards")
-                {
-                    // Clear adding status on any error
-                    if msg.contains("Failed") {
-                        self.adding_token_start_time = None;
-                        self.adding_token_name = None;
-                    }
-                    self.refreshing_status = RefreshingStatus::NotRefreshing;
-                } else {
-                    tracing::debug!(
-                        msg = msg,
-                        ?msg_type,
-                        "unsupported message received in token screen"
-                    );
-                }
+                tracing::debug!(
+                    msg = msg,
+                    ?msg_type,
+                    "unsupported message received in token screen"
+                );
             }
             TokensSubscreen::SearchTokens => {
                 if msg_type == MessageType::Error {
@@ -2914,22 +2985,35 @@ impl ScreenLike for TokensScreen {
         }
     }
 
-    fn display_task_error(&mut self, error: &TaskError) -> bool {
-        // A token-balance refresh with no local identities is a normal empty
-        // state, not an in-flight operation. Clear the refresh indicator and let
-        // AppState show the informational banner.
-        if matches!(error, TaskError::NoIdentitiesFound)
-            && self.tokens_subscreen == TokensSubscreen::MyTokens
-        {
-            self.refreshing_status = RefreshingStatus::NotRefreshing;
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.tokens_subscreen == TokensSubscreen::MyTokens {
+            let was_stopped = self.refreshing_status == RefreshingStatus::Refreshing
+                && self.pending_operation_context.as_ref() == Some(context);
+            let expected = self.pending_operation_context.clone();
+            self.refreshing_status
+                .stop_on_failure(expected.as_ref(), context);
+            if !was_stopped {
+                return;
+            }
+            self.pending_operation_context = None;
+            self.operation_banner.take_and_clear();
         }
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
         false
     }
 
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        // Clear any active operation banner
-        self.operation_banner.take_and_clear();
-
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: BackendTaskSuccessResult,
+    ) {
+        let completes_pending = completes_pending_operation(
+            self.pending_operation_context.as_ref(),
+            context,
+            &backend_task_success_result,
+        );
         match backend_task_success_result {
             BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
                 let mut sr = self.search_results.lock_recover();
@@ -2939,7 +3023,6 @@ impl ScreenLike for TokensScreen {
                     self.next_cursors.push(cursor);
                 }
                 self.contract_search_status = ContractSearchStatus::Complete;
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
                 let default_info = (None, vec![]);
@@ -2950,7 +3033,6 @@ impl ScreenLike for TokensScreen {
 
                 self.selected_contract_description = info.0.clone();
                 self.selected_token_infos = info.1.clone();
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.contract_details_loading = false;
             }
             BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
@@ -2958,7 +3040,11 @@ impl ScreenLike for TokensScreen {
                 amount,
                 explanation,
             ) => {
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
+                if completes_pending {
+                    self.refreshing_status = RefreshingStatus::NotRefreshing;
+                    self.pending_operation_context = None;
+                    self.operation_banner.take_and_clear();
+                }
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
                     itb.estimated_unclaimed_rewards = Some(amount);
                 }
@@ -2976,10 +3062,13 @@ impl ScreenLike for TokensScreen {
                     &self.all_known_tokens,
                     &self.token_pricing_data,
                 );
-                // Refresh display
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             BackendTaskSuccessResult::FetchedTokenBalances => {
+                if completes_pending {
+                    self.refreshing_status = RefreshingStatus::NotRefreshing;
+                    self.pending_operation_context = None;
+                    self.operation_banner.take_and_clear();
+                }
                 // Refresh my_tokens to show updated balances
                 self.my_tokens = my_tokens(
                     &self.app_context,
@@ -2987,7 +3076,6 @@ impl ScreenLike for TokensScreen {
                     &self.all_known_tokens,
                     &self.token_pricing_data,
                 );
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             BackendTaskSuccessResult::RegisteredTokenContract => {
                 self.token_creator_status = TokenCreatorStatus::Complete;
@@ -3015,6 +3103,75 @@ mod tests {
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
+
+    #[test]
+    fn in_flight_token_refresh_failure_requires_the_matching_backend_task() {
+        let expected = BackendTaskContext::TokenBalanceRefresh;
+        let mut status = RefreshingStatus::Refreshing;
+        status.stop_on_failure(Some(&expected), &BackendTaskContext::Other);
+        status.stop_on_failure(Some(&expected), &BackendTaskContext::Unknown);
+        assert_eq!(status, RefreshingStatus::Refreshing);
+
+        status.stop_on_failure(Some(&expected), &expected);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+
+        status.stop_on_failure(Some(&expected), &expected);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+    }
+
+    #[test]
+    fn duplicate_balance_refresh_is_suppressed_only_while_the_first_is_pending() {
+        let action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::QueryMyTokenBalances,
+        )));
+
+        assert!(is_duplicate_balance_refresh(
+            &RefreshingStatus::Refreshing,
+            Some(&BackendTaskContext::TokenBalanceRefresh),
+            &action,
+        ));
+        assert!(!is_duplicate_balance_refresh(
+            &RefreshingStatus::NotRefreshing,
+            None,
+            &action,
+        ));
+    }
+
+    #[test]
+    fn token_balance_success_requires_the_refresh_task_context() {
+        let pending = BackendTaskContext::TokenBalanceRefresh;
+        let result = BackendTaskSuccessResult::FetchedTokenBalances;
+
+        assert!(completes_pending_operation(
+            Some(&pending),
+            &BackendTaskContext::TokenBalanceRefresh,
+            &result,
+        ));
+        assert!(!completes_pending_operation(
+            Some(&pending),
+            &BackendTaskContext::Other,
+            &result,
+        ));
+    }
+
+    #[test]
+    fn in_flight_reward_estimate_failure_requires_the_matching_pair() {
+        let expected = BackendTaskContext::TokenRewardEstimate(IdentityTokenIdentifier {
+            identity_id: Identifier::from([1; 32]),
+            token_id: Identifier::from([2; 32]),
+        });
+        let other_pair = BackendTaskContext::TokenRewardEstimate(IdentityTokenIdentifier {
+            identity_id: Identifier::from([1; 32]),
+            token_id: Identifier::from([3; 32]),
+        });
+        let mut status = RefreshingStatus::Refreshing;
+
+        status.stop_on_failure(Some(&expected), &other_pair);
+        assert_eq!(status, RefreshingStatus::Refreshing);
+
+        status.stop_on_failure(Some(&expected), &expected);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+    }
 
     fn ensure_test_env() {
         static INIT: Once = Once::new();

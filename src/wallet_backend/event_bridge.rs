@@ -130,7 +130,7 @@ impl EventBridge {
                 );
                 let _ = self
                     .task_result_sender
-                    .try_send(TaskResult::Success(Box::new(result)));
+                    .try_send(TaskResult::unattributed_success(result));
             }
         }
     }
@@ -158,7 +158,7 @@ impl EventBridge {
         let result = BackendTaskSuccessResult::DashPayIncomingDetected(candidates);
         let _ = self
             .task_result_sender
-            .try_send(TaskResult::Success(Box::new(result)));
+            .try_send(TaskResult::unattributed_success(result));
     }
 
     fn apply_status(&self, status: SpvStatus) {
@@ -416,7 +416,7 @@ impl PlatformEventHandler for EventBridge {
             let result = BackendTaskSuccessResult::PlatformAddressSyncPushed { updates: resolved };
             let _ = self
                 .task_result_sender
-                .try_send(TaskResult::Success(Box::new(result)));
+                .try_send(TaskResult::unattributed_success(result));
         }
 
         self.nudge_refresh();
@@ -742,7 +742,7 @@ mod tests {
         rx: &mut tokio::sync::mpsc::Receiver<TaskResult>,
     ) -> Option<Vec<Address>> {
         while let Ok(r) = rx.try_recv() {
-            if let TaskResult::Success(result) = r
+            if let TaskResult::Success { result, .. } = r
                 && let BackendTaskSuccessResult::CoreItem(
                     CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
                 ) = *result
@@ -933,7 +933,7 @@ mod tests {
         rx: &mut tokio::sync::mpsc::Receiver<TaskResult>,
     ) -> Option<Vec<crate::model::dashpay::DetectedIncomingOutput>> {
         while let Ok(r) = rx.try_recv() {
-            if let TaskResult::Success(result) = r
+            if let TaskResult::Success { result, .. } = r
                 && let BackendTaskSuccessResult::DashPayIncomingDetected(candidates) = *result
             {
                 return Some(candidates);

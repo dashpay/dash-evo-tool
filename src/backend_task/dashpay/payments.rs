@@ -14,6 +14,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Payment record for local storage
@@ -56,6 +57,30 @@ async fn get_next_address_index(
     backend
         .dashpay_increment_send_index(identity_id, contact_id)
         .map_err(|e| format!("Failed to allocate next DashPay address index: {}", e))
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+enum ContactRequestKeyIndexError {
+    #[error("Missing senderKeyIndex")]
+    MissingSender,
+    #[error("Missing recipientKeyIndex")]
+    MissingRecipient,
+}
+
+fn read_contact_request_key_indices(
+    properties: &BTreeMap<String, Value>,
+) -> Result<(u32, u32), ContactRequestKeyIndexError> {
+    let sender = properties
+        .get("senderKeyIndex")
+        .ok_or(ContactRequestKeyIndexError::MissingSender)?
+        .to_integer::<u32>()
+        .map_err(|_| ContactRequestKeyIndexError::MissingSender)?;
+    let recipient = properties
+        .get("recipientKeyIndex")
+        .ok_or(ContactRequestKeyIndexError::MissingRecipient)?
+        .to_integer::<u32>()
+        .map_err(|_| ContactRequestKeyIndexError::MissingRecipient)?;
+    Ok((sender, recipient))
 }
 
 /// Derive a payment address for a contact from their encrypted extended public key
@@ -109,21 +134,8 @@ pub async fn derive_contact_payment_address(
         .ok_or("Missing encryptedPublicKey in contact request".to_string())?;
 
     // Get key indices for decryption
-    let sender_key_index = props
-        .get("senderKeyIndex")
-        .and_then(|v| match v {
-            Value::U32(idx) => Some(*idx),
-            _ => None,
-        })
-        .ok_or("Missing senderKeyIndex".to_string())?;
-
-    let recipient_key_index = props
-        .get("recipientKeyIndex")
-        .and_then(|v| match v {
-            Value::U32(idx) => Some(*idx),
-            _ => None,
-        })
-        .ok_or("Missing recipientKeyIndex".to_string())?;
+    let (sender_key_index, recipient_key_index) =
+        read_contact_request_key_indices(props).map_err(|error| error.to_string())?;
 
     // Get our private key for decryption
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -644,6 +656,18 @@ pub async fn check_address_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_request_key_indices_accept_platform_integer_variants() {
+        for value in [Value::I128(17), Value::U32(17), Value::I64(17)] {
+            let properties = std::collections::BTreeMap::from([
+                ("senderKeyIndex".to_string(), value.clone()),
+                ("recipientKeyIndex".to_string(), value),
+            ]);
+
+            assert_eq!(read_contact_request_key_indices(&properties), Ok((17, 17)));
+        }
+    }
 
     fn create_test_address() -> Address {
         let pubkey_bytes = [0x02; 33];

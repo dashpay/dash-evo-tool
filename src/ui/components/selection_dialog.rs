@@ -1,6 +1,6 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window_after_open_by_id;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 
@@ -58,6 +58,7 @@ impl ComponentResponse for SelectionDialogComponentResponse {
 /// for styling), and preselection. The dialog can be dismissed by pressing Escape
 /// (treated as cancel) or clicking the X button. Enter confirms the current selection.
 pub struct SelectionDialog {
+    id: egui::Id,
     title: WidgetText,
     message: WidgetText,
     options: Vec<String>,
@@ -98,13 +99,15 @@ impl Component for SelectionDialog {
 }
 
 impl SelectionDialog {
-    /// Create a new selection dialog with the given title, message, and options
+    /// Create a selection dialog with a stable ID unique to this instance.
     pub fn new(
+        id: egui::Id,
         title: impl Into<WidgetText>,
         message: impl Into<WidgetText>,
         options: Vec<String>,
     ) -> Self {
         Self {
+            id,
             title: title.into(),
             message: message.into(),
             options,
@@ -150,7 +153,7 @@ impl SelectionDialog {
         use crate::ui::components::component_trait::{Component, ComponentResponse};
 
         let mut selection_result: Option<SelectionStatus> = None;
-        egui::Area::new(egui::Id::new("selection_dialog_modal").with(self.title.text()))
+        egui::Area::new(self.id.with("modal_area"))
             .fixed_pos(egui::Pos2::ZERO)
             .order(egui::Order::Middle)
             .interactable(true)
@@ -181,10 +184,12 @@ impl SelectionDialog {
             ui.ctx(),
             ModalChromeConfig {
                 title: self.title.clone(),
-                overlay_id: egui::Id::new("selection_dialog_overlay"),
+                overlay_id: self.id.with("overlay"),
                 overlay_order: egui::Order::Middle,
                 window_order: egui::Order::Foreground,
                 resizable: false,
+                show_close_button: true,
+                blocks_input: false,
                 inner_margin: 16,
             },
             |ui| {
@@ -279,11 +284,19 @@ impl SelectionDialog {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
         }
 
-        // Handle click outside window (skip if ComboBox dropdown is open)
+        // Handle click outside window (skip if ComboBox dropdown is open).
+        // SelectionDialog is value-constructed every frame, so the opening-frame
+        // skip is tracked in egui memory rather than a persistent guard field —
+        // otherwise the click that opened the dialog would cancel it on the same
+        // frame, before it is ever visible.
         if let Some(ref wr) = chrome.window_response
             && final_response.is_none()
             && !combo_open
-            && clicked_outside_window(ui.ctx(), wr.rect)
+            && clicked_outside_window_after_open_by_id(
+                ui.ctx(),
+                wr.rect,
+                self.id.with("outside_click_pass"),
+            )
         {
             final_response = Some(SelectionStatus::Canceled);
         }
@@ -314,6 +327,7 @@ mod tests {
     #[test]
     fn test_selection_dialog_creation() {
         let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_creation_test"),
             "Pick Wallet",
             "Choose the wallet to use",
             vec!["Wallet A".into(), "Wallet B".into(), "Wallet C".into()],
@@ -333,7 +347,12 @@ mod tests {
 
     #[test]
     fn test_selection_dialog_default_buttons() {
-        let dialog = SelectionDialog::new("Title", "Message", vec!["A".into(), "B".into()]);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_default_buttons_test"),
+            "Title",
+            "Message",
+            vec!["A".into(), "B".into()],
+        );
 
         assert!(dialog.confirm_text.is_some_and(|t| t.text() == "Select"));
         assert!(dialog.cancel_text.is_some_and(|t| t.text() == "Cancel"));
@@ -343,26 +362,46 @@ mod tests {
     #[test]
     fn test_selection_dialog_preselect() {
         // Normal preselection
-        let dialog =
-            SelectionDialog::new("Title", "Message", vec!["A".into(), "B".into(), "C".into()])
-                .preselect(2);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_preselect_test"),
+            "Title",
+            "Message",
+            vec!["A".into(), "B".into(), "C".into()],
+        )
+        .preselect(2);
         assert_eq!(dialog.selected_index, 2);
 
         // Out-of-bounds clamped to last index
-        let dialog =
-            SelectionDialog::new("Title", "Message", vec!["A".into(), "B".into()]).preselect(99);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_preselect_clamped_test"),
+            "Title",
+            "Message",
+            vec!["A".into(), "B".into()],
+        )
+        .preselect(99);
         assert_eq!(dialog.selected_index, 1);
 
         // Empty options: stays at 0
-        let dialog = SelectionDialog::new("Title", "Message", vec![]).preselect(5);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_preselect_empty_test"),
+            "Title",
+            "Message",
+            vec![],
+        )
+        .preselect(5);
         assert_eq!(dialog.selected_index, 0);
     }
 
     #[test]
     fn test_selection_dialog_no_buttons() {
-        let dialog = SelectionDialog::new("Title", "Message", vec!["Only".into()])
-            .confirm_text(NOTHING)
-            .cancel_text(NOTHING);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_no_buttons_test"),
+            "Title",
+            "Message",
+            vec!["Only".into()],
+        )
+        .confirm_text(NOTHING)
+        .cancel_text(NOTHING);
 
         assert!(dialog.confirm_text.is_none());
         assert!(dialog.cancel_text.is_none());

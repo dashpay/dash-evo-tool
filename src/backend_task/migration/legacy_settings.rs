@@ -16,6 +16,10 @@ use dash_sdk::dpp::dashcore::Network;
 use serde::{Deserialize, Serialize};
 
 use crate::database::Database;
+use crate::model::data_migration::{
+    DirectMigrationVersion, MAX_DIRECT_MIGRATION_VERSION, MIN_DIRECT_MIGRATION_VERSION,
+    classify_direct_migration_version,
+};
 use crate::model::settings::AppSettings;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 
@@ -44,6 +48,18 @@ pub enum SettingsImport {
 /// and leaves the sentinel unwritten, so the next launch retries.
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsImportError {
+    /// The legacy database predates the oldest layout this import supports.
+    #[error(
+        "legacy data version {found} is older than the minimum directly migratable version {minimum_supported}"
+    )]
+    LegacyDataTooOld { found: i64, minimum_supported: i64 },
+
+    /// The legacy database comes from a newer, unknown layout.
+    #[error(
+        "legacy data version {found} is newer than the maximum directly migratable version {maximum_supported}"
+    )]
+    LegacyDataTooNew { found: i64, maximum_supported: i64 },
+
     /// The legacy `settings` row could not be read from `data.db`.
     #[error("could not read legacy settings")]
     LegacyRead {
@@ -70,15 +86,36 @@ pub enum SettingsImportError {
 ///
 /// # Errors
 ///
-/// Returns [`SettingsImportError`] when `data.db` cannot be read or the k/v
-/// store cannot be written. The sentinel stays unwritten in both cases, so
-/// the next launch retries rather than silently keeping the defaults.
+/// Returns [`SettingsImportError`] when the saved data is outside the supported
+/// direct-update range, `data.db` cannot be read, or the k/v store cannot be
+/// written. The sentinel stays unwritten on failure.
 pub fn import_legacy_settings(
     app_kv: &DetKv,
     db: &Database,
 ) -> Result<SettingsImport, SettingsImportError> {
     if sentinel_present(app_kv)? {
         return Ok(SettingsImport::AlreadyDone);
+    }
+
+    let version = db
+        .stored_data_version()
+        .map_err(|source| SettingsImportError::LegacyRead { source })?
+        .unwrap_or(0);
+
+    match classify_direct_migration_version(version) {
+        DirectMigrationVersion::TooOld => {
+            return Err(SettingsImportError::LegacyDataTooOld {
+                found: version,
+                minimum_supported: MIN_DIRECT_MIGRATION_VERSION,
+            });
+        }
+        DirectMigrationVersion::Supported => {}
+        DirectMigrationVersion::TooNew => {
+            return Err(SettingsImportError::LegacyDataTooNew {
+                found: version,
+                maximum_supported: MAX_DIRECT_MIGRATION_VERSION,
+            });
+        }
     }
 
     let legacy = db
@@ -89,7 +126,8 @@ pub fn import_legacy_settings(
         write_sentinel(app_kv)?;
         tracing::debug!(
             target = "migration::legacy_settings",
-            "No legacy settings row — nothing to import",
+            version,
+            "Supported saved data has no legacy preferences — nothing to import",
         );
         return Ok(SettingsImport::NoLegacyData);
     };
@@ -210,6 +248,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn too_old_version_is_rejected_without_marking_the_import_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = legacy_db(dir.path());
+        db.execute("UPDATE settings SET database_version = 10 WHERE id = 1", [])
+            .expect("set too-old version");
+        let app_kv = kv();
+
+        let error = import_legacy_settings(&app_kv, &db).expect_err("version 10 must fail");
+
+        assert!(matches!(
+            error,
+            SettingsImportError::LegacyDataTooOld {
+                found: 10,
+                minimum_supported: 11,
+            }
+        ));
+        assert!(stored(&app_kv).is_none(), "no preferences may be imported");
+
+        db.execute("UPDATE settings SET database_version = 11 WHERE id = 1", [])
+            .expect("set v0.9.3 version");
+        assert!(matches!(
+            import_legacy_settings(&app_kv, &db),
+            Ok(SettingsImport::Imported { .. })
+        ));
+    }
+
+    #[test]
+    fn empty_settings_table_is_rejected_without_writing_the_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("data.db")).expect("open db");
+        db.execute(
+            "CREATE TABLE settings (id INTEGER PRIMARY KEY, database_version INTEGER NOT NULL)",
+            [],
+        )
+        .expect("create empty settings table");
+        let app_kv = kv();
+
+        assert!(matches!(
+            import_legacy_settings(&app_kv, &db),
+            Err(SettingsImportError::LegacyDataTooOld { found: 0, .. })
+        ));
+        assert!(!sentinel_present(&app_kv).expect("read sentinel"));
+    }
+
+    #[test]
+    fn missing_settings_table_is_rejected_without_writing_the_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::new(dir.path().join("data.db")).expect("open db");
+        let app_kv = kv();
+
+        assert!(matches!(
+            import_legacy_settings(&app_kv, &db),
+            Err(SettingsImportError::LegacyDataTooOld { found: 0, .. })
+        ));
+        assert!(!sentinel_present(&app_kv).expect("read sentinel"));
+    }
+
     /// The first launch after upgrading (before this import existed) wrote a
     /// `default()` blob over the user's preferences. The import must repair
     /// that, not treat the default blob as a user choice worth keeping.
@@ -269,6 +365,8 @@ mod tests {
     fn fresh_install_records_the_sentinel_without_writing_settings() {
         let dir = tempfile::tempdir().unwrap();
         let db = Database::new(dir.path().join("data.db")).expect("open db");
+        db.initialize(&dir.path().join("data.db"))
+            .expect("initialize fresh database");
         let app_kv = kv();
 
         let outcome = import_legacy_settings(&app_kv, &db).expect("import");

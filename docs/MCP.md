@@ -70,7 +70,7 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `network_info` | — | `det-cli network-info` | Show active network and available configured networks |
 | `network_reinit_sdk` | `network` | `det-cli network-reinit-sdk` | Rebuild Core RPC client and Platform SDK with current config (use after changing credentials) |
 | `network_switch` | `network` | `det-cli network-switch` | Switch the active network (creates context if needed, may take a few seconds) |
-| `core_wallets_list` | `network`? | `det-cli core-wallets-list` | List wallets loaded in the app (alias + seed hash) |
+| `core_wallets_list` | `network`? | `det-cli core-wallets-list` | List wallets saved for the active network (alias + seed hash) |
 | `core_wallet_import` | `mnemonic`, `network`, `alias`? | `det-cli core-wallet-import` | Import a wallet from a BIP-39 recovery phrase (unprotected); returns its seed hash. Idempotent |
 | `core_address_create` | `wallet_id`, `network`? | `det-cli core-address-create` | Generate a new receive address for a wallet |
 | `core_balances_get` | `wallet_id`, `network`? | `det-cli core-balances-get` | Show wallet balances (total, confirmed, unconfirmed) in duffs |
@@ -99,9 +99,9 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 
 ### SPV requirements
 
-All wallet-facing tools wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). Even DAPI-only operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
+Wallet-facing tools that need chain or proof state wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and proof-verifying platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). These Platform operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
 
-Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), the local wallet import (`core_wallet_import`), and the shielded snapshot read `shielded_balance_get` (a pure in-memory read of the last synced balance). `shielded_address_get` also skips the SPV gate, but it reads through the wallet backend, so the backend must already be wired — run `shielded_init` (or any SPV-gated tool) first in standalone mode. `shielded_init` and `shielded_sync` still wait for SPV — they wire the wallet backend and drive a coordinator sync.
+Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), the local wallet import (`core_wallet_import`), and the shielded snapshot read `shielded_balance_get` (a pure in-memory read of the last synced balance). Wallet-reading tools hydrate saved wallets from local storage without starting SPV. `shielded_address_get` also skips the SPV gate and wires the wallet backend automatically, but `shielded_init` is still required before it can return an address for a wallet whose shielded keys have not been bound. `shielded_init` and `shielded_sync` still wait for SPV and drive a coordinator sync.
 
 `masternode_credits_withdraw` waits for SPV before dispatching: a withdrawal does proof-verified Platform reads, so it gates like every other proof-verifying tool. (`identity_credits_withdraw` historically skipped this gate; the masternode tool deliberately adds it.)
 

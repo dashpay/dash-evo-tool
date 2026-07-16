@@ -1,5 +1,6 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
+use crate::ui::components::styled::styled_text_edit_singleline;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
@@ -60,6 +61,9 @@ pub struct ConfirmationDialog {
     confirm_text: Option<WidgetText>,
     cancel_text: Option<WidgetText>,
     danger_mode: bool,
+    required_confirmation_text: Option<String>,
+    confirmation_prompt: Option<WidgetText>,
+    confirmation_input: String,
     is_open: bool,
     opening_guard: ModalOpeningGuard,
 }
@@ -103,6 +107,9 @@ impl ConfirmationDialog {
             confirm_text: Some("Confirm".into()),
             cancel_text: Some("Cancel".into()),
             danger_mode: false,
+            required_confirmation_text: None,
+            confirmation_prompt: None,
+            confirmation_input: String::new(),
             is_open: true,
             opening_guard: ModalOpeningGuard::armed(),
         }
@@ -126,10 +133,27 @@ impl ConfirmationDialog {
         self
     }
 
+    /// Require the user to type an exact value before confirmation is enabled.
+    pub fn require_confirmation_text(
+        mut self,
+        expected: impl Into<String>,
+        prompt: impl Into<WidgetText>,
+    ) -> Self {
+        self.required_confirmation_text = Some(expected.into());
+        self.confirmation_prompt = Some(prompt.into());
+        self
+    }
+
     /// Set whether the dialog is open
     pub fn open(mut self, open: bool) -> Self {
         self.is_open = open;
         self
+    }
+
+    fn confirmation_text_matches(&self) -> bool {
+        self.required_confirmation_text
+            .as_ref()
+            .is_none_or(|expected| self.confirmation_input == *expected)
     }
 }
 
@@ -171,15 +195,41 @@ impl ConfirmationDialog {
                 );
                 ui.add_space(20.0);
 
+                if let Some(prompt) = self.confirmation_prompt.clone() {
+                    ui.label(
+                        egui::RichText::new(prompt.text())
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(6.0);
+                    ui.add(
+                        styled_text_edit_singleline(&mut self.confirmation_input, dark_mode)
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(20.0);
+                }
+
+                let confirmation_text_matches = self.confirmation_text_matches();
+
                 // Buttons
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Confirm button (only if text is provided)
                         if let Some(confirm_text) = &self.confirm_text {
                             let response = if self.danger_mode {
-                                ComponentStyles::add_danger_button(ui, confirm_text.clone())
+                                if confirmation_text_matches {
+                                    ComponentStyles::add_danger_button(ui, confirm_text.clone())
+                                } else {
+                                    ui.add_enabled(
+                                        false,
+                                        ComponentStyles::danger_button(confirm_text.clone()),
+                                    )
+                                }
                             } else {
-                                ComponentStyles::add_primary_button(ui, confirm_text.clone())
+                                ComponentStyles::add_primary_button_enabled(
+                                    ui,
+                                    confirmation_text_matches,
+                                    confirm_text.clone(),
+                                )
                             };
 
                             if response.clicked() {
@@ -221,6 +271,7 @@ impl ConfirmationDialog {
         if final_response.is_none()
             && !self.danger_mode
             && self.confirm_text.is_some()
+            && self.confirmation_text_matches()
             && ui.ctx().memory(|m| m.focused().is_none())
             && ui.input(|i| i.key_pressed(egui::Key::Enter))
         {
@@ -308,6 +359,42 @@ mod tests {
         assert!(dialog.cancel_text.is_some());
         assert!(!dialog.danger_mode);
         assert!(dialog.is_open);
+    }
+
+    #[test]
+    fn required_confirmation_text_must_match_exactly() {
+        let mut dialog = ConfirmationDialog::new("Wipe data?", "This cannot be undone.")
+            .require_confirmation_text("WIPE", "Type WIPE to confirm this action.");
+
+        assert!(!dialog.confirmation_text_matches());
+        dialog.confirmation_input = "wipe".to_string();
+        assert!(!dialog.confirmation_text_matches());
+        dialog.confirmation_input = "WIPE".to_string();
+        assert!(dialog.confirmation_text_matches());
+    }
+
+    #[test]
+    fn enter_does_not_bypass_required_confirmation_text() {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let mut dialog = ConfirmationDialog::new("Confirm action?", "This action is sensitive.")
+            .require_confirmation_text("CONFIRM", "Type CONFIRM to confirm this action.");
+        let mut status = None;
+
+        let _ = ctx.run_ui(raw, |ui| {
+            status = dialog.show(ui).inner.dialog_response;
+        });
+
+        assert_eq!(status, None);
     }
 
     #[test]

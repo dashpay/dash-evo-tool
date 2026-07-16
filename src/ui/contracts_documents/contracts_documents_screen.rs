@@ -83,6 +83,19 @@ pub enum DocumentQueryStatus {
 }
 
 impl DocumentQueryStatus {
+    fn complete_if_fetch_in_flight(
+        &mut self,
+        expected: Option<&BackendTaskContext>,
+        completed: &BackendTaskContext,
+    ) -> bool {
+        if *self == Self::WaitingForResult && expected == Some(completed) {
+            *self = Self::Complete;
+            true
+        } else {
+            false
+        }
+    }
+
     fn fail_if_fetch_in_flight(
         &mut self,
         expected: Option<&BackendTaskContext>,
@@ -579,18 +592,33 @@ impl ScreenLike for DocumentQueryScreen {
         }
     }
 
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: BackendTaskSuccessResult,
+    ) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::Documents(documents) => {
+            BackendTaskSuccessResult::Documents(documents)
+                if matches!(context, BackendTaskContext::FetchDocuments(_))
+                    && self.document_query_status.complete_if_fetch_in_flight(
+                        self.pending_fetch_context.as_ref(),
+                        context,
+                    ) =>
+            {
                 self.pending_fetch_context = None;
                 self.query_banner.take_and_clear();
                 self.matching_documents = documents
                     .iter()
                     .filter_map(|(_, doc)| doc.clone())
                     .collect();
-                self.document_query_status = DocumentQueryStatus::Complete;
             }
-            BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor) => {
+            BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor)
+                if matches!(context, BackendTaskContext::FetchDocumentsPage(_))
+                    && self.document_query_status.complete_if_fetch_in_flight(
+                        self.pending_fetch_context.as_ref(),
+                        context,
+                    ) =>
+            {
                 self.pending_fetch_context = None;
                 self.query_banner.take_and_clear();
                 self.matching_documents = page_docs
@@ -601,11 +629,8 @@ impl ScreenLike for DocumentQueryScreen {
                 if let Some(cursor) = next_cursor {
                     self.next_cursors.push(cursor.clone());
                 }
-                self.document_query_status = DocumentQueryStatus::Complete;
             }
-            _ => {
-                // Handle other variants
-            }
+            _ => {}
         }
     }
 
@@ -771,7 +796,10 @@ impl ScreenLike for DocumentQueryScreen {
 
         if let AppAction::BackendTask(task) = &action {
             let context = BackendTaskContext::from(task);
-            if matches!(context, BackendTaskContext::FetchDocumentsPage(_)) {
+            if matches!(
+                context,
+                BackendTaskContext::FetchDocuments(_) | BackendTaskContext::FetchDocumentsPage(_)
+            ) {
                 self.pending_fetch_context = Some(context);
             }
         }
@@ -848,5 +876,58 @@ mod tests {
         let mut status = DocumentQueryStatus::Complete;
         assert!(!status.fail_if_fetch_in_flight(Some(&expected), &expected));
         assert_eq!(status, DocumentQueryStatus::Complete);
+    }
+
+    #[test]
+    fn document_success_requires_the_matching_in_flight_context() {
+        let tmp = tempfile::tempdir().expect("temp data dir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = DocumentQueryScreen::new(&app_context);
+        let expected = BackendTaskContext::FetchDocumentsPage(Box::new(query(10)));
+        let different_query = BackendTaskContext::FetchDocumentsPage(Box::new(query(20)));
+        let existing_cursor = Start::StartAfter(vec![1]);
+
+        screen.document_query_status = DocumentQueryStatus::WaitingForResult;
+        screen.pending_fetch_context = Some(expected.clone());
+        screen.current_page = 2;
+        screen.next_cursors = vec![existing_cursor.clone()];
+        screen.has_next_page = true;
+
+        screen.display_backend_task_result(
+            &different_query,
+            BackendTaskSuccessResult::PageDocuments(Default::default(), None),
+        );
+
+        assert_eq!(
+            screen.document_query_status,
+            DocumentQueryStatus::WaitingForResult
+        );
+        assert_eq!(screen.pending_fetch_context.as_ref(), Some(&expected));
+        assert_eq!(screen.current_page, 2);
+        assert_eq!(screen.next_cursors, vec![existing_cursor]);
+        assert!(screen.has_next_page);
+
+        let next_cursor = Start::StartAfter(vec![2]);
+        screen.display_backend_task_result(
+            &expected,
+            BackendTaskSuccessResult::PageDocuments(Default::default(), Some(next_cursor.clone())),
+        );
+
+        assert_eq!(screen.document_query_status, DocumentQueryStatus::Complete);
+        assert_eq!(screen.pending_fetch_context, None);
+        assert_eq!(
+            screen.next_cursors,
+            vec![Start::StartAfter(vec![1]), next_cursor]
+        );
+        assert!(screen.has_next_page);
+
+        let accepted_cursors = screen.next_cursors.clone();
+        screen.display_backend_task_result(
+            &expected,
+            BackendTaskSuccessResult::PageDocuments(Default::default(), None),
+        );
+
+        assert_eq!(screen.next_cursors, accepted_cursors);
+        assert!(screen.has_next_page);
     }
 }

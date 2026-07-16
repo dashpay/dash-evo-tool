@@ -539,6 +539,52 @@ fn tc_ovl_028_pointer_click_beneath_blocked() {
     assert!(handle.take_actions().is_empty());
 }
 
+#[test]
+fn raising_frame_pointer_release_does_not_click_beneath_overlay() {
+    let counter = Rc::new(Cell::new(0u32));
+    let counter_ui = Rc::clone(&counter);
+    let raise_overlay = Rc::new(Cell::new(false));
+    let raise_overlay_ui = Rc::clone(&raise_overlay);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .build_ui(move |ui| {
+            if raise_overlay_ui.get() && !ProgressOverlay::has_global(ui.ctx()) {
+                ProgressOverlay::set_global_spinner_only(ui.ctx());
+            }
+            ProgressOverlay::claim_input(ui.ctx());
+            if ui.button("Broadcast").clicked() {
+                counter_ui.set(counter_ui.get() + 1);
+            }
+            ProgressOverlay::render_global(ui.ctx(), false);
+        });
+
+    harness.step();
+    let button_center = harness.get_by_label("Broadcast").rect().center();
+    harness.hover_at(button_center);
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+
+    raise_overlay.set(true);
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+
+    assert_eq!(
+        counter.get(),
+        0,
+        "the release that completes on the raising frame must not reach the control beneath"
+    );
+}
+
 /// TC-OVL-029 — keyboard input does not reach widgets beneath the overlay.
 /// The renderer never uses the deprecated `Ui::set_enabled` (design-review).
 #[test]

@@ -64,6 +64,7 @@ pub struct ConfirmationDialog {
     required_confirmation_text: Option<String>,
     confirmation_prompt: Option<WidgetText>,
     confirmation_input: String,
+    blocks_input: bool,
     is_open: bool,
     opening_guard: ModalOpeningGuard,
 }
@@ -110,6 +111,7 @@ impl ConfirmationDialog {
             required_confirmation_text: None,
             confirmation_prompt: None,
             confirmation_input: String::new(),
+            blocks_input: false,
             is_open: true,
             opening_guard: ModalOpeningGuard::armed(),
         }
@@ -130,6 +132,12 @@ impl ConfirmationDialog {
     /// Enable danger mode (red confirm button) for destructive actions
     pub fn danger_mode(mut self, enabled: bool) -> Self {
         self.danger_mode = enabled;
+        self
+    }
+
+    /// Set whether the dialog blocks input to all controls behind it.
+    pub fn blocks_input(mut self, enabled: bool) -> Self {
+        self.blocks_input = enabled;
         self
     }
 
@@ -174,10 +182,14 @@ impl ConfirmationDialog {
                 title: self.title.clone(),
                 overlay_id: egui::Id::new("confirmation_dialog_overlay"),
                 overlay_order: egui::Order::Background,
-                window_order: egui::Order::Middle,
+                window_order: if self.blocks_input {
+                    egui::Order::Foreground
+                } else {
+                    egui::Order::Middle
+                },
                 resizable: false,
                 show_close_button: true,
-                blocks_input: false,
+                blocks_input: self.blocks_input,
                 inner_margin: 16,
             },
             |ui| {

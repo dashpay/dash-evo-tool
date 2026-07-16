@@ -381,6 +381,8 @@ struct ContactInfoLookup {
     next_derivation_index: u32,
 }
 
+type ContactInfoKeys = (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>);
+
 const CONTACT_INFO_PAGE_SIZE: usize = 100;
 
 fn next_contact_info_page(docs: &Documents) -> Option<Start> {
@@ -415,6 +417,88 @@ where
     Ok(documents)
 }
 
+fn contact_info_derivation_index(document: &Document) -> Option<u32> {
+    document
+        .properties()
+        .get("derivationEncryptionKeyIndex")
+        .and_then(|value| value.to_integer::<u32>().ok())
+}
+
+fn has_contact_info_key_material(document: &Document) -> bool {
+    contact_info_derivation_index(document).is_some()
+        && document
+            .properties()
+            .get("rootEncryptionKeyIndex")
+            .and_then(|value| value.to_integer::<u32>().ok())
+            .is_some()
+        && matches!(
+            document.properties().get("encToUserId"),
+            Some(Value::Bytes(_))
+        )
+}
+
+fn find_existing_contact_info<F>(
+    documents: Vec<Document>,
+    contact_user_id: Identifier,
+    mut derive_keys: F,
+) -> Option<ExistingContactInfo>
+where
+    F: FnMut(u32) -> Result<ContactInfoKeys, TaskError>,
+{
+    for document in documents {
+        let Some(derivation_index) = contact_info_derivation_index(&document) else {
+            continue;
+        };
+        if !has_contact_info_key_material(&document) {
+            continue;
+        }
+
+        let Ok((enc_user_id_key, private_data_key)) = derive_keys(derivation_index) else {
+            continue;
+        };
+        let Some(Value::Bytes(enc_user_id)) = document.properties().get("encToUserId") else {
+            continue;
+        };
+        if decrypt_to_user_id(enc_user_id, &enc_user_id_key).ok()
+            == Some(contact_user_id.to_buffer())
+        {
+            return Some(ExistingContactInfo {
+                document,
+                derivation_index,
+                enc_user_id_key,
+                private_data_key,
+            });
+        }
+    }
+
+    None
+}
+
+async fn scan_contact_info_documents<F, Fut>(
+    documents: Vec<Document>,
+    contact_user_id: Identifier,
+    with_key_session: F,
+) -> Result<ContactInfoLookup, TaskError>
+where
+    F: FnOnce(Vec<Document>, Identifier) -> Fut,
+    Fut: Future<Output = Result<Option<ExistingContactInfo>, TaskError>>,
+{
+    let next_derivation_index = documents
+        .iter()
+        .filter_map(contact_info_derivation_index)
+        .fold(0u32, |next, index| next.max(index.saturating_add(1)));
+    let existing = if documents.iter().any(has_contact_info_key_material) {
+        with_key_session(documents, contact_user_id).await?
+    } else {
+        None
+    };
+
+    Ok(ContactInfoLookup {
+        existing,
+        next_derivation_index,
+    })
+}
+
 async fn lookup_contact_info(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -444,48 +528,43 @@ async fn lookup_contact_info(
             .map_err(TaskError::from)
     })
     .await?;
-    let mut existing = None;
-    let mut next_derivation_index = 0u32;
+    let documents = existing_docs.into_values().flatten().collect();
+    scan_contact_info_documents(
+        documents,
+        contact_user_id,
+        |documents, contact_user_id| async move {
+            let seed_hash = identity
+                .dashpay_wallet_seed_hash()
+                .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+            let network = identity.network;
 
-    for doc in existing_docs.into_values().flatten() {
-        let props = doc.properties();
-        let Some(derivation_index) = props
-            .get("derivationEncryptionKeyIndex")
-            .and_then(|value| value.to_integer::<u32>().ok())
-        else {
-            continue;
-        };
-        next_derivation_index = next_derivation_index.max(derivation_index.saturating_add(1));
-        if props
-            .get("rootEncryptionKeyIndex")
-            .and_then(|value| value.to_integer::<u32>().ok())
-            .is_none()
-        {
-            continue;
-        }
-
-        let (enc_user_id_key, private_data_key) =
-            derive_contact_info_keys(app_context, identity, derivation_index).await?;
-        let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") else {
-            continue;
-        };
-        if existing.is_none()
-            && decrypt_to_user_id(enc_user_id, &enc_user_id_key).ok()
-                == Some(contact_user_id.to_buffer())
-        {
-            existing = Some(ExistingContactInfo {
-                document: doc,
-                derivation_index,
-                enc_user_id_key,
-                private_data_key,
-            });
-        }
-    }
-
-    Ok(ContactInfoLookup {
-        existing,
-        next_derivation_index,
-    })
+            app_context
+                .wallet_backend()?
+                .secret_access()
+                .with_secret_session(
+                    &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                    async |session| {
+                        let plaintext = session.plaintext();
+                        let seed = plaintext
+                            .expose_hd_seed()
+                            .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                        Ok(find_existing_contact_info(
+                            documents,
+                            contact_user_id,
+                            |derivation_index| {
+                                crate::wallet_backend::derive_contact_info_encryption_keys(
+                                    seed,
+                                    network,
+                                    derivation_index,
+                                )
+                            },
+                        ))
+                    },
+                )
+                .await
+        },
+    )
+    .await
 }
 
 pub(super) async fn contact_info_is_hidden(
@@ -715,6 +794,7 @@ mod tests {
     use super::*;
     use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
     use dash_sdk::dpp::version::PlatformVersion;
+    use std::cell::Cell;
     use std::collections::VecDeque;
     use std::future::ready;
 
@@ -777,6 +857,138 @@ mod tests {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
         })
+    }
+
+    fn lookup_contact_info_document(
+        document_id: u8,
+        derivation_index: u32,
+        encrypted_user_id: [u8; 32],
+    ) -> Document {
+        let properties = BTreeMap::from([
+            (
+                "derivationEncryptionKeyIndex".to_string(),
+                Value::U32(derivation_index),
+            ),
+            ("rootEncryptionKeyIndex".to_string(), Value::U32(0)),
+            (
+                "encToUserId".to_string(),
+                Value::Bytes(encrypted_user_id.to_vec()),
+            ),
+        ]);
+        DppDocument::V0(DocumentV0 {
+            id: id(document_id),
+            owner_id: id(254),
+            creator_id: None,
+            properties,
+            revision: Some(1),
+            created_at: None,
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn contact_info_scan_uses_one_secret_session_for_many_documents() {
+        let contact_user_id = id(200);
+        let encrypted_other_id = encrypt_to_user_id(&id(201).to_buffer(), &KEY).expect("encrypt");
+        let documents = (0..=CONTACT_INFO_PAGE_SIZE)
+            .map(|index| {
+                lookup_contact_info_document(index as u8, index as u32, encrypted_other_id)
+            })
+            .collect();
+        let sessions = Cell::new(0);
+        let derivations = Cell::new(0);
+
+        let lookup =
+            scan_contact_info_documents(documents, contact_user_id, |documents, target| {
+                sessions.set(sessions.get() + 1);
+                ready(Ok(find_existing_contact_info(documents, target, |_| {
+                    derivations.set(derivations.get() + 1);
+                    Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
+                })))
+            })
+            .await
+            .expect("scan");
+
+        assert!(lookup.existing.is_none());
+        assert_eq!(lookup.next_derivation_index, 101);
+        assert_eq!(derivations.get(), 101);
+        assert_eq!(sessions.get(), 1, "the entire scan uses one unlock session");
+    }
+
+    #[test]
+    fn contact_info_scan_stops_deriving_after_target_match() {
+        let contact_user_id = id(210);
+        let encrypted_target =
+            encrypt_to_user_id(&contact_user_id.to_buffer(), &KEY).expect("encrypt target");
+        let encrypted_other =
+            encrypt_to_user_id(&id(211).to_buffer(), &KEY).expect("encrypt other");
+        let documents = vec![
+            lookup_contact_info_document(1, 3, encrypted_target),
+            lookup_contact_info_document(2, 4, encrypted_other),
+        ];
+        let mut derived_indices = Vec::new();
+
+        let existing = find_existing_contact_info(documents, contact_user_id, |index| {
+            derived_indices.push(index);
+            Ok((Zeroizing::new(KEY), Zeroizing::new(OTHER_KEY)))
+        });
+
+        assert!(existing.is_some());
+        assert_eq!(derived_indices, vec![3]);
+    }
+
+    #[tokio::test]
+    async fn contact_info_scan_skips_late_hardened_index_and_keeps_high_water_mark() {
+        const SEED: [u8; 64] = [42; 64];
+        const MATCH_INDEX: u32 = 7;
+        const UNDERIVABLE_INDEX: u32 = 1 << 31;
+
+        let contact_user_id = id(220);
+        let (target_key, _) = crate::wallet_backend::derive_contact_info_encryption_keys(
+            &SEED,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            MATCH_INDEX,
+        )
+        .expect("derive target key");
+        let encrypted_target =
+            encrypt_to_user_id(&contact_user_id.to_buffer(), &target_key).expect("encrypt target");
+        let documents = vec![
+            lookup_contact_info_document(1, MATCH_INDEX, encrypted_target),
+            lookup_contact_info_document(2, UNDERIVABLE_INDEX, [0; 32]),
+        ];
+        let sessions = Cell::new(0);
+
+        let lookup =
+            scan_contact_info_documents(documents, contact_user_id, |documents, target| {
+                sessions.set(sessions.get() + 1);
+                ready(Ok(find_existing_contact_info(documents, target, |index| {
+                    crate::wallet_backend::derive_contact_info_encryption_keys(
+                        &SEED,
+                        dash_sdk::dpp::dashcore::Network::Testnet,
+                        index,
+                    )
+                })))
+            })
+            .await
+            .expect("the late underivable document must not abort the matched lookup");
+
+        assert_eq!(
+            lookup.existing.map(|existing| existing.derivation_index),
+            Some(MATCH_INDEX)
+        );
+        assert_eq!(
+            lookup.next_derivation_index,
+            UNDERIVABLE_INDEX + 1,
+            "the on-chain coordinate still advances the public high-water mark"
+        );
+        assert_eq!(sessions.get(), 1);
     }
 
     #[tokio::test]

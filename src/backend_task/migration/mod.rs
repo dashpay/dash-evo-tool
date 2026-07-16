@@ -58,8 +58,8 @@ impl AppContext {
     /// re-poll affected screens once the migration finishes. On
     /// failure, publishes [`MigrationState::Failed`] so the per-frame
     /// banner reconciliation in `AppState` can surface the error
-    /// variant with a "Retry now" action — without it the banner
-    /// would be stuck in `Running` forever, and `run_backend_task`
+    /// variant with its recovery action when retrying can help — without it
+    /// the banner would be stuck in `Running` forever, and `run_backend_task`
     /// would keep rejecting every wallet-touching task with
     /// `WalletStorageNotReady` until the app is restarted.
     pub async fn run_migration_task(
@@ -126,9 +126,12 @@ impl AppContext {
 }
 
 pub(crate) fn migration_task_error(source: Arc<MigrationError>) -> TaskError {
-    if matches!(*source, MigrationError::InteractivePromptUnavailable) {
-        TaskError::StorageUpdateNeedsDesktop { source }
-    } else {
-        TaskError::MigrationFailed { source }
+    match source.as_ref() {
+        MigrationError::InteractivePromptUnavailable => {
+            TaskError::StorageUpdateNeedsDesktop { source }
+        }
+        MigrationError::LegacyDataTooOld { .. } => TaskError::SavedDataTooOld { source },
+        MigrationError::LegacyDataTooNew { .. } => TaskError::SavedDataTooNew { source },
+        _ => TaskError::MigrationFailed { source },
     }
 }

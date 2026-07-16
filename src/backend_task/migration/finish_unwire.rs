@@ -81,10 +81,23 @@ pub struct MigrationCompletion {
 
 /// Domain error envelope for the migration orchestrator.
 ///
-/// Variants wrap upstream error types via `#[source]`; the
-/// user-facing message lives on [`TaskError::MigrationFailed`].
+/// Variants wrap upstream error types via `#[source]`; user-facing messages
+/// live on the matching [`TaskError`] variants.
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationError {
+    /// The legacy database predates the oldest layout this migration can read
+    /// directly. The numeric fields are retained for diagnostics only.
+    #[error(
+        "legacy data version {found} is older than the minimum directly migratable version {minimum_supported}"
+    )]
+    LegacyDataTooOld { found: i64, minimum_supported: i64 },
+
+    /// The legacy database comes from a newer, unknown layout.
+    #[error(
+        "legacy data version {found} is newer than the maximum directly migratable version {maximum_supported}"
+    )]
+    LegacyDataTooNew { found: i64, maximum_supported: i64 },
+
     /// Could not open the legacy `data.db` SQLite file to sniff for
     /// legacy rows.
     #[error("could not open legacy data.db at {path}")]
@@ -299,17 +312,50 @@ fn open_legacy_read_only(path: &std::path::Path) -> Result<Connection, Migration
 /// end up publishable, or it leaves the status on `Running` — which gates every
 /// wallet-touching task behind `WalletStorageNotReady`, with no retry to escape.
 ///
-/// A [`TaskError::MigrationFailed`] chain is reused verbatim, so the banner shows
-/// the same typed source and a wrapped [`MigrationError::WalletBackendUnavailable`]
-/// still classifies as backend-not-ready. Anything else is wrapped in
+/// Task errors that already carry a [`MigrationError`] chain reuse it verbatim,
+/// so the banner sees the same typed source. Anything else is wrapped in
 /// [`MigrationError::Unexpected`] rather than dropped.
 pub(crate) fn migration_error_chain(error: TaskError) -> Arc<MigrationError> {
     match error {
-        TaskError::MigrationFailed { source } => source,
+        TaskError::MigrationFailed { source }
+        | TaskError::SavedDataTooOld { source }
+        | TaskError::SavedDataTooNew { source }
+        | TaskError::StorageUpdateNeedsDesktop { source } => source,
         other => Arc::new(MigrationError::Unexpected {
             source: Box::new(other),
         }),
     }
+}
+
+fn validate_legacy_database_version(version: i64) -> Result<(), MigrationError> {
+    use crate::model::data_migration::{
+        DirectMigrationVersion, MAX_DIRECT_MIGRATION_VERSION, MIN_DIRECT_MIGRATION_VERSION,
+        classify_direct_migration_version,
+    };
+
+    match classify_direct_migration_version(version) {
+        DirectMigrationVersion::TooOld => Err(MigrationError::LegacyDataTooOld {
+            found: version,
+            minimum_supported: MIN_DIRECT_MIGRATION_VERSION,
+        }),
+        DirectMigrationVersion::Supported => Ok(()),
+        DirectMigrationVersion::TooNew => Err(MigrationError::LegacyDataTooNew {
+            found: version,
+            maximum_supported: MAX_DIRECT_MIGRATION_VERSION,
+        }),
+    }
+}
+
+fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), MigrationError> {
+    let version = app_context
+        .db
+        .stored_data_version()
+        .map_err(|source| MigrationError::LegacyDbRead {
+            table: "settings",
+            source,
+        })?
+        .unwrap_or(0);
+    validate_legacy_database_version(version)
 }
 
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
@@ -363,11 +409,13 @@ pub(crate) fn migration_error_chain(error: TaskError) -> Arc<MigrationError> {
 ///
 /// # Errors
 ///
-/// [`TaskError::MigrationFailed`] when the wallet drain fails (the completion
-/// sentinel stays unwritten, so the next launch retries), or when the wallet
-/// drain succeeded but the app-data or identity pass hit a hard failure — an
-/// unreadable legacy file, a k/v write error. Undecodable *rows* are not an
-/// error: they are counted and reported on
+/// [`TaskError::SavedDataTooOld`] before any pass begins when the legacy database
+/// predates v0.9.3, or [`TaskError::SavedDataTooNew`] when it comes from an
+/// unknown newer layout. [`TaskError::MigrationFailed`] when the wallet drain
+/// fails (the completion sentinel stays unwritten, so the next launch retries),
+/// or when the wallet drain succeeded but the app-data or identity pass hit a
+/// hard failure — an unreadable legacy file, a k/v write error. Undecodable
+/// *rows* are not an error: they are counted and reported on
 /// [`MigrationState::SucceededWithUnreadableVotes`] /
 /// [`MigrationState::SucceededWithUnreadableIdentities`], because failing here
 /// would wedge the wallet drain behind a row the user cannot repair.
@@ -379,6 +427,8 @@ pub(crate) fn migration_error_chain(error: TaskError) -> Arc<MigrationError> {
 /// both signals) rather than a returned `Err` that the caller would re-publish
 /// as a plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+    validate_saved_data_for_migration(app_context)?;
+
     let status = app_context.migration_status();
 
     // Scheduled votes and top-up history carry their own sentinel and run
@@ -2141,9 +2191,7 @@ fn now_epoch_seconds() -> i64 {
 
 impl From<MigrationError> for TaskError {
     fn from(source: MigrationError) -> Self {
-        TaskError::MigrationFailed {
-            source: Arc::new(source),
-        }
+        super::migration_task_error(Arc::new(source))
     }
 }
 
@@ -3964,6 +4012,78 @@ mod tests {
             crate::model::user_role::UserRoleCell::default(),
         )
         .expect("AppContext")
+    }
+
+    #[tokio::test]
+    async fn too_old_database_version_is_rejected_before_migration() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        ctx.db
+            .execute("UPDATE settings SET database_version = 10 WHERE id = 1", [])
+            .expect("set too-old database version");
+
+        let error = run(&ctx).await.expect_err("version 10 must be rejected");
+
+        assert!(
+            matches!(
+                &error,
+                TaskError::SavedDataTooOld { source }
+                    if matches!(
+                        source.as_ref(),
+                        MigrationError::LegacyDataTooOld {
+                            found: 10,
+                            minimum_supported: 11,
+                        }
+                    )
+            ),
+            "too-old data must keep its typed version diagnostics: {error:?}",
+        );
+        assert_eq!(
+            error.to_string(),
+            "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version."
+        );
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the typed migration source must remain available for diagnostics",
+        );
+        assert!(
+            read_sentinel(&ctx.app_kv(), ctx.network)
+                .expect("read sentinel")
+                .is_none(),
+            "the migration must not write its completion sentinel after rejecting the version",
+        );
+    }
+
+    #[test]
+    fn v093_database_version_is_accepted_for_direct_migration() {
+        validate_legacy_database_version(11).expect("v0.9.3 data must remain migratable");
+    }
+
+    #[test]
+    fn current_database_version_is_accepted_for_direct_migration() {
+        validate_legacy_database_version(i64::from(crate::database::DEFAULT_DB_VERSION))
+            .expect("current data must remain migratable");
+    }
+
+    #[test]
+    fn invalid_and_future_database_versions_are_typed() {
+        assert!(matches!(
+            validate_legacy_database_version(-1),
+            Err(MigrationError::LegacyDataTooOld { found: -1, .. })
+        ));
+        let future_error = validate_legacy_database_version(41)
+            .expect_err("the first unknown future version must be rejected");
+        assert!(matches!(
+            &future_error,
+            MigrationError::LegacyDataTooNew { found: 41, .. }
+        ));
+        let task_error = TaskError::from(future_error);
+        assert!(matches!(task_error, TaskError::SavedDataTooNew { .. }));
+        assert!(std::error::Error::source(&task_error).is_some());
+        assert!(matches!(
+            validate_legacy_database_version(i64::MAX),
+            Err(MigrationError::LegacyDataTooNew { .. })
+        ));
     }
 
     /// F113 — a launch with no legacy rows must report `did_work = false`

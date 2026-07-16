@@ -321,6 +321,13 @@ pub enum BackendTaskSuccessResult {
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
     CastScheduledVote(ScheduledDPNSVote),
+    /// A scheduled-vote sweep finished without a query, identity or Platform
+    /// failure. The app uses this acknowledgement to retire a preserved
+    /// migration eligibility cutoff only after the recovery attempt succeeds.
+    ScheduledVoteSweepCompleted {
+        network: Network,
+        preserve_eligibility_since_ms: Option<u64>,
+    },
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
     /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
     ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),

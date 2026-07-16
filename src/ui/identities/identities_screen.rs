@@ -874,6 +874,14 @@ impl IdentitiesScreen {
                 self.remove_confirmation_dialog = None;
                 match result {
                     ConfirmationStatus::Confirmed => {
+                        if self.app_context.migration_status().state().is_in_progress() {
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "The storage update is still running. Wait for it to finish before removing an identity.",
+                                MessageType::Warning,
+                            );
+                            return AppAction::None;
+                        }
                         if let Some(identity_to_remove) = self.identity_to_remove.take() {
                             let identity_id = identity_to_remove.identity.id();
 

@@ -63,8 +63,10 @@ pub enum MigrationStep {
 /// state across the per-frame `load_full()` boundary.
 #[derive(Debug, Clone)]
 pub enum MigrationState {
-    /// No migration in progress and none required.
+    /// The cold-start migration has not completed its readiness check yet.
     Idle,
+    /// The readiness check completed and found no work for this launch.
+    Ready,
     /// Migration is currently executing the given step.
     Running { step: MigrationStep },
     /// Migration copied and hydrated protected wallets but must collect their
@@ -72,44 +74,19 @@ pub enum MigrationState {
     AwaitingWalletPasswords { wallets: Vec<WalletSeedHash> },
     /// Migration completed successfully (or no legacy data was present).
     Success,
-    /// The wallet drain completed — seeds, metadata and registration all
-    /// landed, so funds are reachable — but `count` legacy scheduled votes
-    /// could not be decoded and did not come across. Terminal and non-fatal:
-    /// the legacy rows are never deleted, and a retry cannot decode a corrupt
-    /// row, so the user is told once rather than offered a futile retry.
-    SucceededWithUnreadableVotes { count: u32 },
-    /// The wallet drain completed, but `count` legacy identities could not be
-    /// decoded and did not come across — so the keys they held (a masternode's
-    /// owner / voting key, say) are not loaded. Terminal and non-fatal: the
-    /// legacy rows are never deleted, so they remain recoverable. Re-published
-    /// from a durable record on every launch until the user acknowledges it, and
-    /// separate from [`Self::SucceededWithUnreadableVotes`] because the remedy
-    /// differs — re-import a key, not re-schedule a vote.
-    SucceededWithUnreadableIdentities { count: u32 },
-    /// The wallet drain completed, but both DET-owned passes left undecodable
-    /// rows behind on the same launch: `identities` legacy identities and
-    /// `votes` legacy scheduled votes did not come across. Terminal and
-    /// non-fatal — like the two single-signal variants it combines, and for the
-    /// same reason: a corrupt row decodes no better on a retry.
-    ///
-    /// It exists because neither signal may eat the other. Both warnings are
-    /// durable and re-published on every launch until acknowledged, so with only
-    /// the single-signal variants available the identity half would permanently
-    /// outrank the vote half and cost the user a vote whose deadline is still
-    /// live. One banner names both remedies instead: load the identities again,
-    /// re-schedule the votes.
-    ///
-    /// Because that single banner names both problems, its single acknowledge
-    /// action retires *both* durable records (see
-    /// [`acknowledge_unreadable_votes`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_votes)
-    /// and
-    /// [`acknowledge_unreadable_identities`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_identities)).
-    SucceededWithUnreadableIdentitiesAndVotes { identities: u32, votes: u32 },
+    /// The storage update completed, but one or more legacy rows could not be
+    /// decoded. Each non-zero counter is backed by a durable warning record and
+    /// identifies the recovery instructions the banner must show.
+    SucceededWithUnreadableData {
+        identities: u32,
+        votes: u32,
+        top_ups: u32,
+    },
     /// Both DET-owned passes are damaged on the same launch: the wallet drain
     /// landed, but `count` legacy identities could not be decoded AND the
     /// app-data import hit a hard failure. Rendered as a single retryable error
     /// banner naming both problems, so neither masks the other — the plain
-    /// [`Self::SucceededWithUnreadableIdentities`] would have swallowed the
+    /// identity-only form of [`Self::SucceededWithUnreadableData`] would have swallowed the
     /// app-data failure and left the user no retry. The app-data sentinel stays
     /// unwritten, so a retry (or the next launch) re-attempts that import; the
     /// undecodable identity rows stay in the previous version's storage, named by
@@ -119,7 +96,7 @@ pub enum MigrationState {
     /// completed and merely left a later notice-record read failing is not one:
     /// its sentinel is written, so this state's "we did not finish updating the
     /// rest of your data — retry" copy would be false and its retry a no-op. That
-    /// path publishes [`Self::SucceededWithUnreadableIdentities`] instead.
+    /// path publishes [`Self::SucceededWithUnreadableData`] instead.
     FailedWithUnreadableIdentities {
         count: u32,
         error: Arc<crate::backend_task::migration::MigrationError>,
@@ -143,25 +120,20 @@ impl PartialEq for MigrationState {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (MigrationState::Idle, MigrationState::Idle) => true,
+            (MigrationState::Ready, MigrationState::Ready) => true,
             (MigrationState::Success, MigrationState::Success) => true,
             (
-                MigrationState::SucceededWithUnreadableVotes { count: a },
-                MigrationState::SucceededWithUnreadableVotes { count: b },
-            ) => a == b,
-            (
-                MigrationState::SucceededWithUnreadableIdentities { count: a },
-                MigrationState::SucceededWithUnreadableIdentities { count: b },
-            ) => a == b,
-            (
-                MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                MigrationState::SucceededWithUnreadableData {
                     identities: ia,
                     votes: va,
+                    top_ups: ta,
                 },
-                MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                MigrationState::SucceededWithUnreadableData {
                     identities: ib,
                     votes: vb,
+                    top_ups: tb,
                 },
-            ) => ia == ib && va == vb,
+            ) => ia == ib && va == vb && ta == tb,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
             (
                 MigrationState::AwaitingWalletPasswords { wallets: a },

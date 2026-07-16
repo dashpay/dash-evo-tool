@@ -11,6 +11,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use futures::future::join_all;
@@ -134,22 +135,27 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::ScheduledVotes)
             }
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => {
-                self.vote_on_dpns_name(
-                    &scheduled_vote.contested_name,
-                    scheduled_vote.choice,
-                    &[*voter],
-                    sdk,
-                    sender,
-                )
-                .await?;
+                let result = self
+                    .vote_on_dpns_name(
+                        &scheduled_vote.contested_name,
+                        scheduled_vote.choice,
+                        &[*voter],
+                        sdk,
+                        sender,
+                    )
+                    .await?;
+                confirm_scheduled_vote_result(result)?;
                 Ok(BackendTaskSuccessResult::CastScheduledVote(scheduled_vote))
             }
             ContestedResourceTask::CastDueScheduledVotes {
                 preserve_eligibility_since_ms,
-            } => {
-                self.cast_due_scheduled_votes(sdk, sender, preserve_eligibility_since_ms)
-                    .await
-            }
+            } => self
+                .cast_due_scheduled_votes(sdk, sender, preserve_eligibility_since_ms)
+                .await
+                .map_err(|source| TaskError::ScheduledVoteSweepFailed {
+                    network: self.network,
+                    source: Box::new(source),
+                }),
             ContestedResourceTask::ClearAllScheduledVotes => {
                 self.clear_all_scheduled_votes()?;
                 Ok(BackendTaskSuccessResult::Refresh)
@@ -200,11 +206,15 @@ impl AppContext {
             })
             .collect();
         if due.is_empty() {
-            return Ok(BackendTaskSuccessResult::None);
+            return Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: self.network,
+                preserve_eligibility_since_ms,
+            });
         }
 
         let voters = self.load_local_voting_identities()?;
         let mut castable: Vec<(ScheduledDPNSVote, QualifiedIdentity)> = Vec::new();
+        let mut first_error = None;
         for vote in due {
             match voters.iter().find(|i| i.identity.id() == vote.voter_id) {
                 Some(voter) => castable.push((vote, voter.clone())),
@@ -213,11 +223,14 @@ impl AppContext {
                         contested_name = %vote.contested_name,
                         "No local voting identity for a scheduled vote; skipping it"
                     );
+                    first_error.get_or_insert_with(|| TaskError::NoVotingIdentity {
+                        identity_id: vote.voter_id.to_string(Encoding::Base58),
+                    });
                 }
             }
         }
         if castable.is_empty() {
-            return Ok(BackendTaskSuccessResult::None);
+            return Err(first_error.unwrap_or(TaskError::ScheduledVoteResultUnavailable));
         }
 
         // Tell the Scheduled Votes screen which votes are now in flight.
@@ -229,7 +242,7 @@ impl AppContext {
             .await;
 
         for (vote, voter) in castable {
-            match self
+            let result = self
                 .vote_on_dpns_name(
                     &vote.contested_name,
                     vote.choice,
@@ -238,13 +251,15 @@ impl AppContext {
                     sender.clone(),
                 )
                 .await
-            {
-                Ok(_) => {
-                    let _ = sender
+                .and_then(confirm_scheduled_vote_result);
+            match result {
+                Ok(()) => {
+                    sender
                         .send(TaskResult::unattributed_success(
                             BackendTaskSuccessResult::CastScheduledVote(vote),
                         ))
-                        .await;
+                        .await
+                        .map_err(|_| TaskError::InternalSendError)?;
                 }
                 Err(e) => {
                     tracing::error!(
@@ -252,11 +267,32 @@ impl AppContext {
                         contested_name = %vote.contested_name,
                         "Failed to cast a due scheduled vote; leaving it for the next sweep"
                     );
+                    first_error.get_or_insert(e);
                 }
             }
         }
-        Ok(BackendTaskSuccessResult::None)
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                network: self.network,
+                preserve_eligibility_since_ms,
+            })
+        }
     }
+}
+
+fn confirm_scheduled_vote_result(result: BackendTaskSuccessResult) -> Result<(), TaskError> {
+    let BackendTaskSuccessResult::DPNSVoteResults(results) = result else {
+        return Err(TaskError::ScheduledVoteResultUnavailable);
+    };
+    if results.is_empty() {
+        return Err(TaskError::ScheduledVoteResultUnavailable);
+    }
+    for (_, _, result) in results {
+        result.map_err(|source| TaskError::ScheduledVoteRejected { source })?;
+    }
+    Ok(())
 }
 
 fn scheduled_vote_is_due(
@@ -274,6 +310,28 @@ fn scheduled_vote_is_due(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nested_platform_rejection_is_not_a_successful_scheduled_vote() {
+        let result = BackendTaskSuccessResult::DPNSVoteResults(vec![(
+            "alice".to_string(),
+            ResourceVoteChoice::Lock,
+            Err(Arc::new(TaskError::InternalSendError)),
+        )]);
+
+        assert!(matches!(
+            confirm_scheduled_vote_result(result),
+            Err(TaskError::ScheduledVoteRejected { .. })
+        ));
+    }
+
+    #[test]
+    fn an_empty_nested_result_is_not_a_successful_scheduled_vote() {
+        assert!(matches!(
+            confirm_scheduled_vote_result(BackendTaskSuccessResult::DPNSVoteResults(Vec::new())),
+            Err(TaskError::ScheduledVoteResultUnavailable)
+        ));
+    }
 
     /// Migration extends only eligibility windows that overlap its wait.
     #[test]

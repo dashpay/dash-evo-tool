@@ -923,7 +923,17 @@ impl MasternodeDetailView {
 
     /// Returns `true` once the node has been removed.
     fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> bool {
-        if ui.button("Remove masternode").clicked() {
+        let migration_in_progress = self.app_context.migration_status().state().is_in_progress();
+        if ui
+            .add_enabled(
+                !migration_in_progress,
+                egui::Button::new("Remove masternode"),
+            )
+            .on_disabled_hover_text(
+                "Wait for the storage update to finish before removing this masternode.",
+            )
+            .clicked()
+        {
             self.remove_dialog = Some(
                 ConfirmationDialog::new(
                     "Remove masternode",

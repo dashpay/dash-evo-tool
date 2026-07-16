@@ -35,21 +35,17 @@ pub enum MigrationTask {
     /// completion sentinel exists in `det-app.sqlite`, subsequent calls
     /// return `Success` immediately without touching the legacy file.
     FinishUnwire,
-    /// Retire the "some scheduled votes could not be read" warning for the
-    /// active network. The warning is re-raised on every launch until the user
-    /// acknowledges it, so this is the one gesture that stops it — the legacy
-    /// vote rows themselves are never touched.
-    AcknowledgeUnreadableVotes,
+    /// Retire warnings for unreadable scheduled-vote and top-up rows on the
+    /// active network. The legacy rows themselves are never touched.
+    AcknowledgeUnreadableAppData,
     /// Retire the "some identities could not be read" warning for the active
-    /// network. Same contract as [`Self::AcknowledgeUnreadableVotes`]: the
+    /// network. Same contract as [`Self::AcknowledgeUnreadableAppData`]: the
     /// warning is re-raised on every launch until the user acknowledges it, and
     /// the legacy identity rows themselves are never touched.
     AcknowledgeUnreadableIdentities,
-    /// Retire both warnings at once — the acknowledgement of the single combined
-    /// banner that names both problems. Retiring only one half would re-raise the
-    /// other on the next launch, as a notice the user has already read and acted
-    /// on.
-    AcknowledgeUnreadableIdentitiesAndVotes,
+    /// Retire identity and app-data warnings together after acknowledging the
+    /// single banner that names every affected data type.
+    AcknowledgeUnreadableData,
 }
 
 impl AppContext {
@@ -108,16 +104,16 @@ impl AppContext {
                     }
                 }
             }
-            MigrationTask::AcknowledgeUnreadableVotes => {
-                finish_unwire::acknowledge_unreadable_votes(self)?;
+            MigrationTask::AcknowledgeUnreadableAppData => {
+                finish_unwire::acknowledge_unreadable_app_data(self)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
             MigrationTask::AcknowledgeUnreadableIdentities => {
                 finish_unwire::acknowledge_unreadable_identities(self)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
-            MigrationTask::AcknowledgeUnreadableIdentitiesAndVotes => {
-                finish_unwire::acknowledge_unreadable_votes(self)?;
+            MigrationTask::AcknowledgeUnreadableData => {
+                finish_unwire::acknowledge_unreadable_app_data(self)?;
                 finish_unwire::acknowledge_unreadable_identities(self)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }

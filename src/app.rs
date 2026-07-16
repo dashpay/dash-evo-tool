@@ -44,7 +44,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,11 +84,22 @@ pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
 fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
     matches!(
         state,
-        MigrationState::Success
-            | MigrationState::SucceededWithUnreadableVotes { .. }
-            | MigrationState::SucceededWithUnreadableIdentities { .. }
-            | MigrationState::SucceededWithUnreadableIdentitiesAndVotes { .. }
+        MigrationState::Ready
+            | MigrationState::Success
+            | MigrationState::SucceededWithUnreadableData { .. }
     )
+}
+
+const LEGACY_SETTINGS_IMPORT_WARNING: &str = "The app could not confirm that your network preference was restored from the previous version. Check the selected network before using the application.";
+
+fn show_legacy_settings_import_warning(
+    ctx: &egui::Context,
+    error: &crate::backend_task::migration::legacy_settings::SettingsImportError,
+) {
+    let handle =
+        MessageBanner::set_global(ctx, LEGACY_SETTINGS_IMPORT_WARNING, MessageType::Warning);
+    handle.disable_auto_dismiss();
+    handle.with_details(error);
 }
 
 fn unix_time_ms() -> u64 {
@@ -96,6 +107,19 @@ fn unix_time_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn clear_confirmed_vote_recovery_cutoff(
+    deferred: &mut BTreeMap<Network, u64>,
+    network: Network,
+    confirmed_cutoff: Option<u64>,
+) -> bool {
+    if confirmed_cutoff.is_some() && deferred.get(&network).copied() == confirmed_cutoff {
+        deferred.remove(&network);
+        true
+    } else {
+        false
+    }
 }
 
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
@@ -332,8 +356,9 @@ pub fn migration_unreadable_votes_text(count: u32) -> String {
 pub fn migration_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
-         ({count} in total). Your previous data is untouched. Choose Load Identity on the \
-         Identities screen to load them again and restore their keys."
+         ({count} in total). Your previous data is untouched. For a user identity, choose Load \
+         Identity on the Identities screen. For a masternode or evonode identity, choose + Load \
+         on the Masternodes tab."
     )
 }
 
@@ -348,8 +373,9 @@ pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u3
     format!(
         "Some identities ({identities} in total) and some scheduled votes ({votes} in total) from \
          the previous version could not be read and were not carried over. Your previous data is \
-         untouched. Choose Load Identity on the Identities screen to load the identities again, \
-         and schedule the votes again on the Scheduled Votes screen."
+         untouched. For a user identity, choose Load Identity on the Identities screen. For a \
+         masternode or evonode identity, choose + Load on the Masternodes tab. Schedule the votes \
+         again on the Scheduled Votes screen."
     )
 }
 
@@ -363,9 +389,52 @@ pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
          ({count} in total), and updating the rest of your previous data did not finish. Your \
-         previous data is untouched. Choose Retry now to finish updating, then choose Load \
-         Identity on the Identities screen to load them again and restore their keys."
+         previous data is untouched. Choose Retry now to finish updating. For a user identity, \
+         choose Load Identity on the Identities screen. For a masternode or evonode identity, \
+         choose + Load on the Masternodes tab."
     )
+}
+
+/// User-facing banner copy for every non-empty combination of unreadable
+/// legacy identity, scheduled-vote and top-up rows.
+pub fn migration_unreadable_data_text(identities: u32, votes: u32, top_ups: u32) -> String {
+    match (identities > 0, votes > 0, top_ups > 0) {
+        (true, false, false) => migration_unreadable_identities_text(identities),
+        (false, true, false) => migration_unreadable_votes_text(votes),
+        (true, true, false) => {
+            migration_unreadable_identities_and_votes_text(identities, votes)
+        }
+        (false, false, true) => format!(
+            "Some records of earlier additions to identity balances from the previous version \
+             could not be read and were not carried over ({top_ups} in total). Check each \
+             identity's balance history before adding more funds."
+        ),
+        (true, false, true) => format!(
+            "Some identities ({identities} in total) and some records of earlier additions to \
+             identity balances ({top_ups} in total) from the previous version could not be read \
+             and were not carried over. For a user identity, choose Load Identity on the \
+             Identities screen. For a masternode or evonode identity, choose + Load on the \
+             Masternodes tab. Check each identity's balance history before adding more funds."
+        ),
+        (false, true, true) => format!(
+            "Some scheduled votes ({votes} in total) and some records of earlier additions to \
+             identity balances ({top_ups} in total) from the previous version could not be read \
+             and were not carried over. Schedule the votes again on the Scheduled Votes screen. \
+             Check each identity's balance history before adding more funds."
+        ),
+        (true, true, true) => format!(
+            "Some identities ({identities} in total), some scheduled votes ({votes} in total), \
+             and some records of earlier additions to identity balances ({top_ups} in total) \
+             from the previous version could not be read and were not carried over. For a user \
+             identity, choose Load Identity on the Identities screen. For a masternode or \
+             evonode identity, choose + Load on the Masternodes tab. Schedule the votes again on \
+             the Scheduled Votes screen, and check each identity's balance history before adding \
+             more funds."
+        ),
+        (false, false, false) => {
+            "Some data from the previous version could not be read. Check your identities, scheduled votes, and identity balance history before continuing.".to_string()
+        }
+    }
 }
 
 /// How long the cold-start readiness gate waits for the wallet backend to wire
@@ -551,6 +620,11 @@ pub struct AppState {
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
     /// Per-network start of a migration wait that deferred scheduled-vote casting.
     scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
+    /// Networks with a scheduled-vote sweep currently running.
+    scheduled_vote_sweeps_in_progress: BTreeSet<Network>,
+    /// Last recovery-sweep attempt per network, used to throttle retries while
+    /// retaining the original eligibility cutoff.
+    scheduled_vote_recovery_last_attempt: BTreeMap<Network, Instant>,
     last_repaint_request: Instant, // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>, // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
@@ -849,11 +923,14 @@ impl AppState {
         match crate::backend_task::migration::legacy_settings::import_legacy_settings(&app_kv, &db)
         {
             Ok(outcome) => tracing::debug!(?outcome, "Legacy settings import"),
-            Err(e) => tracing::warn!(
-                error = ?e,
-                "Could not import preferences from the previous version — using defaults; \
-                 the next launch retries",
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "Could not import preferences from the previous version — using defaults; \
+                     the next launch retries",
+                );
+                show_legacy_settings_import_warning(&ctx, &e);
+            }
         }
 
         let settings = match app_kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY) {
@@ -1212,6 +1289,8 @@ impl AppState {
             theme: ThemeState::new(theme_preference),
             last_scheduled_vote_check: Instant::now(),
             scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
+            scheduled_vote_sweeps_in_progress: BTreeSet::new(),
+            scheduled_vote_recovery_last_attempt: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: !onboarding_completed,
@@ -1902,6 +1981,19 @@ impl App for AppState {
                             );
                             self.visible_screen_mut().refresh();
                         }
+                        BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                            network,
+                            preserve_eligibility_since_ms,
+                        } => {
+                            self.scheduled_vote_sweeps_in_progress.remove(&network);
+                            if clear_confirmed_vote_recovery_cutoff(
+                                &mut self.scheduled_vote_sweep_deferred_since_ms,
+                                network,
+                                preserve_eligibility_since_ms,
+                            ) {
+                                self.scheduled_vote_recovery_last_attempt.remove(&network);
+                            }
+                        }
                         BackendTaskSuccessResult::NetworkContextCreated {
                             network,
                             context,
@@ -1963,6 +2055,22 @@ impl App for AppState {
                 }
                 TaskResult::Error {
                     context,
+                    error: err @ TaskError::ScheduledVoteSweepFailed { network, .. },
+                } => {
+                    self.scheduled_vote_sweeps_in_progress.remove(&network);
+                    self.visible_screen_mut()
+                        .display_backend_task_error(&context, &err);
+                    if !self.visible_screen_mut().display_task_error(&err) {
+                        let msg = err.to_string();
+                        let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                        handle.disable_auto_dismiss();
+                        handle.with_details(&err);
+                        self.visible_screen_mut()
+                            .display_message(&msg, MessageType::Error);
+                    }
+                }
+                TaskResult::Error {
+                    context,
                     error: err,
                 } => {
                     self.route_contact_request_error_to_hidden_hub(&err);
@@ -2013,22 +2121,31 @@ impl App for AppState {
             self.scheduled_vote_sweep_deferred_since_ms
                 .entry(network)
                 .or_insert_with(unix_time_ms);
-        } else if let Some(preserve_eligibility_since_ms) =
-            self.scheduled_vote_sweep_deferred_since_ms.remove(&network)
-        {
-            self.last_scheduled_vote_check = now;
-            self.handle_backend_task(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::CastDueScheduledVotes {
-                    preserve_eligibility_since_ms: Some(preserve_eligibility_since_ms),
-                },
-            ));
-        } else if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
-            self.last_scheduled_vote_check = now;
-            self.handle_backend_task(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::CastDueScheduledVotes {
-                    preserve_eligibility_since_ms: None,
-                },
-            ));
+        } else if !self.scheduled_vote_sweeps_in_progress.contains(&network) {
+            let preserve_eligibility_since_ms = self
+                .scheduled_vote_sweep_deferred_since_ms
+                .get(&network)
+                .copied();
+            let recovery_due = preserve_eligibility_since_ms.is_some()
+                && self
+                    .scheduled_vote_recovery_last_attempt
+                    .get(&network)
+                    .is_none_or(|last| now.duration_since(*last) > Duration::from_secs(60));
+            let periodic_due = preserve_eligibility_since_ms.is_none()
+                && now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60);
+            if recovery_due || periodic_due {
+                self.last_scheduled_vote_check = now;
+                if preserve_eligibility_since_ms.is_some() {
+                    self.scheduled_vote_recovery_last_attempt
+                        .insert(network, now);
+                }
+                self.scheduled_vote_sweeps_in_progress.insert(network);
+                self.handle_backend_task(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::CastDueScheduledVotes {
+                        preserve_eligibility_since_ms,
+                    },
+                ));
+            }
         }
 
         // Drive the SPV-sync block BEFORE claiming input and running the screen, so
@@ -2274,6 +2391,9 @@ mod migration_banner_tests {
         assert!(!migration_allows_scheduled_vote_sweep(
             &MigrationState::Idle
         ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::Ready
+        ));
         assert!(!migration_allows_scheduled_vote_sweep(
             &MigrationState::Running {
                 step: MigrationStep::Identities,
@@ -2288,17 +2408,68 @@ mod migration_banner_tests {
             &MigrationState::Success,
         ));
         assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::SucceededWithUnreadableVotes { count: 1 },
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::SucceededWithUnreadableIdentities { count: 1 },
-        ));
-        assert!(migration_allows_scheduled_vote_sweep(
-            &MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+            &MigrationState::SucceededWithUnreadableData {
                 identities: 1,
                 votes: 1,
+                top_ups: 1,
             },
         ));
+    }
+
+    #[test]
+    fn failed_legacy_settings_import_raises_a_sticky_warning() {
+        use crate::backend_task::migration::legacy_settings::SettingsImportError;
+
+        let ctx = egui::Context::default();
+        let error = SettingsImportError::LegacyDataTooOld {
+            found: 1,
+            minimum_supported: 11,
+        };
+
+        show_legacy_settings_import_warning(&ctx, &error);
+
+        assert!(MessageBanner::has_global(&ctx));
+        MessageBanner::clear_global_message(&ctx, LEGACY_SETTINGS_IMPORT_WARNING);
+    }
+
+    #[test]
+    fn deferred_vote_cutoff_clears_only_after_matching_success() {
+        let mut deferred = BTreeMap::from([(Network::Testnet, 42)]);
+
+        assert!(!clear_confirmed_vote_recovery_cutoff(
+            &mut deferred,
+            Network::Testnet,
+            None,
+        ));
+        assert!(!clear_confirmed_vote_recovery_cutoff(
+            &mut deferred,
+            Network::Testnet,
+            Some(41),
+        ));
+        assert_eq!(deferred.get(&Network::Testnet), Some(&42));
+
+        assert!(clear_confirmed_vote_recovery_cutoff(
+            &mut deferred,
+            Network::Testnet,
+            Some(42),
+        ));
+        assert!(!deferred.contains_key(&Network::Testnet));
+    }
+
+    #[test]
+    fn unreadable_identity_copy_names_both_loading_paths() {
+        let text = migration_unreadable_identities_text(2);
+        assert!(text.contains("Identities screen"));
+        assert!(text.contains("Masternodes tab"));
+        assert!(text.contains("+ Load"));
+    }
+
+    #[test]
+    fn unreadable_top_up_copy_is_actionable() {
+        let text = migration_unreadable_data_text(0, 0, 2);
+        assert!(text.contains("balance history"));
+        assert!(text.contains("before adding more funds"));
+        assert!(text.ends_with('.'));
     }
 
     /// TC-MIG-014 — every `MigrationStep` exposes a non-empty,

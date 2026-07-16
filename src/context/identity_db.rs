@@ -717,14 +717,7 @@ impl AppContext {
         Ok(Some(qi))
     }
 
-    /// `true` when an identity blob is already stored under `id`.
-    ///
-    /// Presence only: the blob is never decoded, so this cannot touch key
-    /// material. Backs the legacy-identity import's skip-if-present rule —
-    /// [`Self::insert_local_qualified_identity`] is INSERT-OR-REPLACE, so a
-    /// retry without this check would overwrite an identity the user has since
-    /// edited with the stale legacy copy. Keys on the blob, not the enumeration
-    /// index, so a dangling index entry still imports.
+    /// Returns whether an identity blob is stored under `id` without decoding it.
     pub(crate) fn has_local_qualified_identity(
         &self,
         id: &Identifier,
@@ -932,8 +925,16 @@ impl AppContext {
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
+        if self.migration_status().state().is_in_progress() {
+            return Err(TaskError::WalletStorageNotReady);
+        }
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
+        crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(
+            |source| TaskError::IdentityDeletionMigrationRecord {
+                source: Arc::new(source),
+            },
+        )?;
         self.clear_identity_vault_keys(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
         index_remove_identity(&kv, &id)

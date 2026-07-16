@@ -1846,8 +1846,11 @@ async fn remove_wallet_wipes_secrets_on_fresh_install_without_legacy_tables() {
 /// encrypted seeds persisted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
+    use crate::backend_task::BackendTaskSuccessResult;
+    use crate::backend_task::system_task::SystemTask;
+
     let (ctx, sender, _tmp) = offline_testnet_context();
-    ctx.ensure_wallet_backend(sender)
+    ctx.ensure_wallet_backend(sender.clone())
         .await
         .expect("ensure_wallet_backend should succeed offline");
 
@@ -1873,8 +1876,19 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         "precondition: raw seed must exist before clear"
     );
 
-    ctx.clear_network_database()
+    let result = ctx
+        .run_system_task(SystemTask::ClearNetworkDatabase, sender)
+        .await
         .expect("clear_network_database should succeed");
+    assert!(
+        matches!(
+            result,
+            BackendTaskSuccessResult::NetworkDatabaseCleared {
+                network: Network::Testnet
+            }
+        ),
+        "clear completion must identify the network that was erased"
+    );
 
     // The wallet must not rehydrate: its meta and seed (both forms) are gone.
     assert!(
@@ -1983,6 +1997,7 @@ async fn clear_network_database_wipes_local_identity_private_keys() {
     );
 
     ctx.clear_network_database()
+        .await
         .expect("clear_network_database should succeed");
 
     assert!(
@@ -2083,7 +2098,7 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     let secrets_dir = tmp.path().join("secrets");
     std::fs::set_permissions(&secrets_dir, std::fs::Permissions::from_mode(0o500))
         .expect("make vault directory read-only");
-    let result = ctx.clear_network_database();
+    let result = ctx.clear_network_database().await;
     std::fs::set_permissions(&secrets_dir, std::fs::Permissions::from_mode(0o700))
         .expect("restore vault directory permissions");
 
@@ -2107,10 +2122,37 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend.set_clear_shielded_test_failure(true);
+
+    let result = ctx.clear_network_database().await;
+
+    backend.shutdown().await;
+    match result {
+        Err(TaskError::WalletDataClearIncomplete {
+            failed,
+            first_error,
+        }) => {
+            assert_eq!(failed, 1, "the shielded clear should be the only failure");
+            assert!(
+                matches!(*first_error, TaskError::WalletDataClearUnavailable),
+                "the aggregate must preserve the shielded clear error"
+            );
+        }
+        other => panic!("shielded clear failure must make clear incomplete: {other:?}"),
+    }
+}
+
 /// Clear-all must fail before changing any state when the wallet backend is
 /// unavailable, because persisted secrets from an earlier run may still exist.
-#[test]
-fn clear_network_database_refuses_unwired_backend_without_partial_wipe() {
+#[tokio::test]
+async fn clear_network_database_refuses_unwired_backend_without_partial_wipe() {
     let (ctx, _sender, _tmp) = offline_testnet_context();
     let seed = [0xB3u8; 64];
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
@@ -2119,7 +2161,7 @@ fn clear_network_database_refuses_unwired_backend_without_partial_wipe() {
     ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
         .expect("persist wallet before backend wiring");
 
-    let result = ctx.clear_network_database();
+    let result = ctx.clear_network_database().await;
 
     assert!(
         matches!(result, Err(TaskError::WalletDataClearUnavailable)),

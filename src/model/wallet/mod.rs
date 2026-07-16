@@ -487,7 +487,7 @@ impl Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
                 wallet_info: ClosedKeyItem {
                     seed_hash,
-                    encrypted_seed,
+                    encrypted_seed: Zeroizing::new(encrypted_seed),
                     salt,
                     nonce,
                     password_hint: None,
@@ -720,7 +720,7 @@ pub struct OpenWalletSeed {
 #[derive(Clone, PartialEq)]
 pub struct ClosedKeyItem {
     pub seed_hash: WalletSeedHash, // SHA-256 hash of the seed
-    pub encrypted_seed: Vec<u8>,
+    pub encrypted_seed: Zeroizing<Vec<u8>>,
     pub salt: Vec<u8>,
     pub nonce: Vec<u8>,
     pub password_hint: Option<String>,
@@ -2323,7 +2323,7 @@ mod tests {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
                 wallet_info: ClosedKeyItem {
                     seed_hash,
-                    encrypted_seed: seed.to_vec(),
+                    encrypted_seed: Zeroizing::new(seed.to_vec()),
                     salt: vec![],
                     nonce: vec![],
                     password_hint: None,
@@ -2381,7 +2381,7 @@ mod tests {
 
         let mut wallet_seed = WalletSeed::Closed(ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
-            encrypted_seed: envelope.ciphertext,
+            encrypted_seed: Zeroizing::new(envelope.ciphertext),
             salt: envelope.salt,
             nonce: envelope.nonce,
             password_hint: None,
@@ -2405,7 +2405,7 @@ mod tests {
         let seed = [0x09u8; 64];
         let mut wallet_seed = WalletSeed::Closed(ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -2656,8 +2656,8 @@ mod tests {
             panic!("wallet should be open");
         };
         assert_ne!(
-            open.wallet_info.encrypted_seed,
-            test_seed().to_vec(),
+            open.wallet_info.encrypted_seed.as_slice(),
+            test_seed().as_slice(),
             "open wallet must not store the plaintext seed"
         );
         // A wrong passphrase is rejected — proves `open` truly decrypts to
@@ -2688,11 +2688,13 @@ mod tests {
         let needle = hex::encode(seed);
         let closed = ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: vec![],
             nonce: vec![],
             password_hint: None,
         };
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        assert_zeroize_on_drop(&closed.encrypted_seed);
         let open_seed = OpenWalletSeed {
             wallet_info: closed.clone(),
         };

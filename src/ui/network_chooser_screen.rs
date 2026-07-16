@@ -1,7 +1,8 @@
 use crate::app::AppAction;
 use crate::backend_task::core::CoreTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::system_task::SystemTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
@@ -14,6 +15,7 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::network_label;
 use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
@@ -74,6 +76,7 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_message: Option<DatabaseClearMessage>,
+    db_clear_in_progress: bool,
     wipe_platform_data_dialog: Option<ConfirmationDialog>,
     auto_start_spv: bool,
     discovery_in_progress: bool,
@@ -114,6 +117,7 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_message: None,
+            db_clear_in_progress: false,
             wipe_platform_data_dialog: None,
             auto_start_spv,
             discovery_in_progress: false,
@@ -177,53 +181,56 @@ impl NetworkChooserScreen {
                             .selected_text(network_text)
                             .width(200.0);
 
-                        let response = ui.add_enabled_ui(!is_spv_connected, |ui| {
-                            network_combo.show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_value(
-                                        &mut self.current_network,
-                                        Network::Mainnet,
-                                        "Mainnet",
-                                    )
-                                    .clicked()
-                                {
-                                    app_action = AppAction::SwitchNetwork(Network::Mainnet);
-                                }
-                                // Testnet always visible; Devnet/Local only in dev mode
-                                if ui
-                                    .selectable_value(
-                                        &mut self.current_network,
-                                        Network::Testnet,
-                                        "Testnet",
-                                    )
-                                    .clicked()
-                                {
-                                    app_action = AppAction::SwitchNetwork(Network::Testnet);
-                                }
-                                if self.selected_role.at_least(UserRole::Power)
-                                    && ui
+                        let response = ui.add_enabled_ui(
+                            !is_spv_connected && !self.db_clear_in_progress,
+                            |ui| {
+                                network_combo.show_ui(ui, |ui| {
+                                    if ui
                                         .selectable_value(
                                             &mut self.current_network,
-                                            Network::Devnet,
-                                            "Devnet",
+                                            Network::Mainnet,
+                                            "Mainnet",
                                         )
                                         .clicked()
-                                {
-                                    app_action = AppAction::SwitchNetwork(Network::Devnet);
-                                }
-                                if self.selected_role.at_least(UserRole::Power)
-                                    && ui
+                                    {
+                                        app_action = AppAction::SwitchNetwork(Network::Mainnet);
+                                    }
+                                    // Testnet always visible; Devnet/Local only in dev mode
+                                    if ui
                                         .selectable_value(
                                             &mut self.current_network,
-                                            Network::Regtest,
-                                            "Local",
+                                            Network::Testnet,
+                                            "Testnet",
                                         )
                                         .clicked()
-                                {
-                                    app_action = AppAction::SwitchNetwork(Network::Regtest);
-                                }
-                            });
-                        });
+                                    {
+                                        app_action = AppAction::SwitchNetwork(Network::Testnet);
+                                    }
+                                    if self.selected_role.at_least(UserRole::Power)
+                                        && ui
+                                            .selectable_value(
+                                                &mut self.current_network,
+                                                Network::Devnet,
+                                                "Devnet",
+                                            )
+                                            .clicked()
+                                    {
+                                        app_action = AppAction::SwitchNetwork(Network::Devnet);
+                                    }
+                                    if self.selected_role.at_least(UserRole::Power)
+                                        && ui
+                                            .selectable_value(
+                                                &mut self.current_network,
+                                                Network::Regtest,
+                                                "Local",
+                                            )
+                                            .clicked()
+                                    {
+                                        app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                    }
+                                });
+                            },
+                        );
 
                         if is_spv_connected {
                             response
@@ -722,7 +729,10 @@ impl NetworkChooserScreen {
                 .corner_radius(Shape::RADIUS_MD)
                 .min_size(egui::vec2(0.0, 36.0));
 
-                if ui.add(clear_button).clicked() {
+                if ui
+                    .add_enabled(!self.db_clear_in_progress, clear_button)
+                    .clicked()
+                {
                     let message = format!(
                         "This removes the data used by this version for {}, including wallets, tokens, contacts, and cached identity data. If you updated from an earlier version, its read-only recovery database stays on this device and may still contain wallet recovery data. Continue?",
                         self.current_network_label()
@@ -1157,22 +1167,10 @@ impl NetworkChooserScreen {
                 self.db_clear_dialog = None;
                 match result {
                     ConfirmationStatus::Confirmed => {
-                        match self.current_app_context().clear_network_database() {
-                            Ok(_) => {
-                                self.db_clear_message =
-                                    Some(DatabaseClearMessage::Success(format!(
-                                        "Cleared {} database. Restart or resync to rebuild state.",
-                                        self.current_network_label()
-                                    )));
-                                return AppAction::Refresh;
-                            }
-                            Err(err) => {
-                                self.db_clear_message = Some(DatabaseClearMessage::Error(format!(
-                                    "Failed to clear database: {}",
-                                    err
-                                )));
-                            }
-                        }
+                        self.db_clear_in_progress = true;
+                        return AppAction::BackendTask(BackendTask::SystemTask(
+                            SystemTask::ClearNetworkDatabase,
+                        ));
                     }
                     ConfirmationStatus::Canceled => {
                         // No-op
@@ -1491,7 +1489,16 @@ impl ScreenLike for NetworkChooserScreen {
         // refresh ("Updated to N node addresses.").
 
         // Handle DapiNodesDiscovered (from "Refresh DAPI endpoints" button)
-        if let BackendTaskSuccessResult::DapiNodesDiscovered {
+        if let BackendTaskSuccessResult::NetworkDatabaseCleared { network } =
+            &backend_task_success_result
+        {
+            self.db_clear_in_progress = false;
+            let network_label = network_label(*network);
+            self.db_clear_message = Some(DatabaseClearMessage::Success(format!(
+                "Cleared {network_label} database. Restart or resync to rebuild state."
+            )));
+            self.refresh();
+        } else if let BackendTaskSuccessResult::DapiNodesDiscovered {
             network,
             count,
             addresses_csv,
@@ -1527,6 +1534,13 @@ impl ScreenLike for NetworkChooserScreen {
                     MessageType::Success,
                 );
             }
+        }
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if matches!(context, BackendTaskContext::ClearNetworkDatabase) {
+            self.db_clear_in_progress = false;
+            self.db_clear_message = Some(DatabaseClearMessage::Error(error.to_string()));
         }
     }
 

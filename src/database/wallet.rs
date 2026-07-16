@@ -157,7 +157,7 @@ impl Database {
 
         let wallet_rows = stmt.query_map([network_str.clone()], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
-            let encrypted_seed: Vec<u8> = row.get(1)?;
+            let encrypted_seed = zeroize::Zeroizing::new(row.get::<_, Vec<u8>>(1)?);
             let salt: Vec<u8> = row.get(2)?;
             let nonce: Vec<u8> = row.get(3)?;
             let master_ecdsa_bip44_account_0_epk_bytes: Vec<u8> = row.get(4)?;
@@ -189,9 +189,18 @@ impl Database {
                     )),
                 )
             })?;
+            if !uses_password && encrypted_seed.len() != 64 {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Seed should be 64 bytes for open wallet".to_string(),
+                    )),
+                ));
+            }
             let closed_wallet_seed = ClosedKeyItem {
                 seed_hash: seed_hash_array,
-                encrypted_seed: encrypted_seed.clone(),
+                encrypted_seed,
                 salt,
                 nonce,
                 password_hint,
@@ -202,15 +211,6 @@ impl Database {
                 // Unprotected wallets load as Open (verified) carrying no
                 // plaintext seed; validate the verbatim 64-byte envelope so a
                 // corrupt blob surfaces here rather than at first sign.
-                if encrypted_seed.len() != 64 {
-                    return Err(rusqlite::Error::FromSqlConversionFailure(
-                        1,
-                        rusqlite::types::Type::Blob,
-                        Box::new(CorruptedBlobError(
-                            "Seed should be 64 bytes for open wallet".to_string(),
-                        )),
-                    ));
-                }
                 WalletSeed::Open(OpenWalletSeed {
                     wallet_info: closed_wallet_seed,
                 })

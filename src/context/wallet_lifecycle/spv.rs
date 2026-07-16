@@ -20,7 +20,7 @@ impl AppContext {
         clear_spv_chain_storage(&spv_dir)
     }
 
-    pub fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
+    pub async fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
         let backend = self
             .wallet_backend()
             .map_err(|_| TaskError::WalletDataClearUnavailable)?;
@@ -103,18 +103,14 @@ impl AppContext {
 
         // Reset the upstream shielded coordinator (quiesces its sync loop and
         // empties the per-network store) and unlink DET's two retired legacy
-        // shielded files. The coordinator reset is async, so it runs off-thread
-        // as a best-effort subtask; the legacy-file unlinks are synchronous and
-        // scoped strictly to THIS network's spv directory.
+        // shielded files. The legacy-file unlinks are synchronous and scoped
+        // strictly to THIS network's spv directory.
         cleanup_legacy_shielded_files(backend.spv_storage_dir())?;
 
-        let backend = Arc::clone(&backend);
-        self.subtasks
-            .spawn_sync("shielded_coordinator_clear", async move {
-                if let Err(error) = backend.clear_shielded().await {
-                    tracing::warn!(%error, "Shielded coordinator reset failed during clear");
-                }
-            });
+        if let Err(error) = backend.clear_shielded().await {
+            tracing::warn!(%error, "Shielded coordinator reset failed during clear");
+            failures.push(error);
+        }
 
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();

@@ -235,7 +235,7 @@ mod tests {
             nonce,
         } = encrypt_message(&SENTINEL_SEED, SENTINEL_PASSPHRASE).expect("enc");
         let envelope = StoredSeedEnvelope {
-            encrypted_seed,
+            encrypted_seed: Zeroizing::new(encrypted_seed),
             salt,
             nonce,
             password_hint: None,

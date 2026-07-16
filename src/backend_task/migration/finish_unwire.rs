@@ -2137,7 +2137,7 @@ where
         }
 
         let envelope = crate::model::wallet::seed_envelope::StoredSeedEnvelope {
-            encrypted_seed,
+            encrypted_seed: zeroize::Zeroizing::new(encrypted_seed),
             salt,
             nonce,
             password_hint,
@@ -3613,7 +3613,7 @@ mod tests {
 
         let got = view.get(&seed_hash).expect("get").expect("entry present");
         assert!(got.uses_password);
-        assert_eq!(got.encrypted_seed, ciphertext.to_vec());
+        assert_eq!(got.encrypted_seed.as_slice(), ciphertext);
         assert_eq!(got.salt, salt.to_vec());
         assert_eq!(got.nonce, nonce.to_vec());
         assert_eq!(got.password_hint.as_deref(), Some("granny's birthday"));
@@ -3674,7 +3674,7 @@ mod tests {
         assert_eq!(second.failed, 0);
 
         let got = view.get(&seed_hash).unwrap().unwrap();
-        assert_eq!(got.encrypted_seed, ciphertext.to_vec());
+        assert_eq!(got.encrypted_seed.as_slice(), ciphertext);
         assert!(!got.uses_password);
     }
 
@@ -3730,7 +3730,7 @@ mod tests {
 
         let got = view.get(&seed_hash).expect("get").expect("present");
         assert!(got.uses_password);
-        assert_eq!(got.encrypted_seed, ciphertext.to_vec());
+        assert_eq!(got.encrypted_seed.as_slice(), ciphertext);
         assert_eq!(got.password_hint.as_deref(), Some("locked"));
     }
 

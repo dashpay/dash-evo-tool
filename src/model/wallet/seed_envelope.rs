@@ -29,6 +29,7 @@
 //! network input.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 /// Current on-disk version tag for the bincode-encoded
 /// [`StoredSeedEnvelope`] payload. The version byte is framed by the
@@ -48,7 +49,7 @@ pub struct StoredSeedEnvelope {
     /// `uses_password` is `false`, contains the raw 64-byte seed
     /// verbatim — DET's encryption layer is bypassed for unprotected
     /// wallets (the upstream vault still encrypts at rest).
-    pub encrypted_seed: Vec<u8>,
+    pub encrypted_seed: Zeroizing<Vec<u8>>,
     /// Argon2 salt used to derive the AES-GCM key from the user's
     /// password. Empty when `uses_password` is `false`.
     pub salt: Vec<u8>,
@@ -86,7 +87,7 @@ mod tests {
     fn debug_output_does_not_expose_seed_bytes() {
         let seed_bytes = [0x42u8; 64];
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed_bytes.to_vec(),
+            encrypted_seed: Zeroizing::new(seed_bytes.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -110,7 +111,7 @@ mod tests {
     #[test]
     fn stored_seed_envelope_round_trips_through_bincode() {
         let original = StoredSeedEnvelope {
-            encrypted_seed: vec![0xAB; 80],
+            encrypted_seed: Zeroizing::new(vec![0xAB; 80]),
             salt: vec![0x01; 16],
             nonce: vec![0x02; 12],
             password_hint: Some("granny's birthday".into()),
@@ -130,7 +131,7 @@ mod tests {
     #[test]
     fn non_password_envelope_round_trips() {
         let original = StoredSeedEnvelope {
-            encrypted_seed: vec![0x11; 64],
+            encrypted_seed: Zeroizing::new(vec![0x11; 64]),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -142,5 +143,8 @@ mod tests {
         let (decoded, _): (StoredSeedEnvelope, _) =
             bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).expect("decode");
         assert_eq!(decoded, original);
+
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        assert_zeroize_on_drop(&decoded.encrypted_seed);
     }
 }

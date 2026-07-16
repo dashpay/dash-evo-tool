@@ -25,7 +25,7 @@ use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
-use crate::ui::theme::ThemeMode;
+use crate::ui::theme::{ThemeMode, network_label};
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
 use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
@@ -1794,6 +1794,25 @@ impl App for AppState {
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
                         }
+                        BackendTaskSuccessResult::NetworkDatabaseCleared { network } => {
+                            let network_label = network_label(network);
+                            MessageBanner::set_global(
+                                ctx,
+                                format!(
+                                    "Cleared {network_label} database. Restart or resync to rebuild state."
+                                ),
+                                MessageType::Success,
+                            );
+                            if let Some(screen) = self
+                                .main_screens
+                                .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                            {
+                                screen.display_backend_task_result(
+                                    &context,
+                                    BackendTaskSuccessResult::NetworkDatabaseCleared { network },
+                                );
+                            }
+                        }
                         BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
                             // The EventBridge surfaced received outputs on a
                             // freshly-seen wallet transaction. Run the owner-
@@ -1966,11 +1985,22 @@ impl App for AppState {
                     error: err,
                 } => {
                     self.route_contact_request_error_to_hidden_hub(&err);
-                    self.visible_screen_mut()
-                        .display_backend_task_error(&context, &err);
+                    let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
+                    if is_database_clear {
+                        if let Some(screen) = self
+                            .main_screens
+                            .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                        {
+                            screen.display_backend_task_error(&context, &err);
+                        }
+                    } else {
+                        self.visible_screen_mut()
+                            .display_backend_task_error(&context, &err);
+                    }
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
-                    let handled = self.visible_screen_mut().display_task_error(&err);
+                    let handled =
+                        !is_database_clear && self.visible_screen_mut().display_task_error(&err);
 
                     if !handled {
                         let msg = err.to_string();
@@ -1979,8 +2009,10 @@ impl App for AppState {
                         // TaskError Debug output is shown to users, deliberately.
                         // Ensure inner error types don't expose secrets.
                         handle.with_details(&err);
-                        self.visible_screen_mut()
-                            .display_message(&msg, MessageType::Error);
+                        if !is_database_clear {
+                            self.visible_screen_mut()
+                                .display_message(&msg, MessageType::Error);
+                        }
                     }
                 }
                 TaskResult::Refresh => {

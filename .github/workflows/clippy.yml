@@ -1,23 +1,26 @@
 name: Clippy
 
+# Path filters below fire on any change that can affect a lint or fmt result,
+# and on nothing that cannot. `**/*.rs` covers build.rs and every crate's
+# sources; documentation changes deliberately match nothing.
 on:
   push:
     branches:
-      - master
       - "v*-dev"
-    paths:
-      - "**/*.rs"
+    paths: &code_paths
+      - "**/*.rs" # includes build.rs
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".cargo/config.toml"
+      - "rust-toolchain.toml"
       - ".github/workflows/clippy.yml"
-  # No `paths` filter: every non-draft pull request runs clippy and the fmt
-  # check, so a green PR always means they actually ran.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  # Allows a manual run against a branch — the only way to exercise a draft PR,
-  # whose `pull_request` runs are suppressed by the draft guard below. Note a
-  # manual run tests the branch head, not the PR merge commit.
+    paths: *code_paths
+  # Allows a manual run against a branch. Draft PRs are suppressed by the
+  # `draft != true` guard below and otherwise have no way to run CI at all; a
+  # manual run covers them. Note it tests the branch head, not the PR merge
+  # commit, so it does not prove the merged result is green.
   workflow_dispatch:
 
 concurrency:

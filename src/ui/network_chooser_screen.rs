@@ -15,7 +15,6 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::network_label;
 use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
@@ -26,14 +25,17 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone)]
-enum SpvClearMessage {
-    Success(String),
-    Error(String),
+pub(crate) fn chooser_network_label(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "Mainnet",
+        Network::Testnet => "Testnet",
+        Network::Devnet => "Devnet",
+        Network::Regtest => "Local",
+    }
 }
 
 #[derive(Debug, Clone)]
-enum DatabaseClearMessage {
+enum SpvClearMessage {
     Success(String),
     Error(String),
 }
@@ -75,7 +77,6 @@ pub struct NetworkChooserScreen {
     spv_clear_dialog: Option<ConfirmationDialog>,
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
-    db_clear_message: Option<DatabaseClearMessage>,
     db_clear_in_progress: bool,
     wipe_platform_data_dialog: Option<ConfirmationDialog>,
     auto_start_spv: bool,
@@ -116,7 +117,6 @@ impl NetworkChooserScreen {
             spv_clear_dialog: None,
             spv_clear_message: None,
             db_clear_dialog: None,
-            db_clear_message: None,
             db_clear_in_progress: false,
             wipe_platform_data_dialog: None,
             auto_start_spv,
@@ -743,30 +743,6 @@ impl NetworkChooserScreen {
                             .cancel_text(Some("Cancel"))
                             .danger_mode(true),
                     );
-                    self.db_clear_message = None;
-                }
-
-                if let Some(feedback) = self.db_clear_message.clone() {
-                    ui.add_space(8.0);
-                    let (message, color) = match &feedback {
-                        DatabaseClearMessage::Success(msg) => (msg.as_str(), DashColors::SUCCESS),
-                        DatabaseClearMessage::Error(msg) => (msg.as_str(), DashColors::ERROR),
-                    };
-
-                    egui::Frame::new()
-                        .fill(color.gamma_multiply(0.08))
-                        .inner_margin(egui::Margin::symmetric(10, 6))
-                        .stroke(egui::Stroke::new(1.0, color))
-                        .corner_radius(Shape::RADIUS_MD)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(message).color(color));
-                                ui.add_space(8.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.db_clear_message = None;
-                                }
-                            });
-                        });
                 }
 
                 if self.db_clear_dialog.is_some() {
@@ -1200,12 +1176,7 @@ impl NetworkChooserScreen {
     }
 
     fn current_network_label(&self) -> &'static str {
-        match self.current_network {
-            Network::Mainnet => "Mainnet",
-            Network::Testnet => "Testnet",
-            Network::Devnet => "Devnet",
-            Network::Regtest => "Local",
-        }
+        chooser_network_label(self.current_network)
     }
 
     /// Fraction in [0,1] of the download window from `stage_start` (default `current`) to `target`.
@@ -1489,14 +1460,10 @@ impl ScreenLike for NetworkChooserScreen {
         // refresh ("Updated to N node addresses.").
 
         // Handle DapiNodesDiscovered (from "Refresh DAPI endpoints" button)
-        if let BackendTaskSuccessResult::NetworkDatabaseCleared { network } =
+        if let BackendTaskSuccessResult::NetworkDatabaseCleared { .. } =
             &backend_task_success_result
         {
             self.db_clear_in_progress = false;
-            let network_label = network_label(*network);
-            self.db_clear_message = Some(DatabaseClearMessage::Success(format!(
-                "Cleared {network_label} database. Restart or resync to rebuild state."
-            )));
             self.refresh();
         } else if let BackendTaskSuccessResult::DapiNodesDiscovered {
             network,
@@ -1537,10 +1504,9 @@ impl ScreenLike for NetworkChooserScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if matches!(context, BackendTaskContext::ClearNetworkDatabase) {
             self.db_clear_in_progress = false;
-            self.db_clear_message = Some(DatabaseClearMessage::Error(error.to_string()));
         }
     }
 
@@ -1555,6 +1521,14 @@ impl ScreenLike for NetworkChooserScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chooser_network_labels_match_the_labels_shown_before_database_clear() {
+        assert_eq!(chooser_network_label(Network::Mainnet), "Mainnet");
+        assert_eq!(chooser_network_label(Network::Testnet), "Testnet");
+        assert_eq!(chooser_network_label(Network::Devnet), "Devnet");
+        assert_eq!(chooser_network_label(Network::Regtest), "Local");
+    }
 
     #[test]
     fn wipe_platform_data_is_available_only_to_developers_on_devnet() {

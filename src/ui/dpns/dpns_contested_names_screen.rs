@@ -12,7 +12,9 @@ use eframe::egui::{self, Button, Color32, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 
-use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
+use crate::app::{
+    AppAction, BackendTasksExecutionMode, DesiredAppAction, scheduled_vote_sweep_is_quiet,
+};
 use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::error::TaskError;
@@ -1846,6 +1848,7 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        let handled = scheduled_vote_sweep_is_quiet(error);
         if matches!(
             error,
             TaskError::ScheduledVoteRejected { .. }
@@ -1861,7 +1864,7 @@ impl ScreenLike for DPNSScreen {
                 }
             }
         }
-        false
+        handled
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -2170,5 +2173,69 @@ impl ScreenLike for DPNSScreen {
             action = AppAction::BackendTask(bt);
         }
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::user_role::UserRoleCell;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        crate::app_dir::ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Regtest,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            UserRoleCell::default(),
+        )
+        .expect("offline regtest AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    #[test]
+    fn scheduled_vote_sweep_error_is_handled_after_cleanup() {
+        let (ctx, _temp_dir) = offline_ctx();
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        let error = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::NoVotingIdentity {
+                identity_id: "voter-id".to_string(),
+            }),
+        };
+
+        screen.scheduled_vote_cast_in_progress = true;
+        assert!(screen.display_task_error(&error));
+        assert!(!screen.scheduled_vote_cast_in_progress);
+    }
+
+    #[test]
+    fn direct_scheduled_vote_error_remains_available_to_global_handling() {
+        let (ctx, _temp_dir) = offline_ctx();
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+
+        screen.scheduled_vote_cast_in_progress = true;
+        assert!(!screen.display_task_error(&TaskError::ScheduledVoteResultUnavailable));
+        assert!(!screen.scheduled_vote_cast_in_progress);
+
+        let sweep_error = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Regtest,
+            source: Box::new(TaskError::ScheduledVoteResultUnavailable),
+        };
+        assert!(!screen.display_task_error(&sweep_error));
     }
 }

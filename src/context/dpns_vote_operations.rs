@@ -218,6 +218,88 @@ fn is_authorized_scheduled_replacement(
         })
 }
 
+fn replace_scheduled_operation(
+    kv: &DetKv,
+    network: Network,
+    operation: &mut DpnsVoteOperation,
+    replacing_scheduled_key: &DpnsVoteTargetKey,
+) -> Result<(), TaskError> {
+    if operation.targets.len() != 1
+        || !is_authorized_scheduled_replacement(
+            DpnsVoteTargetStatus::Scheduled,
+            replacing_scheduled_key,
+            operation,
+            Some(replacing_scheduled_key),
+        )
+    {
+        return Err(TaskError::DpnsVoteTargetBusy);
+    }
+    let replacement = operation.targets[0].clone();
+    for mut existing in load_operations(kv, network)? {
+        let Some(outcome) = existing
+            .targets
+            .iter_mut()
+            .find(|outcome| outcome.target.key == *replacing_scheduled_key)
+        else {
+            continue;
+        };
+        if outcome.status != DpnsVoteTargetStatus::Scheduled {
+            continue;
+        }
+        *outcome = replacement;
+        outcome.operation_id = existing.id;
+        write_existing_operation(kv, network, &existing)?;
+        *operation = existing;
+        return Ok(());
+    }
+    Err(TaskError::DpnsVoteTargetBusy)
+}
+
+fn cancel_scheduled_target(
+    kv: &DetKv,
+    network: Network,
+    operation_id: DpnsVoteOperationId,
+    key: &DpnsVoteTargetKey,
+) -> Result<bool, TaskError> {
+    let Some(mut operation): Option<DpnsVoteOperation> = kv
+        .get(DetScope::Global, &operation_key(network, operation_id))
+        .map_err(unreadable_operation_err)?
+    else {
+        return Ok(false);
+    };
+    let Some(outcome) = operation
+        .targets
+        .iter_mut()
+        .find(|outcome| outcome.target.key == *key)
+    else {
+        return Ok(false);
+    };
+    if outcome.status != DpnsVoteTargetStatus::Scheduled {
+        return Ok(false);
+    }
+    outcome.status = DpnsVoteTargetStatus::NotApplied;
+    write_existing_operation(kv, network, &operation)?;
+    Ok(true)
+}
+
+fn cancel_all_scheduled_targets(kv: &DetKv, network: Network) -> Result<usize, TaskError> {
+    let mut cancelled = 0;
+    for mut operation in load_operations(kv, network)? {
+        let mut changed = false;
+        for outcome in &mut operation.targets {
+            if outcome.status == DpnsVoteTargetStatus::Scheduled {
+                outcome.status = DpnsVoteTargetStatus::NotApplied;
+                changed = true;
+                cancelled += 1;
+            }
+        }
+        if changed {
+            write_existing_operation(kv, network, &operation)?;
+        }
+    }
+    Ok(cancelled)
+}
+
 impl AppContext {
     /// Durably claim one due scheduled target before any executor can observe it.
     pub(crate) fn queue_scheduled_dpns_vote_target(
@@ -235,7 +317,7 @@ impl AppContext {
     /// Persist a reviewed operation and atomically acquire all unresolved locks.
     pub fn insert_dpns_vote_operation(
         &self,
-        operation: &DpnsVoteOperation,
+        operation: &mut DpnsVoteOperation,
         replacing_scheduled_key: Option<&DpnsVoteTargetKey>,
     ) -> Result<(), TaskError> {
         if operation
@@ -250,71 +332,10 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
-        let replacement_is_valid = replacing_scheduled_key.is_none_or(|key| {
-            operation.targets.iter().any(|outcome| {
-                outcome.target.key == *key
-                    && outcome.status == DpnsVoteTargetStatus::Scheduled
-                    && matches!(outcome.target.timing, VoteTiming::Scheduled(_))
-            })
-        });
-        if !replacement_is_valid {
-            return Err(TaskError::DpnsVoteTargetBusy);
+        if let Some(key) = replacing_scheduled_key {
+            return replace_scheduled_operation(&kv, self.network, operation, key);
         }
-
-        let mut replaced = Vec::new();
-        let mut replacement_found = false;
-        for mut existing in load_operations(&kv, self.network)? {
-            let original = existing.clone();
-            let mut changed = false;
-            for existing_outcome in &mut existing.targets {
-                let conflicts = existing_outcome.status.holds_lock()
-                    && operation.targets.iter().any(|new_outcome| {
-                        new_outcome.status.holds_lock()
-                            && new_outcome.target.key == existing_outcome.target.key
-                    });
-                if !conflicts {
-                    continue;
-                }
-                let explicitly_replaced = is_authorized_scheduled_replacement(
-                    existing_outcome.status,
-                    &existing_outcome.target.key,
-                    operation,
-                    replacing_scheduled_key,
-                );
-                if explicitly_replaced {
-                    changed = true;
-                    replacement_found = true;
-                    existing_outcome.status = DpnsVoteTargetStatus::NotApplied;
-                } else {
-                    for previous in replaced {
-                        write_existing_operation(&kv, self.network, &previous)?;
-                    }
-                    return Err(TaskError::DpnsVoteTargetBusy);
-                }
-            }
-            if changed {
-                if let Err(error) = write_existing_operation(&kv, self.network, &existing) {
-                    for previous in replaced {
-                        write_existing_operation(&kv, self.network, &previous)?;
-                    }
-                    return Err(error);
-                }
-                replaced.push(original);
-            }
-        }
-        if replacing_scheduled_key.is_some() && !replacement_found {
-            for original in replaced {
-                write_existing_operation(&kv, self.network, &original)?;
-            }
-            return Err(TaskError::DpnsVoteTargetBusy);
-        }
-        if let Err(error) = persist_operation(&kv, self.network, operation) {
-            for original in replaced {
-                write_existing_operation(&kv, self.network, &original)?;
-            }
-            return Err(error);
-        }
-        Ok(())
+        persist_operation(&kv, self.network, operation)
     }
 
     /// Persist updated target statuses while retaining the original operation ID.
@@ -571,38 +592,21 @@ impl AppContext {
         operation_id: DpnsVoteOperationId,
         key: &DpnsVoteTargetKey,
     ) -> Result<(), TaskError> {
-        let Some(mut operation) = self.dpns_vote_operation(operation_id)? else {
-            return Ok(());
-        };
-        let Some(outcome) = operation
-            .targets
-            .iter_mut()
-            .find(|outcome| outcome.target.key == *key)
-        else {
-            return Ok(());
-        };
-        if outcome.status == DpnsVoteTargetStatus::Scheduled {
-            outcome.status = DpnsVoteTargetStatus::NotApplied;
-            self.update_dpns_vote_operation(&operation)?;
-        }
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cancel_scheduled_target(&self.det_kv()?, self.network, operation_id, key)?;
         Ok(())
     }
 
     /// Release every not-yet-submitting scheduled target on this network.
     pub(crate) fn cancel_all_scheduled_dpns_vote_targets(&self) -> Result<(), TaskError> {
-        let operations = self.dpns_vote_operations()?;
-        for mut operation in operations {
-            let mut changed = false;
-            for outcome in &mut operation.targets {
-                if outcome.status == DpnsVoteTargetStatus::Scheduled {
-                    outcome.status = DpnsVoteTargetStatus::NotApplied;
-                    changed = true;
-                }
-            }
-            if changed {
-                self.update_dpns_vote_operation(&operation)?;
-            }
-        }
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cancel_all_scheduled_targets(&self.det_kv()?, self.network)?;
         Ok(())
     }
 }
@@ -617,6 +621,59 @@ mod tests {
     use dash_sdk::platform::Identifier;
     use platform_wallet_storage::{KvStore, ObjectId};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CountingKv {
+        inner: InMemoryKv,
+        puts: AtomicUsize,
+    }
+
+    impl CountingKv {
+        fn reset_puts(&self) {
+            self.puts.store(0, Ordering::Relaxed);
+        }
+
+        fn put_count(&self) -> usize {
+            self.puts.load(Ordering::Relaxed)
+        }
+    }
+
+    impl KvStore for CountingKv {
+        fn get(
+            &self,
+            scope: &ObjectId,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, platform_wallet_storage::KvError> {
+            self.inner.get(scope, key)
+        }
+
+        fn put(
+            &self,
+            scope: &ObjectId,
+            key: &str,
+            value: &[u8],
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            self.puts.fetch_add(1, Ordering::Relaxed);
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(
+            &self,
+            scope: &ObjectId,
+            key: &str,
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, platform_wallet_storage::KvError> {
+            self.inner.list_keys(scope, prefix)
+        }
+    }
 
     fn kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -719,6 +776,29 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_replacement_reuses_the_existing_record_in_one_write() {
+        let store = Arc::new(CountingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let mut scheduled = operation(DpnsVoteTargetStatus::Scheduled);
+        scheduled.targets[0].target.timing = VoteTiming::Scheduled(42);
+        let key = scheduled.targets[0].target.key.clone();
+        persist_operation(&kv, Network::Testnet, &scheduled).unwrap();
+
+        let mut replacement = operation(DpnsVoteTargetStatus::Scheduled);
+        replacement.targets[0].target.timing = VoteTiming::Scheduled(84);
+        store.reset_puts();
+
+        replace_scheduled_operation(&kv, Network::Testnet, &mut replacement, &key).unwrap();
+
+        assert_eq!(store.put_count(), 1);
+        assert_eq!(replacement.id, scheduled.id);
+        assert_eq!(
+            load_operations(&kv, Network::Testnet).unwrap(),
+            vec![replacement]
+        );
+    }
+
+    #[test]
     fn due_schedule_is_durably_queued_once_through_the_kv_seam() {
         let kv = kv();
         let mut scheduled = operation(DpnsVoteTargetStatus::Scheduled);
@@ -739,6 +819,43 @@ mod tests {
                 .unwrap(),
             "a second executor must not claim the same schedule"
         );
+    }
+
+    #[test]
+    fn cancellation_does_not_overwrite_a_queued_target() {
+        let kv = kv();
+        let mut scheduled = operation(DpnsVoteTargetStatus::Scheduled);
+        scheduled.targets[0].target.timing = VoteTiming::Scheduled(42);
+        let key = scheduled.targets[0].target.key.clone();
+        persist_operation(&kv, Network::Testnet, &scheduled).unwrap();
+        transition_scheduled_target_to_queued(&kv, Network::Testnet, scheduled.id, &key).unwrap();
+
+        assert!(!cancel_scheduled_target(&kv, Network::Testnet, scheduled.id, &key).unwrap());
+        assert_eq!(
+            load_operations(&kv, Network::Testnet).unwrap()[0].targets[0].status,
+            DpnsVoteTargetStatus::Queued
+        );
+    }
+
+    #[test]
+    fn cancel_all_preserves_targets_that_are_already_queued() {
+        let kv = kv();
+        let mut scheduled = operation(DpnsVoteTargetStatus::Scheduled);
+        scheduled.targets[0].target.timing = VoteTiming::Scheduled(42);
+        let mut queued = operation(DpnsVoteTargetStatus::Queued);
+        queued.targets[0].target.key.vote_poll_id = Identifier::from([3; 32]);
+        persist_operation(&kv, Network::Testnet, &scheduled).unwrap();
+        persist_operation(&kv, Network::Testnet, &queued).unwrap();
+
+        assert_eq!(
+            cancel_all_scheduled_targets(&kv, Network::Testnet).unwrap(),
+            1
+        );
+        let operations = load_operations(&kv, Network::Testnet).unwrap();
+        assert!(operations.iter().any(|operation| {
+            operation.targets[0].target.key == queued.targets[0].target.key
+                && operation.targets[0].status == DpnsVoteTargetStatus::Queued
+        }));
     }
 
     /// A corrupt indexed row must block lock reconstruction rather than being skipped.

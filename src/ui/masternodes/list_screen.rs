@@ -921,6 +921,17 @@ impl ScreenLike for MasternodesScreen {
         }
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        result: crate::backend_task::BackendTaskSuccessResult,
+    ) {
+        if let MasternodesView::Voting(center) = &mut self.view {
+            center.display_backend_task_result(context, &result);
+        }
+        self.display_task_result(result);
+    }
+
     fn display_backend_task_error(
         &mut self,
         context: &crate::backend_task::BackendTaskContext,

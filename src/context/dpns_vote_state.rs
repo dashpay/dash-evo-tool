@@ -60,13 +60,15 @@ fn load_snapshot(
     {
         return Ok(Some(snapshot));
     }
-    let legacy = kv
-        .get(scope, LEGACY_CURRENT_VOTES_KEY)
-        .map_err(vote_state_err)?;
-    if let Some(snapshot) = &legacy {
-        save_snapshot(kv, network, voter_id, snapshot)?;
+    if kv
+        .get::<StoredCurrentVotes>(scope, LEGACY_CURRENT_VOTES_KEY)
+        .map_err(vote_state_err)?
+        .is_some()
+    {
+        kv.delete(scope, LEGACY_CURRENT_VOTES_KEY)
+            .map_err(vote_state_err)?;
     }
-    Ok(legacy)
+    Ok(None)
 }
 
 fn save_snapshot(
@@ -327,6 +329,42 @@ mod tests {
             Some(snapshot)
         );
         assert_eq!(load_snapshot(&kv, Network::Mainnet, &voter).unwrap(), None);
+    }
+
+    #[test]
+    fn legacy_snapshot_is_discarded_instead_of_assigned_to_a_network() {
+        let kv = kv();
+        let voter = Identifier::from([1; 32]);
+        let snapshot = StoredCurrentVotes {
+            available: true,
+            updated_at: now_ms(),
+            votes: BTreeMap::new(),
+        };
+        kv.put(
+            DetScope::Identity(&voter.to_buffer()),
+            LEGACY_CURRENT_VOTES_KEY,
+            &snapshot,
+        )
+        .unwrap();
+
+        assert_eq!(load_snapshot(&kv, Network::Testnet, &voter).unwrap(), None);
+        assert_eq!(load_snapshot(&kv, Network::Mainnet, &voter).unwrap(), None);
+        assert!(
+            kv.get::<StoredCurrentVotes>(
+                DetScope::Identity(&voter.to_buffer()),
+                &current_votes_key(Network::Testnet),
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            kv.get::<StoredCurrentVotes>(
+                DetScope::Identity(&voter.to_buffer()),
+                LEGACY_CURRENT_VOTES_KEY,
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]

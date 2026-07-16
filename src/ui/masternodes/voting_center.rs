@@ -12,9 +12,8 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, ComboBox, RichText};
 
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
-use crate::backend_task::BackendTaskContext;
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::contested_name::ContestedName;
 use crate::model::dpns_voting::{
@@ -60,6 +59,15 @@ struct ReviewExclusion {
 }
 
 impl DpnsVotingCenter {
+    pub(crate) fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        self.submitted_operation =
+            updated_submitted_operation(self.submitted_operation, context, result);
+    }
+
     pub(crate) fn display_backend_task_error(&mut self, context: &BackendTaskContext) {
         let Some(operation_id) = self.submitted_operation else {
             return;
@@ -1099,6 +1107,27 @@ fn should_return_to_review_after_error(
             }
 }
 
+fn updated_submitted_operation(
+    submitted_operation: Option<DpnsVoteOperationId>,
+    context: &BackendTaskContext,
+    result: &BackendTaskSuccessResult,
+) -> Option<DpnsVoteOperationId> {
+    match (submitted_operation, context, result) {
+        (
+            Some(submitted),
+            BackendTaskContext::DpnsVoteOperation {
+                network: submitted_network,
+                operation_id: submitted_id,
+            },
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: result_network,
+                operation_id: result_id,
+            },
+        ) if submitted == *submitted_id && submitted_network == result_network => Some(*result_id),
+        _ => submitted_operation,
+    }
+}
+
 fn has_loaded_voting_key(voter: &QualifiedIdentity) -> bool {
     voter
         .private_keys
@@ -1293,5 +1322,24 @@ mod tests {
             &context,
             false,
         ));
+    }
+
+    #[test]
+    fn schedule_replacement_tracks_the_authoritative_operation_id() {
+        let submitted = DpnsVoteOperationId::from_bytes([4; 16]);
+        let stored = DpnsVoteOperationId::from_bytes([5; 16]);
+        let context = BackendTaskContext::DpnsVoteOperation {
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+            operation_id: submitted,
+        };
+        let result = crate::backend_task::BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+            operation_id: stored,
+        };
+
+        assert_eq!(
+            updated_submitted_operation(Some(submitted), &context, &result),
+            Some(stored)
+        );
     }
 }

@@ -16,7 +16,6 @@ use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
 use dash_sdk::dpp::voting::votes::resource_vote::accessors::v0::ResourceVoteGettersV0;
@@ -406,7 +405,7 @@ impl AppContext {
                     VoteTiming::Now => None,
                 })
                 .collect::<Vec<_>>();
-            self.insert_dpns_vote_operation(&operation, replacing_scheduled_key.as_ref())?;
+            self.insert_dpns_vote_operation(&mut operation, replacing_scheduled_key.as_ref())?;
             if !scheduled_votes.is_empty()
                 && let Err(error) = self.insert_scheduled_votes(&scheduled_votes)
             {

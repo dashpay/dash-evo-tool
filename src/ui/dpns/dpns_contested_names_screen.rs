@@ -12,9 +12,7 @@ use eframe::egui::{self, Button, Color32, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 
-use crate::app::{
-    AppAction, BackendTasksExecutionMode, DesiredAppAction, scheduled_vote_sweep_is_quiet,
-};
+use crate::app::{AppAction, DesiredAppAction, scheduled_vote_sweep_is_quiet};
 use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::error::TaskError;

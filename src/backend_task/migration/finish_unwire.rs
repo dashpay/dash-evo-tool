@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-#[cfg(test)]
 use dash_sdk::platform::Identifier;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -440,9 +439,46 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
 /// app-data failure that coincides with unreadable identities on the same
 /// launch. Both must reach the user, so the terminal state is
 /// [`MigrationState::FailedWithUnreadableIdentities`] (published here, carrying
-/// both signals) rather than a returned `Err` that the caller would re-publish
-/// as a plain `Failed`, dropping the identity count.
+/// both signals) rather than an `Err` that this boundary would publish as a
+/// plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+    let _run_guard = match app_context.migration_run.try_lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            let guard = app_context.migration_run.lock().await;
+            match app_context.migration_status().state().as_ref() {
+                MigrationState::Failed { error } => {
+                    let result = Err(super::migration_task_error(Arc::clone(error)));
+                    drop(guard);
+                    return result;
+                }
+                MigrationState::Idle => guard,
+                _ => {
+                    drop(guard);
+                    return Ok(false);
+                }
+            }
+        }
+    };
+
+    match run_under_guard(app_context).await {
+        Ok(did_work) => Ok(did_work),
+        Err(task_error) => {
+            if !app_context.migration_status().state().is_in_progress() {
+                return Err(task_error);
+            }
+            let source = migration_error_chain(task_error);
+            app_context
+                .migration_status()
+                .set_state(MigrationState::Failed {
+                    error: Arc::clone(&source),
+                });
+            Err(super::migration_task_error(source))
+        }
+    }
+}
+
+async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     validate_saved_data_for_migration(app_context)?;
 
     let status = app_context.migration_status();
@@ -1367,8 +1403,8 @@ fn write_identity_progress(
 }
 
 /// Record an explicit identity deletion before removing its modern record.
-/// A later partial-pass retry then skips the stale legacy row even if the
-/// deletion races the migration's initial presence snapshot.
+/// A later partial-pass retry then skips the stale legacy row. The caller holds
+/// `migration_run` across this marker and the complete modern-store deletion.
 pub(crate) fn record_identity_deletion(
     app_context: &AppContext,
     id: [u8; 32],
@@ -1472,6 +1508,7 @@ fn migrate_identities(
         network,
         &mut progress.processed,
         |processed| write_identity_progress(&app_kv, network, processed),
+        |id| app_context.has_local_qualified_identity(&Identifier::from(id)),
         |qi, wallet| {
             // Diagnostic only — the link is imported either way (see the pure
             // body). An absent wallet means it failed to migrate or is locked.
@@ -1521,17 +1558,20 @@ fn migrate_identities(
 /// Pure identity-import body (testable without an `AppContext`).
 ///
 /// `processed` contains identities already imported, already present in modern
-/// storage, or explicitly deleted. `record_processed` durably advances that set
-/// after each successful insert, and `insert` is the vault-routing writer.
-fn migrate_identities_from_conn<R, I>(
+/// storage, or explicitly deleted. `has_current_blob` checks storage directly
+/// before each pending insert. `record_processed` durably advances the set after
+/// an insert or direct-presence discovery, and `insert` is the vault-routing writer.
+fn migrate_identities_from_conn<R, H, I>(
     conn: &Connection,
     network: Network,
     processed: &mut BTreeSet<[u8; 32]>,
     mut record_processed: R,
+    mut has_current_blob: H,
     mut insert: I,
 ) -> Result<IdentityMigrationOutcome, MigrationError>
 where
     R: FnMut(&BTreeSet<[u8; 32]>) -> Result<(), MigrationError>,
+    H: FnMut([u8; 32]) -> Result<bool, TaskError>,
     I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<(), TaskError>,
 {
     let import_failed = |source: TaskError| MigrationError::IdentityImportFailed {
@@ -1560,10 +1600,17 @@ where
         // identity trips the vault-first downgrade guard. The legacy `data.db`
         // is preserved, so those keys are recoverable by a later build. See the
         // known limitation in the design doc (§7) and the tracked follow-up.
-        //
-        // The processed set is stable during the pass: backend identity writers
-        // share the migration gate, and direct deletion rejects while it runs.
         if processed.contains(&row.id) {
+            outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
+            continue;
+        }
+
+        // The index-derived startup snapshot is only a fast path. Check the
+        // blob itself before every pending insert so a stale or incomplete
+        // index cannot overwrite a modern record with its legacy copy.
+        if has_current_blob(row.id).map_err(import_failed)? {
+            processed.insert(row.id);
+            record_processed(processed)?;
             outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
             continue;
         }
@@ -2716,7 +2763,7 @@ mod tests {
 
         const NETWORK: Network = Network::Testnet;
 
-        fn create_identity_table(conn: &Connection) {
+        pub(super) fn create_identity_table(conn: &Connection) {
             create_legacy_identity_table(conn).expect("create identity table");
         }
 
@@ -2762,6 +2809,7 @@ mod tests {
                 NETWORK,
                 &mut BTreeSet::new(),
                 |_| Ok(()),
+                |_| Ok(false),
                 |qi, _| {
                     recorder
                         .imported
@@ -2806,6 +2854,7 @@ mod tests {
                 NETWORK,
                 &mut processed,
                 |_| Ok(()),
+                |_| Ok(false),
                 |qi, _| {
                     recorder
                         .imported
@@ -2826,6 +2875,46 @@ mod tests {
         }
 
         #[test]
+        fn direct_blob_presence_skips_and_checkpoints_a_stale_index_snapshot() {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            create_identity_table(&conn);
+            let existing = [0xAA; 32];
+            insert_identity(&conn, existing, Some(identity_blob(existing)), true);
+
+            let recorder = Recorder::default();
+            let checkpoints = RefCell::new(Vec::new());
+            let mut processed = BTreeSet::new();
+            let outcome = migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                &mut processed,
+                |processed| {
+                    checkpoints.borrow_mut().push(processed.clone());
+                    Ok(())
+                },
+                |id| Ok(id == existing),
+                |qi, _| {
+                    recorder
+                        .imported
+                        .borrow_mut()
+                        .push(qi.identity.id().to_buffer());
+                    Ok(())
+                },
+            )
+            .expect("presence check");
+
+            assert_eq!(outcome.imported, 0);
+            assert_eq!(outcome.skipped_existing, 1);
+            assert!(recorder.imported.borrow().is_empty());
+            assert_eq!(processed, BTreeSet::from([existing]));
+            assert_eq!(
+                *checkpoints.borrow(),
+                vec![BTreeSet::from([existing])],
+                "the direct-presence discovery must become durable progress",
+            );
+        }
+
+        #[test]
         fn a_partial_hard_failure_does_not_reimport_an_earlier_identity() {
             let conn = Connection::open_in_memory().expect("in-memory db");
             create_identity_table(&conn);
@@ -2841,6 +2930,7 @@ mod tests {
                 NETWORK,
                 &mut processed,
                 |_| Ok(()),
+                |_| Ok(false),
                 |qi, _| {
                     let id = qi.identity.id().to_buffer();
                     attempts.borrow_mut().push(id);
@@ -2862,6 +2952,7 @@ mod tests {
                 NETWORK,
                 &mut processed,
                 |_| Ok(()),
+                |_| Ok(false),
                 |qi, _| {
                     attempts.borrow_mut().push(qi.identity.id().to_buffer());
                     Ok(())
@@ -2895,6 +2986,7 @@ mod tests {
                 NETWORK,
                 &mut BTreeSet::new(),
                 |_| Ok(()),
+                |_| Ok(false),
                 |qi, _| {
                     recorder
                         .imported
@@ -2937,6 +3029,7 @@ mod tests {
                 NETWORK,
                 &mut BTreeSet::new(),
                 |_| Ok(()),
+                |_| Ok(false),
                 |_, wallet| {
                     links.borrow_mut().push(*wallet);
                     Ok(())
@@ -4327,6 +4420,84 @@ mod tests {
     }
 
     #[test]
+    fn identity_deletion_is_atomic_with_an_idle_migration_lock_holder() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let deleted = [0x44; 32];
+        let _migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+
+        assert!(matches!(
+            ctx.delete_local_qualified_identity(&Identifier::from(deleted)),
+            Err(TaskError::WalletStorageNotReady)
+        ));
+        assert!(
+            !read_identity_progress(&ctx.app_kv(), ctx.network)
+                .expect("read progress")
+                .processed
+                .contains(&deleted),
+            "a rejected delete must not leave a tombstone or any other partial write",
+        );
+    }
+
+    #[tokio::test]
+    async fn public_migration_run_waits_behind_idle_deletion_guard() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let follower_ctx = Arc::clone(&ctx);
+        let follower = tokio::spawn(async move { run(&follower_ctx).await });
+        tokio::task::yield_now().await;
+
+        assert!(
+            !follower.is_finished(),
+            "the public entry point must wait for the shared migration guard",
+        );
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "a waiting migration must not publish Running before it owns the guard",
+        );
+
+        drop(migration_guard);
+        let did_work = follower.await.expect("join").expect("migration task");
+
+        assert!(!did_work, "the fresh-install pass has no legacy work");
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
+            "an idle lock holder was deletion, not a completed migration leader",
+        );
+    }
+
+    #[tokio::test]
+    async fn public_migration_follower_returns_the_published_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let source = Arc::new(MigrationError::WalletBackendUnavailable);
+        ctx.migration_status().set_state(MigrationState::Failed {
+            error: Arc::clone(&source),
+        });
+        let follower_ctx = Arc::clone(&ctx);
+        let follower = tokio::spawn(async move { run(&follower_ctx).await });
+        tokio::task::yield_now().await;
+
+        assert!(
+            !follower.is_finished(),
+            "the follower must wait for the leader"
+        );
+        drop(migration_guard);
+        let error = follower
+            .await
+            .expect("join")
+            .expect_err("the follower must return the leader's failure");
+
+        assert!(matches!(
+            error,
+            TaskError::MigrationFailed { source: returned }
+                if Arc::ptr_eq(&returned, &source)
+        ));
+    }
+
+    #[test]
     fn identity_deletion_before_migration_is_recorded_for_the_retry_filter() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
@@ -4340,6 +4511,55 @@ mod tests {
                 .processed
                 .contains(&deleted)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deletion_first_keeps_a_pending_legacy_identity_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let deleted = [0x55; 32];
+        let deleted_id = Identifier::from(deleted);
+        ctx.delete_local_qualified_identity(&deleted_id)
+            .expect("delete through normal path");
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        identities::create_identity_table(&conn);
+        identities::insert_identity(
+            &conn,
+            deleted,
+            Some(identities::identity_blob(deleted)),
+            true,
+        );
+        let mut processed = read_identity_progress(&ctx.app_kv(), ctx.network)
+            .expect("read deletion marker")
+            .processed;
+        let inserted = std::cell::Cell::new(false);
+        let outcome = migrate_identities_from_conn(
+            &conn,
+            ctx.network,
+            &mut processed,
+            |_| Ok(()),
+            |_| Ok(false),
+            |_, _| {
+                inserted.set(true);
+                Ok(())
+            },
+        )
+        .expect("migration pass");
+
+        assert!(
+            !inserted.get(),
+            "the deleted identity must not be re-imported"
+        );
+        assert_eq!(outcome.skipped_existing, 1);
+        assert!(
+            !ctx.has_local_qualified_identity(&deleted_id)
+                .expect("read identity store")
+        );
+
+        backend.shutdown().await;
     }
 
     #[tokio::test]

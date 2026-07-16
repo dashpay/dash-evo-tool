@@ -176,7 +176,7 @@ impl SingleKeyEntry {
     }
 
     /// Encode for the upstream vault: `[version || bincode(self)]`.
-    pub fn encode(&self) -> Result<Vec<u8>, TaskError> {
+    pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, TaskError> {
         encode_tagged(SINGLE_KEY_ENTRY_VERSION, self).map_err(|detail| {
             tracing::warn!(
                 target = "wallet_backend::single_key_entry",

@@ -4054,6 +4054,50 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn too_new_database_version_is_rejected_before_migration() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        ctx.db
+            .execute("UPDATE settings SET database_version = 41 WHERE id = 1", [])
+            .expect("set too-new database version");
+
+        let error = run(&ctx).await.expect_err("version 41 must be rejected");
+
+        assert!(
+            matches!(
+                &error,
+                TaskError::SavedDataTooNew { source }
+                    if matches!(
+                        source.as_ref(),
+                        MigrationError::LegacyDataTooNew {
+                            found: 41,
+                            maximum_supported: 40,
+                        }
+                    )
+            ),
+            "too-new data must keep its typed version diagnostics: {error:?}",
+        );
+        assert_eq!(
+            error.to_string(),
+            "Your saved data was created by a newer version of Dash Evo Tool. Update to the latest version to open it."
+        );
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the typed migration source must remain available for diagnostics",
+        );
+        assert!(
+            read_sentinel(&ctx.app_kv(), ctx.network)
+                .expect("read sentinel")
+                .is_none(),
+            "the migration must not write its completion sentinel after rejecting the version",
+        );
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "rejecting the version before any pass must not publish a migration state",
+        );
+    }
+
     #[test]
     fn v093_database_version_is_accepted_for_direct_migration() {
         validate_legacy_database_version(11).expect("v0.9.3 data must remain migratable");
@@ -4063,6 +4107,26 @@ mod tests {
     fn current_database_version_is_accepted_for_direct_migration() {
         validate_legacy_database_version(i64::from(crate::database::DEFAULT_DB_VERSION))
             .expect("current data must remain migratable");
+    }
+
+    /// Upper-accept boundary: the newest supported pre-unwire layout
+    /// (`MAX_DIRECT_MIGRATION_VERSION`, currently 40) is the top of the accepted
+    /// 11..=40 range and must still migrate, while the first version above it is
+    /// rejected as too new. Pins both sides of the ceiling so a silent narrowing
+    /// of the range is caught.
+    #[test]
+    fn max_supported_database_version_is_accepted_for_direct_migration() {
+        use crate::model::data_migration::MAX_DIRECT_MIGRATION_VERSION;
+
+        validate_legacy_database_version(MAX_DIRECT_MIGRATION_VERSION)
+            .expect("the newest supported pre-unwire data version must remain migratable");
+        assert!(
+            matches!(
+                validate_legacy_database_version(MAX_DIRECT_MIGRATION_VERSION + 1),
+                Err(MigrationError::LegacyDataTooNew { .. })
+            ),
+            "the first version above the supported range must be rejected as too new",
+        );
     }
 
     #[test]

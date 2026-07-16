@@ -9,6 +9,12 @@ on:
       - published
   workflow_dispatch:
   workflow_call:
+    inputs:
+      version_override:
+        description: "Override the Cargo.toml package version for this build only (never committed)"
+        required: false
+        type: string
+        default: ""
 
 concurrency:
   group: flatpak-${{ github.ref }}
@@ -36,6 +42,39 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Resolve version override
+        id: vsel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_OVERRIDE_INPUT: ${{ inputs.version_override }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          ov="$VERSION_OVERRIDE_INPUT"
+          if [ -z "$ov" ] && [ "${{ github.event_name }}" = "release" ]; then
+            tag="$EVENT_RELEASE_TAG"
+            # Recover the original version_override from the release notes marker
+            # `finalize` (weekly-build.yml) writes at creation time. This works for
+            # ANY accepted version shape (not just the canonical vX.Y.Z-weekly.YYYYMMDD
+            # pattern), so a custom `version` dispatch input survives undrafting too.
+            body=$(gh release view "$tag" --json body --jq .body -R "$GITHUB_REPOSITORY")
+            marker=$(printf '%s' "$body" | grep -oE '<!-- weekly-version: [^ ]+ -->' | sed -E 's/<!-- weekly-version: (.+) -->/\1/' || true)
+            if [ -n "$marker" ]; then
+              ov="$marker"
+            elif printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-weekly\.[0-9]{8}$'; then
+              # Fallback for releases created before the marker existed.
+              ov="${tag#v}+$(git rev-parse --short=9 HEAD)"
+            fi
+          fi
+          echo "override=$ov" >> "$GITHUB_OUTPUT"
+
+      - name: Apply version override
+        if: steps.vsel.outputs.override != ''
+        uses: ./.github/actions/apply-version-override
+        with:
+          version: ${{ steps.vsel.outputs.override }}
 
       - name: Install Rust toolchain (for cargo metadata)
         uses: dtolnay/rust-toolchain@stable

@@ -432,7 +432,7 @@ mod tests {
         ciphertext.truncate(ciphertext.len() - 1);
         let item = ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
-            encrypted_seed: ciphertext,
+            encrypted_seed: zeroize::Zeroizing::new(ciphertext),
             salt,
             nonce,
             password_hint: Some("the saved hint".to_string()),

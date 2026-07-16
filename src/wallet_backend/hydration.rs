@@ -28,6 +28,8 @@ use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed, WalletSeedHash};
 use crate::wallet_backend::secret_seam::SecretScheme;
 use std::collections::{BTreeMap, HashMap};
+#[cfg(test)]
+use zeroize::Zeroizing;
 
 use super::WalletBackend;
 
@@ -105,7 +107,7 @@ fn reconstruct_wallet(
         SecretScheme::Protected => {
             seed_view.delete_legacy_best_effort(seed_hash);
             let envelope = StoredSeedEnvelope {
-                encrypted_seed: Vec::new(),
+                encrypted_seed: zeroize::Zeroizing::new(Vec::new()),
                 salt: Vec::new(),
                 nonce: Vec::new(),
                 password_hint: meta.password_hint.clone(),
@@ -123,7 +125,7 @@ fn reconstruct_wallet(
                 .get_raw(seed_hash)?
                 .ok_or(TaskError::SecretSeamMissing)?;
             let envelope = StoredSeedEnvelope {
-                encrypted_seed: raw.to_vec(),
+                encrypted_seed: zeroize::Zeroizing::new(raw.to_vec()),
                 salt: Vec::new(),
                 nonce: Vec::new(),
                 password_hint: meta.password_hint.clone(),
@@ -324,7 +326,7 @@ mod tests {
         let xpub = xpub_bytes_for(seed, network);
 
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -366,7 +368,7 @@ mod tests {
         let xpub = xpub_bytes_for(seed, network);
 
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: vec![0xAB; 80],
+            encrypted_seed: Zeroizing::new(vec![0xAB; 80]),
             salt: vec![0x01; 16],
             nonce: vec![0x02; 12],
             password_hint: Some("granny's birthday".into()),
@@ -402,7 +404,7 @@ mod tests {
         let seed = [0xDDu8; 64];
         let xpub = xpub_bytes_for(seed, Network::Testnet);
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -442,7 +444,7 @@ mod tests {
         let network = Network::Testnet;
         let xpub = xpub_bytes_for(seed, network);
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -487,7 +489,7 @@ mod tests {
         view.set(
             &hash,
             &StoredSeedEnvelope {
-                encrypted_seed: seed.to_vec(),
+                encrypted_seed: Zeroizing::new(seed.to_vec()),
                 salt: Vec::new(),
                 nonce: Vec::new(),
                 password_hint: None,
@@ -544,7 +546,7 @@ mod tests {
         view.set(
             &hash,
             &StoredSeedEnvelope {
-                encrypted_seed: seed.to_vec(),
+                encrypted_seed: Zeroizing::new(seed.to_vec()),
                 salt: Vec::new(),
                 nonce: Vec::new(),
                 password_hint: None,
@@ -604,7 +606,7 @@ mod tests {
         let seed = [0xEEu8; 64];
         let hash = seed_hash_for(seed);
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -633,7 +635,7 @@ mod tests {
         let seed = [0xBEu8; 64];
         let xpub = xpub_bytes_for(seed, Network::Testnet);
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: vec![0x33; 16], // wrong length on purpose
+            encrypted_seed: Zeroizing::new(vec![0x33; 16]), // wrong length on purpose
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -674,7 +676,7 @@ mod tests {
         let seed = [0x55u8; 64];
         let xpub = xpub_bytes_for(seed, Network::Testnet);
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,

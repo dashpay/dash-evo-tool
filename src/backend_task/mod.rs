@@ -247,6 +247,8 @@ pub enum BackendTaskContext {
     TokenBalanceRefresh,
     /// A perpetual-reward estimate for one identity-token pair.
     TokenRewardEstimate(IdentityTokenIdentifier),
+    /// The destructive per-network database clear.
+    ClearNetworkDatabase,
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -280,6 +282,7 @@ impl From<&BackendTask> for BackendTaskContext {
                 }),
                 _ => Self::Other,
             },
+            BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             _ => Self::Other,
         }
     }
@@ -291,6 +294,9 @@ pub enum BackendTaskSuccessResult {
     // General results
     None,
     Refresh,
+    NetworkDatabaseCleared {
+        network: Network,
+    },
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
@@ -1047,6 +1053,16 @@ mod tests {
         assert_eq!(
             BackendTaskContext::from(&task),
             BackendTaskContext::TokenRewardEstimate(identity_token_id)
+        );
+    }
+
+    #[test]
+    fn backend_task_context_identifies_network_database_clear() {
+        let task = BackendTask::SystemTask(SystemTask::ClearNetworkDatabase);
+
+        assert_eq!(
+            BackendTaskContext::from(&task),
+            BackendTaskContext::ClearNetworkDatabase
         );
     }
 

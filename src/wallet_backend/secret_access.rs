@@ -1167,7 +1167,7 @@ mod tests {
             nonce,
         } = encrypt_message(seed, passphrase).expect("encrypt seed");
         let envelope = StoredSeedEnvelope {
-            encrypted_seed,
+            encrypted_seed: Zeroizing::new(encrypted_seed),
             salt,
             nonce,
             password_hint: Some("granny's birthday".into()),
@@ -1182,7 +1182,7 @@ mod tests {
     /// Write an unprotected HD seed envelope (raw 64 bytes, no password).
     fn store_unprotected_hd(store: &Arc<SecretStore>, seed_hash: &WalletSeedHash, seed: &[u8; 64]) {
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: Zeroizing::new(seed.to_vec()),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,
@@ -1205,7 +1205,7 @@ mod tests {
         // than panic inside `Nonce::from_slice` (which would poison the
         // long-lived secret-store mutex).
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: vec![0u8; 80],
+            encrypted_seed: Zeroizing::new(vec![0u8; 80]),
             salt: vec![0u8; 16],
             nonce: vec![0u8; 5], // wrong length on purpose
             password_hint: None,

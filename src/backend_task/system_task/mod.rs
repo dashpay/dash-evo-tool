@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemTask {
+    ClearNetworkDatabase,
     WipePlatformData,
     UpdateThemePreference(ThemeMode),
 }
@@ -18,6 +19,12 @@ impl AppContext {
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
+            SystemTask::ClearNetworkDatabase => {
+                self.clear_network_database().await?;
+                Ok(BackendTaskSuccessResult::NetworkDatabaseCleared {
+                    network: self.network,
+                })
+            }
             SystemTask::WipePlatformData => self.wipe_devnet(),
             SystemTask::UpdateThemePreference(theme_mode) => {
                 self.handle_update_theme_preference(theme_mode)

@@ -278,7 +278,7 @@ mod tests {
 
     fn sample_password_envelope() -> StoredSeedEnvelope {
         StoredSeedEnvelope {
-            encrypted_seed: vec![0xAB; 80],
+            encrypted_seed: Zeroizing::new(vec![0xAB; 80]),
             salt: vec![0x01; 16],
             nonce: vec![0x02; 12],
             password_hint: Some("granny's birthday".into()),
@@ -289,7 +289,7 @@ mod tests {
 
     fn sample_non_password_envelope() -> StoredSeedEnvelope {
         StoredSeedEnvelope {
-            encrypted_seed: vec![0x11; 64],
+            encrypted_seed: Zeroizing::new(vec![0x11; 64]),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,

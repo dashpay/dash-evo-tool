@@ -260,7 +260,7 @@ mod tests {
         // Create a ClosedWalletSeed instance with the encrypted data
         let closed_wallet_seed = ClosedKeyItem {
             seed_hash,
-            encrypted_seed: envelope.ciphertext,
+            encrypted_seed: Zeroizing::new(envelope.ciphertext),
             salt: envelope.salt,
             nonce: envelope.nonce,
             password_hint: None, // Set password hint if needed
@@ -290,7 +290,7 @@ mod tests {
         // Create a ClosedWalletSeed instance with the encrypted data
         let closed_wallet_seed = ClosedKeyItem {
             seed_hash,
-            encrypted_seed: envelope.ciphertext,
+            encrypted_seed: Zeroizing::new(envelope.ciphertext),
             salt: envelope.salt,
             nonce: envelope.nonce,
             password_hint: None,
@@ -342,7 +342,7 @@ mod tests {
         let envelope = encrypt_message(&[9u8; 10], "pw").expect("encrypt");
         let item = ClosedKeyItem {
             seed_hash: [0u8; 32],
-            encrypted_seed: envelope.ciphertext,
+            encrypted_seed: Zeroizing::new(envelope.ciphertext),
             salt: envelope.salt,
             nonce: envelope.nonce,
             password_hint: None,

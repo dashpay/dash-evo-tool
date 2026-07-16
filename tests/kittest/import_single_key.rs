@@ -149,9 +149,7 @@ fn imported_single_key_is_visible_in_session() {
                 .expect("create AppState")
                 .with_animations(false)
         });
-        harness.run_steps(5);
-
-        let app_context = harness.state().current_app_context().clone();
+        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
         let network = app_context.network();
 
         // A network-correct WIF for whatever network the fresh context opened on.

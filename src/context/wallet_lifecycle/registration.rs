@@ -237,7 +237,7 @@ impl AppContext {
         // migrate to the raw seam lazily at the next unlock (one prompt the
         // user already does).
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: wallet.encrypted_seed_slice().to_vec(),
+            encrypted_seed: zeroize::Zeroizing::new(wallet.encrypted_seed_slice().to_vec()),
             salt: wallet.salt().to_vec(),
             nonce: wallet.nonce().to_vec(),
             password_hint: wallet.password_hint().clone(),

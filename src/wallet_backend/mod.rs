@@ -115,6 +115,7 @@ use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
+use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::PlatformWalletManager;
 use platform_wallet_storage::secrets::SecretStore;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
@@ -147,32 +148,86 @@ enum ContactRequestRecord {
     Incoming,
 }
 
-/// One-shot latch guarding chain-sync startup. The upstream
-/// `SpvRuntime::spawn_run_loop` unconditionally spawns a fresh run loop per
-/// call, so [`WalletBackend::start`] uses this to spawn exactly once even when
-/// invoked repeatedly (Connect clicked twice, eager-init plus a manual click).
+#[derive(Debug)]
+enum StartFlightError {
+    Failed(Arc<PlatformWalletError>),
+    Superseded,
+}
+
+type StartFlightOutcome = Result<(), StartFlightError>;
+
 #[derive(Debug, Default)]
-struct StartLatch(AtomicBool);
+struct StartFlight {
+    begun: AtomicBool,
+    outcome: tokio::sync::OnceCell<StartFlightOutcome>,
+}
+
+/// Shared-result latch guarding chain-sync startup. The upstream
+/// `SpvRuntime::spawn_run_loop` unconditionally spawns a fresh run loop per
+/// call, so [`WalletBackend::start`] joins concurrent callers onto one flight
+/// and reuses its outcome without spawning a second loop.
+#[derive(Debug)]
+struct StartLatch {
+    current: std::sync::Mutex<Arc<StartFlight>>,
+    lifecycle: tokio::sync::Mutex<()>,
+}
+
+impl Default for StartLatch {
+    fn default() -> Self {
+        Self {
+            current: std::sync::Mutex::new(Arc::new(StartFlight::default())),
+            lifecycle: tokio::sync::Mutex::new(()),
+        }
+    }
+}
 
 impl StartLatch {
-    /// Returns `true` exactly once — on the first call. Every later call
-    /// returns `false`. Atomic swap, so concurrent callers race to a single
-    /// winner.
-    fn try_begin(&self) -> bool {
-        !self.0.swap(true, Ordering::SeqCst)
+    fn flight(&self) -> Arc<StartFlight> {
+        Arc::clone(
+            &self
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    fn is_current(&self, flight: &Arc<StartFlight>) -> bool {
+        Arc::ptr_eq(
+            &self
+                .current
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            flight,
+        )
+    }
+
+    async fn claim(&self, flight: &Arc<StartFlight>) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let lifecycle = self.lifecycle.lock().await;
+        self.is_current(flight).then_some(lifecycle)
     }
 
     /// Whether the latch has been triggered.
     fn is_started(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.flight().begun.load(Ordering::SeqCst)
     }
 
-    /// Re-arm the latch so [`WalletBackend::start`] can spawn the run loop
-    /// again on a reused backend. Used by the restart-in-place teardown
-    /// ([`WalletBackend::stop_in_place`]); without it the one-shot
-    /// `try_begin` would refuse the reconnect's start.
+    /// Re-arm the latch with a fresh flight for the next start attempt.
     fn reset(&self) {
-        self.0.store(false, Ordering::SeqCst);
+        *self
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(StartFlight::default());
+    }
+
+    /// Re-arm only if `flight` is still current, preserving a newer reset.
+    fn reset_if_current(&self, flight: &Arc<StartFlight>) {
+        let mut current = self
+            .current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if Arc::ptr_eq(&current, flight) {
+            *current = Arc::new(StartFlight::default());
+        }
     }
 }
 
@@ -399,7 +454,7 @@ impl WalletBackend {
         pwm.configure_shielded(spv_storage_dir.join("platform-wallet-shielded.sqlite"))
             .await
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             })?;
 
         let peer = Self::spv_primary_peer_socket(ctx, network);
@@ -593,7 +648,7 @@ impl WalletBackend {
                 .load_from_persistor()
                 .await
                 .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(e),
+                    source: Arc::new(e),
                 })?;
         }
 
@@ -790,7 +845,7 @@ impl WalletBackend {
             }
             Err(e) => {
                 return Err(TaskError::WalletBackend {
-                    source: Box::new(e),
+                    source: Arc::new(e),
                 });
             }
         }
@@ -965,7 +1020,7 @@ impl WalletBackend {
         }
         let Some(pw) = pw else {
             return Err(TaskError::WalletBackend {
-                source: Box::new(platform_wallet::error::PlatformWalletError::WalletNotFound(
+                source: Arc::new(platform_wallet::error::PlatformWalletError::WalletNotFound(
                     hex::encode(wallet_id),
                 )),
             });
@@ -1172,7 +1227,7 @@ impl WalletBackend {
             .clear_shielded()
             .await
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             })
     }
 
@@ -1189,7 +1244,7 @@ impl WalletBackend {
         match self.inner.pwm.remove_wallet(wallet_id).await {
             Ok(_) | Err(PlatformWalletError::WalletNotFound(_)) => Ok(()),
             Err(e) => Err(TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             }),
         }
     }
@@ -1262,8 +1317,9 @@ impl WalletBackend {
     /// later sync failures surface asynchronously through the upstream run
     /// task and the `EventBridge` `on_error` callback.
     ///
-    /// Idempotent: the first call latches a started flag and spawns the run
-    /// loop; subsequent calls return `Ok(())` without spawning a second loop.
+    /// Idempotent: concurrent calls join one shared-result flight, and calls
+    /// after a successful start reuse its `Ok(())` without spawning a second
+    /// run loop.
     ///
     /// SPV is spawned immediately, but the Platform/identity sync coordinators
     /// are gated on masternode-list readiness via [`CoordinatorGate`]: starting
@@ -1272,23 +1328,45 @@ impl WalletBackend {
     /// either now (if masternodes already synced) or when the `EventBridge`
     /// reports the masternode list reached `Synced`.
     pub async fn start(&self) -> Result<(), TaskError> {
-        if !self.inner.start_latch.try_begin() {
-            tracing::debug!("Wallet backend chain sync already started; ignoring");
-            return Ok(());
-        }
+        loop {
+            let flight = self.inner.start_latch.flight();
+            let outcome = flight
+                .outcome
+                .get_or_init(|| async {
+                    let Some(_lifecycle) = self.inner.start_latch.claim(&flight).await else {
+                        return Err(StartFlightError::Superseded);
+                    };
+                    flight.begun.store(true, Ordering::SeqCst);
+                    match self.start_once().await {
+                        Ok(()) => Ok(()),
+                        Err(source) => {
+                            self.inner.start_latch.reset_if_current(&flight);
+                            Err(StartFlightError::Failed(Arc::new(source)))
+                        }
+                    }
+                })
+                .await;
 
+            match outcome {
+                Ok(()) => return Ok(()),
+                Err(StartFlightError::Failed(source)) => {
+                    return Err(TaskError::WalletBackend {
+                        source: Arc::clone(source),
+                    });
+                }
+                Err(StartFlightError::Superseded) => {}
+            }
+        }
+    }
+
+    async fn start_once(&self) -> Result<(), PlatformWalletError> {
         let config = self.build_client_config();
 
         // New API: `start(config)` (async, initializes the SPV client) is called first,
         // then `spawn_run_loop()` (sync, spawns the background run-loop task).
         // The old `spawn_in_background(config)` combined both steps.
         let spv = self.inner.pwm.spv_arc();
-        if let Err(e) = spv.start(config).await {
-            self.inner.start_latch.reset();
-            return Err(TaskError::WalletBackend {
-                source: Box::new(e),
-            });
-        }
+        spv.start(config).await?;
         spv.spawn_run_loop();
 
         // Defer the coordinator starts behind the quorum-readiness gate. The
@@ -1450,6 +1528,7 @@ impl WalletBackend {
     /// duplicate loop; the guard makes the stale thread observe the bumped
     /// generation and stand down.
     pub async fn stop_in_place(&self) {
+        let _lifecycle = self.inner.start_latch.lifecycle.lock().await;
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {
             tracing::warn!(
@@ -1806,7 +1885,7 @@ impl WalletBackend {
             .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
             .await
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             })
     }
 
@@ -1860,7 +1939,7 @@ impl WalletBackend {
             .next_receive_address_for_account(DEFAULT_BIP44_ACCOUNT)
             .await
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             })?;
         Ok(addr.to_string())
     }
@@ -2107,7 +2186,7 @@ impl WalletBackend {
                     }
                 };
                 recorded.map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(e.into()),
+                    source: Arc::new(e.into()),
                 })?;
             }
             None => match direction {
@@ -2501,7 +2580,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             // Future operation name from a newer upstream — fall through to
             // WalletBackend rather than silently discarding the error.
             _ => TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             },
         };
     }
@@ -2523,7 +2602,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         // pre-flight ever stops covering a case it must degrade to the generic
         // wrapper, never panic mid-operation.
         other @ P::ShieldedSpendUnconfirmed { .. } => TaskError::WalletBackend {
-            source: Box::new(other),
+            source: Arc::new(other),
         },
 
         // Every remaining variant → generic WalletBackend wrapper.
@@ -2576,7 +2655,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
         | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
-            source: Box::new(other),
+            source: Arc::new(other),
         },
     }
 }
@@ -2598,7 +2677,7 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         // Registration creates the identity, so it cannot legitimately raise a
         // "not managed" lookup error — fold into the generic envelope.
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
-            source: Box::new(e),
+            source: Arc::new(e),
         },
     }
 }
@@ -2623,7 +2702,7 @@ fn map_identity_top_up_error(
             source: Box::new(e),
         },
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
-            source: Box::new(e),
+            source: Arc::new(e),
         },
     }
 }
@@ -2667,7 +2746,7 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         // "not managed" classification is not meaningful here — fold into the
         // generic envelope alongside the other preconditions.
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
-            source: Box::new(e),
+            source: Arc::new(e),
         },
     }
 }
@@ -2768,63 +2847,90 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 mod tests {
     use super::*;
 
-    /// The start latch is one-shot: `try_begin` returns `true` only on the
-    /// first call, so `WalletBackend::start` spawns the SPV run loop exactly
-    /// once even when called repeatedly (Connect clicked twice, eager-init plus
-    /// a manual click). This guards against a double-SPV-spawn regression.
+    /// A completed start flight remains current, so repeated calls reuse its
+    /// result instead of spawning another SPV run loop.
     #[test]
-    fn start_latch_fires_once() {
+    fn start_latch_reuses_completed_flight() {
         let latch = StartLatch::default();
         assert!(!latch.is_started(), "fresh latch must not be started");
-        assert!(latch.try_begin(), "first try_begin must win");
-        assert!(
-            latch.is_started(),
-            "latch must report started after winning"
-        );
-        assert!(!latch.try_begin(), "second try_begin must lose");
-        assert!(!latch.try_begin(), "third try_begin must lose");
-        assert!(latch.is_started(), "latch stays started");
+
+        let first = latch.flight();
+        first.begun.store(true, Ordering::SeqCst);
+        first.outcome.set(Ok(())).expect("set flight outcome");
+
+        let repeated = latch.flight();
+        assert!(Arc::ptr_eq(&first, &repeated));
+        assert!(matches!(repeated.outcome.get(), Some(Ok(()))));
+        assert!(latch.is_started());
     }
 
-    /// Restart-in-place: `reset()` re-arms the one-shot latch so `try_begin`
-    /// wins again on a reused backend (the reconnect's `start()`).
+    /// Restart-in-place replaces the completed flight, and a stale failed
+    /// flight cannot reset the replacement.
     #[test]
     fn start_latch_reset_allows_restart() {
         let latch = StartLatch::default();
-        assert!(latch.try_begin(), "first begin wins");
-        assert!(!latch.try_begin(), "second begin refused while latched");
+        let first = latch.flight();
+        first.begun.store(true, Ordering::SeqCst);
         assert!(latch.is_started());
 
         latch.reset();
+        let replacement = latch.flight();
+        assert!(!Arc::ptr_eq(&first, &replacement));
         assert!(!latch.is_started(), "reset must clear the latch");
-        assert!(latch.try_begin(), "begin wins again after reset");
-        assert!(!latch.try_begin(), "and re-latches one-shot after reset");
+
+        latch.reset_if_current(&first);
+        assert!(
+            Arc::ptr_eq(&replacement, &latch.flight()),
+            "a stale flight must not replace the current flight"
+        );
     }
 
-    /// Concurrent callers race to a single winner — exactly one thread sees
-    /// `try_begin() == true`. Pins the atomic-swap contract that prevents two
-    /// SPV run loops from racing against the same data directory.
-    #[test]
-    fn start_latch_single_winner_under_contention() {
-        use std::sync::Arc as StdArc;
+    /// A caller that captured a flight before reset cannot initialize that
+    /// stale generation after the replacement becomes current.
+    #[tokio::test]
+    async fn start_latch_stale_flight_cannot_initialize_after_reset() {
+        let latch = StartLatch::default();
+        let stale = latch.flight();
+
+        latch.reset();
+
+        assert!(latch.claim(&stale).await.is_none());
+        let current = latch.flight();
+        assert!(latch.claim(&current).await.is_some());
+    }
+
+    /// Concurrent callers share one `OnceCell` initializer, preserving the
+    /// single-spawn guarantee while every caller receives the stored outcome.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn start_latch_single_winner_under_contention() {
         use std::sync::atomic::AtomicUsize;
 
-        let latch = StdArc::new(StartLatch::default());
-        let winners = StdArc::new(AtomicUsize::new(0));
+        let latch = Arc::new(StartLatch::default());
+        let winners = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(16));
 
         let handles: Vec<_> = (0..16)
             .map(|_| {
-                let latch = StdArc::clone(&latch);
-                let winners = StdArc::clone(&winners);
-                std::thread::spawn(move || {
-                    if latch.try_begin() {
-                        winners.fetch_add(1, Ordering::SeqCst);
-                    }
+                let latch = Arc::clone(&latch);
+                let winners = Arc::clone(&winners);
+                let barrier = Arc::clone(&barrier);
+                tokio::spawn(async move {
+                    barrier.wait().await;
+                    let flight = latch.flight();
+                    let outcome = flight
+                        .outcome
+                        .get_or_init(|| async {
+                            flight.begun.store(true, Ordering::SeqCst);
+                            winners.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        })
+                        .await;
+                    assert!(outcome.is_ok());
                 })
             })
             .collect();
         for h in handles {
-            h.join().expect("thread panicked");
+            h.await.expect("task panicked");
         }
 
         assert_eq!(

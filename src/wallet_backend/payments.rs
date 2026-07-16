@@ -10,6 +10,7 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+use std::sync::Arc;
 
 use super::{DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend};
 
@@ -29,7 +30,7 @@ impl WalletBackend {
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(seed, self.inner.network)
             .map_err(|source| TaskError::WalletBackend {
-                source: Box::new(platform_wallet::error::PlatformWalletError::KeyDerivation(
+                source: Arc::new(platform_wallet::error::PlatformWalletError::KeyDerivation(
                     source.to_string(),
                 )),
             })?;
@@ -174,7 +175,7 @@ impl WalletBackend {
                     )
                     .await
                     .map_err(|source| TaskError::WalletBackend {
-                        source: Box::new(source),
+                        source: Arc::new(source),
                     })?;
                 Ok(tx.txid())
             })
@@ -256,7 +257,7 @@ impl WalletBackend {
                     )
                     .await
                     .map_err(|e| TaskError::WalletBackend {
-                        source: Box::new(e),
+                        source: Arc::new(e),
                     })?;
                 let private_key =
                     self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;

@@ -10,6 +10,7 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+use std::sync::Arc;
 
 use super::{
     DetPlatformSigner, DetSigner, PlatformPathIndex, WalletBackend, map_identity_register_error,
@@ -143,7 +144,7 @@ impl WalletBackend {
             Ok(()) => Ok(true),
             Err(platform_wallet::error::PlatformWalletError::IdentityAlreadyExists(_)) => Ok(false),
             Err(e) => Err(TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             }),
         }
     }

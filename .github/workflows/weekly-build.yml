@@ -171,8 +171,10 @@ jobs:
             # (the same marker `finalize` writes) — i.e. it's provably one of
             # THIS workflow's own not-yet-published drafts, never anything
             # else.
-            owned=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-              --jq 'select(.draft == true and ((.body // "") | test("<!-- weekly-version:"))) | "true"' 2>/dev/null || echo "")
+            # shellcheck disable=SC2016
+            owned=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq --arg tag "$TAG" '.[] | select(.tag_name == $tag and .draft == true and ((.body // "") | test("<!-- weekly-version:"))) | "true"' \
+              2>/dev/null | head -n1 || echo "")
             if [ "$owned" != "true" ]; then
               echo "::error::Refusing force re-cut: tag $TAG already exists and is not one of this workflow's own draft releases. This would collide with an existing or already-published release — pick a different version."
               exit 1

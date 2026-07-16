@@ -110,8 +110,9 @@ jobs:
               } >>"$GITHUB_OUTPUT"
               exit 0
             fi
-            LAST=$(git tag -l 'v*-weekly.*' --sort=-creatordate | head -n1)
-            if [ -n "$LAST" ] && [ "$(git rev-list --count "${LAST}..HEAD")" -eq 0 ]; then
+            LAST=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '[.[] | select(.draft == true and ((.body // "") | test("<!-- weekly-version:")))] | sort_by(.created_at) | reverse | .[0].tag_name // empty')
+            if [ -n "$LAST" ] && git rev-parse -q --verify "refs/tags/$LAST" >/dev/null && [ "$(git rev-list --count "${LAST}..HEAD")" -eq 0 ]; then
               {
                 echo "should_release=false"
                 echo "reason=no_commits"
@@ -148,9 +149,8 @@ jobs:
       - name: Delete stale weekly drafts
         run: |
           set -euo pipefail
-          mapfile -t olds < <(gh release list --limit 200 --json tagName,isDraft \
-            --jq '.[] | select(.isDraft) | .tagName' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-weekly\.[0-9]{8}$' || true)
+          mapfile -t olds < <(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.draft == true and ((.body // "") | test("<!-- weekly-version:"))) | .tag_name')
           for old in "${olds[@]}"; do
             [ -z "$old" ] && continue
             [ "$old" = "$TAG" ] && continue # never touch today's tag (force re-cut)
@@ -162,7 +162,22 @@ jobs:
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists — force re-cut: moving it to the current commit."
+            # Never force-move a tag we don't own. Without this guard,
+            # force=true + version=<existing-release-version> (e.g. version:
+            # 0.9.3) would silently rewrite — and a subsequent build failure
+            # could let `cleanup` delete — a real, already-published release
+            # tag. Only proceed if a GH release for this tag exists, is still
+            # a draft, and carries our own weekly-version marker in its body
+            # (the same marker `finalize` writes) — i.e. it's provably one of
+            # THIS workflow's own not-yet-published drafts, never anything
+            # else.
+            owned=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+              --jq 'select(.draft == true and ((.body // "") | test("<!-- weekly-version:"))) | "true"' 2>/dev/null || echo "")
+            if [ "$owned" != "true" ]; then
+              echo "::error::Refusing force re-cut: tag $TAG already exists and is not one of this workflow's own draft releases. This would collide with an existing or already-published release — pick a different version."
+              exit 1
+            fi
+            echo "Tag $TAG already exists as our own draft — force re-cut: moving it to the current commit."
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag -f -a "$TAG" -m "Weekly draft pre-release $TAG" HEAD
@@ -262,7 +277,7 @@ jobs:
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete "$TAG" --yes --cleanup-tag -R "$GITHUB_REPOSITORY"
           else
-            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" || true
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG"
           fi
 
   notify:
@@ -297,7 +312,7 @@ jobs:
           RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
           if [ "$CI_RED" = "true" ]; then
-            TEXT=":warning: *I, Claudius the Magnificent, decline to bless a broken week.* CI on \`v1.0-dev\` is red — no weekly draft was cut. Mend the pipeline: <${RUN_URL}|the run>."
+            TEXT=":warning: *I, Claudius the Magnificent, decline to bless a broken week.* CI on \`${GITHUB_REF_NAME}\` is red — no weekly draft was cut. Mend the pipeline: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ]; then
             TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` awaits your royal assent — undraft it here: <${RELEASE_URL}|the release page>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ] && [ "$CLEANUP_RESULT" = "success" ]; then

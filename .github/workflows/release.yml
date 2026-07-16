@@ -68,16 +68,34 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
 
     steps:
+      - name: Resolve checkout ref
+        id: resolve_ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [ -n "$tag" ] && gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" >/dev/null 2>&1; then
+            echo "ref=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          # Only pin to inputs.tag for the workflow_call path (weekly-build.yml,
-          # the only caller — it always passes an already-pushed tag). Direct
-          # workflow_dispatch's `tag` input is a NEW tag name softprops/action-gh-release
-          # creates at the end of this job, not an existing ref — checking it
-          # out here would fail with "ref not found" for that path, so it must
-          # keep falling back to github.ref (the dispatch-selected branch).
-          ref: ${{ (github.event_name == 'workflow_call' && inputs.tag) || github.ref }}
+          # inputs.tag is checked out ONLY when it already exists as a real
+          # ref (verified above via the API — github.event_name cannot be
+          # used here: a reusable workflow inherits the CALLER's original
+          # event_name, e.g. schedule/workflow_dispatch, it is never
+          # 'workflow_call'). weekly-build.yml's call always passes an
+          # already-pushed tag, so this pins the build to it. Direct
+          # workflow_dispatch's `tag` input is often a NEW tag name
+          # softprops/action-gh-release creates at the end of this job, not
+          # an existing ref yet — that case (and push/release triggers, and
+          # workflow_dispatch with no tag) correctly falls back to
+          # github.ref via the resolve step above.
+          ref: ${{ steps.resolve_ref.outputs.ref }}
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override
@@ -201,16 +219,34 @@ jobs:
     name: Build macOS ARM64 (Signed & Notarized)
     runs-on: macos-latest
     steps:
+      - name: Resolve checkout ref
+        id: resolve_ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [ -n "$tag" ] && gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" >/dev/null 2>&1; then
+            echo "ref=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          # Only pin to inputs.tag for the workflow_call path (weekly-build.yml,
-          # the only caller — it always passes an already-pushed tag). Direct
-          # workflow_dispatch's `tag` input is a NEW tag name softprops/action-gh-release
-          # creates at the end of this job, not an existing ref — checking it
-          # out here would fail with "ref not found" for that path, so it must
-          # keep falling back to github.ref (the dispatch-selected branch).
-          ref: ${{ (github.event_name == 'workflow_call' && inputs.tag) || github.ref }}
+          # inputs.tag is checked out ONLY when it already exists as a real
+          # ref (verified above via the API — github.event_name cannot be
+          # used here: a reusable workflow inherits the CALLER's original
+          # event_name, e.g. schedule/workflow_dispatch, it is never
+          # 'workflow_call'). weekly-build.yml's call always passes an
+          # already-pushed tag, so this pins the build to it. Direct
+          # workflow_dispatch's `tag` input is often a NEW tag name
+          # softprops/action-gh-release creates at the end of this job, not
+          # an existing ref yet — that case (and push/release triggers, and
+          # workflow_dispatch with no tag) correctly falls back to
+          # github.ref via the resolve step above.
+          ref: ${{ steps.resolve_ref.outputs.ref }}
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override
@@ -530,16 +566,34 @@ jobs:
     name: Build macOS x86_64 (Signed & Notarized)
     runs-on: macos-latest
     steps:
+      - name: Resolve checkout ref
+        id: resolve_ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if [ -n "$tag" ] && gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" >/dev/null 2>&1; then
+            echo "ref=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          # Only pin to inputs.tag for the workflow_call path (weekly-build.yml,
-          # the only caller — it always passes an already-pushed tag). Direct
-          # workflow_dispatch's `tag` input is a NEW tag name softprops/action-gh-release
-          # creates at the end of this job, not an existing ref — checking it
-          # out here would fail with "ref not found" for that path, so it must
-          # keep falling back to github.ref (the dispatch-selected branch).
-          ref: ${{ (github.event_name == 'workflow_call' && inputs.tag) || github.ref }}
+          # inputs.tag is checked out ONLY when it already exists as a real
+          # ref (verified above via the API — github.event_name cannot be
+          # used here: a reusable workflow inherits the CALLER's original
+          # event_name, e.g. schedule/workflow_dispatch, it is never
+          # 'workflow_call'). weekly-build.yml's call always passes an
+          # already-pushed tag, so this pins the build to it. Direct
+          # workflow_dispatch's `tag` input is often a NEW tag name
+          # softprops/action-gh-release creates at the end of this job, not
+          # an existing ref yet — that case (and push/release triggers, and
+          # workflow_dispatch with no tag) correctly falls back to
+          # github.ref via the resolve step above.
+          ref: ${{ steps.resolve_ref.outputs.ref }}
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override

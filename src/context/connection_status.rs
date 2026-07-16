@@ -50,12 +50,8 @@ impl From<u8> for OverallConnectionState {
 #[derive(Debug)]
 pub struct ConnectionStatus {
     spv_status: AtomicU8,
-    /// Event-driven mirror of `spv_status` for async waiters. Every transition
-    /// funnelled through [`Self::set_spv_status`] is broadcast here.
-    /// [`Self::begin_spv_stop`] bypasses this (it writes the atomic directly) —
-    /// `Stopping` is not a waited-on state, so that is intentional.
-    /// [`Self::reset`] explicitly sends `Idle` to keep the watch coherent across
-    /// network switches.
+    /// Event-driven mirror of `spv_status` for async waiters. Status transitions
+    /// are broadcast here, including atomic stop claims and network resets.
     spv_status_tx: watch::Sender<SpvStatus>,
     overall_state: AtomicU8,
     /// `true` once the SPV masternode list has finished syncing, so quorum
@@ -214,9 +210,9 @@ impl ConnectionStatus {
     /// Subscribe to SPV-status changes. Each call creates a new
     /// [`watch::Receiver`] that receives the current value immediately via
     /// [`watch::Receiver::borrow_and_update`] and then wakes on every
-    /// [`set_spv_status`] transition (deduped — same-value writes are
-    /// suppressed). The sender is app-lifetime, so `changed()` never returns
-    /// `Err` during normal operation.
+    /// SPV status transition (deduped — same-value writes are suppressed). The
+    /// sender is app-lifetime, so `changed()` never returns `Err` during normal
+    /// operation.
     pub fn subscribe_spv_status(&self) -> watch::Receiver<SpvStatus> {
         self.spv_status_tx.subscribe()
     }
@@ -244,6 +240,14 @@ impl ConnectionStatus {
                 )
                 .is_ok()
             {
+                let _ = self.spv_status_tx.send_if_modified(|cur| {
+                    if *cur != SpvStatus::Stopping {
+                        *cur = SpvStatus::Stopping;
+                        true
+                    } else {
+                        false
+                    }
+                });
                 return true;
             }
         }
@@ -926,6 +930,28 @@ mod tests {
                 "second stop from {active:?} must lose while one is in flight"
             );
         }
+    }
+
+    #[test]
+    fn begin_spv_stop_mirrors_stopping_to_watch_receivers() {
+        let status = ConnectionStatus::new();
+        status.set_spv_status(SpvStatus::Running);
+        let mut existing = status.subscribe_spv_status();
+        assert_eq!(*existing.borrow_and_update(), SpvStatus::Running);
+
+        assert!(status.begin_spv_stop());
+        assert!(
+            existing.has_changed().expect("sender is alive"),
+            "an existing receiver must be notified of the stopping transition"
+        );
+        assert_eq!(*existing.borrow_and_update(), SpvStatus::Stopping);
+
+        let mut fresh = status.subscribe_spv_status();
+        assert_eq!(
+            *fresh.borrow_and_update(),
+            SpvStatus::Stopping,
+            "a fresh receiver must observe the atomic status mirror"
+        );
     }
 
     /// `begin_spv_stop` is a no-op (returns `false`, leaves status untouched)

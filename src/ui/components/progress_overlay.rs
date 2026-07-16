@@ -164,6 +164,8 @@ struct OverlayState {
     watchdog_logged: bool,
     /// Set once focus has been placed on the first button (focus trap).
     focus_requested: bool,
+    /// Set after the raising frame's pending pointer interaction is discarded.
+    pointer_input_claimed: bool,
     /// Opt-in action id designated as the single keyboard-reachable escape.
     /// When set, `claim_input` activates it at frame start: a press of
     /// Enter/Space enqueues this action directly (the same queue a click feeds) and
@@ -190,6 +192,7 @@ impl OverlayState {
             last_progress_at: now,
             watchdog_logged: false,
             focus_requested: false,
+            pointer_input_claimed: false,
             keyboard_escape_action: config.keyboard_escape_action.clone(),
         }
     }
@@ -706,7 +709,9 @@ impl ProgressOverlay {
     /// - stripping `Event::Text`, the clipboard events (Copy/Cut/Paste), and the
     ///   navigation/confirm/edit keys (Tab, Enter, Escape, Space, arrows,
     ///   Backspace, Delete, Home, End, PageUp, PageDown) from `i.events` so
-    ///   nothing beneath observes them.
+    ///   nothing beneath observes them, and
+    /// - discarding pending pointer press/click/drag input on the raising frame,
+    ///   before the foreground sink has prior-frame geometry.
     ///
     /// A hard block is never keyboard-dismissable or keyboard-activatable, with one
     /// opt-in exception: a block that designates a single keyboard escape via
@@ -717,10 +722,12 @@ impl ProgressOverlay {
     /// and the key never survives to a widget beneath. Every
     /// other key, and every non-opted block, stays fully blocked.
     pub fn claim_input(ctx: &egui::Context) {
-        let stack = get_overlay_state(ctx);
-        let Some(top) = stack.last() else {
+        let mut stack = get_overlay_state(ctx);
+        let Some(top) = stack.last_mut() else {
             return;
         };
+        let claim_pointer = !top.pointer_input_claimed;
+        top.pointer_input_claimed = true;
         // Release beneath focus ONLY for a button-less block — it has no widget of
         // its own to hold focus, so a focused field beneath would keep its caret.
         // A buttoned block keeps its button focused (`render_buttons` manages the
@@ -738,9 +745,18 @@ impl ProgressOverlay {
         // enqueues nothing and strips Enter/Space exactly the same.
         let escape_action = top.keyboard_escape_action.clone();
         let key = top.key;
+        if claim_pointer {
+            set_overlay_state(ctx, stack);
+        }
         let mut activate_escape = false;
         ctx.input_mut(|i| {
+            if claim_pointer {
+                i.pointer = Default::default();
+            }
             i.events.retain(|e| {
+                if claim_pointer && matches!(e, egui::Event::PointerButton { .. }) {
+                    return false;
+                }
                 if matches!(
                     e,
                     egui::Event::Text(_)
@@ -789,9 +805,6 @@ impl ProgressOverlay {
         if activate_escape && let Some(action_id) = escape_action {
             push_overlay_action(ctx, key, &action_id);
         }
-        // TODO: claim pointer press/click/drag at frame start
-        // (analogue of the keyboard frame-start claim above) to close the
-        // one-frame click-through on the raising frame.
     }
 
     /// Render the topmost entry. Call once per frame from `AppState::update`,

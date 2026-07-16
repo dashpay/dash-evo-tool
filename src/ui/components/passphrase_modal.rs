@@ -155,9 +155,10 @@ pub fn passphrase_modal(
     //
     // `blocks_input` is unconditional and independent of `cancellable`: the
     // progress overlay yields its own barrier to ANY passphrase prompt, so every
-    // prompt must own the interaction surface beneath it. `cancellable` governs
-    // only who may dismiss it (Cancel / X / Escape / click-outside), which the
-    // sink does not affect — dismissal reads raw pointer input.
+    // prompt must own the interaction surface beneath it (via the modal layer).
+    // `cancellable` governs only who may dismiss it (Cancel / X / Escape /
+    // click-outside), which the modal layer does not affect — dismissal reads raw
+    // pointer input.
     let chrome = modal_chrome(
         ctx,
         ModalChromeConfig {
@@ -290,14 +291,14 @@ pub fn clear_passphrase_modal_state(ctx: &Context, config_id: egui::Id) {
 /// egui resolves a frame's click at `begin_pass` — against the *previous* frame's
 /// widget geometry and modal layer — before that frame's `update` runs. On the
 /// frame a prompt first renders, the previous frame had no prompt and no modal
-/// sink, so a press-then-release completing now still resolves to the control
-/// beneath, *before* [`passphrase_modal`] installs its sink later this frame. A
-/// widget only reports the click if a `Released` event is still in
+/// layer, so a press-then-release completing now still resolves to the control
+/// beneath, *before* [`passphrase_modal`] registers its modal layer later this
+/// frame. A widget only reports the click if a `Released` event is still in
 /// `input.pointer` when it interacts (see egui's `Context::create_widget`);
 /// clearing the pointer state — called as the prompt is promoted, before the
 /// screen beneath runs — drops that one frame's click so it cannot fall through.
-/// The sink covers every later frame. Keyboard events are left intact so the
-/// freshly focused password field still receives typing.
+/// The modal layer covers every later frame. Keyboard events are left intact so
+/// the freshly focused password field still receives typing.
 pub fn drop_activation_frame_pointer_click(ctx: &Context) {
     ctx.input_mut(|input| {
         input.pointer = Default::default();

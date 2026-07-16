@@ -589,6 +589,113 @@ fn cancellable_passphrase_modal_still_dismisses_from_its_own_controls() {
     );
 }
 
+/// NEW-005 regression: the password field inside the passphrase modal can take
+/// keyboard focus and receive typed input, while a widget behind the modal
+/// receives none of it.
+///
+/// `modal_chrome` blocks background input by registering the **window's own**
+/// layer as egui's modal layer. A prior version registered a separate
+/// full-screen "sink" `Area` instead; because that sink was a different layer
+/// than the window, the window did not resolve at/above the modal layer and the
+/// password `TextEdit` was silently denied keyboard focus — typing did nothing
+/// (release-blocking). This test pins both halves at once: the modal layer is
+/// the window's own layer (not a sink), the field holds focus and receives the
+/// typed text (surfaced through `Submit`), and the background stays blocked.
+#[test]
+fn passphrase_modal_password_field_focuses_and_blocks_background() {
+    use std::cell::RefCell;
+
+    use dash_evo_tool::ui::components::passphrase_modal::PassphraseModalOutcome;
+
+    let outcome = Rc::new(RefCell::new(PassphraseModalOutcome::Pending));
+    let outcome_ui = Rc::clone(&outcome);
+    let background_text = Rc::new(RefCell::new(String::new()));
+    let background_ui = Rc::clone(&background_text);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(640.0, 480.0))
+        .build_ui(move |ui| {
+            // A widget behind the modal. It must never receive the typed text.
+            {
+                let mut bg = background_ui.borrow_mut();
+                ui.add(egui::TextEdit::singleline(&mut *bg).id(egui::Id::new("background_field")));
+            }
+
+            let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_focus_blocks_bg"),
+                window_title: "Unlock Wallet",
+                body: "My Wallet",
+                hint: None,
+                error: None,
+                submit_label: "Unlock",
+                secondary_action_label: None,
+                input_placeholder: "Enter password",
+                remember_label: None,
+                cancellable: true,
+            };
+            *outcome_ui.borrow_mut() = passphrase_modal(ui.ctx(), &config, |_| {});
+        });
+
+    // Frame 1 opens the modal and focuses the field; frame 2 lets the modal layer
+    // (registered at the end of frame 1) take effect.
+    harness.step();
+    harness.step();
+
+    // The modal layer is the window's OWN Foreground layer, not a separate sink.
+    let sink_id = egui::Id::new("passphrase_modal_overlay")
+        .with("Unlock Wallet")
+        .with("input_sink");
+    let modal_layer = harness
+        .ctx
+        .memory(|m| m.top_modal_layer())
+        .expect("the blocking modal registers a modal layer");
+    assert_eq!(
+        modal_layer.order,
+        egui::Order::Foreground,
+        "the modal layer is the Foreground window",
+    );
+    assert_ne!(
+        modal_layer.id, sink_id,
+        "the modal layer must be the window's own layer, not a separate input sink \
+         — registering the sink is what denied the password field focus (NEW-005)",
+    );
+
+    // Below-modal layers get neither pointer nor keyboard input.
+    assert!(
+        !harness
+            .ctx
+            .memory(|m| m.is_above_modal_layer(egui::LayerId::background())),
+        "the background layer is blocked below the modal",
+    );
+
+    // The password field holds keyboard focus (the regression left it unfocusable).
+    assert!(
+        harness.ctx.memory(|m| m.focused()).is_some(),
+        "the password field can hold keyboard focus",
+    );
+
+    // Typed text reaches the focused password field, not the background.
+    harness.event(egui::Event::Text("secret".to_string()));
+    harness.step();
+
+    harness.get_by_label("Unlock").click();
+    harness.step();
+
+    assert_eq!(
+        *background_text.borrow(),
+        "",
+        "a widget behind the modal must not receive the typed text",
+    );
+    match &*outcome.borrow() {
+        PassphraseModalOutcome::Submit(text) => assert_eq!(
+            text.as_str(),
+            "secret",
+            "the password field received the typed keyboard input",
+        ),
+        other => panic!("expected Submit carrying the typed password, got {other:?}"),
+    }
+}
+
 #[test]
 fn blocking_passphrase_modal_has_no_dismiss_control() {
     let mut harness = Harness::builder()

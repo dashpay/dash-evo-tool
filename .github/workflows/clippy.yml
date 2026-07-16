@@ -3,7 +3,7 @@ name: Clippy
 on:
   push:
     branches:
-      - main
+      - master
       - "v*-dev"
     paths:
       - "**/*.rs"
@@ -11,14 +11,14 @@ on:
       - "Cargo.lock"
       - ".cargo/config.toml"
       - ".github/workflows/clippy.yml"
+  # No `paths` filter: every non-draft pull request runs clippy and the fmt
+  # check, so a green PR always means they actually ran.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/config.toml"
-      - ".github/workflows/clippy.yml"
+  # Allows a manual run against a branch — the only way to exercise a draft PR,
+  # whose `pull_request` runs are suppressed by the draft guard below. Note a
+  # manual run tests the branch head, not the PR merge commit.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

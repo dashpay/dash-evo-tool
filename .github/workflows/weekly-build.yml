@@ -29,6 +29,9 @@ concurrency:
   group: weekly-build
   cancel-in-progress: false # weekly cadence: never interrupt a half-cut release
 
+env:
+  TARGET_BRANCH: v1.0-dev
+
 permissions: {}
 
 jobs:
@@ -50,6 +53,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Decide
@@ -68,7 +72,7 @@ jobs:
           # absent, not red.
           red=false
           for wf in tests.yml clippy.yml; do
-            concl=$(gh run list --workflow "$wf" --branch v1.0-dev --status completed \
+            concl=$(gh run list --workflow "$wf" --branch "${{ env.TARGET_BRANCH }}" --status completed \
                       --limit 1 --json conclusion --jq '.[0].conclusion // ""')
             case "$concl" in
               failure | cancelled | timed_out | startup_failure) red=true ;;
@@ -142,6 +146,7 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Delete stale weekly drafts
@@ -169,7 +174,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # See the SECURITY NOTE at the top of this file: GITHUB_TOKEN only.
-          git tag -a "$TAG" -m "Weekly draft pre-release $TAG" "$GITHUB_SHA"
+          # Use HEAD, not $GITHUB_SHA: checkout is pinned to TARGET_BRANCH, while
+          # GITHUB_SHA can reflect a different workflow_dispatch triggering ref.
+          git tag -a "$TAG" -m "Weekly draft pre-release $TAG" HEAD
           git push origin "refs/tags/$TAG"
 
   release:

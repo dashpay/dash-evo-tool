@@ -12,7 +12,8 @@
 //!
 //! Row actions dispatch the DashPay backend tasks directly: Accept and Decline
 //! on a received request, Cancel on a sent one, and Pay on an established
-//! contact (which opens the existing send-payment screen).
+//! contact (which opens the existing send-payment screen), and View Profile
+//! (which opens the existing contact-profile viewer).
 
 use super::request_card::{RequestAction, RequestCard};
 use super::social_profile_gate_card::SocialProfileGateCard;
@@ -41,6 +42,7 @@ pub const ADD_BY_USERNAME_LABEL: &str = "Add by username";
 pub const SCAN_QR_LABEL: &str = "Scan QR";
 pub const SHOW_MY_QR_LABEL: &str = "Show my QR";
 pub const PAY_LABEL: &str = "Pay";
+pub const VIEW_PROFILE_LABEL: &str = "View Profile";
 pub const RECEIVED_HEADING: &str = "Received requests";
 pub const ACTIVE_HEADING_PREFIX: &str = "Active contacts";
 pub const SENT_HEADING: &str = "Sent requests";
@@ -449,9 +451,9 @@ fn received_section(
 }
 
 /// Active contacts — searchable list of established contacts, each row offering
-/// a Pay affordance that opens the existing send-payment screen. Pay is an
-/// experimental DashPay feature, classified identically at all four entry points
-/// into [`ScreenType::DashPaySendPayment`].
+/// the existing contact-profile viewer and, when enabled, the send-payment
+/// screen. Pay is an experimental DashPay feature, classified identically at all
+/// four entry points into [`ScreenType::DashPaySendPayment`].
 fn active_section(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -493,15 +495,30 @@ fn active_section(
                     ui.with_layout(
                         eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
                         |ui| {
-                            if !pay_available {
-                                return;
+                            if pay_available {
+                                let pay = ui
+                                    .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
+                                    .clickable_tooltip("Send Dash to this contact.");
+                                if pay.clicked() {
+                                    action = AppAction::AddScreen(
+                                        ScreenType::DashPaySendPayment(
+                                            identity.clone(),
+                                            contact.identity_id,
+                                        )
+                                        .create_screen(app_context),
+                                    );
+                                }
                             }
-                            let pay = ui
-                                .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
-                                .clickable_tooltip("Send Dash to this contact.");
-                            if pay.clicked() {
+
+                            let view_profile = ui
+                                .add(ComponentStyles::secondary_button(
+                                    VIEW_PROFILE_LABEL,
+                                    dark_mode,
+                                ))
+                                .clickable_tooltip("View this contact's public profile.");
+                            if view_profile.clicked() {
                                 action = AppAction::AddScreen(
-                                    ScreenType::DashPaySendPayment(
+                                    contact_profile_screen_type(
                                         identity.clone(),
                                         contact.identity_id,
                                     )
@@ -757,6 +774,10 @@ fn has_social_profile(
     matches!(profiles.get_or_request(identity), Some(Some(_)))
 }
 
+fn contact_profile_screen_type(identity: QualifiedIdentity, contact_id: Identifier) -> ScreenType {
+    ScreenType::DashPayContactProfileViewer(identity, contact_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,6 +930,17 @@ mod tests {
             contacts_button_kind(ContactsButton::GateSetUpProfile),
             ContactsButtonKind::SwitchHubTab(super::super::IdentityHubTab::Settings),
         );
+    }
+
+    #[test]
+    fn contact_profile_action_targets_the_working_viewer_and_selected_contact() {
+        let identity = qualified_identity(id(1));
+
+        assert!(matches!(
+            contact_profile_screen_type(identity, id(2)),
+            ScreenType::DashPayContactProfileViewer(owner, contact_id)
+                if owner.identity.id() == id(1) && contact_id == id(2)
+        ));
     }
 
     // ---------------------------------------------------------------

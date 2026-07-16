@@ -2004,6 +2004,109 @@ async fn clear_network_database_wipes_local_identity_private_keys() {
         .await;
 }
 
+/// A masternode removal must report an incomplete clear when its voting,
+/// owner, or payout key cannot be deleted from the vault.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fails() {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+        IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+    };
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+
+    let (ctx, sender, tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let pv = PlatformVersion::latest();
+    let identity_id = Identifier::from([0x73u8; 32]);
+    let mut private_keys = KeyStorage::default();
+    let key_specs = [
+        (
+            1,
+            Purpose::VOTING,
+            PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+        ),
+        (
+            2,
+            Purpose::OWNER,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        ),
+        (
+            3,
+            Purpose::TRANSFER,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        ),
+    ];
+    for (key_id, purpose, target) in key_specs {
+        let mut key = IdentityPublicKey::random_key(key_id, Some(1), pv);
+        key.set_purpose(purpose);
+        private_keys.private_keys.insert(
+            (target, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key),
+                PrivateKeyData::Clear([0x70 + key_id as u8; 32]),
+            ),
+        );
+    }
+    let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
+    let qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: Some(2),
+        identity_type: IdentityType::Masternode,
+        alias: Some("Removal failure masternode".to_string()),
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    };
+    ctx.insert_local_qualified_identity(&qi, &None)
+        .expect("persist masternode identity");
+
+    let secrets_dir = tmp.path().join("secrets");
+    std::fs::set_permissions(&secrets_dir, std::fs::Permissions::from_mode(0o500))
+        .expect("make vault directory read-only");
+    let result = ctx.clear_network_database();
+    std::fs::set_permissions(&secrets_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("restore vault directory permissions");
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+
+    match result {
+        Err(TaskError::WalletDataClearIncomplete {
+            failed,
+            first_error,
+        }) => {
+            assert!(failed >= 1, "at least one vault-key delete must fail");
+            assert!(
+                matches!(*first_error, TaskError::IdentityKeyVault { .. }),
+                "the first failure must preserve the identity-vault error chain"
+            );
+        }
+        other => panic!("masternode key deletion failure must make clear incomplete: {other:?}"),
+    }
+}
+
 /// Clear-all must fail before changing any state when the wallet backend is
 /// unavailable, because persisted secrets from an earlier run may still exist.
 #[test]

@@ -212,10 +212,15 @@ impl<'a> IdentityKeyView<'a> {
         &self,
         keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
     ) -> Result<(), TaskError> {
+        let mut first_error = None;
         for (target, key_id) in keys {
-            self.delete(&target, key_id)?;
+            if let Err(error) = self.delete(&target, key_id)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 }
 

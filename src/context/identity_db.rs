@@ -934,7 +934,7 @@ impl AppContext {
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
-        self.clear_identity_vault_keys(&kv, &id);
+        self.clear_identity_vault_keys(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
         index_remove_identity(&kv, &id)
     }
@@ -986,29 +986,22 @@ impl AppContext {
         kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
     }
 
-    /// Delete every identity-key raw secret for `id` from the vault. Best
-    /// effort: a decode/read failure is logged and skipped so identity removal
-    /// never wedges on an unreadable blob — leaving a stale vault entry is
-    /// preferable to blocking the delete, and the entry is unreachable once the
-    /// blob is gone. Idempotent (deleting an absent label is `Ok`).
-    fn clear_identity_vault_keys(&self, kv: &DetKv, id: &[u8; 32]) {
-        let Ok(Some(stored)) =
-            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
+    /// Delete every identity-key raw secret for `id` from the vault.
+    /// Idempotent when the identity or an individual vault label is absent.
+    fn clear_identity_vault_keys(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<(), TaskError> {
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
+            .map_err(identity_err)?
         else {
-            return;
+            return Ok(());
         };
-        let Ok(qi) = QualifiedIdentity::from_bytes(&stored.qi_bytes) else {
-            return;
-        };
+        let qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
         let view = crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id);
-        if let Err(e) = view.delete_all(qi.private_keys.keys_set()) {
-            tracing::warn!(
-                target = "context::identity_db",
-                identity = %hex::encode(id),
-                error = ?e,
-                "Failed to clear some identity vault keys on delete; continuing",
-            );
-        }
+        view.delete_all(qi.private_keys.keys_set())
     }
 
     /// Devnet-only sweep: drop every locally-stored identity for the
@@ -1024,7 +1017,7 @@ impl AppContext {
         let kv = self.det_kv()?;
         let ids = load_identity_index(&kv)?;
         for id in &ids {
-            self.clear_identity_vault_keys(&kv, id);
+            self.clear_identity_vault_keys(&kv, id)?;
             purge_identity_scope(&kv, id)?;
         }
         kv.delete(DetScope::Global, IDENTITY_INDEX_KEY)

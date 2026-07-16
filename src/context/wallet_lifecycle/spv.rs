@@ -59,13 +59,15 @@ impl AppContext {
         match kv.list(DetScope::Global, Some("det:dashpay:")) {
             Ok(keys) => {
                 for k in keys {
-                    if let Err(e) = kv.delete(DetScope::Global, &k) {
-                        tracing::warn!(key = %k, "DashPay sidecar delete failed: {e:?}");
+                    if let Err(source) = kv.delete(DetScope::Global, &k) {
+                        tracing::warn!(key = %k, error = ?source, "DashPay sidecar delete failed");
+                        failures.push(TaskError::DashpaySidecarStorage { source });
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!("DashPay sidecar listing failed: {e:?}");
+            Err(source) => {
+                tracing::warn!(error = ?source, "DashPay sidecar listing failed");
+                failures.push(TaskError::DashpaySidecarStorage { source });
             }
         }
         match self.local_identity_ids() {
@@ -76,6 +78,7 @@ impl AppContext {
                             owner = %owner,
                             "DashPay per-owner overlay clear failed: {e:?}"
                         );
+                        failures.push(e);
                     }
                     // Wipe each identity's vault keys and det:identity:* records too —
                     // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)

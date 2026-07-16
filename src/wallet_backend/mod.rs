@@ -148,10 +148,9 @@ enum ContactRequestRecord {
 }
 
 /// One-shot latch guarding chain-sync startup. The upstream
-/// `SpvRuntime::spawn_in_background` unconditionally spawns a fresh run loop
-/// per call, so [`WalletBackend::start`] uses this to spawn exactly once even
-/// when invoked repeatedly (Connect clicked twice, eager-init plus a manual
-/// click).
+/// `SpvRuntime::spawn_run_loop` unconditionally spawns a fresh run loop per
+/// call, so [`WalletBackend::start`] uses this to spawn exactly once even when
+/// invoked repeatedly (Connect clicked twice, eager-init plus a manual click).
 #[derive(Debug, Default)]
 struct StartLatch(AtomicBool);
 
@@ -1254,14 +1253,14 @@ impl WalletBackend {
     /// Start chain sync and the periodic upstream coordinators.
     ///
     /// Upstream has no single `PlatformWalletManager::start()`; this
-    /// orchestrates the parts: `SpvRuntime::spawn_in_background(ClientConfig)`
-    /// plus the platform-address / identity / shielded sync coordinators.
+    /// orchestrates the parts: `SpvRuntime::start(ClientConfig)` followed by
+    /// `spawn_run_loop()`, plus the platform-address / identity / shielded sync
+    /// coordinators.
     ///
-    /// `SpvRuntime::start()` only *constructs* the client; the network and
-    /// sync loop runs inside `SpvRuntime::run()`, which itself calls
-    /// `start()` and which `spawn_in_background()` drives on the tokio
-    /// runtime. Sync failures surface asynchronously via the upstream run
-    /// task and the `EventBridge` `on_error` callback, not from this call.
+    /// `SpvRuntime::start()` initializes the network manager, disk storage,
+    /// and SPV client. The sync loop runs separately on the tokio runtime;
+    /// later sync failures surface asynchronously through the upstream run
+    /// task and the `EventBridge` `on_error` callback.
     ///
     /// Idempotent: the first call latches a started flag and spawns the run
     /// loop; subsequent calls return `Ok(())` without spawning a second loop.
@@ -1284,11 +1283,12 @@ impl WalletBackend {
         // then `spawn_run_loop()` (sync, spawns the background run-loop task).
         // The old `spawn_in_background(config)` combined both steps.
         let spv = self.inner.pwm.spv_arc();
-        spv.start(config)
-            .await
-            .map_err(|e| TaskError::WalletBackend {
+        if let Err(e) = spv.start(config).await {
+            self.inner.start_latch.reset();
+            return Err(TaskError::WalletBackend {
                 source: Box::new(e),
-            })?;
+            });
+        }
         spv.spawn_run_loop();
 
         // Defer the coordinator starts behind the quorum-readiness gate. The

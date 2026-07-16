@@ -167,12 +167,11 @@ impl AppContext {
             return Err(e);
         }
         let backend = self.wallet_backend()?;
-        // Forward-compat: `start()`'s signature is fallible though the current
-        // impl is infallible. The reachable start-time failure today is the
-        // wiring step above, surfaced via `mark_spv_error`; this branch keeps
-        // the start step covered should `start()` begin to fail.
+        // `start()` can fail while initializing SPV networking, disk storage,
+        // or the client; surface that through both the indicator and result.
         if let Err(e) = backend.start().await {
             self.mark_spv_error(&e);
+            return Err(e);
         }
         Ok(())
     }

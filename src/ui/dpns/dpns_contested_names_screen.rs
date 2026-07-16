@@ -1769,7 +1769,12 @@ impl DPNSScreen {
             VoteHandlingStatus::SchedulingVotes
         };
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
-            ContestedResourceTask::SubmitDpnsVoteOperation(operation, selected_voters, None),
+            ContestedResourceTask::SubmitDpnsVoteOperation(
+                operation,
+                selected_voters,
+                None,
+                self.app_context.network(),
+            ),
         ))
     }
 
@@ -1962,7 +1967,7 @@ impl ScreenLike for DPNSScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::DpnsVoteOperationUpdated(_) => {
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. } => {
                 self.vote_banner.take_and_clear();
                 self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                 self.refresh();

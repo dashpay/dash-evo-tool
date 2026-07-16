@@ -419,7 +419,10 @@ impl MasternodesScreen {
                             .clicked()
                     {
                         action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::ReconcileDpnsVoteOperation(operation.id),
+                            ContestedResourceTask::ReconcileDpnsVoteOperation(
+                                operation.id,
+                                self.app_context.network(),
+                            ),
                         ));
                     }
                 });
@@ -651,7 +654,10 @@ impl MasternodesScreen {
                     && ComponentStyles::add_secondary_button(ui, "Check again", dark_mode).clicked()
                 {
                     action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::ReconcileDpnsVoteOperation(scheduled.operation_id),
+                        ContestedResourceTask::ReconcileDpnsVoteOperation(
+                            scheduled.operation_id,
+                            self.app_context.network(),
+                        ),
                     ));
                 }
             });
@@ -912,6 +918,16 @@ impl ScreenLike for MasternodesScreen {
         if let MasternodesView::Detail(detail) = &self.view {
             let node_id = detail.node_id();
             self.open_detail(node_id);
+        }
+    }
+
+    fn display_backend_task_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        _error: &crate::backend_task::error::TaskError,
+    ) {
+        if let MasternodesView::Voting(center) = &mut self.view {
+            center.display_backend_task_error(context);
         }
     }
 

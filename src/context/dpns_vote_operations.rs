@@ -176,6 +176,33 @@ fn write_existing_operation(
     .map_err(operation_err)
 }
 
+fn transition_scheduled_target_to_queued(
+    kv: &DetKv,
+    network: Network,
+    operation_id: DpnsVoteOperationId,
+    key: &DpnsVoteTargetKey,
+) -> Result<bool, TaskError> {
+    let Some(mut operation): Option<DpnsVoteOperation> = kv
+        .get(DetScope::Global, &operation_key(network, operation_id))
+        .map_err(unreadable_operation_err)?
+    else {
+        return Ok(false);
+    };
+    let Some(outcome) = operation
+        .targets
+        .iter_mut()
+        .find(|outcome| outcome.target.key == *key)
+    else {
+        return Ok(false);
+    };
+    if outcome.status != DpnsVoteTargetStatus::Scheduled {
+        return Ok(false);
+    }
+    outcome.status = DpnsVoteTargetStatus::Queued;
+    write_existing_operation(kv, network, &operation)?;
+    Ok(true)
+}
+
 fn is_authorized_scheduled_replacement(
     existing_status: DpnsVoteTargetStatus,
     existing_key: &DpnsVoteTargetKey,
@@ -192,6 +219,19 @@ fn is_authorized_scheduled_replacement(
 }
 
 impl AppContext {
+    /// Durably claim one due scheduled target before any executor can observe it.
+    pub(crate) fn queue_scheduled_dpns_vote_target(
+        &self,
+        operation_id: DpnsVoteOperationId,
+        key: &DpnsVoteTargetKey,
+    ) -> Result<bool, TaskError> {
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        transition_scheduled_target_to_queued(&self.det_kv()?, self.network, operation_id, key)
+    }
+
     /// Persist a reviewed operation and atomically acquire all unresolved locks.
     pub fn insert_dpns_vote_operation(
         &self,
@@ -676,6 +716,29 @@ mod tests {
             &replacement,
             Some(&other),
         ));
+    }
+
+    #[test]
+    fn due_schedule_is_durably_queued_once_through_the_kv_seam() {
+        let kv = kv();
+        let mut scheduled = operation(DpnsVoteTargetStatus::Scheduled);
+        scheduled.targets[0].target.timing = VoteTiming::Scheduled(42);
+        let key = scheduled.targets[0].target.key.clone();
+        persist_operation(&kv, Network::Testnet, &scheduled).unwrap();
+
+        assert!(
+            transition_scheduled_target_to_queued(&kv, Network::Testnet, scheduled.id, &key,)
+                .unwrap()
+        );
+        assert_eq!(
+            load_operations(&kv, Network::Testnet).unwrap()[0].targets[0].status,
+            DpnsVoteTargetStatus::Queued
+        );
+        assert!(
+            !transition_scheduled_target_to_queued(&kv, Network::Testnet, scheduled.id, &key,)
+                .unwrap(),
+            "a second executor must not claim the same schedule"
+        );
     }
 
     /// A corrupt indexed row must block lock reconstruction rather than being skipped.

@@ -13,6 +13,7 @@ use eframe::egui::{self, ComboBox, RichText};
 
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::BackendTaskContext;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::context::AppContext;
 use crate::model::contested_name::ContestedName;
@@ -59,6 +60,26 @@ struct ReviewExclusion {
 }
 
 impl DpnsVotingCenter {
+    pub(crate) fn display_backend_task_error(&mut self, context: &BackendTaskContext) {
+        let Some(operation_id) = self.submitted_operation else {
+            return;
+        };
+        if should_return_to_review_after_error(
+            operation_id,
+            self.app_context.network(),
+            context,
+            self.app_context
+                .dpns_vote_operation(operation_id)
+                .ok()
+                .flatten()
+                .is_some(),
+        ) {
+            self.submitted_operation = None;
+            self.workspace.step = DpnsVoteComposerStep::Review;
+            self.focus_step_heading = true;
+        }
+    }
+
     pub fn new(
         app_context: &Arc<AppContext>,
         preselected_voter: Option<Identifier>,
@@ -531,7 +552,10 @@ impl DpnsVotingCenter {
                 {
                     return VotingCenterOutcome::Action(Box::new(AppAction::BackendTask(
                         BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id),
+                            ContestedResourceTask::ReconcileDpnsVoteOperation(
+                                operation_id,
+                                self.app_context.network(),
+                            ),
                         ),
                     )));
                 }
@@ -622,6 +646,7 @@ impl DpnsVotingCenter {
                 operation,
                 self.selected_voters(),
                 self.editing_scheduled_key.clone(),
+                self.app_context.network(),
             )),
         )))
     }
@@ -1044,6 +1069,20 @@ fn is_explicit_schedule_replacement(
         && matches!(replacement_timing, VoteTiming::Scheduled(_))
 }
 
+fn should_return_to_review_after_error(
+    submitted_operation: DpnsVoteOperationId,
+    network: dash_sdk::dpp::dashcore::Network,
+    context: &BackendTaskContext,
+    operation_was_journaled: bool,
+) -> bool {
+    !operation_was_journaled
+        && context
+            == &BackendTaskContext::DpnsVoteOperation {
+                network,
+                operation_id: submitted_operation,
+            }
+}
+
 fn has_loaded_voting_key(voter: &QualifiedIdentity) -> bool {
     voter
         .private_keys
@@ -1210,5 +1249,33 @@ mod tests {
 
         assert!(summary.contains("Lock at "));
         assert!(summary.contains("→ Abstain at "));
+    }
+
+    #[test]
+    fn matching_pre_journal_error_returns_the_composer_to_review() {
+        let operation_id = DpnsVoteOperationId::from_bytes([4; 16]);
+        let context = BackendTaskContext::DpnsVoteOperation {
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+            operation_id,
+        };
+
+        assert!(should_return_to_review_after_error(
+            operation_id,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            &context,
+            false,
+        ));
+        assert!(!should_return_to_review_after_error(
+            operation_id,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            &context,
+            true,
+        ));
+        assert!(!should_return_to_review_after_error(
+            operation_id,
+            dash_sdk::dpp::dashcore::Network::Mainnet,
+            &context,
+            false,
+        ));
     }
 }

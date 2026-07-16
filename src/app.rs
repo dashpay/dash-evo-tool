@@ -2085,11 +2085,22 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                         }
-                        BackendTaskSuccessResult::DpnsVoteOperationUpdated(operation_id) => {
-                            match active_context.dpns_vote_operation(operation_id) {
-                                Ok(Some(operation)) => {
-                                    let diagnostics = active_context
-                                        .dpns_vote_operation_diagnostics(operation_id);
+                        BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                            network,
+                            operation_id,
+                        } => {
+                            let operation_context = self.network_contexts.get(&network).cloned();
+                            match operation_context
+                                .as_ref()
+                                .map(|context| context.dpns_vote_operation(operation_id))
+                            {
+                                Some(Ok(Some(operation))) => {
+                                    let diagnostics = operation_context
+                                        .as_ref()
+                                        .map(|context| {
+                                            context.dpns_vote_operation_diagnostics(operation_id)
+                                        })
+                                        .unwrap_or_default();
                                     let (message, message_type, keep_visible) =
                                         dpns_vote_feedback(&operation);
                                     let handle =
@@ -2101,22 +2112,31 @@ impl App for AppState {
                                         handle.disable_auto_dismiss();
                                     }
                                 }
-                                Ok(None) => {
+                                Some(Ok(None)) => {
                                     MessageBanner::set_global(
                                         ctx,
                                         "This node already has that vote. Nothing was submitted.",
                                         MessageType::Info,
                                     );
                                 }
-                                Err(error) => tracing::warn!(
+                                Some(Err(error)) => tracing::warn!(
                                     ?error,
+                                    ?network,
                                     operation_id = %operation_id,
                                     "Could not load DPNS vote operation feedback"
+                                ),
+                                None => tracing::warn!(
+                                    ?network,
+                                    operation_id = %operation_id,
+                                    "Could not find the originating network for DPNS vote feedback"
                                 ),
                             }
                             self.visible_screen_mut().display_backend_task_result(
                                 &context,
-                                BackendTaskSuccessResult::DpnsVoteOperationUpdated(operation_id),
+                                BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                                    network,
+                                    operation_id,
+                                },
                             );
                             self.visible_screen_mut().refresh();
                         }

@@ -258,7 +258,10 @@ pub enum BackendTaskContext {
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
     /// One durable DPNS vote operation.
-    DpnsVoteOperation(DpnsVoteOperationId),
+    DpnsVoteOperation {
+        network: Network,
+        operation_id: DpnsVoteOperationId,
+    },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -332,10 +335,17 @@ impl From<&BackendTask> for BackendTaskContext {
                 operation,
                 _,
                 _,
-            )) => Self::DpnsVoteOperation(operation.id),
+                network,
+            )) => Self::DpnsVoteOperation {
+                network: *network,
+                operation_id: operation.id,
+            },
             BackendTask::ContestedResourceTask(
-                ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id),
-            ) => Self::DpnsVoteOperation(*operation_id),
+                ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id, network),
+            ) => Self::DpnsVoteOperation {
+                network: *network,
+                operation_id: *operation_id,
+            },
             _ => Self::Other,
         }
     }
@@ -385,7 +395,10 @@ pub enum BackendTaskSuccessResult {
         network: Network,
         preserve_eligibility_since_ms: Option<u64>,
     },
-    DpnsVoteOperationUpdated(DpnsVoteOperationId),
+    DpnsVoteOperationUpdated {
+        network: Network,
+        operation_id: DpnsVoteOperationId,
+    },
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
     /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
     ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),
@@ -1122,6 +1135,22 @@ mod tests {
         assert_eq!(
             BackendTaskContext::from(&task),
             BackendTaskContext::ClearNetworkDatabase
+        );
+    }
+
+    #[test]
+    fn dpns_vote_context_preserves_the_originating_network() {
+        let operation_id = DpnsVoteOperationId::from_bytes([7; 16]);
+        let task = BackendTask::ContestedResourceTask(
+            ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id, Network::Mainnet),
+        );
+
+        assert_eq!(
+            BackendTaskContext::from(&task),
+            BackendTaskContext::DpnsVoteOperation {
+                network: Network::Mainnet,
+                operation_id,
+            }
         );
     }
 

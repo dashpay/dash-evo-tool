@@ -610,8 +610,11 @@ impl ScreenLike for AddContactScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup =
-                        InfoPopup::new("About Contact Requests", CONTACT_REQUEST_INFO_TEXT);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_add_contact_info_popup"),
+                        "About Contact Requests",
+                        CONTACT_REQUEST_INFO_TEXT,
+                    );
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }

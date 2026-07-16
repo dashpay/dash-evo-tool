@@ -422,8 +422,11 @@ impl ScreenLike for SendPaymentScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup =
-                        InfoPopup::new("Payment Guidelines", PAYMENT_GUIDELINES_INFO_TEXT);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_send_payment_info_popup"),
+                        "Payment Guidelines",
+                        PAYMENT_GUIDELINES_INFO_TEXT,
+                    );
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }

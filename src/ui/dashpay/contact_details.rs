@@ -596,8 +596,11 @@ impl ScreenLike for ContactDetailsScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup =
-                        InfoPopup::new("Private Contact Information", PRIVATE_CONTACT_INFO_TEXT);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_contact_details_private_info_popup"),
+                        "Private Contact Information",
+                        PRIVATE_CONTACT_INFO_TEXT,
+                    );
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }

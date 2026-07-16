@@ -304,8 +304,11 @@ impl ScreenLike for ProfileSearchScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup =
-                        InfoPopup::new("About Profile Search", PROFILE_SEARCH_INFO_TEXT);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_profile_search_info_popup"),
+                        "About Profile Search",
+                        PROFILE_SEARCH_INFO_TEXT,
+                    );
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }

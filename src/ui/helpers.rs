@@ -56,8 +56,8 @@ pub(crate) fn clicked_outside_window_after_open(
 /// arming is derived from a gap in rendering, it re-arms automatically however
 /// the modal was previously dismissed and needs no explicit teardown.
 ///
-/// `id` must be stable for the modal across frames; since these modals are shown
-/// one-at-a-time, a per-component constant id is sufficient.
+/// `id` must be stable across frames and unique to the modal instance so one
+/// modal's render history cannot disarm another modal's opening-frame guard.
 pub(crate) fn clicked_outside_window_after_open_by_id(
     ctx: &egui::Context,
     window_rect: egui::Rect,

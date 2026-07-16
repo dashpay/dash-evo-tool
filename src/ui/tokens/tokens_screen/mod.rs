@@ -2841,7 +2841,11 @@ impl ScreenLike for TokensScreen {
 
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
-                        let mut popup = InfoPopup::new("Information", &info_text);
+                        let mut popup = InfoPopup::new(
+                            egui::Id::new("tokens_screen_info_popup"),
+                            "Information",
+                            &info_text,
+                        );
                         if popup.show(ui).inner {
                             self.show_pop_up_info = None;
                         }

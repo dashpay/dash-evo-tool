@@ -8,6 +8,7 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 /// Similar to ConfirmationDialog but for showing informational content only
 /// Supports both plain text and markdown rendering
 pub struct InfoPopup {
+    id: egui::Id,
     title: WidgetText,
     message: String,
     close_text: WidgetText,
@@ -16,9 +17,10 @@ pub struct InfoPopup {
 }
 
 impl InfoPopup {
-    /// Create a new info popup with the given title and message
-    pub fn new(title: impl Into<WidgetText>, message: impl Into<String>) -> Self {
+    /// Create an info popup with a stable ID unique to this popup instance.
+    pub fn new(id: egui::Id, title: impl Into<WidgetText>, message: impl Into<String>) -> Self {
         Self {
+            id,
             title: title.into(),
             message: message.into(),
             close_text: "Close".into(),
@@ -64,7 +66,7 @@ impl InfoPopup {
             ui.ctx(),
             ModalChromeConfig {
                 title: self.title.clone(),
-                overlay_id: egui::Id::new("info_popup_overlay"),
+                overlay_id: self.id.with("overlay"),
                 overlay_order: egui::Order::Background,
                 window_order: egui::Order::Middle,
                 resizable: is_markdown, // Allow resizing for markdown content
@@ -148,7 +150,7 @@ impl InfoPopup {
             && clicked_outside_window_after_open_by_id(
                 ui.ctx(),
                 wr.rect,
-                egui::Id::new("info_popup_overlay").with("outside_click_pass"),
+                self.id.with("outside_click_pass"),
             )
         {
             was_closed = true;
@@ -169,5 +171,60 @@ impl InfoPopup {
     /// Check if the popup is currently open
     pub fn is_open(&self) -> bool {
         self.is_open
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outside_press() -> egui::RawInput {
+        let outside_pos = egui::pos2(0.0, 0.0);
+        egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(outside_pos),
+                egui::Event::PointerButton {
+                    pos: outside_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn opening_one_popup_after_closing_another_ignores_its_opening_click() {
+        let ctx = egui::Context::default();
+
+        let _ = ctx.run_ui(outside_press(), |ui| {
+            let mut popup = InfoPopup::new(
+                egui::Id::new("first_info_popup"),
+                "First popup",
+                "First message.",
+            );
+            assert!(!popup.show(ui).inner);
+        });
+        let _ = ctx.run_ui(outside_press(), |ui| {
+            let mut popup = InfoPopup::new(
+                egui::Id::new("first_info_popup"),
+                "First popup",
+                "First message.",
+            );
+            assert!(popup.show(ui).inner);
+        });
+
+        let _ = ctx.run_ui(outside_press(), |ui| {
+            let mut popup = InfoPopup::new(
+                egui::Id::new("second_info_popup"),
+                "Second popup",
+                "Second message.",
+            );
+            assert!(
+                !popup.show(ui).inner,
+                "the second popup must survive its own opening click"
+            );
+        });
     }
 }

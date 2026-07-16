@@ -171,9 +171,8 @@ jobs:
             # (the same marker `finalize` writes) — i.e. it's provably one of
             # THIS workflow's own not-yet-published drafts, never anything
             # else.
-            # shellcheck disable=SC2016
             owned=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq --arg tag "$TAG" '.[] | select(.tag_name == $tag and .draft == true and ((.body // "") | test("<!-- weekly-version:"))) | "true"' \
+              --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true and ((.body // \"\") | test(\"<!-- weekly-version:\"))) | \"true\"" \
               2>/dev/null | head -n1 || echo "")
             if [ "$owned" != "true" ]; then
               echo "::error::Refusing force re-cut: tag $TAG already exists and is not one of this workflow's own draft releases. This would collide with an existing or already-published release — pick a different version."
@@ -318,11 +317,11 @@ jobs:
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ]; then
             TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` awaits your royal assent — undraft it here: <${RELEASE_URL}|the release page>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ] && [ "$CLEANUP_RESULT" = "success" ]; then
-            TEXT=":rotating_light: <!channel> *Even I, Claudius the Magnificent, cannot forge a release from a broken build.* Version \`${VERSION}\` for \`${REPO}\` was tagged, yet the platform build faltered — I have swept the orphaned tag away so next week begins unblemished. Inspect the wreckage: <${RUN_URL}|the run>."
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot forge a release from a broken build.* Version \`${VERSION}\` for \`${REPO}\` was tagged, yet the platform build faltered — I have swept the orphaned tag away so next week begins unblemished. Inspect the wreckage: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ]; then
-            TEXT=":rotating_light: <!channel> *Even I, Claudius the Magnificent, cannot forge a release from a broken build, and I could not clean up after myself either.* Version \`${VERSION}\` for \`${REPO}\` was tagged, the platform build faltered, and automatic cleanup did not finish — a stray tag or draft release may remain. Manual sweep required: <${RUN_URL}|the run>."
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot forge a release from a broken build, and I could not clean up after myself either.* Version \`${VERSION}\` for \`${REPO}\` was tagged, the platform build faltered, and automatic cleanup did not finish — a stray tag or draft release may remain. Manual sweep required: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ]; then
-            TEXT=":rotating_light: <!channel> *Even I, Claudius the Magnificent, could not even lay down this week's tag.* Something broke for \`${REPO}\` before any build began. Inspect: <${RUN_URL}|the run>."
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, could not even lay down this week's tag.* Something broke for \`${REPO}\` before any build began. Inspect: <${RUN_URL}|the run>."
           else
             echo "Nothing to notify."
             exit 0

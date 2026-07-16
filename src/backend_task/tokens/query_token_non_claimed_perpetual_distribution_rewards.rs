@@ -73,11 +73,11 @@ impl AppContext {
         token_id: Identifier,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let token_config = self.db.get_token_config_for_id(&token_id, self)?.ok_or(
-            TaskError::TokenQueryError {
-                detail: "Token config not found in database".to_string(),
-            },
-        )?;
+        let token_config =
+            self.get_token_config_for_id(&token_id)?
+                .ok_or(TaskError::TokenQueryError {
+                    detail: "Token config not found in database".to_string(),
+                })?;
         let perpetual_distribution = token_config
             .distribution_rules()
             .perpetual_distribution()

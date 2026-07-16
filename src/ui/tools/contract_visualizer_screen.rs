@@ -9,7 +9,7 @@ use crate::ui::theme::DashColors;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::platform::DataContract;
-use eframe::egui::{Color32, Context, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{Color32, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
@@ -30,12 +30,6 @@ pub struct ContractVisualizerScreen {
     // ---- parsed output -------
     parsed_json: Option<String>,
     parse_status: ContractParseStatus,
-
-    // ---- helper for chooser search ----
-    // Allow dead_code: This field provides search functionality for contract selection,
-    // useful for filtering contracts in the visualizer interface
-    #[allow(dead_code)]
-    contract_search_term: String,
 }
 
 impl ContractVisualizerScreen {
@@ -47,8 +41,6 @@ impl ContractVisualizerScreen {
 
             parsed_json: None,
             parse_status: ContractParseStatus::NotStarted,
-
-            contract_search_term: String::new(),
         }
     }
 
@@ -121,7 +113,7 @@ impl ContractVisualizerScreen {
 
     fn show_input(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for Contract:");
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let resp = ui.add(
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)
@@ -142,7 +134,7 @@ impl ContractVisualizerScreen {
 
         ScrollArea::vertical().show(ui, |ui| match &self.parse_status {
             ContractParseStatus::Complete => {
-                ui.monospace(self.parsed_json.as_ref().unwrap());
+                ui.monospace(self.parsed_json.as_deref().unwrap_or_default());
             }
             ContractParseStatus::Error(msg) => {
                 let error_color = DashColors::ERROR;
@@ -178,22 +170,22 @@ impl crate::ui::ScreenLike for ContractVisualizerScreen {
         // Local parse errors are set directly via self.parse_status.
     }
     fn display_task_result(&mut self, _r: BackendTaskSuccessResult) {}
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenToolsContractVisualizerScreen,
         );
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         /* ---------- central panel ---------- */
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             self.show_input(ui);
             self.show_output(ui);
             AppAction::None

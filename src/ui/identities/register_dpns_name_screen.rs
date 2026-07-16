@@ -12,7 +12,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
+use crate::ui::components::{
+    MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ResultBannerExt,
+};
 use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
 use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
@@ -61,14 +63,28 @@ pub struct RegisterDpnsNameScreen {
     completed_fee_result: Option<FeeResult>,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
-    refresh_banner: Option<BannerHandle>,
+    /// Bucket A overlay-adoption pattern: a button-less full-window block raised
+    /// when the bounded registration is dispatched and torn down on every
+    /// terminal result. It replaces the old progress banner and, by blocking the
+    /// whole window, closes the double-submit hole the banner left open.
+    op_overlay: Option<OverlayHandle>,
 }
 
 impl RegisterDpnsNameScreen {
     pub fn new(app_context: &Arc<AppContext>, source: RegisterDpnsNameSource) -> Self {
         let qualified_identities: Vec<_> =
             app_context.load_local_user_identities().unwrap_or_default();
-        let selected_qualified_identity = qualified_identities.first().cloned();
+
+        // Seed from the app-scoped selected identity (W2 SYNC); fall back to first.
+        let selected_qualified_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| {
+                qualified_identities
+                    .iter()
+                    .find(|qi| qi.identity.id() == id)
+                    .cloned()
+            })
+            .or_else(|| qualified_identities.first().cloned());
 
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
             get_selected_wallet(identity, Some(app_context), None)
@@ -124,7 +140,7 @@ impl RegisterDpnsNameScreen {
             show_advanced_options: false,
             completed_fee_result: None,
             source,
-            refresh_banner: None,
+            op_overlay: None,
         }
     }
 
@@ -180,7 +196,7 @@ impl RegisterDpnsNameScreen {
     fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Identity selector
+        // Identity selector — SYNC: write-back via syncing_global on user pick.
         let response = ui.add(
             IdentitySelector::new(
                 "dpns_register_identity_selector",
@@ -191,7 +207,8 @@ impl RegisterDpnsNameScreen {
             .unwrap()
             .width(300.0)
             .label("Identity:")
-            .other_option(false),
+            .other_option(false)
+            .syncing_global(self.app_context.clone()),
         );
 
         // Handle identity change - auto-select key and update wallet
@@ -270,6 +287,37 @@ impl RegisterDpnsNameScreen {
         )))
     }
 
+    /// Dispatch the registration and raise the Bucket A blocking overlay.
+    ///
+    /// The overlay is raised only when a real task is produced (an identity and a
+    /// signing key are selected), so a no-op click never strands a block. The
+    /// full-window block is the in-progress feedback that replaces the old banner
+    /// and prevents a second submit while the first is in flight.
+    fn begin_registration(&mut self, ctx: &Context) -> AppAction {
+        let action = self.register_dpns_name_clicked();
+        if matches!(action, AppAction::BackendTask(_)) {
+            self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult;
+            self.raise_progress_overlay(ctx);
+        }
+        action
+    }
+
+    fn raise_progress_overlay(&mut self, ctx: &Context) {
+        self.op_overlay.raise(
+            ctx,
+            "Registering your username on the network.",
+            OverlayConfig::default(),
+        );
+    }
+
+    /// Test seam: run the exact production overlay-raise the Register button uses,
+    /// so the Bucket A adoption (raise + guaranteed teardown) is exercisable in
+    /// kittests without funding an identity. Mirrors `force_input_for_test`.
+    #[doc(hidden)]
+    pub fn raise_progress_overlay_for_test(&mut self, ctx: &Context) {
+        self.raise_progress_overlay(ctx);
+    }
+
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
@@ -301,23 +349,28 @@ impl RegisterDpnsNameScreen {
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // Tear down the blocking overlay on the error terminal path so a
+        // failed registration can never hard-lock the window.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refresh_banner.take_and_clear();
+            self.op_overlay.take_and_clear();
             self.register_dpns_name_status = RegisterDpnsNameStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        // Tear down the blocking overlay on the success terminal path.
         if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
             backend_task_success_result
         {
-            self.refresh_banner.take_and_clear();
+            self.op_overlay.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Build breadcrumbs based on where we came from
         let breadcrumbs = match self.source {
             RegisterDpnsNameSource::Dpns => vec![
@@ -338,18 +391,18 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ],
         };
 
-        let mut action = add_top_panel(ctx, &self.app_context, breadcrumbs, vec![]);
+        let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
 
         // Use the appropriate left panel highlight based on source
         let root_screen = match self.source {
             RegisterDpnsNameSource::Dpns => crate::ui::RootScreenType::RootScreenDPNSActiveContests,
             RegisterDpnsNameSource::Identities => crate::ui::RootScreenType::RootScreenIdentities,
         };
-        action |= add_left_panel(ctx, &self.app_context, root_screen);
+        action |= add_left_panel(ui, &self.app_context, root_screen);
 
         // Don't show the tools/dpns subscreen chooser panels for this screen
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             egui::ScrollArea::vertical()
@@ -410,8 +463,9 @@ impl ScreenLike for RegisterDpnsNameScreen {
             if self.selected_wallet.is_some()
                 && let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -485,7 +539,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             // Fee estimation
             let fee_estimator = self.app_context.fee_estimator();
             let estimated_fee = fee_estimator.estimate_document_create();
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
@@ -551,11 +605,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 .disabled_tooltip(&hover_text)
                 .clicked()
             {
-                self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult;
-                let handle = MessageBanner::set_global(ui.ctx(), "Registering DPNS name...", MessageType::Info);
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
-                inner_action = self.register_dpns_name_clicked();
+                inner_action = self.begin_registration(ui.ctx());
             }
 
             ui.add_space(10.0);

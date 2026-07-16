@@ -1,8 +1,8 @@
 //! MCP service definition — DashMcpService struct, context providers, and ServerHandler impl.
 
 use crate::context::AppContext;
+use crate::mcp::error::McpToolError;
 use crate::mcp::tools;
-use crate::spv::CoreBackendMode;
 use rmcp::handler::server::tool::{ToolCallContext, ToolRouter};
 use rmcp::model::*;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, service::RequestContext};
@@ -37,6 +37,20 @@ impl ContextHolder {
             Self::Shared(swap) => swap.store(ctx),
             #[cfg(feature = "cli")]
             Self::Standalone(swap) => swap.store(Some(ctx)),
+        }
+    }
+
+    /// Whether this holder needs lazy initialization before the first load.
+    /// Only standalone (stdio/CLI) contexts start empty; shared (HTTP) contexts
+    /// are pre-populated by the GUI. A `match` stays correct whether or not the
+    /// `mcp` feature compiles in the `Shared` variant — unlike an `if let`, which
+    /// becomes an irrefutable pattern in a `cli`-only build.
+    #[cfg(feature = "cli")]
+    fn needs_lazy_init(&self) -> bool {
+        match self {
+            #[cfg(feature = "mcp")]
+            Self::Shared(_) => false,
+            Self::Standalone(_) => true,
         }
     }
 }
@@ -84,34 +98,122 @@ impl DashMcpService {
         }
     }
 
-    /// Get the current AppContext.
+    /// Get the current AppContext, returning a tool-native [`McpToolError`].
     ///
     /// In HTTP mode, loads from the shared ArcSwap (always initialized).
-    /// In stdio/CLI mode, initializes on first call, then loads.
-    pub(crate) async fn ctx(&self) -> Result<Arc<AppContext>, McpError> {
+    /// In stdio/CLI mode, initializes on first call, then loads. Tool invokers
+    /// call this so the error propagates with `?` and is converted to the wire
+    /// error once at the router boundary — no lossy `McpError` → string round-trip.
+    pub(crate) async fn tool_ctx(&self) -> Result<Arc<AppContext>, McpToolError> {
         #[cfg(feature = "cli")]
-        if let ContextHolder::Standalone(_) = &self.ctx {
+        if self.ctx.needs_lazy_init() {
             let ctx_holder = self.ctx.clone();
             self.init_guard
                 .get_or_try_init(|| async {
                     let app_context = init_app_context().await.map_err(|e| {
                         tracing::error!("MCP context initialization failed: {e}");
-                        McpError::internal_error("Failed to initialize application context", None)
+                        McpToolError::Internal(
+                            "Failed to initialize application context".to_owned(),
+                        )
                     })?;
                     ctx_holder.store(app_context);
-                    Ok::<(), McpError>(())
+                    Ok::<(), McpToolError>(())
                 })
                 .await?;
         }
         self.ctx
             .load()
-            .ok_or_else(|| McpError::internal_error("AppContext not initialized", None))
+            .ok_or_else(|| McpToolError::Internal("AppContext not initialized".to_owned()))
     }
 
     /// Replace the active context. Used by `network_switch` to point the
     /// server at a newly created network context. Works in all modes.
     pub(crate) fn swap_context(&self, new_ctx: Arc<AppContext>) {
         self.ctx.store(new_ctx);
+    }
+
+    /// Drain the wallet backend's persister before process exit.
+    ///
+    /// Called from the standalone stdio serve path (`start_stdio`), inside
+    /// `block_on` while the Tokio runtime is still alive.  Ensures any in-flight
+    /// `TokenBalanceChangeSet` / `PlatformWalletChangeSet` persister writes issued
+    /// by the coordinator sync loops complete before the process exits.
+    ///
+    /// ## Why this does NOT stop the coordinator timer panic
+    ///
+    /// Each coordinator (`identity-sync`, `platform-address-sync`, `shielded-sync`)
+    /// runs on a **dedicated OS thread** that calls [`Handle::block_on`].  Their
+    /// inner loop ends with:
+    ///
+    /// ```text
+    /// tokio::select! {
+    ///     _ = tokio::time::sleep(interval) => {}   // panics if runtime shut down
+    ///     _ = cancel.cancelled()            => break,
+    /// }
+    /// ```
+    ///
+    /// `backend.shutdown()` → `quiesce()` cancels the tokens and waits for
+    /// `is_syncing == false`, but **does not join the OS threads** — it returns
+    /// as soon as the last persister write completes.  At that point the coordinator
+    /// threads are still alive and may poll `sleep(interval)` in `select!`.
+    ///
+    /// `tokio::select!` picks arms in **random order** for fairness.  If
+    /// `sleep(interval)` is polled before `cancel.cancelled()` (which is ready
+    /// immediately) while the Tokio runtime is shutting down, `Sleep::poll`
+    /// panics: *"A Tokio 1.x context was found, but it is being shutdown."*
+    ///
+    /// A `tokio::time::sleep` grace period was tried and also fails: DAPI retries
+    /// that are already in flight when `quiesce()` returns can extend past any
+    /// fixed sleep window.
+    ///
+    /// **The deterministic fix** is `std::process::exit` in the CLI entry points
+    /// (`run_stdio_server`, `run_headless`, and the one-shot tool path in `main`),
+    /// applied after the tool result is flushed to stdout.  `process::exit`
+    /// reclaims all OS threads before they can poll the shutting-down timer wheel.
+    /// The upstream fix (storing and joining the OS thread's `JoinHandle` in
+    /// `quiesce()`) would be the correct library-level solution.
+    ///
+    /// ## Graceful teardown — plan for when upstream delivers
+    ///
+    /// Once `WalletBackend::quiesce()` (or a new `shutdown_and_join()` variant)
+    /// joins the coordinator OS threads before returning, the `process::exit`
+    /// stopgap can be removed from all three CLI call-sites.  The replacement
+    /// would look like:
+    ///
+    /// ```text
+    /// // TODO(graceful-teardown): remove process::exit once WalletBackend exposes
+    /// // coordinator JoinHandles and quiesce() joins them before returning.
+    ///
+    /// // 1. Quiesce persister writes AND join all coordinator OS threads.
+    /// backend.shutdown_and_join().await;
+    ///
+    /// // 2. At this point NO coordinator thread holds a Tokio timer registration,
+    /// //    so the runtime can be dropped (or allowed to fall off the stack)
+    /// //    without triggering the "context is being shutdown" panic.
+    /// drop(runtime);   // or just let it fall out of scope
+    ///
+    /// // 3. Return normally — no hard-exit required.
+    /// return result;
+    /// ```
+    ///
+    /// Call-sites to update when the upstream fix lands:
+    /// - `src/bin/det_cli/connect.rs`  — `run_stdio_server()`
+    /// - `src/bin/det_cli/main.rs`     — one-shot tool path in `main()`
+    /// - `src/bin/det_cli/headless.rs` — `run_headless()`
+    ///
+    /// ## Safe to call unconditionally
+    ///
+    /// - Context never initialized → `ctx.load()` returns `None` → no-op.
+    /// - Context init'd, backend never wired → `wallet_backend()` returns
+    ///   `Err(WalletBackendNotYetWired)` → no-op (no coordinators were started).
+    #[cfg(feature = "cli")]
+    pub async fn shutdown_wallet_backend(&self) {
+        let Some(ctx) = self.ctx.load() else { return };
+        let Ok(backend) = ctx.wallet_backend() else {
+            return;
+        };
+        // Drain in-flight persister writes.  Does not join coordinator threads.
+        backend.shutdown().await;
     }
 
     /// Build the tool router using trait-based tool composition.
@@ -121,6 +223,7 @@ impl DashMcpService {
             .with_async_tool::<tools::network::NetworkReinitSdk>()
             .with_async_tool::<tools::network::NetworkSwitch>()
             .with_async_tool::<tools::wallet::ListWalletsTool>()
+            .with_async_tool::<tools::wallet::ImportWallet>()
             .with_async_tool::<tools::wallet::GenerateReceiveAddress>()
             .with_async_tool::<tools::wallet::WalletBalancesQuery>()
             .with_async_tool::<tools::wallet::FetchPlatformBalances>()
@@ -133,12 +236,20 @@ impl DashMcpService {
             .with_async_tool::<tools::identity::IdentityCreditsTransfer>()
             .with_async_tool::<tools::identity::IdentityCreditsWithdraw>()
             .with_async_tool::<tools::identity::IdentityCreditsToAddress>()
+            // Masternode / evonode tools
+            .with_async_tool::<tools::masternode::MasternodeIdentityLoad>()
+            .with_async_tool::<tools::masternode::MasternodeCreditsWithdraw>()
             // Shielded tools
             .with_async_tool::<tools::shielded::ShieldedShieldFromCore>()
             .with_async_tool::<tools::shielded::ShieldedShieldFromPlatform>()
             .with_async_tool::<tools::shielded::ShieldedTransferTool>()
             .with_async_tool::<tools::shielded::ShieldedUnshield>()
             .with_async_tool::<tools::shielded::ShieldedWithdrawTool>()
+            // Shielded read/control tools (Phase G — agent self-verification)
+            .with_async_tool::<tools::shielded::ShieldedInit>()
+            .with_async_tool::<tools::shielded::ShieldedSync>()
+            .with_async_tool::<tools::shielded::ShieldedBalanceGet>()
+            .with_async_tool::<tools::shielded::ShieldedAddressGet>()
     }
 }
 
@@ -209,18 +320,47 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
 
     let db_file_path = data_file_path(&data_dir, "data.db")
         .map_err(|e| McpError::internal_error(format!("db path: {e}"), None))?;
-    let db = Arc::new(
-        Database::new(&db_file_path)
-            .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
-    );
-    db.initialize(&db_file_path)
-        .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
+    let db = if db_file_path.exists() {
+        Arc::new(
+            Database::open_legacy_read_only(&db_file_path)
+                .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
+        )
+    } else {
+        let db = Arc::new(
+            Database::new(&db_file_path)
+                .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
+        );
+        db.initialize(&db_file_path)
+            .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
+        db
+    };
 
-    let network = db
-        .get_settings()
+    let app_kv = AppContext::open_app_kv(&data_dir)
+        .map_err(|e| McpError::internal_error(format!("app k/v open: {e}"), None))?;
+    let secret_store = AppContext::open_secret_store(&data_dir).map_err(|e| {
+        // A legacy passphrase-protected vault can only be unlocked through the
+        // GUI's boot prompt — name the real cause and the path forward instead
+        // of the generic "another copy is running" lock message.
+        if e.is_secret_store_wrong_passphrase() {
+            McpError::internal_error(
+                "Your saved keys are protected by a passphrase set in an earlier version. \
+                 Open the Dash Evo Tool desktop app and enter the passphrase to unlock them, \
+                 then run this command again."
+                    .to_string(),
+                None,
+            )
+        } else {
+            McpError::internal_error(format!("secret store open: {e}"), None)
+        }
+    })?;
+    let network = app_kv
+        .get::<crate::model::settings::AppSettings>(
+            crate::wallet_backend::DetScope::Global,
+            crate::model::settings::AppSettings::KV_KEY,
+        )
         .ok()
         .flatten()
-        .map(|(network, ..)| network)
+        .map(|s| s.network)
         .unwrap_or(Network::Mainnet);
 
     let subtasks = Arc::new(TaskManager::new());
@@ -243,10 +383,12 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         data_dir,
         network,
         db,
-        None, // no wallet passwords in MCP server
         subtasks,
         connection_status,
         egui::Context::default(),
+        app_kv,
+        secret_store,
+        crate::model::user_role::UserRoleCell::default(),
     )
     .ok_or_else(|| {
         McpError::internal_error(
@@ -255,22 +397,15 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         )
     })?;
 
-    // Headless mode has no Dash Core RPC credentials — force SPV backend so
-    // wallet tools work without a local node. This is defence-in-depth even
-    // after the v34 migration: a user could point `det_cli` at a GUI data dir
-    // where someone explicitly chose RPC. We flip the in-memory mode only
-    // (volatile) so the GUI's saved preference is never overwritten.
-    if app_context.core_backend_mode() != CoreBackendMode::Spv {
-        tracing::info!("Headless mode: forcing SPV backend (was RPC)");
-        app_context.set_core_backend_mode_volatile(CoreBackendMode::Spv);
-    }
+    // Seed the role from AppSettings — the single source of truth, matching the
+    // GUI boot path, so a role chosen in the GUI is honoured here too.
+    app_context.seed_user_role_from_settings();
 
-    if let Err(e) = app_context.start_spv() {
-        tracing::warn!("SPV start failed (wallet tools may not work): {e}");
-    } else {
-        tracing::info!("SPV client started, wallets loading in background");
-    }
-
+    // Chain sync is SPV-only (owned by upstream platform-wallet). Starting it
+    // here would fast-fail: the wallet backend is not wired yet at boot. SPV is
+    // instead wired-then-started lazily by `resolve::ensure_spv_synced` on the
+    // first gated tool call — the single chokepoint that also covers the HTTP
+    // context swap and the post-network-switch path.
     Ok(app_context)
 }
 

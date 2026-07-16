@@ -12,9 +12,26 @@
 //! performed by Platform. For accurate fees, use Platform's EstimateStateTransitionFee
 //! endpoint (when available).
 
-use crate::model::amount::Amount;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
+use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
+use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
+use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
 use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::withdrawal::Pooling;
+use std::collections::BTreeMap;
+
+/// Maximum number of platform address inputs allowed per state transition.
+pub(crate) const MAX_PLATFORM_INPUTS: usize = 16;
+
+/// Estimated serialized bytes per input (address + signature/witness data).
+const ESTIMATED_BYTES_PER_INPUT: usize = 225;
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
 /// These determine the cost of storing and processing data on Platform.
@@ -81,6 +98,29 @@ impl Default for DataContractRegistrationFees {
             search_keyword_fee: 10_000_000_000,             // 0.1 DASH
         }
     }
+}
+
+/// Component counts describing a data contract, used for detailed fee estimation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ContractComponents {
+    /// Serialized size of the contract in bytes.
+    pub contract_bytes: usize,
+    /// Number of document types defined in the contract.
+    pub document_type_count: usize,
+    /// Number of non-unique indexes across all document types.
+    pub non_unique_index_count: usize,
+    /// Number of unique indexes across all document types.
+    pub unique_index_count: usize,
+    /// Number of contested indexes across all document types.
+    pub contested_index_count: usize,
+    /// Whether the contract defines a token.
+    pub has_token: bool,
+    /// Whether the token uses perpetual distribution.
+    pub has_perpetual_distribution: bool,
+    /// Whether the token uses pre-programmed distribution.
+    pub has_pre_programmed_distribution: bool,
+    /// Number of search keywords registered for the contract.
+    pub search_keyword_count: usize,
 }
 
 /// Minimum fees for state transitions (in credits).
@@ -177,12 +217,6 @@ impl PlatformFeeEstimator {
         }
     }
 
-    /// Try to create from platform version (for future dynamic fee support)
-    pub fn from_platform_version(_platform_version: &PlatformVersion) -> Self {
-        // For now, use default fees. In future, could read from platform_version
-        Self::new()
-    }
-
     /// Apply the fee multiplier to a base fee amount.
     /// Multiplier is in permille: 1000 = 1x, 1500 = 1.5x, 2000 = 2x
     fn apply_multiplier(&self, base_fee: u64) -> u64 {
@@ -263,7 +297,7 @@ impl PlatformFeeEstimator {
         // - Per-output costs
         // We add a 50% buffer to account for any additional costs
         let base_fee_credits = self.estimate_credit_transfer_to_addresses(output_count);
-        let fee_duffs = base_fee_credits / 1000; // Convert credits to duffs
+        let fee_duffs = base_fee_credits / CREDITS_PER_DUFF;
         // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
         fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
     }
@@ -312,8 +346,6 @@ impl PlatformFeeEstimator {
         has_output: bool,
         key_count: usize,
     ) -> u64 {
-        // Estimated serialized bytes per input (address + signature/witness data)
-        const ESTIMATED_BYTES_PER_INPUT: usize = 225;
         // Estimated bytes for identity structure + keys
         const ESTIMATED_IDENTITY_BASE_BYTES: usize = 100;
         const ESTIMATED_BYTES_PER_KEY: usize = 50;
@@ -374,8 +406,6 @@ impl PlatformFeeEstimator {
     /// This includes base cost, asset lock cost, input costs, storage-based fees,
     /// and a 20% safety buffer to account for fee variability.
     pub fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
-        // Estimated serialized bytes per input (address + signature/witness data)
-        const ESTIMATED_BYTES_PER_INPUT: usize = 225;
         // Estimated bytes for top-up transaction structure
         const ESTIMATED_TOPUP_BASE_BYTES: usize = 100;
         // Estimated seek operations for tree traversal
@@ -404,6 +434,64 @@ impl PlatformFeeEstimator {
 
         // Add 20% safety buffer to account for fee variability
         total.saturating_add(total / 5)
+    }
+
+    /// Resolve the actual fee paid by a wallet-funded identity top-up.
+    ///
+    /// A top-up converts `amount_duffs` of asset-lock value into
+    /// `amount_duffs × CREDITS_PER_DUFF` credits, less the Platform processing
+    /// fee. That fee is the shortfall between the credits the asset lock should
+    /// have minted and the balance the identity actually gained:
+    ///
+    /// ```text
+    /// actual_fee = expected_credits − (balance_after − balance_before)
+    /// ```
+    ///
+    /// The subtraction is only meaningful when `balance_before` is the
+    /// identity's true pre-top-up balance. After a backend reload the caller may
+    /// hold a stale cached balance — too low (inflating the apparent increase
+    /// and collapsing the delta toward zero) or too high (the apparent increase
+    /// shrinks and the delta swells toward the full minted amount). Either skew
+    /// drifts the measured fee away from what the top-up actually cost, so the
+    /// measured fee is trusted only when it is physically possible **and** lands
+    /// in a plausible band relative to the deterministic estimate; otherwise the
+    /// estimate — the trustworthy value — is returned.
+    pub fn resolve_identity_topup_actual_fee(
+        &self,
+        amount_duffs: u64,
+        balance_before: u64,
+        balance_after: u64,
+    ) -> u64 {
+        let expected_credits = amount_duffs.saturating_mul(CREDITS_PER_DUFF);
+        let balance_increase = balance_after.saturating_sub(balance_before);
+        let delta_fee = expected_credits.saturating_sub(balance_increase);
+
+        let estimate = self.estimate_identity_topup();
+
+        // Plausibility band for the measured fee. Three conditions must all hold:
+        //
+        //  • `0 < delta_fee` — a real top-up always pays a non-zero Platform fee.
+        //    A stale-LOW `balance_before` inflates the apparent increase to ≥100 %
+        //    of the mint and collapses the delta to zero.
+        //  • `delta_fee < expected_credits` — the fee can never exceed what the
+        //    asset lock minted. A stale-HIGH `balance_before` makes the increase
+        //    saturate to zero, swelling the delta to the full minted amount.
+        //  • `delta_fee <= plausible_upper` — the deterministic estimate already
+        //    over-states the fee (it bills the full asset-lock processing cost),
+        //    so a real fee sits at or below it; `×2` leaves headroom for storage
+        //    and epoch variance. A *partial*-stale `balance_before` yields a delta
+        //    that is non-zero and below the mint yet grossly inflated past the
+        //    estimate — caught here where the two boundary checks above miss it.
+        //
+        // The low side stays at `0 < delta_fee`: the estimate over-predicts, so a
+        // legitimately small real fee (well under the estimate) must not be
+        // rejected — no tighter lower bound is defensible.
+        let plausible_upper = estimate.saturating_mul(2);
+        if 0 < delta_fee && delta_fee < expected_credits && delta_fee <= plausible_upper {
+            delta_fee
+        } else {
+            estimate
+        }
     }
 
     /// Estimate fee for document batch transition
@@ -518,20 +606,20 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for data contract creation with detailed component counts.
     /// This provides the most accurate estimate by accounting for all registration fees.
-    #[allow(clippy::too_many_arguments)]
-    pub fn estimate_contract_create_detailed(
-        &self,
-        contract_bytes: usize,
-        document_type_count: usize,
-        non_unique_index_count: usize,
-        unique_index_count: usize,
-        contested_index_count: usize,
-        has_token: bool,
-        has_perpetual_distribution: bool,
-        has_pre_programmed_distribution: bool,
-        search_keyword_count: usize,
-    ) -> u64 {
+    pub fn estimate_contract_create_detailed(&self, components: ContractComponents) -> u64 {
         const ESTIMATED_SEEKS: usize = 20;
+
+        let ContractComponents {
+            contract_bytes,
+            document_type_count,
+            non_unique_index_count,
+            unique_index_count,
+            contested_index_count,
+            has_token,
+            has_perpetual_distribution,
+            has_pre_programmed_distribution,
+            search_keyword_count,
+        } = components;
 
         let mut base_fee = self.registration_fees.base_contract_registration_fee;
 
@@ -648,13 +736,17 @@ impl PlatformFeeEstimator {
     }
 }
 
-/// Credits per DASH constant
-/// 1 DASH = 100,000,000,000 credits (100 billion)
-pub const CREDITS_PER_DASH: u64 = 100_000_000_000;
+/// Credits per DASH: 1 DASH = 10^DASH_DECIMAL_PLACES credits (100 billion).
+pub const CREDITS_PER_DASH: u64 = 10u64.pow(DASH_DECIMAL_PLACES as u32);
 
 /// Format credits as DASH for display
 pub fn format_credits_as_dash(credits: u64) -> String {
     Amount::dash_from_credits(credits).to_string()
+}
+
+/// Format an amount in duffs as DASH for display.
+pub fn format_duffs_as_dash(duffs: u64) -> String {
+    Amount::dash_from_duffs(duffs).to_string()
 }
 
 /// Format credits for display (with both credits and DASH)
@@ -667,13 +759,337 @@ pub fn format_credits(credits: u64) -> String {
     }
 }
 
+/// Calculate the estimated fee for a platform address funds transfer.
+///
+/// Uses [`PlatformFeeEstimator`] for base costs (input/output fees) plus storage fees.
+pub(crate) fn estimate_platform_fee(
+    estimator: &PlatformFeeEstimator,
+    input_count: usize,
+    output_count: usize,
+) -> u64 {
+    let inputs = input_count.max(1);
+    let outputs = output_count.max(1);
+
+    // Base fee from Platform's min fee structure
+    // - 500,000 credits per input (address_funds_transfer_input_cost)
+    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
+    let base_fee = estimator.estimate_address_funds_transfer(inputs, outputs);
+
+    // Add storage fees for serialized input bytes only
+    // (outputs don't add significant serialization overhead)
+    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
+    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
+
+    // Total with 20% safety buffer
+    let total = base_fee.saturating_add(storage_fee);
+    total.saturating_add(total / 5)
+}
+
+/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
+pub(crate) fn estimate_withdrawal_fee_from_transition(
+    platform_version: &PlatformVersion,
+    inputs: &BTreeMap<PlatformAddress, u64>,
+    output_script: &CoreScript,
+) -> u64 {
+    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
+        .iter()
+        .map(|(addr, amount)| (*addr, (0, *amount)))
+        .collect();
+
+    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
+        inputs: inputs_with_nonce,
+        output: None,
+        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+        core_fee_per_byte: 1,
+        pooling: Pooling::Never,
+        output_script: output_script.clone(),
+        user_fee_increase: 0,
+        input_witnesses: Vec::new(),
+    });
+
+    transition
+        .calculate_min_required_fee(platform_version)
+        .unwrap_or(0)
+}
+
+/// Calculate the estimated fee for funding a Platform address from an asset lock.
+pub(crate) fn estimate_address_funding_fee_from_transition(
+    platform_version: &PlatformVersion,
+    destination: &PlatformAddress,
+) -> u64 {
+    let mut outputs = BTreeMap::new();
+    outputs.insert(*destination, None);
+
+    let transition =
+        AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
+            asset_lock_proof: AssetLockProof::default(),
+            inputs: BTreeMap::new(),
+            outputs,
+            fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
+            user_fee_increase: 0,
+            ..Default::default()
+        });
+
+    transition
+        .calculate_min_required_fee(platform_version)
+        .unwrap_or(0)
+}
+
+/// Result of allocating platform addresses for a transfer.
+#[derive(Debug, Clone)]
+pub(crate) struct AddressAllocationResult {
+    /// Map of platform address to amount to transfer from each
+    pub inputs: BTreeMap<PlatformAddress, u64>,
+    /// Index of the fee payer in BTreeMap iteration order
+    pub fee_payer_index: u16,
+    /// Estimated fee for this transaction
+    pub estimated_fee: u64,
+    /// Amount that couldn't be covered (0 if fully covered)
+    pub shortfall: u64,
+    /// Addresses sorted by balance descending (for UI display)
+    pub sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
+}
+
+/// Allocates platform addresses for a transfer, using a custom fee calculator.
+pub(crate) fn allocate_platform_addresses_with_fee<F>(
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    destination: Option<&PlatformAddress>,
+    fee_for_inputs: F,
+) -> AddressAllocationResult
+where
+    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
+{
+    // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
+    let filtered: Vec<_> = addresses
+        .iter()
+        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
+        .cloned()
+        .collect();
+
+    // Sort addresses by balance descending so the largest balance is used first
+    let mut sorted_addresses = filtered;
+    sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+
+    // Early return if no addresses available after filtering
+    if sorted_addresses.is_empty() {
+        return AddressAllocationResult {
+            inputs: BTreeMap::new(),
+            fee_payer_index: 0,
+            estimated_fee: fee_for_inputs(&BTreeMap::new()),
+            shortfall: amount_credits,
+            sorted_addresses: vec![],
+        };
+    }
+
+    // The highest-balance address (first in sorted order) will pay the fee
+    let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
+
+    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
+    let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
+
+    // Iterate until fee estimate stabilizes (input count affects fee)
+    for _ in 0..=MAX_PLATFORM_INPUTS {
+        inputs.clear();
+        let mut remaining = amount_credits;
+
+        for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
+            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
+                break;
+            }
+            let is_fee_payer = idx == 0;
+            let available = if is_fee_payer {
+                balance.saturating_sub(estimated_fee)
+            } else {
+                *balance
+            };
+            let use_amount = remaining.min(available);
+            if use_amount > 0 || is_fee_payer {
+                inputs.insert(*platform_addr, use_amount);
+                remaining = remaining.saturating_sub(use_amount);
+            }
+        }
+
+        let new_fee = fee_for_inputs(&inputs);
+        if new_fee == estimated_fee {
+            break;
+        }
+        estimated_fee = new_fee;
+    }
+
+    // Calculate shortfall (amount we couldn't allocate)
+    let total_allocated: u64 = inputs.values().sum();
+    let allocation_shortfall = amount_credits.saturating_sub(total_allocated);
+
+    // Check if fee payer can actually afford the fee from their remaining balance.
+    let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
+        let fee_payer_balance = sorted_addresses.first().map(|(_, _, b)| *b).unwrap_or(0);
+        let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
+        let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
+        estimated_fee.saturating_sub(fee_payer_remaining)
+    } else {
+        estimated_fee
+    };
+
+    let shortfall = allocation_shortfall.saturating_add(fee_deficit);
+
+    // Find the index of the fee payer in BTreeMap order (required by backend)
+    let fee_payer_index = fee_payer_addr
+        .and_then(|payer| {
+            inputs
+                .keys()
+                .enumerate()
+                .find(|(_, addr)| **addr == payer)
+                .map(|(idx, _)| idx as u16)
+        })
+        .unwrap_or(0);
+
+    AddressAllocationResult {
+        inputs,
+        fee_payer_index,
+        estimated_fee,
+        shortfall,
+        sorted_addresses,
+    }
+}
+
+/// Allocates platform addresses for a transfer, selecting which addresses to use
+/// and how much from each.
+///
+/// Algorithm:
+/// 1. Filters out the destination address (can't be both input and output)
+/// 2. Sorts addresses by balance descending (largest first)
+/// 3. The highest-balance address pays the fee
+/// 4. Iteratively allocates until fee estimate converges
+/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
+///
+/// Returns the allocation result with inputs, fee payer index, and any shortfall.
+pub(crate) fn allocate_platform_addresses(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    destination: Option<&PlatformAddress>,
+) -> AddressAllocationResult {
+    let max_inputs = addresses
+        .iter()
+        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
+        .count()
+        .min(MAX_PLATFORM_INPUTS);
+
+    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
+        // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
+        estimate_platform_fee(estimator, max_inputs.max(1), 1)
+    })
+}
+
+/// Estimate the Core (L1) network fee, in duffs, for a simple wallet send.
+///
+/// Mirrors the upstream key-wallet `TransactionBuilder` used by
+/// `WalletBackend::send_payment`: it builds at the default `FeeRate::normal()`
+/// (1 duff per byte) and sizes a non-SegWit P2PKH transaction as
+/// `10 + inputs × 148 + outputs × 34` bytes. A "Max" send spends every UTXO
+/// into a single recipient output with no change, so pass the wallet's full
+/// UTXO count as `num_inputs` and the recipient count as `num_outputs`.
+///
+/// A 15% safety margin is added on top of the raw size-based fee so the
+/// reserved amount comfortably covers the fee the builder actually charges
+/// (which rounds up, and may vary slightly with real script sizes). Reserving
+/// marginally more than needed leaves a few dust duffs in the wallet — always
+/// safe — whereas under-reserving would make the send fail.
+///
+/// `num_inputs` and `num_outputs` are clamped to a minimum of 1.
+pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) -> u64 {
+    const TX_BASE_BYTES: u64 = 10;
+    const BYTES_PER_INPUT: u64 = 148;
+    const BYTES_PER_OUTPUT: u64 = 34;
+    /// Default `FeeRate::normal()` in the upstream builder: 1 duff per byte.
+    const DUFFS_PER_BYTE: u64 = 1;
+    /// Extra headroom over the raw size estimate, in percent.
+    const SAFETY_MARGIN_PERCENT: u64 = 15;
+
+    let inputs = num_inputs.max(1) as u64;
+    let outputs = num_outputs.max(1) as u64;
+
+    let size_bytes = TX_BASE_BYTES
+        .saturating_add(inputs.saturating_mul(BYTES_PER_INPUT))
+        .saturating_add(outputs.saturating_mul(BYTES_PER_OUTPUT));
+
+    let raw_fee = size_bytes.saturating_mul(DUFFS_PER_BYTE);
+    raw_fee.saturating_add(raw_fee.saturating_mul(SAFETY_MARGIN_PERCENT) / 100)
+}
+
+/// Compute the maximum spendable amount, in duffs, for a Core "Max" send:
+/// the whole balance minus the estimated L1 network fee.
+///
+/// Returns `None` when the balance does not cover the estimated fee (i.e.
+/// nothing is left to send). Callers should disable "Max" and show a calm
+/// message in that case rather than producing an amount that would fail.
+///
+/// `num_inputs` is the wallet's UTXO count and `num_outputs` the recipient
+/// count; both are passed through to [`estimate_core_l1_send_fee_duffs`].
+pub fn core_max_send_amount_duffs(
+    balance_duffs: u64,
+    num_inputs: usize,
+    num_outputs: usize,
+) -> Option<u64> {
+    let fee = estimate_core_l1_send_fee_duffs(num_inputs, num_outputs);
+    let spendable = balance_duffs.checked_sub(fee)?;
+    (spendable > 0).then_some(spendable)
+}
+
+/// The duffs a Core "Max" send must reserve for the L1 network fee — the
+/// difference between the spendable balance and [`core_max_send_amount_duffs`].
+///
+/// Returns `None` in lockstep with `core_max_send_amount_duffs`: when the
+/// spendable balance cannot cover the fee there is no valid Max to reserve
+/// against, so callers disable "Max" rather than show a reserve for a send
+/// that would fail.
+///
+/// `spendable_duffs` MUST be the spendable balance (confirmed + unconfirmed),
+/// never the headline `total` — `total` counts immature coinbase and locked
+/// CoinJoin funds the upstream `CoinSelector` rejects, so reserving against it
+/// over-shoots the selectable set and the broadcast fails.
+pub fn core_max_send_reserve_duffs(
+    spendable_duffs: u64,
+    num_inputs: usize,
+    num_outputs: usize,
+) -> Option<u64> {
+    let max = core_max_send_amount_duffs(spendable_duffs, num_inputs, num_outputs)?;
+    Some(spendable_duffs.saturating_sub(max))
+}
+
 /// Compute the exact shielded fee for a given number of Orchard actions.
 ///
 /// Wraps `compute_minimum_shielded_fee` from `dpp`. Use this to calculate
 /// the fee after note selection, when the action count is known.
-pub fn shielded_fee_for_actions(num_actions: usize, platform_version: &PlatformVersion) -> u64 {
+///
+/// Returns the fee in credits, or a boxed [`ProtocolError`] when the active
+/// protocol version has no known shielded-fee formula. The error is boxed
+/// because `ProtocolError` is large and this sits on a hot `Ok` path.
+///
+/// [`ProtocolError`]: dash_sdk::dpp::ProtocolError
+pub fn shielded_fee_for_actions(
+    num_actions: usize,
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<dash_sdk::dpp::ProtocolError>> {
     use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
-    compute_minimum_shielded_fee(num_actions, platform_version)
+    compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
+}
+
+/// Fee headroom (credits) to reserve from the platform balance when shielding
+/// from it, so a "Max" amount still leaves enough to pay the shield's platform
+/// fee. `ShieldFromBalance` needs the shield fee on top of the shielded amount
+/// out of the same balance, so this must reserve the two-action shielded fee
+/// (scaled by the network multiplier) — not the far smaller plain
+/// platform-transfer estimate. Falls back to `0` if the active protocol version
+/// has no shielded-fee formula (the backend re-validates before dispatch).
+pub fn shield_from_balance_fee_headroom(
+    platform_version: &PlatformVersion,
+    fee_multiplier_permille: u64,
+) -> u64 {
+    let base_fee = shielded_fee_for_actions(2, platform_version).unwrap_or(0);
+    let multiplier = fee_multiplier_permille.max(1000);
+    base_fee.saturating_mul(multiplier) / 1000
 }
 
 #[cfg(test)]
@@ -692,6 +1108,124 @@ mod tests {
         // Base cost + asset lock cost + 2 keys
         let fee = estimator.estimate_identity_create(2);
         assert_eq!(fee, 2_000_000 + 200_000_000 + 2 * 6_500_000);
+    }
+
+    #[test]
+    fn test_identity_topup_actual_fee_uses_balance_delta_when_consistent() {
+        let estimator = PlatformFeeEstimator::new();
+        // 500_000 duffs → 500_000_000 credits minted; a real top-up loses some
+        // to the processing fee, so the balance gains slightly less.
+        let amount_duffs = 500_000u64;
+        let balance_before = 1_000_000_000u64;
+        let processing_fee = 3_000_000u64;
+        let balance_after = balance_before + amount_duffs * CREDITS_PER_DUFF - processing_fee;
+        assert_eq!(
+            estimator.resolve_identity_topup_actual_fee(
+                amount_duffs,
+                balance_before,
+                balance_after,
+            ),
+            processing_fee,
+            "a consistent balance delta must report the real processing fee"
+        );
+    }
+
+    #[test]
+    fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_balance() {
+        let estimator = PlatformFeeEstimator::new();
+        // Stale (too-low) `balance_before` — e.g. after a backend reload — makes
+        // the apparent increase exceed the minted credits, so the naive delta
+        // collapses to zero. The helper must fall back to the estimate instead.
+        let amount_duffs = 500_000u64;
+        let stale_balance_before = 0u64;
+        let balance_after = 9_999_999_999u64; // far more than the lock could mint
+        let resolved = estimator.resolve_identity_topup_actual_fee(
+            amount_duffs,
+            stale_balance_before,
+            balance_after,
+        );
+        assert_ne!(resolved, 0, "a top-up must never report a zero fee");
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "the stale-balance fallback must be the deterministic estimate"
+        );
+    }
+
+    /// A stale-HIGH `balance_before` must fall back to the estimate.
+    ///
+    /// If the cached balance is *higher* than the post-top-up balance (e.g.
+    /// because it was read before a spend cleared on-chain), then
+    /// `balance_after.saturating_sub(balance_before)` underflows to 0 and
+    /// `delta_fee` equals the full minted amount — not a fee, just noise.
+    /// The helper must detect this invariant violation and return the estimate.
+    #[test]
+    fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_high_balance() {
+        let estimator = PlatformFeeEstimator::new();
+        let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
+        let expected_credits = amount_duffs * CREDITS_PER_DUFF;
+        // balance_before is stale-HIGH: the cached balance is higher than
+        // balance_after, so balance_increase saturates to 0 and delta_fee would
+        // equal the full minted amount without the guard.
+        let stale_balance_before = 10_000_000_000u64;
+        let balance_after = 5_000_000_000u64; // lower than before (stale-HIGH)
+        assert!(
+            balance_after < stale_balance_before,
+            "pre-condition: stale-HIGH scenario"
+        );
+        let resolved = estimator.resolve_identity_topup_actual_fee(
+            amount_duffs,
+            stale_balance_before,
+            balance_after,
+        );
+        assert_ne!(
+            resolved, expected_credits,
+            "stale-HIGH must not report the full minted amount as the fee"
+        );
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "stale-HIGH must fall back to the deterministic estimate"
+        );
+    }
+
+    /// A *partial*-stale `balance_before` produces a delta that is non-zero and
+    /// below the minted amount — so it slips past the two boundary checks — yet
+    /// is grossly inflated relative to the real fee. The plausibility cap against
+    /// the deterministic estimate must catch it and fall back to the estimate.
+    #[test]
+    fn test_identity_topup_actual_fee_rejects_partial_stale_inflated_delta() {
+        let estimator = PlatformFeeEstimator::new();
+        let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
+        let expected_credits = amount_duffs * CREDITS_PER_DUFF;
+
+        // Truth: a ~3,000,000-credit processing fee on a large prior balance.
+        let true_before = 1_000_000_000u64;
+        let real_fee = 3_000_000u64;
+        let balance_after = true_before + expected_credits - real_fee; // freshly read
+
+        // `balance_before` is PARTIAL-stale-HIGH: higher than truth by 3 billion,
+        // but not high enough to saturate the increase to zero. The naive delta is
+        // positive and below the mint, so the boundary checks alone accept it.
+        let stale_before = 4_000_000_000u64;
+        let naive_increase = balance_after - stale_before;
+        let naive_delta = expected_credits - naive_increase;
+        assert!(
+            naive_delta > 0 && naive_delta < expected_credits,
+            "pre-condition: the inflated delta slips past both boundary checks"
+        );
+        assert!(
+            naive_delta > estimator.estimate_identity_topup() * 2,
+            "pre-condition: the inflated delta is grossly above the estimate"
+        );
+
+        let resolved =
+            estimator.resolve_identity_topup_actual_fee(amount_duffs, stale_before, balance_after);
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "a partial-stale inflated delta must fall back to the deterministic estimate"
+        );
     }
 
     #[test]
@@ -735,17 +1269,17 @@ mod tests {
     fn test_contract_create_detailed_with_token() {
         let estimator = PlatformFeeEstimator::new();
         // Contract with a token
-        let fee = estimator.estimate_contract_create_detailed(
-            500,   // contract bytes
-            1,     // 1 document type
-            1,     // 1 non-unique index
-            0,     // 0 unique indexes
-            0,     // 0 contested indexes
-            true,  // has token
-            false, // no perpetual distribution
-            false, // no pre-programmed distribution
-            0,     // 0 search keywords
-        );
+        let fee = estimator.estimate_contract_create_detailed(ContractComponents {
+            contract_bytes: 500,
+            document_type_count: 1,
+            non_unique_index_count: 1,
+            unique_index_count: 0,
+            contested_index_count: 0,
+            has_token: true,
+            has_perpetual_distribution: false,
+            has_pre_programmed_distribution: false,
+            search_keyword_count: 0,
+        });
         // Base: 0.1 DASH + Document type: 0.02 DASH + Index: 0.01 DASH + Token: 0.1 DASH
         // = 0.23 DASH + storage fees
         let expected_registration = 10_000_000_000 + 2_000_000_000 + 1_000_000_000 + 10_000_000_000;
@@ -761,13 +1295,127 @@ mod tests {
     }
 
     #[test]
+    fn test_core_l1_send_fee_matches_builder_size_model() {
+        // 1 input, 1 output (Max send: all funds to one recipient, no change).
+        // Upstream size = 10 + 148 + 34 = 192 bytes at 1 duff/byte = 192 duffs.
+        // With the 15% margin: 192 + floor(192 * 15 / 100) = 192 + 28 = 220.
+        assert_eq!(estimate_core_l1_send_fee_duffs(1, 1), 220);
+
+        // 2 inputs, 1 output: 10 + 296 + 34 = 340 bytes → 340 + 51 = 391.
+        assert_eq!(estimate_core_l1_send_fee_duffs(2, 1), 391);
+
+        // Fee grows with input count.
+        assert!(estimate_core_l1_send_fee_duffs(5, 1) > estimate_core_l1_send_fee_duffs(1, 1));
+    }
+
+    #[test]
+    fn test_core_l1_send_fee_clamps_to_minimum_one() {
+        // Zero inputs/outputs are clamped to 1 each — never a zero-byte tx.
+        assert_eq!(
+            estimate_core_l1_send_fee_duffs(0, 0),
+            estimate_core_l1_send_fee_duffs(1, 1)
+        );
+    }
+
+    #[test]
+    fn test_core_l1_send_fee_covers_actual_builder_fee() {
+        // The estimate must be >= the raw size-based fee the builder charges,
+        // so reserving it always leaves enough for the real fee.
+        for inputs in 1..=10 {
+            let raw_size = 10 + inputs as u64 * 148 + 34; // 1 output, no change
+            let estimate = estimate_core_l1_send_fee_duffs(inputs, 1);
+            assert!(
+                estimate >= raw_size,
+                "estimate {estimate} must cover raw fee {raw_size} for {inputs} inputs"
+            );
+        }
+    }
+
+    #[test]
+    fn test_core_max_send_amount_subtracts_fee() {
+        // Balance well above the fee: spendable = balance - fee.
+        let balance = 1_000_000_u64;
+        let fee = estimate_core_l1_send_fee_duffs(1, 1);
+        assert_eq!(
+            core_max_send_amount_duffs(balance, 1, 1),
+            Some(balance - fee)
+        );
+    }
+
+    #[test]
+    fn test_core_max_send_amount_edge_balance_at_or_below_fee() {
+        let fee = estimate_core_l1_send_fee_duffs(1, 1);
+
+        // Balance exactly equal to the fee: nothing left to send.
+        assert_eq!(core_max_send_amount_duffs(fee, 1, 1), None);
+        // Balance below the fee: nothing left to send.
+        assert_eq!(core_max_send_amount_duffs(fee - 1, 1, 1), None);
+        // Zero balance: nothing left to send.
+        assert_eq!(core_max_send_amount_duffs(0, 1, 1), None);
+
+        // One duff above the fee: exactly one spendable duff.
+        assert_eq!(core_max_send_amount_duffs(fee + 1, 1, 1), Some(1));
+    }
+
+    #[test]
+    fn test_core_max_send_reserve_complements_send_amount() {
+        // Reserve + send amount must reconstitute the spendable balance, and the
+        // reserve equals the estimated fee whenever a Max exists.
+        let spendable = 1_000_000_u64;
+        let fee = estimate_core_l1_send_fee_duffs(3, 1);
+        let send = core_max_send_amount_duffs(spendable, 3, 1).expect("covers fee");
+        let reserve = core_max_send_reserve_duffs(spendable, 3, 1).expect("covers fee");
+        assert_eq!(send + reserve, spendable);
+        assert_eq!(reserve, fee);
+    }
+
+    #[test]
+    fn test_core_max_send_reserve_none_when_balance_below_fee() {
+        let fee = estimate_core_l1_send_fee_duffs(1, 1);
+        // In lockstep with core_max_send_amount_duffs: no Max → no reserve.
+        assert_eq!(core_max_send_reserve_duffs(fee, 1, 1), None);
+        assert_eq!(core_max_send_reserve_duffs(0, 1, 1), None);
+        assert_eq!(core_max_send_reserve_duffs(fee + 1, 1, 1), Some(fee));
+    }
+
+    #[test]
+    fn shield_from_balance_headroom_reserves_shielded_fee_not_transfer_fee() {
+        let platform_version = PlatformVersion::latest();
+        let base_fee = shielded_fee_for_actions(2, platform_version).expect("known version");
+
+        // At the minimum (1000‰) multiplier the headroom equals the base fee.
+        let headroom = shield_from_balance_fee_headroom(platform_version, 1000);
+        assert_eq!(headroom, base_fee);
+
+        // It must reserve the full shielded fee (>50M), an order of magnitude
+        // above the plain platform-transfer estimate — under-reserving here is
+        // what got a Max shield-from-platform rejected upstream.
+        assert!(
+            headroom > 50_000_000,
+            "shield-from-balance headroom must reserve the shielded fee: {headroom}"
+        );
+        assert!(headroom > PlatformFeeEstimator::new().estimate_credit_transfer());
+
+        // Headroom scales with the multiplier and a sub-1000 multiplier is
+        // clamped up to 1000 so we never under-reserve.
+        assert_eq!(
+            shield_from_balance_fee_headroom(platform_version, 500),
+            base_fee
+        );
+        assert_eq!(
+            shield_from_balance_fee_headroom(platform_version, 2000),
+            base_fee.saturating_mul(2000) / 1000
+        );
+    }
+
+    #[test]
     fn test_shielded_fee_for_actions() {
         let platform_version = PlatformVersion::latest();
 
-        let fee_2 = shielded_fee_for_actions(2, platform_version);
-        let fee_3 = shielded_fee_for_actions(3, platform_version);
-        let fee_5 = shielded_fee_for_actions(5, platform_version);
-        let fee_10 = shielded_fee_for_actions(10, platform_version);
+        let fee_2 = shielded_fee_for_actions(2, platform_version).expect("known version");
+        let fee_3 = shielded_fee_for_actions(3, platform_version).expect("known version");
+        let fee_5 = shielded_fee_for_actions(5, platform_version).expect("known version");
+        let fee_10 = shielded_fee_for_actions(10, platform_version).expect("known version");
 
         // Fees should be positive and increase with action count
         assert!(fee_2 > 0, "fee for 2 actions should be positive");
@@ -793,5 +1441,137 @@ mod tests {
             (0.8..=1.2).contains(&ratio),
             "per-action cost should be roughly constant, got ratio {ratio}"
         );
+    }
+
+    /// A distinct P2PKH platform address for the given seed byte.
+    fn pa(byte: u8) -> PlatformAddress {
+        PlatformAddress::P2pkh([byte; 20])
+    }
+
+    /// A placeholder Core address; the allocation logic passes it through
+    /// untouched, so any valid address stands in.
+    fn any_core_address() -> Address {
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::dashcore::PublicKey;
+        use dash_sdk::dpp::dashcore::secp256k1::{
+            PublicKey as SecpPublicKey, Secp256k1, SecretKey,
+        };
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[1u8; 32]).expect("valid secret key");
+        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&secp, &sk).serialize())
+            .expect("valid pubkey");
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    fn addrs(balances: &[(u8, u64)]) -> Vec<(PlatformAddress, Address, u64)> {
+        let core = any_core_address();
+        balances
+            .iter()
+            .map(|(byte, balance)| (pa(*byte), core.clone(), *balance))
+            .collect()
+    }
+
+    #[test]
+    fn allocate_covers_amount_from_single_address() {
+        let addresses = addrs(&[(1, 1000)]);
+        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |_| 100);
+
+        assert_eq!(
+            result.shortfall, 0,
+            "fully funded transfer has no shortfall"
+        );
+        assert_eq!(result.estimated_fee, 100);
+        assert_eq!(result.inputs.get(&pa(1)).copied(), Some(500));
+        assert_eq!(result.fee_payer_index, 0);
+    }
+
+    #[test]
+    fn allocate_converges_when_fee_depends_on_input_count() {
+        // Fee grows with input count, so the allocation loop must iterate until
+        // the fee estimate stabilizes rather than under-funding on the first pass.
+        let addresses = addrs(&[(1, 300), (2, 300)]);
+        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |inputs| {
+            inputs.len() as u64 * 10
+        });
+
+        assert_eq!(result.estimated_fee, 20, "fee converged for two inputs");
+        assert_eq!(result.inputs.len(), 2);
+        assert_eq!(result.inputs.values().sum::<u64>(), 500);
+        assert_eq!(result.shortfall, 0);
+    }
+
+    #[test]
+    fn allocate_reports_shortfall_when_underfunded() {
+        let addresses = addrs(&[(1, 100)]);
+        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |_| 50);
+
+        // 100 balance, 50 reserved for fee → only 50 allocatable against a 500 ask.
+        assert_eq!(result.estimated_fee, 50);
+        assert_eq!(result.inputs.get(&pa(1)).copied(), Some(50));
+        assert_eq!(result.shortfall, 450);
+    }
+
+    #[test]
+    fn allocate_picks_highest_balance_as_fee_payer_and_excludes_destination() {
+        let addresses = addrs(&[(1, 100), (2, 1000), (9, 5000)]);
+        let destination = pa(9);
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 200, Some(&destination), |_| 30);
+
+        assert!(
+            !result.inputs.contains_key(&destination),
+            "destination must never be used as an input",
+        );
+        // Highest remaining balance (pa(2)) sorts first and pays the fee.
+        assert_eq!(
+            result.sorted_addresses.first().map(|(a, _, _)| *a),
+            Some(pa(2))
+        );
+        assert_eq!(result.inputs.get(&pa(2)).copied(), Some(200));
+        assert_eq!(result.shortfall, 0);
+        let fee_payer_key = result
+            .inputs
+            .keys()
+            .nth(result.fee_payer_index as usize)
+            .copied();
+        assert_eq!(
+            fee_payer_key,
+            Some(pa(2)),
+            "fee_payer_index locates the fee payer"
+        );
+    }
+
+    #[test]
+    fn allocate_with_no_addresses_reports_full_shortfall() {
+        let result = allocate_platform_addresses_with_fee(&[], 500, None, |_| 10);
+
+        assert!(result.inputs.is_empty());
+        assert!(result.sorted_addresses.is_empty());
+        assert_eq!(result.shortfall, 500);
+        assert_eq!(result.estimated_fee, 10);
+    }
+
+    #[test]
+    fn allocate_with_estimator_uses_worst_case_platform_fee() {
+        let estimator = PlatformFeeEstimator::new();
+        let addresses = addrs(&[(1, 10_000_000_000)]);
+        let result = allocate_platform_addresses(&estimator, &addresses, 1_000_000, None);
+
+        assert_eq!(
+            result.estimated_fee,
+            estimate_platform_fee(&estimator, 1, 1)
+        );
+        assert_eq!(result.shortfall, 0);
+        assert_eq!(result.fee_payer_index, 0);
+        assert_eq!(result.inputs.get(&pa(1)).copied(), Some(1_000_000));
+    }
+
+    #[test]
+    fn platform_fee_accounts_for_every_output() {
+        let estimator = PlatformFeeEstimator::new();
+        let one_output = estimate_platform_fee(&estimator, 1, 1);
+        let two_outputs = estimate_platform_fee(&estimator, 1, 2);
+
+        assert!(two_outputs > one_output);
     }
 }

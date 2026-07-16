@@ -17,7 +17,7 @@ use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyType, Purpose, accessors::IdentityGettersV0,
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use egui::{Button, ComboBox, Context, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Button, ComboBox, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,7 +50,7 @@ pub struct GroveSTARKScreen {
     mode: ProofMode,
 
     // Generation fields
-    selected_identity: Option<String>,
+    pub selected_identity: Option<String>,
     selected_key: Option<IdentityPublicKey>,
     selected_contract: Option<String>,
     selected_document_type: Option<String>,
@@ -91,7 +91,7 @@ impl GroveSTARKScreen {
 
         // Load initial contracts (exclude system contracts)
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let all_contracts = app_context.get_contracts(None, None).unwrap_or_default();
+        let all_contracts = app_context.get_contracts().unwrap_or_default();
 
         tracing::info!(
             "ZK Proofs screen found {} total contracts",
@@ -128,10 +128,32 @@ impl GroveSTARKScreen {
             available_contracts.len()
         );
 
+        // Seed selected_identity from the app-scoped id if it is in the EdDSA-filtered list
+        // (READ-only R4: no syncing_global — a developer tool must not push an EdDSA-only
+        // identity as the global selection).
+        let eddsa_filter = |qi: &&QualifiedIdentity| {
+            qi.identity.public_keys().iter().any(|(_, key)| {
+                matches!(key.key_type(), KeyType::EDDSA_25519_HASH160)
+                    && (key.purpose() == Purpose::AUTHENTICATION
+                        || key.purpose() == Purpose::TRANSFER)
+            })
+        };
+        let selected_identity: Option<String> = {
+            let preferred_id = app_context.selected_identity_id();
+            preferred_id
+                .and_then(|id| {
+                    qualified_identities
+                        .iter()
+                        .find(|qi| eddsa_filter(qi) && qi.identity.id() == id)
+                })
+                .or_else(|| qualified_identities.iter().find(|qi| eddsa_filter(qi)))
+                .map(|qi| qi.identity.id().to_string(Encoding::Base58))
+        };
+
         Self {
             app_context: app_context.clone(),
             mode: ProofMode::Generate,
-            selected_identity: None,
+            selected_identity,
             selected_key: None,
             selected_contract: None,
             selected_document_type: None,
@@ -167,6 +189,21 @@ impl GroveSTARKScreen {
             .iter()
             .map(|qualified_identity| qualified_identity.identity.clone())
             .collect();
+
+        // Re-seed selected_identity from the app-scoped id iff it is in the
+        // refreshed EdDSA-filtered list (READ-only R4: no syncing_global).
+        let preferred_id = app_context.selected_identity_id();
+        let new_selection = preferred_id
+            .and_then(|id| {
+                self.qualified_identities
+                    .iter()
+                    .find(|qi| qi.identity.id() == id)
+            })
+            .or_else(|| self.qualified_identities.first())
+            .map(|qi| qi.identity.id().to_string(Encoding::Base58));
+        if self.selected_identity.is_none() {
+            self.selected_identity = new_selection;
+        }
     }
 
     fn get_qualified_identity(&self, identity_id_str: &str) -> Option<&QualifiedIdentity> {
@@ -205,7 +242,7 @@ impl GroveSTARKScreen {
 
     fn refresh_contracts(&mut self, app_context: &AppContext) {
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let all_contracts = app_context.get_contracts(None, None).unwrap_or_default();
+        let all_contracts = app_context.get_contracts().unwrap_or_default();
 
         self.available_contracts = all_contracts
             .into_iter()
@@ -235,7 +272,7 @@ impl GroveSTARKScreen {
         self.available_document_types.clear();
         self.selected_document_type = None;
 
-        if let Ok(contracts) = app_context.get_contracts(None, None) {
+        if let Ok(contracts) = app_context.get_contracts() {
             for contract in contracts {
                 let id = contract
                     .contract
@@ -371,72 +408,25 @@ impl GroveSTARKScreen {
             }
         };
 
-        // Get the private key from the qualified identity
-        let private_key = match self.get_qualified_identity(&identity_id) {
-            Some(qualified_identity) => {
-                // Get the wallets for resolving encrypted keys
-                let wallets = app_context.wallets.read().unwrap();
-                let wallet_vec: Vec<_> = wallets.values().cloned().collect();
-
-                // Try to get the private key
-                match qualified_identity.private_keys.get_resolve(
-                    &(
-                        PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                        selected_key.id(),
-                    ),
-                    &wallet_vec,
-                    app_context.network,
-                ) {
-                    Ok(Some((_, private_key_bytes))) => private_key_bytes,
-                    Ok(None) => {
-                        MessageBanner::set_global(
-                            app_context.egui_ctx(),
-                            "Private key not found in storage",
-                            MessageType::Error,
-                        );
-                        self.is_generating = false;
-                        return AppAction::None;
-                    }
-                    Err(e) => {
-                        MessageBanner::set_global(
-                            app_context.egui_ctx(),
-                            format!("Failed to get private key: {}", e),
-                            MessageType::Error,
-                        );
-                        self.is_generating = false;
-                        return AppAction::None;
-                    }
-                }
-            }
-            None => {
-                MessageBanner::set_global(
-                    app_context.egui_ctx(),
-                    "Qualified identity not found",
-                    MessageType::Error,
-                );
-                self.is_generating = false;
-                return AppAction::None;
-            }
+        // The backend resolves the signing key and derives its public key
+        // through the JIT chokepoint — the seed never enters the UI. Carry the
+        // qualified identity (which holds the chokepoint handle) into the task.
+        let Some(qualified_identity) = self.get_qualified_identity(&identity_id).cloned() else {
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "Qualified identity not found",
+                MessageType::Error,
+            );
+            self.is_generating = false;
+            return AppAction::None;
         };
 
-        // For EDDSA_25519_HASH160, the key data is only 20 bytes (the hash)
-        // We need to derive the public key from the private key
-        let public_key = {
-            use ed25519_dalek::SigningKey;
-            let signing_key = SigningKey::from_bytes(&private_key);
-            let verifying_key = signing_key.verifying_key();
-            *verifying_key.as_bytes()
-        };
-
-        // Use fixed parameters for simplicity and consistency
         let task = BackendTask::GroveSTARKTask(GroveSTARKTask::GenerateProof {
-            identity_id,
+            identity: Box::new(qualified_identity),
             contract_id,
             document_type,
             document_id,
             key_id: selected_key.id(),
-            private_key,
-            public_key,
         });
 
         AppAction::BackendTask(task)
@@ -522,7 +512,7 @@ impl GroveSTARKScreen {
     }
 
     fn render_generation_ui(&mut self, ui: &mut Ui, app_context: &AppContext) -> Option<AppAction> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let debug_build = cfg!(debug_assertions);
 
         ui.label(
@@ -864,7 +854,7 @@ impl GroveSTARKScreen {
         ui: &mut Ui,
         app_context: &AppContext,
     ) -> Option<AppAction> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let debug_build = cfg!(debug_assertions);
 
         ui.label(
@@ -1059,12 +1049,12 @@ impl ScreenLike for GroveSTARKScreen {
         // Pop on success if needed
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Add top panel with breadcrumb
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
@@ -1072,21 +1062,21 @@ impl ScreenLike for GroveSTARKScreen {
 
         // Add left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsGroveSTARKScreen,
         );
 
         // Add tools subscreen chooser panel
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // Add central panel with the main UI
-        let panel_action = island_central_panel(ctx, |ui| {
+        let panel_action = island_central_panel(ui, |ui| {
             ui.label(
                 RichText::new("GroveSTARK Zero-Knowledge Proofs")
                     .size(Typography::SCALE_XL)
                     .strong()
-                    .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
+                    .color(DashColors::text_primary(ui.style().visuals.dark_mode)),
             );
             ui.add_space(5.0);
 
@@ -1094,7 +1084,7 @@ impl ScreenLike for GroveSTARKScreen {
             ui.label(
                 RichText::new("WARNING: GroveSTARK is a research project. It has not been audited and may contain bugs and security flaws. This feature is NOT ready for production usage.")
                     .size(Typography::SCALE_XS)
-                    .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode))
+                    .color(DashColors::text_primary(ui.style().visuals.dark_mode))
             );
             ui.add_space(Spacing::SM);
             ui.separator();
@@ -1108,11 +1098,11 @@ impl ScreenLike for GroveSTARKScreen {
                     RichText::new("Mode:")
                         .size(Typography::SCALE_LG)
                         .strong()
-                        .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
+                        .color(DashColors::text_primary(ui.style().visuals.dark_mode)),
                 );
                 ui.add_space(10.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Generate button
                 let generate_selected = self.mode == ProofMode::Generate;

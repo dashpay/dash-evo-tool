@@ -1,8 +1,13 @@
 //! E2E Test Helpers
 //!
-//! This module provides shared utilities for E2E testing, including:
-//! - Test harness setup
-//! - Common test fixtures
+//! This module provides shared utilities for E2E testing: test harness setup
+//! and per-test data-directory isolation (the latter shared with
+//! `tests/kittest/support.rs` via `tests/common/data_dir.rs`).
+
+#[path = "../common/data_dir.rs"]
+mod data_dir;
+
+pub use data_dir::with_isolated_data_dir;
 
 /// Create a minimal test harness for E2E tests
 #[allow(dead_code)]

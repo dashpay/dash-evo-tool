@@ -1,7 +1,6 @@
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
@@ -22,7 +21,7 @@ impl AppContext {
         let sdk = self.sdk.load().as_ref().clone();
 
         let balance_before = qualified_identity.identity.balance();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_credit_transfer();
+        let estimated_fee = self.fee_estimator().estimate_credit_transfer();
 
         let (sender_balance, receiver_balance) = qualified_identity
             .identity
@@ -63,14 +62,12 @@ impl AppContext {
             .find(|qi| qi.identity.id() == to_identifier)
         {
             receiver.identity.set_balance(receiver_balance);
-            self.update_local_qualified_identity(receiver)
-                .map_err(|e| TaskError::Database { source: e })?;
+            self.update_local_qualified_identity(receiver)?;
         }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
-            .map_err(|e| TaskError::Database { source: e })
     }
 }

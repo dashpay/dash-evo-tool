@@ -3,9 +3,10 @@
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
-use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
+use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::{
-    IdentityInputToLoad, IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+    IdentityInputToLoad, IdentityLoadMode, IdentityTask, IdentityTopUpInfo,
+    TopUpIdentityFundingMethod,
 };
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -13,7 +14,6 @@ use dash_evo_tool::model::qualified_identity::IdentityType;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::WalletArcRef;
-use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -54,7 +54,7 @@ async fn step_top_up(
                 si.qualified_identity.identity.id(),
                 "wrong identity returned"
             );
-            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
         }
         other => panic!("expected ToppedUpIdentity, got: {:?}", other),
     }
@@ -69,13 +69,13 @@ async fn step_top_up_from_platform_addresses(
     // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
     // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
     // addresses via WalletAddressProvider.
-    let platform_addr = {
-        let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        let addr = wallet
-            .platform_receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("failed to derive platform payment address");
-        PlatformAddress::try_from(addr).expect("failed to convert to PlatformAddress")
-    };
+    let platform_addr = crate::framework::funding::derive_platform_receive_address(
+        &ctx.app_context,
+        si.wallet_seed_hash,
+        Network::Testnet,
+        false,
+    )
+    .await;
 
     let fund_result = run_task_with_nonce_retry(
         &ctx.app_context,
@@ -97,15 +97,8 @@ async fn step_top_up_from_platform_addresses(
         fund_result
     );
 
-    // Reset platform sync state so incremental sync doesn't skip the newly
-    // funded address (the previous sync checkpoint may be past the funding tx).
-    if let Err(e) = ctx
-        .app_context
-        .db()
-        .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
-    {
-        tracing::warn!("Failed to reset platform sync info: {}", e);
-    }
+    // The manual fetch always does a full scan, so it discovers the newly
+    // funded address without any checkpoint reset.
 
     // TODO: sync_address_balances may not discover newly funded addresses
     // Expected: FetchPlatformAddressBalances returns > 0 balance after funding
@@ -229,7 +222,7 @@ async fn step_add_key(
     match result {
         BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
             tracing::info!("added key, fee={:?}", fee_result);
-            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
         }
         other => panic!("expected AddedKeyToIdentity, got: {:?}", other),
     }
@@ -242,8 +235,7 @@ async fn step_transfer_credits(
     tracing::info!("=== Step 4: Transfer credits to another identity ===");
 
     let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
-    let (reg_info, _key_bytes_b) =
-        build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b);
+    let reg_info = build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b).await;
     let reg_result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info)),
@@ -277,7 +269,7 @@ async fn step_transfer_credits(
     match result {
         BackendTaskSuccessResult::TransferredCredits(fee_result) => {
             tracing::info!(
-                "transfer succeeded, estimated_fee={}, actual_fee={}",
+                "transfer succeeded, estimated_fee={}, actual_fee={:?}",
                 fee_result.estimated_fee,
                 fee_result.actual_fee
             );
@@ -297,13 +289,13 @@ async fn step_transfer_to_addresses(
     // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
     // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
     // addresses via WalletAddressProvider.
-    let platform_addr = {
-        let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        let addr = wallet
-            .platform_receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("failed to derive platform payment address");
-        PlatformAddress::try_from(addr).expect("failed to convert to PlatformAddress")
-    };
+    let platform_addr = crate::framework::funding::derive_platform_receive_address(
+        &ctx.app_context,
+        si.wallet_seed_hash,
+        Network::Testnet,
+        false,
+    )
+    .await;
 
     let mut outputs = std::collections::BTreeMap::new();
     outputs.insert(platform_addr, 5_000_000u64);
@@ -437,6 +429,9 @@ async fn tc_027_load_identity() {
         keys_input: vec![],
         derive_keys_from_wallets: true,
         selected_wallet_seed_hash: Some(si.wallet_seed_hash),
+        encryption_password: None,
+        load_mode: IdentityLoadMode::Overwrite,
+        load_token: None,
     };
 
     let result = run_task(
@@ -542,6 +537,9 @@ async fn tc_030_load_nonexistent_identity() {
         keys_input: vec![],
         derive_keys_from_wallets: false,
         selected_wallet_seed_hash: None,
+        encryption_password: None,
+        load_mode: IdentityLoadMode::Overwrite,
+        load_token: None,
     };
 
     let result = run_task(
@@ -588,18 +586,13 @@ async fn tc_031_incremental_address_discovery() {
 
     // Step 1: Derive a platform payment address
     tracing::info!("=== Step 1: derive platform payment address ===");
-    let platform_addr = {
-        let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        let addr = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                false,
-                Some(&ctx.app_context),
-            )
-            .expect("failed to derive platform payment address");
-        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr)
-            .expect("failed to convert to PlatformAddress")
-    };
+    let platform_addr = crate::framework::funding::derive_platform_receive_address(
+        &ctx.app_context,
+        si.wallet_seed_hash,
+        dash_sdk::dpp::dashcore::Network::Testnet,
+        false,
+    )
+    .await;
     tracing::info!(
         "Platform address: {}",
         platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet)
@@ -634,9 +627,15 @@ async fn tc_031_incremental_address_discovery() {
     let start = std::time::Instant::now();
 
     let direct_balance = loop {
-        use dash_sdk::platform::Fetch;
-        let sdk = ctx.app_context.sdk();
-        match dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr).await {
+        let fetch_result = run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                use dash_sdk::platform::Fetch;
+                dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr).await
+            }
+        })
+        .await;
+        match fetch_result {
             Ok(Some(info)) if info.balance > 0 => {
                 tracing::info!(
                     "Direct query confirmed: balance={} nonce={}",
@@ -667,16 +666,9 @@ async fn tc_031_incremental_address_discovery() {
         tokio::time::sleep(poll_interval).await;
     };
 
-    // Step 4: Full sync — reset checkpoint and discover the funded address
-    tracing::info!("=== Step 4: full sync (reset checkpoint, discover funded address) ===");
-    if let Err(e) = ctx
-        .app_context
-        .db()
-        .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
-    {
-        tracing::warn!("Failed to reset platform sync info: {}", e);
-    }
-
+    // Step 4: Full sync — the manual fetch always full-scans, so it discovers
+    // the funded address with no checkpoint reset.
+    tracing::info!("=== Step 4: full sync (discover funded address) ===");
     let full_sync_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
@@ -704,18 +696,10 @@ async fn tc_031_incremental_address_discovery() {
         direct_balance
     );
 
-    // Verify checkpoint is now set
-    let (ts, _) = ctx
-        .app_context
-        .db()
-        .get_platform_sync_info(&si.wallet_seed_hash)
-        .unwrap_or((0, 0));
-    assert!(ts > 0, "checkpoint should be set after full sync");
-
-    // Step 6: Incremental-only sync (checkpoint set, seeded balances present)
-    // This exercises the PR #3468 fix: on_address_found must fire for seeded
-    // balances so the address remains visible and gap limit extends correctly.
-    tracing::info!("=== Step 6: incremental sync (seeded balance path) ===");
+    // Step 6: A second sync must still report the balance — guards against a
+    // repeated full scan dropping the address (PR #3468: on_address_found must
+    // fire for already-known balances so they stay visible across syncs).
+    tracing::info!("=== Step 6: second sync (address stays visible) ===");
     let incr_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
@@ -732,19 +716,134 @@ async fn tc_031_incremental_address_discovery() {
         other => panic!("expected PlatformAddressBalances, got: {:?}", other),
     };
 
-    // Step 7: Assert incremental sync still reports the balance
+    // Step 7: Assert the second sync still reports the balance
     assert!(
         incr_bal > 0,
-        "Incremental sync should report seeded balance (full sync: {}, direct: {}). \
-         If this fails, on_address_found is not being called for seeded balances \
-         in incremental-only mode (see Platform PR #3468).",
+        "Second sync should still report the known balance (first sync: {}, direct: {}). \
+         If this fails, on_address_found is not being called for already-known balances \
+         (see Platform PR #3468).",
         full_sync_bal,
         direct_balance,
     );
     tracing::info!(
-        "TC-031 PASSED: full_sync={} incremental={} direct={}",
+        "TC-031 PASSED: first_sync={} second_sync={} direct={}",
         full_sync_bal,
         incr_bal,
         direct_balance
     );
+}
+
+// --- TC-021: identity funding-account survives a backend reload ---
+//
+// Recurrence trap for a5538dc8: the upstream persister `load()` does NOT
+// reconstruct `IdentityTopUp`/`IdentityRegistration` HD funding accounts.
+// Without the loader-side re-provision, a top-up succeeds on first run but
+// fails after every relaunch (`AssetLockTransaction("Identity top-up
+// account for index N not found")`). `ensure_wallets_registered()` is the
+// exact reload chokepoint (re-runs the `load_from_persistor_seedless` load path),
+// so calling it again faithfully simulates an app restart.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_021_identity_funding_account_survives_reload() {
+    let ctx = ctx().await;
+    let si = shared_identity().await;
+
+    // Simulate an app relaunch: re-run the persisted-wallet registration
+    // path. Idempotent for the wallet itself; the funding accounts must be
+    // re-provisioned here or the top-up below fails.
+    ctx.app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired")
+        .ensure_wallets_registered(&ctx.app_context)
+        .await
+        .expect("ensure_wallets_registered (reload simulation) must succeed");
+
+    let top_up_info = IdentityTopUpInfo {
+        qualified_identity: si.qualified_identity.clone(),
+        wallet: si.wallet_arc.clone(),
+        identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(500_000, 0, 1),
+    };
+
+    let result = run_task_with_nonce_retry(
+        &ctx.app_context,
+        BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up_info)),
+    )
+    .await
+    .expect(
+        "TopUpIdentity must succeed AFTER a backend reload — the identity \
+         funding account has to be re-provisioned on the loader path",
+    );
+
+    match result {
+        BackendTaskSuccessResult::ToppedUpIdentity(qi, fee_result) => {
+            assert_eq!(
+                qi.identity.id(),
+                si.qualified_identity.identity.id(),
+                "wrong identity returned"
+            );
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
+            tracing::info!("TC-021 PASSED: top-up survived backend reload");
+        }
+        other => panic!("expected ToppedUpIdentity, got: {:?}", other),
+    }
+}
+
+// --- TC-022: top-up succeeds after a reload via the op-seam guard ---
+//
+// DET persists identities only in its own sidecar, never into the
+// upstream `IdentityManager`, so after a reload the manager holds nothing and a
+// top-up — the one op that looks the identity up there — raised
+// `IdentityNotFound` ~22 ms in, pre-network. This test simulates the reload with
+// `ensure_wallets_registered` (the cold-boot wallet-load path), which does NOT
+// run `reconcile_managed_identities` (that is hooked into
+// `bootstrap_wallet_addresses_jit`). So it exercises the **op-seam guard** —
+// `ensure_identity_managed` inside `top_up_identity` — which re-registers the
+// identity just-in-time. On a funded wallet the top-up must SUCCEED; a pre-fix
+// run reproduces the synchronous `IdentityNotFound`.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_022_topup_after_reload_succeeds_via_op_seam_guard() {
+    let ctx = ctx().await;
+    let si = shared_identity().await;
+
+    // Simulate a relaunch: re-run the persisted-wallet load path, rebuilding the
+    // upstream identity manager from its (empty) on-disk table.
+    ctx.app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired")
+        .ensure_wallets_registered(&ctx.app_context)
+        .await
+        .expect("ensure_wallets_registered (reload simulation) must succeed");
+
+    let top_up_info = IdentityTopUpInfo {
+        qualified_identity: si.qualified_identity.clone(),
+        wallet: si.wallet_arc.clone(),
+        identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(500_000, 0, 1),
+    };
+
+    // The op-seam guard must register the identity, so the top-up reaches the
+    // network and completes. Require success — a failure here (especially a
+    // synchronous `IdentityNotManaged`) is the regression this test guards.
+    let result = run_task_with_nonce_retry(
+        &ctx.app_context,
+        BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up_info)),
+    )
+    .await
+    .expect(
+        "top-up after a manager-clearing reload must succeed via the op-seam \
+         guard; a synchronous IdentityNotManaged means the guard did not run",
+    );
+
+    match result {
+        BackendTaskSuccessResult::ToppedUpIdentity(qi, fee_result) => {
+            assert_eq!(
+                qi.identity.id(),
+                si.qualified_identity.identity.id(),
+                "wrong identity returned"
+            );
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
+            tracing::info!("TC-022 PASSED: top-up succeeded after reload via op-seam guard");
+        }
+        other => panic!("expected ToppedUpIdentity, got: {other:?}"),
+    }
 }

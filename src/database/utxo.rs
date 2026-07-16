@@ -1,23 +1,16 @@
 use crate::database::Database;
 use dash_sdk::dashcore_rpc::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
 use dash_sdk::dpp::dashcore::hashes::Hash;
+#[cfg(test)]
 use dash_sdk::dpp::dashcore::{Address, Network};
 use rusqlite::params;
 
 impl Database {
-    /// Deletes a UTXO from the database given its OutPoint and network.
-    pub fn drop_utxo(&self, outpoint: &OutPoint, network: &str) -> rusqlite::Result<()> {
-        let txid_bytes = outpoint.txid.as_byte_array(); // &[u8; 32]
-        let vout = outpoint.vout as i64; // i64
-
-        self.execute(
-            "DELETE FROM utxos WHERE txid = ? AND vout = ? AND network = ?",
-            params![txid_bytes, vout, network],
-        )?;
-
-        Ok(())
-    }
-
+    /// Test-only fixture: seeds a UTXO row so the still-live
+    /// `get_utxos_by_address` read path can be exercised. Production no
+    /// longer writes the legacy `utxos` table — upstream owns wallet-UTXO
+    /// state.
+    #[cfg(test)]
     pub(crate) fn insert_utxo(
         &self,
         txid: &[u8],
@@ -47,41 +40,37 @@ impl Database {
         &self,
         address: &str,
         network: &str,
-    ) -> Result<Vec<(OutPoint, TxOut)>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    ) -> rusqlite::Result<Vec<(OutPoint, TxOut)>> {
+        let conn = self.locked_conn();
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT txid, vout, value, script_pubkey FROM utxos
+        let mut stmt = conn.prepare(
+            "SELECT txid, vout, value, script_pubkey FROM utxos
          WHERE address = ? AND network = ?",
-            )
-            .map_err(|e| e.to_string())?;
+        )?;
 
-        let tx_out_iter = stmt
-            .query_map(params![address, network], |row| {
-                let txid_bytes: Vec<u8> = row.get(0)?;
-                let vout: u32 = row.get(1)?;
-                let value: u64 = row.get(2)?;
-                let script_pubkey_bytes: Vec<u8> = row.get(3)?;
+        let tx_out_iter = stmt.query_map(params![address, network], |row| {
+            let txid_bytes: Vec<u8> = row.get(0)?;
+            let vout: u32 = row.get(1)?;
+            let value: u64 = row.get(2)?;
+            let script_pubkey_bytes: Vec<u8> = row.get(3)?;
 
-                let txid = Txid::from_slice(&txid_bytes)
-                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-                let outpoint = OutPoint { txid, vout };
+            let txid = Txid::from_slice(&txid_bytes)
+                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+            let outpoint = OutPoint { txid, vout };
 
-                let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
+            let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
 
-                let tx_out = TxOut {
-                    value,
-                    script_pubkey,
-                };
+            let tx_out = TxOut {
+                value,
+                script_pubkey,
+            };
 
-                Ok((outpoint, tx_out))
-            })
-            .map_err(|e| e.to_string())?;
+            Ok((outpoint, tx_out))
+        })?;
 
         let mut utxos = Vec::new();
         for utxo in tx_out_iter {
-            utxos.push(utxo.map_err(|e| e.to_string())?);
+            utxos.push(utxo?);
         }
 
         Ok(utxos)
@@ -176,43 +165,6 @@ mod tests {
 
         assert_eq!(utxos.len(), 1);
         assert_eq!(utxos[0].1.value, 100_000_000); // Original value preserved
-    }
-
-    #[test]
-    fn test_drop_utxo() {
-        let db = create_test_database().expect("Failed to create test database");
-        let network = Network::Testnet;
-        let address = create_test_address(network);
-        let txid = create_test_txid();
-        let script_pubkey = address.script_pubkey();
-
-        // Insert a UTXO
-        db.insert_utxo(
-            txid.as_byte_array(),
-            0,
-            &address,
-            100_000_000,
-            script_pubkey.as_bytes(),
-            network,
-        )
-        .expect("Failed to insert UTXO");
-
-        // Verify it exists
-        let utxos = db
-            .get_utxos_by_address(&address.to_string(), &network.to_string())
-            .expect("Failed to get UTXOs");
-        assert_eq!(utxos.len(), 1);
-
-        // Drop the UTXO
-        let outpoint = OutPoint { txid, vout: 0 };
-        db.drop_utxo(&outpoint, &network.to_string())
-            .expect("Failed to drop UTXO");
-
-        // Verify it's gone
-        let utxos = db
-            .get_utxos_by_address(&address.to_string(), &network.to_string())
-            .expect("Failed to get UTXOs");
-        assert_eq!(utxos.len(), 0);
     }
 
     #[test]

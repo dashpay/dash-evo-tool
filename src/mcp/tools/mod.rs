@@ -1,6 +1,7 @@
 //! Per-domain MCP tool implementations.
 
 pub mod identity;
+pub mod masternode;
 pub mod meta;
 pub mod network;
 pub mod platform;

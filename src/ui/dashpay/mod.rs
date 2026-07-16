@@ -1,6 +1,5 @@
 pub mod add_contact_screen;
 pub mod contact_details;
-pub mod contact_info_editor;
 pub mod contact_profile_viewer;
 pub mod contact_requests;
 pub mod contacts_list;
@@ -16,11 +15,37 @@ pub use dashpay_screen::{DashPayScreen, DashPaySubscreen};
 pub use profile_search::ProfileSearchScreen;
 
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::ContactPrivateInfo;
 use crate::ui::ScreenType;
 use crate::ui::theme::DashColors;
 use chrono::{LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
+use dash_sdk::platform::Identifier;
+
+/// Persist a contact's DET-local private memo (nickname / notes / hidden flag)
+/// to the WalletBackend k/v sidecar — the single save path shared by the
+/// contact list, contact details, and profile-viewer inline editors.
+///
+/// Upstream owns the encrypted on-Platform copy; this is the local plaintext
+/// overlay that powers offline-friendly contact display.
+pub(crate) fn persist_contact_private_info(
+    app_context: &AppContext,
+    owner_id: &Identifier,
+    contact_id: &Identifier,
+    nickname: String,
+    notes: String,
+    is_hidden: bool,
+) -> Result<(), TaskError> {
+    let backend = app_context.wallet_backend()?;
+    let info = ContactPrivateInfo {
+        nickname,
+        notes,
+        is_hidden,
+    };
+    backend.dashpay_set_private_info(owner_id, contact_id, &info)
+}
 
 /// Format a Unix timestamp (seconds or milliseconds) as a human-readable
 /// relative time string (e.g. "3 hours ago", "just now").
@@ -53,7 +78,7 @@ use std::sync::Arc;
 /// Renders a styled "No Identities Loaded" card for DashPay screens.
 /// Returns an AppAction if the user clicks the "Load Identity" button.
 pub fn render_no_identities_card(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
 
     Frame::group(ui.style())
         .fill(ui.visuals().extreme_bg_color)

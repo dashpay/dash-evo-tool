@@ -1,14 +1,22 @@
 use egui::{
     Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Ui, Vec2, WidgetText,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Theme mode enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThemeMode {
-    Light,
-    Dark,
-    #[default]
-    System,
+pub use crate::model::settings::ThemeMode;
+
+use crate::model::qualified_identity::IdentityStatus;
+
+impl From<IdentityStatus> for Color32 {
+    fn from(value: IdentityStatus) -> Self {
+        match value {
+            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
+            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
+            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
+            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
+        }
+    }
 }
 
 /// Detect system theme preference
@@ -20,16 +28,35 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
     }
 }
 
+/// Latches so a persistent detection failure (e.g. no XDG portal on
+/// headless Linux) is logged once instead of on every poll. Cleared on the
+/// next successful detection so a later failure logs again.
+static THEME_DETECTION_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Returns `true` the first time it's called since the latch was last reset
+/// by a successful detection, `false` on every subsequent call.
+fn should_log_theme_detection_failure() -> bool {
+    !THEME_DETECTION_FAILURE_LOGGED.swap(true, Ordering::Relaxed)
+}
+
 /// Detect system theme, returning `None` only on detection errors.
 /// Use this for polling: a `None` means "keep the previous theme" rather than
 /// flipping to an arbitrary default. `Unspecified` maps to Light (common on
 /// Linux where `dark_light` often can't determine the theme).
 pub fn try_detect_system_theme() -> Option<ThemeMode> {
     match dark_light::detect() {
-        Ok(dark_light::Mode::Dark) => Some(ThemeMode::Dark),
-        Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => Some(ThemeMode::Light),
+        Ok(dark_light::Mode::Dark) => {
+            THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+            Some(ThemeMode::Dark)
+        }
+        Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => {
+            THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+            Some(ThemeMode::Light)
+        }
         Err(e) => {
-            tracing::debug!("OS theme detection failed: {e}");
+            if should_log_theme_detection_failure() {
+                tracing::debug!("OS theme detection failed: {e}");
+            }
             None
         }
     }
@@ -46,7 +73,6 @@ pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
 /// Dash brand colors according to official guidelines
 pub struct DashColors;
 
-#[allow(dead_code)]
 impl DashColors {
     /// Primary Dash Blue (#008de4)
     pub const DASH_BLUE: Color32 = Color32::from_rgb(0, 141, 228);
@@ -550,10 +576,20 @@ impl DashColors {
     }
 }
 
+/// User-facing network label, stable across all screens.
+pub fn network_label(network: dash_sdk::dashcore_rpc::dashcore::Network) -> &'static str {
+    use dash_sdk::dashcore_rpc::dashcore::Network;
+    match network {
+        Network::Mainnet => "Mainnet",
+        Network::Testnet => "Testnet",
+        Network::Devnet => "Devnet",
+        Network::Regtest => "Regtest",
+    }
+}
+
 /// Typography scale and font configuration
 pub struct Typography;
 
-#[allow(dead_code)]
 impl Typography {
     pub const SCALE_XS: f32 = 12.0;
     pub const SCALE_SM: f32 = 14.0;
@@ -616,7 +652,6 @@ impl Typography {
 /// Spacing constants for consistent layout
 pub struct Spacing;
 
-#[allow(dead_code)]
 impl Spacing {
     pub const XXS: f32 = 2.0;
     pub const XS: f32 = 4.0;
@@ -643,7 +678,6 @@ impl Spacing {
 /// Border radius and shape constants
 pub struct Shape;
 
-#[allow(dead_code)]
 impl Shape {
     pub const RADIUS_NONE: u8 = 0;
     pub const RADIUS_SM: u8 = 6;
@@ -659,7 +693,6 @@ impl Shape {
 /// Modern shadow definitions for depth and visual appeal
 pub struct Shadow;
 
-#[allow(dead_code)]
 impl Shadow {
     pub fn small() -> egui::Shadow {
         egui::Shadow {
@@ -722,7 +755,6 @@ impl Shadow {
 /// Component style definitions
 pub struct ComponentStyles;
 
-#[allow(dead_code)]
 impl ComponentStyles {
     /// Standard minimum size for dialog buttons (width × height)
     pub const DIALOG_BUTTON_MIN_SIZE: Vec2 = Vec2::new(96.0, 36.0);
@@ -811,7 +843,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::primary_button_text()),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::primary_button_text()),
@@ -833,7 +865,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
@@ -855,7 +887,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::danger_button_text()),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::danger_button_text()),
@@ -890,14 +922,14 @@ impl ComponentStyles {
             ui.add(Self::primary_button(label))
                 .on_hover_cursor(CursorIcon::PointingHand)
         } else {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             let text = match label.into() {
                 WidgetText::RichText(rt) => rt
                     .as_ref()
                     .clone()
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
-                // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+                // LayoutJob/Galley variants are not used by any callsite.
                 other => RichText::new(other.text().to_string())
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
@@ -953,7 +985,7 @@ impl ComponentStyles {
     pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
         let text = match label.into() {
             WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
         };
         Button::new(text)
@@ -1087,7 +1119,7 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Apply the custom visuals first
     ctx.set_visuals(visuals);
 
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.global_style()).clone();
 
     // Configure modern visuals with gradients and glass effects
     // Override all background colors again to ensure they stick
@@ -1175,5 +1207,35 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Don't override extreme_bg_color here - it should remain as input_background for TextEdit widgets
     style.visuals.faint_bg_color = DashColors::background(dark_mode);
 
-    ctx.set_style(style);
+    ctx.set_global_style(style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_detection_failure_logs_once_until_reset() {
+        THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+
+        assert!(
+            should_log_theme_detection_failure(),
+            "first failure should log"
+        );
+        assert!(
+            !should_log_theme_detection_failure(),
+            "repeated failure should be suppressed"
+        );
+        assert!(
+            !should_log_theme_detection_failure(),
+            "still suppressed while failure persists"
+        );
+
+        // A successful detection resets the latch.
+        THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+        assert!(
+            should_log_theme_detection_failure(),
+            "failure after a success should log again"
+        );
+    }
 }

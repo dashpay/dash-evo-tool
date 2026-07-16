@@ -10,7 +10,6 @@ const PASSWORD_INPUT_REVEAL_ICON_WIDTH: f32 = 28.0;
 ///
 /// Intentionally does NOT implement `ComponentResponse` — exposing the `Secret`
 /// through a generic trait would undermine the security model.
-// INTENTIONAL(PROJ-001): Custom response type instead of ComponentResponse.
 pub struct PasswordInputResponse {
     /// The underlying `TextEdit` response.
     pub response: Response,
@@ -38,6 +37,12 @@ pub struct PasswordInputResponse {
 /// let resp = pw.show(ui);
 /// if resp.changed { /* validate */ }
 /// ```
+// Intentional: `Clone` is derived so `passphrase_modal` can store the input
+// state in egui's data cache (which requires `Clone + Send + Sync + 'static`).
+// `Secret::clone` correctly allocates a new mlock-protected buffer so the clone
+// is as safe as the original.  Callers should not clone `PasswordInput` in
+// application code — this impl exists solely for the egui memory subsystem.
+#[derive(Clone)]
 pub struct PasswordInput {
     secret: Secret,
     hint_text: String,
@@ -135,10 +140,10 @@ impl PasswordInput {
 
     /// Render the password input. Returns a [`PasswordInputResponse`].
     pub fn show(&mut self, ui: &mut Ui) -> PasswordInputResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // -- TextEdit --------------------------------------------------------
-        // INTENTIONAL(SEC-005): Egui TextEdit may cache plaintext in layout galleys and
+        // Egui TextEdit may cache plaintext in layout galleys and
         // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
         let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
             .password(!self.revealing)
@@ -178,7 +183,7 @@ impl PasswordInput {
 
         let text_response = ui.add(text_edit);
 
-        // SEC-001: Disable egui's Undoer to prevent plaintext undo history.
+        // Disable egui's Undoer to prevent plaintext undo history.
         if let Some(mut state) =
             egui::widgets::text_edit::TextEditState::load(ui.ctx(), text_response.id)
         {

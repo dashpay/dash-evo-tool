@@ -1,21 +1,99 @@
 use dash_sdk::dashcore_rpc::dashcore::Address;
-#[cfg(test)]
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::{PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET, PlatformAddress};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 
+/// A destination address whose bech32m network prefix does not match the active
+/// network — e.g. a mainnet `dash1…` address used on testnet.
+///
+/// Funds-safety guard: sending to a cross-network address would misdirect
+/// credits, so both the GUI and the MCP tools reject it up front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "This address belongs to a different network. Please check you are using the correct network."
+)]
+pub struct AddressNetworkMismatch;
+
+/// The bech32m human-readable prefix that Platform and Orchard addresses use on
+/// `network` (`dash` on mainnet, `tdash` otherwise). The two families share the
+/// HRP; an Orchard address additionally begins its data section with `z`.
+fn platform_hrp_for_network(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => PLATFORM_HRP_MAINNET,
+        _ => PLATFORM_HRP_TESTNET,
+    }
+}
+
+/// Case-insensitive ASCII prefix test that never panics on multi-byte input.
+fn starts_with_ignore_ascii_case(s: &str, prefix: &str) -> bool {
+    let (s, prefix) = (s.as_bytes(), prefix.as_bytes());
+    s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+/// Validate that a bech32m **Platform** address is for `network` by its prefix.
+///
+/// The single source of truth for Platform address↔network checks. Parses the
+/// human-readable prefix (`dash1…` mainnet, `tdash1…` testnet, case-insensitive)
+/// and rejects a cross-network address. It does not validate the address body —
+/// callers still parse it with `PlatformAddress::from_bech32m_string`.
+///
+/// # Errors
+///
+/// Returns [`AddressNetworkMismatch`] when the prefix is not the one `network`
+/// expects (including any input that is not a recognized Platform prefix).
+pub fn validate_platform_address_for_network(
+    address: &str,
+    network: Network,
+) -> Result<(), AddressNetworkMismatch> {
+    let expected = format!("{}1", platform_hrp_for_network(network));
+    if starts_with_ignore_ascii_case(address.trim(), &expected) {
+        Ok(())
+    } else {
+        Err(AddressNetworkMismatch)
+    }
+}
+
+/// Validate that a bech32m **Orchard** (shielded) address is for `network`.
+///
+/// The Orchard twin of [`validate_platform_address_for_network`]: same HRP, but
+/// the data section begins with `z` (`dash1z…` mainnet, `tdash1z…` testnet,
+/// case-insensitive). Does not validate the address body — callers still parse
+/// it with `OrchardAddress::from_bech32m_string`.
+///
+/// # Errors
+///
+/// Returns [`AddressNetworkMismatch`] when the prefix is not the one `network`
+/// expects.
+pub fn validate_orchard_address_for_network(
+    address: &str,
+    network: Network,
+) -> Result<(), AddressNetworkMismatch> {
+    let expected = format!("{}1z", platform_hrp_for_network(network));
+    if starts_with_ignore_ascii_case(address.trim(), &expected) {
+        Ok(())
+    } else {
+        Err(AddressNetworkMismatch)
+    }
+}
+
 /// Checks if a string looks like a Platform address (bech32m with dash/tdash HRP per DIP-18).
 ///
 /// This checks whether the string starts with a known Platform HRP followed by the
 /// bech32 separator '1'. It does NOT fully validate the address — use
 /// `PlatformAddress::from_bech32m_string()` for that.
+///
+/// Uses byte-level comparison throughout (`as_bytes()`) to avoid the panic that
+/// `s[..hrp.len()]` would produce for non-ASCII (multi-byte UTF-8) input whose
+/// HRP-length byte offset falls inside a multi-byte codepoint.
 pub fn is_platform_address_string(s: &str) -> bool {
+    let bytes = s.as_bytes();
     for hrp in [PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET] {
-        if s.len() > hrp.len()
-            && s[..hrp.len()].eq_ignore_ascii_case(hrp)
-            && s.as_bytes()[hrp.len()] == b'1'
+        let hrp_bytes = hrp.as_bytes();
+        if bytes.len() > hrp_bytes.len()
+            && bytes[..hrp_bytes.len()].eq_ignore_ascii_case(hrp_bytes)
+            && bytes[hrp_bytes.len()] == b'1'
         {
             return true;
         }
@@ -85,6 +163,15 @@ impl AddressKind {
 
         // 1. Shielded (dash1z... / tdash1z...)
         if trimmed.starts_with("dash1z") || trimmed.starts_with("tdash1z") {
+            return Some(AddressKind::Shielded);
+        }
+
+        // 1b. Shielded raw hex form (network-agnostic): 43 bytes = 86 hex chars.
+        // Unambiguous — far too long for a Base58 Core address or Identity ID,
+        // and it cannot start with the `dash1`/`tdash1` Platform HRP.
+        if trimmed.len() == SHIELDED_ADDRESS_RAW_LEN * 2
+            && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
             return Some(AddressKind::Shielded);
         }
 
@@ -233,6 +320,58 @@ impl std::fmt::Display for ValidatedAddress {
     }
 }
 
+/// Raw byte length of an Orchard shielded address (recipient payload).
+pub const SHIELDED_ADDRESS_RAW_LEN: usize = 43;
+
+/// Parse a shielded (Orchard) recipient into its raw 43-byte form.
+///
+/// Accepts either the canonical Bech32m encoding (`dash1z…` mainnet,
+/// `tdash1z…` testnet) or a raw hex string of exactly
+/// [`SHIELDED_ADDRESS_RAW_LEN`] bytes. Returns `None` for any input that is
+/// neither. This is the single source of truth for turning a shielded
+/// recipient string into the bytes a `ShieldedTransfer` task needs, shared by
+/// the send screen's dispatch and any validation path so the two cannot
+/// diverge.
+pub fn parse_shielded_recipient(input: &str) -> Option<Vec<u8>> {
+    use dash_sdk::dpp::address_funds::OrchardAddress;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(addr) = OrchardAddress::from_bech32m_string(trimmed) {
+        return Some(addr.to_raw_bytes().to_vec());
+    }
+    let bytes = hex::decode(trimmed).ok()?;
+    (bytes.len() == SHIELDED_ADDRESS_RAW_LEN).then_some(bytes)
+}
+
+/// A raw Orchard payload that does not decode to a valid shielded address.
+///
+/// Raised when the 43-byte payload is not a well-formed Orchard address (its
+/// `pk_d` is not a valid curve point), so it cannot be rendered as bech32m.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("This shielded address could not be read. Please reopen the wallet and try again.")]
+pub struct InvalidShieldedAddress;
+
+/// Encode a raw 43-byte Orchard payload as its canonical Bech32m string
+/// (`dash1z…` on mainnet, `tdash1z…` elsewhere).
+///
+/// The inverse of [`parse_shielded_recipient`] and the single source of truth
+/// for rendering a shielded address the wallet backend hands us as raw bytes.
+///
+/// # Errors
+///
+/// Returns [`InvalidShieldedAddress`] when `raw` is not a well-formed Orchard
+/// address.
+pub fn encode_shielded_address(
+    raw: &[u8; SHIELDED_ADDRESS_RAW_LEN],
+    network: Network,
+) -> Result<String, InvalidShieldedAddress> {
+    dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(raw)
+        .map(|addr| addr.to_bech32m_string(network))
+        .map_err(|_| InvalidShieldedAddress)
+}
+
 /// Truncate an address string for display, showing a prefix and suffix
 /// separated by an ellipsis.
 ///
@@ -254,6 +393,119 @@ pub fn truncate_address(addr: &str, prefix_len: usize, suffix_len: usize) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_shielded_recipient_accepts_exact_length_hex() {
+        let raw = vec![0xABu8; SHIELDED_ADDRESS_RAW_LEN];
+        let hex_str = hex::encode(&raw);
+        assert_eq!(parse_shielded_recipient(&hex_str), Some(raw.clone()));
+        // Surrounding whitespace is tolerated.
+        assert_eq!(
+            parse_shielded_recipient(&format!("  {hex_str}  ")),
+            Some(raw)
+        );
+    }
+
+    #[test]
+    fn parse_shielded_recipient_rejects_wrong_length_hex() {
+        // One byte short and one byte long — both invalid.
+        assert_eq!(
+            parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN - 1])),
+            None
+        );
+        assert_eq!(
+            parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN + 1])),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_classifies_43_byte_hex_as_shielded() {
+        let hex_str = hex::encode(vec![0x11u8; SHIELDED_ADDRESS_RAW_LEN]);
+        assert_eq!(AddressKind::detect(&hex_str), Some(AddressKind::Shielded));
+        // Wrong length is not a shielded address.
+        let short = hex::encode(vec![0x11u8; SHIELDED_ADDRESS_RAW_LEN - 1]);
+        assert_ne!(AddressKind::detect(&short), Some(AddressKind::Shielded));
+    }
+
+    #[test]
+    fn parse_shielded_recipient_rejects_empty_and_garbage() {
+        assert_eq!(parse_shielded_recipient(""), None);
+        assert_eq!(parse_shielded_recipient("   "), None);
+        assert_eq!(parse_shielded_recipient("not-an-address"), None);
+        // Bech32m for a different address family is not a shielded recipient.
+        assert_eq!(parse_shielded_recipient("dash1qexampleplatform"), None);
+    }
+
+    // --- encode_shielded_address (raw -> bech32m) ---
+    //
+    // Vectors are derived through the real upstream ZIP-32 path
+    // (`OrchardKeySet::from_seed`) rather than fabricated bytes: an Orchard
+    // payload embeds a curve point, so arbitrary bytes are not a valid address
+    // and would not exercise the encoder honestly.
+
+    fn test_shielded_raw_address(network: Network) -> [u8; SHIELDED_ADDRESS_RAW_LEN] {
+        let keys =
+            platform_wallet::wallet::shielded::OrchardKeySet::from_seed(&[7u8; 64], network, 0)
+                .expect("ZIP-32 derivation from a valid test seed");
+        keys.address_at(0).to_raw_address_bytes()
+    }
+
+    #[test]
+    fn encode_shielded_address_round_trips_with_parse() {
+        let raw = test_shielded_raw_address(Network::Testnet);
+        let encoded =
+            encode_shielded_address(&raw, Network::Testnet).expect("valid Orchard payload encodes");
+        // The encoder and the existing parser are exact inverses — a receive
+        // address we render must parse back to the very bytes it came from,
+        // or a user could copy an address that does not match wallet state.
+        assert_eq!(
+            parse_shielded_recipient(&encoded).as_deref(),
+            Some(raw.as_slice()),
+        );
+    }
+
+    #[test]
+    fn encode_shielded_address_uses_network_prefix() {
+        let mainnet = encode_shielded_address(
+            &test_shielded_raw_address(Network::Mainnet),
+            Network::Mainnet,
+        )
+        .expect("valid Orchard payload encodes");
+        let testnet = encode_shielded_address(
+            &test_shielded_raw_address(Network::Testnet),
+            Network::Testnet,
+        )
+        .expect("valid Orchard payload encodes");
+
+        assert!(mainnet.starts_with("dash1z"), "got {mainnet}");
+        assert!(testnet.starts_with("tdash1z"), "got {testnet}");
+        // The output satisfies the shielded network validator the send path
+        // enforces, so an address we display is one the app will accept back.
+        assert!(validate_orchard_address_for_network(&mainnet, Network::Mainnet).is_ok());
+        assert!(validate_orchard_address_for_network(&testnet, Network::Testnet).is_ok());
+        assert_eq!(AddressKind::detect(&testnet), Some(AddressKind::Shielded));
+    }
+
+    #[test]
+    fn encode_shielded_address_rejects_malformed_payload() {
+        // All-zero bytes are not a valid Orchard address (pk_d is not a valid
+        // curve point) — the encoder must reject rather than emit a string
+        // that no one can pay to.
+        assert_eq!(
+            encode_shielded_address(&[0u8; SHIELDED_ADDRESS_RAW_LEN], Network::Testnet),
+            Err(InvalidShieldedAddress),
+        );
+    }
+
+    #[test]
+    fn invalid_shielded_address_message_is_user_facing() {
+        // Everyday-User rule: what happened + what to do, no jargon.
+        assert_eq!(
+            InvalidShieldedAddress.to_string(),
+            "This shielded address could not be read. Please reopen the wallet and try again.",
+        );
+    }
 
     #[test]
     fn address_kind_display_names() {
@@ -398,5 +650,111 @@ mod tests {
     #[test]
     fn detect_garbage_returns_none() {
         assert_eq!(AddressKind::detect("not-an-address"), None);
+    }
+
+    // --- Platform/Orchard address↔network validators ---
+
+    #[test]
+    fn platform_address_matches_its_network() {
+        assert!(validate_platform_address_for_network("dash1qwer1234", Network::Mainnet).is_ok());
+        assert!(validate_platform_address_for_network("tdash1qwer1234", Network::Testnet).is_ok());
+    }
+
+    #[test]
+    fn platform_address_wrong_network_is_typed_mismatch() {
+        // Mainnet address on testnet, and testnet address on mainnet.
+        assert_eq!(
+            validate_platform_address_for_network("dash1qwer1234", Network::Testnet),
+            Err(AddressNetworkMismatch)
+        );
+        assert_eq!(
+            validate_platform_address_for_network("tdash1qwer1234", Network::Mainnet),
+            Err(AddressNetworkMismatch)
+        );
+    }
+
+    #[test]
+    fn orchard_address_matches_its_network() {
+        assert!(validate_orchard_address_for_network("dash1zqwer1234", Network::Mainnet).is_ok());
+        assert!(validate_orchard_address_for_network("tdash1zqwer1234", Network::Testnet).is_ok());
+    }
+
+    #[test]
+    fn orchard_address_wrong_network_is_typed_mismatch() {
+        assert_eq!(
+            validate_orchard_address_for_network("dash1zqwer1234", Network::Testnet),
+            Err(AddressNetworkMismatch)
+        );
+        assert_eq!(
+            validate_orchard_address_for_network("tdash1zqwer1234", Network::Mainnet),
+            Err(AddressNetworkMismatch)
+        );
+    }
+
+    #[test]
+    fn platform_validator_rejects_orchard_prefix_as_wrong_family_on_wrong_network() {
+        // A mainnet Orchard address (`dash1z…`) is not a testnet Platform address.
+        assert_eq!(
+            validate_platform_address_for_network("dash1zqwer1234", Network::Testnet),
+            Err(AddressNetworkMismatch)
+        );
+    }
+
+    #[test]
+    fn network_mismatch_message_is_user_facing() {
+        // The Display string is the calm, jargon-free banner both layers show.
+        assert_eq!(
+            AddressNetworkMismatch.to_string(),
+            "This address belongs to a different network. Please check you are using the correct network."
+        );
+    }
+
+    #[test]
+    fn network_validators_ignore_surrounding_whitespace_and_case() {
+        assert!(validate_platform_address_for_network("  DASH1QWER  ", Network::Mainnet).is_ok());
+        assert!(validate_orchard_address_for_network("  TDASH1ZQWER  ", Network::Testnet).is_ok());
+    }
+
+    // --- is_platform_address_string pitfall guard (TC-MN-031) ---
+    //
+    // The masternode withdraw tool rejects Platform destinations with this
+    // guard, NOT the weaker first-char `resolve::validate_address`. A `dash1…`
+    // / `tdash1…` string must be flagged as Platform so it cannot slip through
+    // as a Core address.
+
+    #[test]
+    fn platform_address_string_detects_bech32m_hrp() {
+        assert!(is_platform_address_string("dash1qwer1234"));
+        assert!(is_platform_address_string("tdash1qwer1234"));
+    }
+
+    #[test]
+    fn platform_address_string_rejects_core_addresses() {
+        // Mainnet (X) and testnet (y) Core addresses are not Platform addresses.
+        assert!(!is_platform_address_string(
+            "XqHiz9VVXfjBnET2z6aZ9j5LKyuGNv3byP"
+        ));
+        assert!(!is_platform_address_string(
+            "yQ9JNCT4S9zVHaKYbr1FUY4YkUMYxSzWAj"
+        ));
+    }
+
+    // TC-MN-B1 — non-ASCII input must never panic.
+    //
+    // The old implementation did `s[..hrp.len()]` which is byte-slicing a
+    // `&str`; that panics when byte offset `hrp.len()` (4 for "dash", 5 for
+    // "tdash") falls inside a multi-byte UTF-8 codepoint.  The fix switches
+    // to `as_bytes()` throughout.  This regression test must never panic.
+    #[test]
+    fn platform_address_string_non_ascii_does_not_panic() {
+        // "日本ABC" — each CJK char is 3 UTF-8 bytes; total 9 bytes.
+        // The old code: s.len()=9 > hrp.len()=4, then s[..4] panics because
+        // byte 4 is inside "本".
+        assert!(!is_platform_address_string("日本ABC"));
+        // Also test strings that are shorter than the HRP in chars but longer
+        // in bytes (no panic even without the length guard being satisfied).
+        assert!(!is_platform_address_string("日"));
+        // Non-ASCII that starts "like" a HRP (ASCII bytes matching then UTF-8)
+        assert!(!is_platform_address_string("dash\u{00E9}test"));
     }
 }

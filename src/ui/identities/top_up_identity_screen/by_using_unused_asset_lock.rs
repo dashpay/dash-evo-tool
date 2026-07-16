@@ -2,77 +2,59 @@ use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::MessageType;
 use crate::ui::components::message_banner::MessageBanner;
-use crate::ui::identities::add_new_identity_screen::FundingMethod;
+use crate::ui::identities::funding_common::{
+    FundingAssetLockPicker, FundingMethod, actionable_asset_locks, asset_lock_address,
+    asset_lock_status_label,
+};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use crate::ui::theme::DashColors;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 
 impl TopUpIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
-        // Ensure a wallet is selected
-        let Some(selected_wallet) = self.wallet.clone() else {
-            ui.label("No wallet selected.");
-            return;
-        };
+        let tracked =
+            match actionable_asset_locks(ui, &mut self.asset_lock_cache, self.wallet.as_ref()) {
+                FundingAssetLockPicker::Handled => return,
+                FundingAssetLockPicker::Available(tracked) => tracked,
+            };
 
-        // Read the wallet to access unused asset locks
-        let wallet = selected_wallet.read().unwrap();
+        ui.heading("Select the unfinished funding to use:");
 
-        if wallet.unused_asset_locks.is_empty() {
-            ui.label("No unused asset locks available.");
-            return;
-        }
-
-        ui.heading("Select an unused asset lock:");
-
-        // Track the index of the currently selected asset lock (if any)
-        let selected_index = self.funding_asset_lock.as_ref().and_then(|(_, proof, _)| {
-            wallet
-                .unused_asset_locks
-                .iter()
-                .position(|(_, _, _, _, p)| p.as_ref() == Some(proof))
-        });
-
-        // Display the asset locks in a scrollable area
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for (index, (tx, address, amount, islock, proof)) in
-                wallet.unused_asset_locks.iter().enumerate()
-            {
+            for lock in &tracked {
                 ui.horizontal(|ui| {
-                    let tx_id = tx.txid().to_string();
-                    let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
-                    let is_locked = if islock.is_some() { "Yes" } else { "No" };
-
-                    // Display asset lock information with "Selected" if this one is selected
-                    let selected_text = if Some(index) == selected_index {
+                    let selected_text = if self.funding_asset_lock == Some(lock.out_point) {
                         " (Selected)"
                     } else {
                         ""
                     };
-
+                    let address_text = match asset_lock_address(lock, self.app_context.network) {
+                        Some(address) => format!(", Address: {address}"),
+                        None => String::new(),
+                    };
                     ui.label(format!(
-                        "TxID: {}, Address: {}, Amount: {:.8} DASH, InstantLock: {}{}",
-                        tx_id, address, lock_amount, is_locked, selected_text
+                        "TxID: {}, Vout: {}{}, Amount: {:.8} DASH, Status: {}{}",
+                        lock.out_point.txid,
+                        lock.out_point.vout,
+                        address_text,
+                        lock.amount as f64 * 1e-8,
+                        asset_lock_status_label(&lock.status),
+                        selected_text,
                     ));
-
-                    if let Some(asset_lock_proof) = proof {
+                    if lock.proof.is_some() {
                         if ui.button("Select").clicked() {
-                            self.funding_asset_lock =
-                                Some((tx.clone(), asset_lock_proof.clone(), address.clone()));
-
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::ReadyToCreate;
+                            self.funding_asset_lock = Some(lock.out_point);
+                            self.set_step(WalletFundedScreenStep::ReadyToCreate);
                         }
                     } else if ui.button("Select").clicked() {
                         MessageBanner::set_global(
                             ui.ctx(),
-                            "Asset lock proof is not yet available — the transaction may not be chain-locked yet. Please try again later.",
+                            "This funding isn't ready to use yet. Wait for it to be confirmed on the Dash network, then try again.",
                             MessageType::Warning,
                         );
                     }
                 });
-
-                ui.add_space(5.0); // Add space between each entry
+                ui.add_space(5.0);
             }
         });
     }
@@ -83,26 +65,19 @@ impl TopUpIdentityScreen {
         step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
-
-        // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = self.current_step();
 
         ui.heading(
-            format!(
-                "{}. Choose the unused asset lock that you would like to use.",
-                step_number
-            )
-            .as_str(),
+            format!("{step_number}. Choose the unfinished funding you'd like to use.").as_str(),
         );
         ui.add_space(10.0);
         self.render_choose_funding_asset_lock(ui);
         ui.add_space(10.0);
 
-        // Fee estimation display
         let fee_estimator = self.app_context.fee_estimator();
         let estimated_fee = fee_estimator.estimate_identity_topup();
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(10, 8))
@@ -124,7 +99,6 @@ impl TopUpIdentityScreen {
 
         ui.add_space(10.0);
 
-        // Top up button
         let mut new_style = (**ui.style()).clone();
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
         ui.set_style(new_style);

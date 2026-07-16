@@ -23,15 +23,14 @@ use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
 /// encryption and decryption keys, so this simply delegates to the standard
 /// identity registration flow.
 ///
-/// Returns the QualifiedIdentity and the raw master authentication private key
-/// bytes captured during registration (before the wallet encrypts them).
+/// Returns the registered `QualifiedIdentity`; signing in tests uses the
+/// identity's public keys (the private keys are derived just-in-time).
 pub async fn create_dashpay_identity(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
     wallet_seed_hash: WalletSeedHash,
-) -> (QualifiedIdentity, Vec<u8>) {
-    let (reg_info, master_key_bytes) =
-        build_identity_registration(app_context, wallet_arc, wallet_seed_hash);
+) -> QualifiedIdentity {
+    let reg_info = build_identity_registration(app_context, wallet_arc, wallet_seed_hash).await;
 
     let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info));
     let result = run_task(app_context, task)
@@ -45,7 +44,7 @@ pub async fn create_dashpay_identity(
                 qi.identity.id(),
                 fee
             );
-            (qi, master_key_bytes)
+            qi
         }
         other => panic!(
             "create_dashpay_identity: expected RegisteredIdentity, got: {:?}",

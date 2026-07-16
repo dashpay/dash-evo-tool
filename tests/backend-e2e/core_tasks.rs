@@ -1,4 +1,4 @@
-//! Backend E2E tests for CoreTask variants (TC-001 to TC-011).
+//! Backend E2E tests for CoreTask variants (TC-001 to TC-012).
 
 use crate::framework::fixtures;
 use crate::framework::harness::ctx;
@@ -7,6 +7,7 @@ use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymen
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::single_key::SingleKeyWallet;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 // TC-001: RefreshWalletInfo — Core only
 #[ignore]
@@ -35,7 +36,9 @@ async fn test_tc001_refresh_wallet_info_core_only() {
         other => panic!("Expected RefreshedWallet, got: {:?}", other),
     }
 
-    let balance = wallet.read().expect("wallet lock").total_balance_duffs();
+    let balance = app_context
+        .snapshot_balance(&ctx.framework_wallet_hash)
+        .total;
     assert!(balance > 0, "Framework wallet balance should be > 0");
 }
 
@@ -68,10 +71,10 @@ async fn test_tc002_refresh_wallet_info_core_and_platform() {
 
 // TC-003: RefreshSingleKeyWalletInfo
 //
-// Single-key wallets require Dash Core (RPC) for UTXO discovery — SPV tracks
-// HD wallet-derived addresses only. The backend now returns a typed
-// `OperationRequiresDashCore` error in SPV mode; the test asserts that
-// mode-specific outcome rather than an unconditional success.
+// Single-key wallets are intentionally unsupported this release (see
+// single-key-mock.md, Decision #7): every single-key task arm returns the typed
+// `SingleKeyWalletsUnsupported`. The test asserts that typed outcome rather than
+// an unconditional success.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc003_refresh_single_key_wallet_info() {
@@ -98,32 +101,17 @@ async fn test_tc003_refresh_single_key_wallet_info() {
     let task = BackendTask::CoreTask(CoreTask::RefreshSingleKeyWalletInfo(skw_arc.clone()));
     let result = run_task(app_context, task).await;
 
-    // Single-key wallets require Dash Core for UTXO discovery. In SPV mode
-    // the backend returns a typed `OperationRequiresDashCore` error; in RPC
-    // mode the refresh should succeed.
-    match app_context.core_backend_mode() {
-        dash_evo_tool::spv::CoreBackendMode::Spv => {
-            let err = result
-                .expect_err("RefreshSingleKeyWalletInfo must fail in SPV mode with a typed error");
-            assert!(
-                matches!(
-                    err,
-                    dash_evo_tool::backend_task::error::TaskError::OperationRequiresDashCore { .. }
-                ),
-                "Expected OperationRequiresDashCore in SPV mode, got: {:?}",
-                err
-            );
-        }
-        dash_evo_tool::spv::CoreBackendMode::Rpc => {
-            let result = result.expect("RefreshSingleKeyWalletInfo should succeed in RPC mode");
-            match result {
-                BackendTaskSuccessResult::RefreshedWallet { .. } => {}
-                other => panic!("Expected RefreshedWallet, got: {:?}", other),
-            }
-            // Balance may be 0 for a fresh key — just verify the read succeeds
-            let _balance = skw_arc.read().expect("skw lock").total_balance_duffs();
-        }
-    }
+    // Single-key wallets are unsupported in this version; the backend
+    // returns the typed `SingleKeyWalletsUnsupported` error.
+    let err = result.expect_err("RefreshSingleKeyWalletInfo must fail with a typed error");
+    assert!(
+        matches!(
+            err,
+            dash_evo_tool::backend_task::error::TaskError::SingleKeyWalletsUnsupported
+        ),
+        "Expected SingleKeyWalletsUnsupported, got: {:?}",
+        err
+    );
 }
 
 // TC-004: CreateRegistrationAssetLock
@@ -204,57 +192,19 @@ async fn test_tc005_create_top_up_asset_lock() {
     }
 }
 
-// TC-006: RecoverAssetLocks
-//
-// In SPV mode the backend returns an empty `RecoveredAssetLocks { 0, 0 }`
-// result because asset lock finality is delivered via InstantLock / ChainLock
-// events — no explicit recovery pass is needed. In RPC mode the Core wallet
-// is scanned for untracked asset lock transactions.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn test_tc006_recover_asset_locks() {
-    let ctx = ctx().await;
-    let app_context = &ctx.app_context;
-
-    let wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
-
-    let task = BackendTask::CoreTask(CoreTask::RecoverAssetLocks(wallet.clone()));
-    let result = run_task(app_context, task)
-        .await
-        .expect("RecoverAssetLocks should succeed");
-
-    match result {
-        BackendTaskSuccessResult::RecoveredAssetLocks {
-            recovered_count,
-            total_amount,
-        } => {
-            // 0 recoveries is valid if no asset locks exist
-            tracing::info!(
-                "RecoverAssetLocks: count={}, total={} duffs",
-                recovered_count,
-                total_amount
-            );
-        }
-        other => panic!("Expected RecoveredAssetLocks, got: {:?}", other),
-    }
-}
+// TC-006: RecoverAssetLocks — REMOVED (Decision #8: hard-removed; upstream
+// AssetLockManager tracks asset locks continuously, no explicit recovery pass)
 
 // TC-007: GetBestChainLock — REMOVED (Core RPC-specific, not available in SPV mode)
 // TC-008: GetBestChainLocks — REMOVED (Core RPC-specific, not available in SPV mode)
 
 // TC-009: SendSingleKeyWalletPayment
 //
-// Broadcast now routes through `AppContext::broadcast_raw_transaction`, so a
-// single-key send can reach the network in both RPC and SPV modes. UTXO
-// discovery still requires Dash Core; in SPV mode the test verifies that
-// `RefreshSingleKeyWalletInfo` returns `OperationRequiresDashCore` and stops
-// before attempting the send (no spendable UTXOs available).
+// Single-key wallets are intentionally unsupported this release (see
+// single-key-mock.md, Decision #7): every single-key task arm returns the typed
+// `SingleKeyWalletsUnsupported`. The test verifies that
+// `RefreshSingleKeyWalletInfo` returns `SingleKeyWalletsUnsupported` and stops;
+// the single-key send flow is unreachable until single-key wallets are reinstated.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc009_send_single_key_wallet_payment() {
@@ -277,62 +227,30 @@ async fn test_tc009_send_single_key_wallet_payment() {
     )
     .expect("Failed to create SingleKeyWallet");
 
-    let skw_address = skw.address.to_string();
     let skw_arc = Arc::new(RwLock::new(skw));
 
-    // Fund the single-key wallet from the framework wallet
-    let framework_wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
-
-    run_task(
-        app_context,
-        BackendTask::CoreTask(CoreTask::SendWalletPayment {
-            wallet: framework_wallet,
-            request: WalletPaymentRequest {
-                recipients: vec![PaymentRecipient {
-                    address: skw_address.clone(),
-                    amount_duffs: 500_000,
-                }],
-                subtract_fee_from_amount: false,
-                memo: Some("TC-009 single key funding".to_string()),
-                override_fee: None,
-            },
-        }),
-    )
-    .await
-    .expect("Funding single-key wallet should succeed");
-
-    // Wait for the transaction to propagate, then refresh UTXOs.
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-    // Backend E2E runs against SPV only (see tests/backend-e2e/README.md), and
-    // single-key wallets depend on Core RPC for UTXO refresh. The refresh task
-    // therefore returns `OperationRequiresDashCore` — we verify the typed error
-    // and stop; the send step is unreachable without refreshed UTXOs.
+    // Single-key wallets are unsupported this release: the refresh
+    // arm returns the typed `SingleKeyWalletsUnsupported` regardless of network
+    // mode. We verify the typed error and stop; the send step is unreachable
+    // until single-key wallets are reinstated.
     let refresh_result = run_task(
         app_context,
         BackendTask::CoreTask(CoreTask::RefreshSingleKeyWalletInfo(skw_arc.clone())),
     )
     .await;
 
-    let err = refresh_result
-        .expect_err("RefreshSingleKeyWalletInfo must fail in SPV mode with a typed error");
+    let err = refresh_result.expect_err("RefreshSingleKeyWalletInfo must fail with a typed error");
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::OperationRequiresDashCore { .. }
+            dash_evo_tool::backend_task::error::TaskError::SingleKeyWalletsUnsupported
         ),
-        "Expected OperationRequiresDashCore in SPV mode, got: {:?}",
+        "Expected SingleKeyWalletsUnsupported, got: {:?}",
         err
     );
     tracing::info!(
-        "TC-009: single-key wallet flow is not supported in SPV mode; \
-         verified typed OperationRequiresDashCore error and skipping send step."
+        "TC-009: single-key wallets are unsupported this release; \
+         verified typed SingleKeyWalletsUnsupported error and skipping send step."
     );
 
     // ----------------------------------------------------------------------
@@ -387,8 +305,6 @@ async fn test_tc009_send_single_key_wallet_payment() {
     //                 address: recipient_address,
     //                 amount_duffs: 1_000,
     //             }],
-    //             subtract_fee_from_amount: true,
-    //             memo: Some("TC-009 send back".to_string()),
     //             override_fee: None,
     //         },
     //     }),
@@ -436,8 +352,6 @@ async fn test_tc011_send_wallet_payment_invalid_address() {
                 address: "not-a-valid-address!!!".to_string(),
                 amount_duffs: 1_000,
             }],
-            subtract_fee_from_amount: false,
-            memo: None,
             override_fee: None,
         },
     });
@@ -452,4 +366,78 @@ async fn test_tc011_send_wallet_payment_invalid_address() {
 
     let err = result.unwrap_err();
     tracing::info!("TC-011: got expected error variant: {:?}", err);
+}
+
+// TC-012: CreateRegistrationAssetLock — freshly-registered wallet, added
+// *after* SPV is already connected and synced, as opposed to TC-004's
+// framework wallet (registered before the SPV client's first sync pass —
+// see `BackendTestContext::init` in `framework/harness.rs`). Isolates
+// whether a wallet's coin-selection can pick an incorrectly-spendable UTXO
+// regardless of when it was registered, or whether that is specific to
+// wallets present from the client's initial (potentially long-lived,
+// history-accumulating) sync. See
+// docs/ai-design/2026-07-07-asset-lock-finality-retest/retest-findings.md
+// for the investigation this isolates.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn test_tc012_create_registration_asset_lock_late_added_wallet() {
+    let ctx = ctx().await;
+    let app_context = &ctx.app_context;
+
+    // A brand-new wallet has no chain history predating its own funding
+    // transaction below — there is no window in which a real spend of one
+    // of its outputs could have happened without this test observing it.
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
+
+    // `create_funded_test_wallet` only waits for `DetWalletBalance::spendable()`
+    // (confirmed + unconfirmed — a UI-display heuristic, see
+    // `wallet_backend/snapshot.rs`'s FUND-SAFETY MANDATE doc comment). The
+    // real asset-lock coin-selector requires strictly confirmed or IS-locked
+    // funds, so a plain unconfirmed mempool deposit satisfies `spendable()`
+    // immediately while still yielding "No UTXOs available for selection" in
+    // the asset-lock builder — a harness/product balance-classification
+    // mismatch, not the question this test isolates. Wait for `.confirmed`
+    // specifically (IS-lock or block confirmation) before attempting the
+    // asset lock, so a genuine coin-selection defect isn't confounded with
+    // this test-harness timing gap. Budgeted for a full Dash block (~2.5min
+    // average) since InstantSend lock arrival isn't guaranteed within any
+    // fixed window in practice — observed anywhere from a few seconds to a
+    // 180s window with zero IS-lock activity at all during this
+    // investigation.
+    let confirm_deadline = std::time::Instant::now() + Duration::from_secs(420);
+    loop {
+        let confirmed = app_context.snapshot_balance(&seed_hash).confirmed;
+        if confirmed >= 2_000_000 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < confirm_deadline,
+            "TC-012: funding tx for the late-added wallet did not reach confirmed \
+             status (IS-lock or block) within 420s — confirmed={confirmed}, target=2_000_000"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    // Use identity index 98 to avoid collision with TC-004 (index 99) and
+    // the shared fixtures (index 0). Credits match TC-004 (100_000_000
+    // credits == 100_000 duffs) for a direct comparison.
+    let task = BackendTask::CoreTask(CoreTask::CreateRegistrationAssetLock(
+        wallet_arc.clone(),
+        100_000_000,
+        98,
+    ));
+
+    let result = run_task(app_context, task)
+        .await
+        .expect("CreateRegistrationAssetLock should succeed for a freshly-added, funded wallet");
+
+    match result {
+        BackendTaskSuccessResult::Message(msg) => {
+            tracing::info!("TC-012: asset lock broadcast message: {}", msg);
+        }
+        other => panic!(
+            "TC-012: expected Message from CreateRegistrationAssetLock, got: {:?}",
+            other
+        ),
+    }
 }

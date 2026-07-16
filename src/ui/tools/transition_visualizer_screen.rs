@@ -6,7 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
@@ -16,7 +16,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::PlatformDeserializable;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui, Window};
+use eframe::egui::{self, Color32, ScrollArea, TextEdit, Ui, Window};
 use egui::RichText;
 use serde_json::Value;
 use std::sync::Arc;
@@ -153,7 +153,7 @@ impl TransitionVisualizerScreen {
     fn show_input_field(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for state transition:");
         ui.add_space(5.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
             TextEdit::multiline(&mut self.input_data)
                 .desired_rows(6)
@@ -207,7 +207,7 @@ impl TransitionVisualizerScreen {
         ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref json) = self.parsed_json {
                 ui.add_space(5.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
                     TextEdit::multiline(&mut json.clone())
                         .desired_rows(10)
@@ -418,23 +418,28 @@ impl ScreenLike for TransitionVisualizerScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let mut action = add_top_panel_with_global_nav(
+            ui,
             &self.app_context,
-            vec![("Tools", AppAction::None)],
+            subdued_everyday_spec(
+                "Tools",
+                RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+            ),
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsTransitionVisualizerScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             self.show_input_field(ui);
             self.show_output(ui)
         });
@@ -459,7 +464,7 @@ impl ScreenLike for TransitionVisualizerScreen {
                             // Check if contract already exists
                             let contract_exists = self
                                 .app_context
-                                .get_contracts(None, None)
+                                .get_contracts()
                                 .unwrap_or_default()
                                 .iter()
                                 .any(|c| {

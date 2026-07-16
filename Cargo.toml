@@ -8,17 +8,17 @@ rust-version = "1.92"
 
 [dependencies]
 tokio-util = { version = "0.7.15" }
-bip39 = { version = "2.2.0", features = ["all-languages", "rand"] }
+bip39 = { version = "2.2.0", features = ["all-languages", "rand", "zeroize"] }
 derive_more = "2.1.1"
-egui = "0.33.3"
-egui_extras = "0.33.3"
-egui_commonmark = "0.22.0"
+egui = "0.35.0"
+egui_extras = "0.35.0"
+egui_commonmark = "0.24.0"
 rfd = "0.17.2"
 qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
-eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
+eframe = { version = "0.35.0", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "54048b9352c5c8361f4cbfaa6a188dd3244e00c4", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -28,7 +28,14 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "54048b9352c5c83
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "54048b9352c5c8361f4cbfaa6a188dd3244e00c4" }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb", features = [
+    "serde",
+    "shielded",
+] }
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb", features = [
+    "shielded",
+] }
 zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
@@ -37,8 +44,16 @@ serde = "1.0.219"
 serde_json = "1.0.140"
 serde_yaml_ng = { version = "0.10.0" }
 tokio = { version = "1.46.1", features = ["full"] }
+# Pin is deliberate; do not "fix" the audit warning by bumping. bincode is flagged
+# unmaintained (RUSTSEC-2025-0141, INFO-level — no known vulnerability). The advisory
+# covers *all* versions, so no bump can clear it: 2.0.1 is the last functional release
+# and 3.0.0 is a tombstone whose lib.rs is a bare `compile_error!`. This crate encodes
+# the on-disk wallet-secret envelopes and QualifiedIdentity blobs, so switching encoders
+# changes the wire format of data users already have on disk — that needs a designed
+# read-old/write-new migration, not a dependency bump.
 bincode = { version = "=2.0.1", features = ["serde"] }
 hex = { version = "0.4.3" }
+async-trait = "0.1.89"
 itertools = "0.14.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
@@ -55,7 +70,12 @@ arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
 directories = "6.0.0"
-rusqlite = { version = "0.38.0", features = ["bundled", "functions", "fallible_uint"] }
+rusqlite = { version = "0.38.0", features = [
+    "bundled",
+    "functions",
+    "fallible_uint",
+    "backup",
+] }
 dark-light = "2.0.0"
 image = { version = "0.25.6", default-features = false, features = [
     "png",
@@ -70,7 +90,6 @@ zxcvbn = "3.1.0"
 argon2 = "0.5.3" # For Argon2 key derivation
 aes-gcm = "0.10.3" # For AES-256-GCM encryption
 cbc = "0.1.2" # For CBC mode encryption
-crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "8.0.0" }
@@ -85,12 +104,6 @@ subtle = { version = "2.6", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 clap_complete = { version = "4", optional = true }
 
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-zmq = "0.10.0"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-zeromq = "0.4.1"
-
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 
@@ -99,19 +112,42 @@ native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
 
 [features]
+default = []
 testing = []
+bench = []
 mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
 cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
-egui_kittest = { version = "0.33.3", features = ["eframe"] }
+egui_kittest = { version = "0.35.0", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
+criterion = "0.5.1"
+# Used only by error-mapping unit tests to construct a genuine divergent-version
+# `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
+# version already in the graph via `platform-wallet-storage`; the `rusqlite`
+# feature is already enabled transitively, so this adds no new build.
+refinery = { version = "0.9.1", default-features = false, features = ["rusqlite"] }
 
 [[bin]]
 name = "det-cli"
 path = "src/bin/det_cli/main.rs"
 required-features = ["cli"]
+
+[[test]]
+name = "backend-e2e"
+path = "tests/backend-e2e/main.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "mcp_http_auth"
+path = "tests/mcp_http_auth.rs"
+required-features = ["mcp"]
+
+[[bench]]
+name = "wallet_hydration"
+harness = false
+required-features = ["bench"]
 
 [build-dependencies]
 winres = "0.1"
@@ -122,9 +158,23 @@ winres = "0.1"
 [profile.dev.package."*"]
 debug = "line-tables-only"
 
+# Argon2id is deliberately memory-hard; unoptimized (opt-level=0) each 64 MiB
+# derivation runs for seconds AND holds its memory that whole time, so the
+# wallet_backend secret-storage tests both ran slowly (5-23s each) and, under
+# whole-suite parallelism, overlapped enough to push the host into swap.
+# opt-level=3 shrinks each derivation to tens of ms, which also collapses the
+# memory-hold window and the swap pressure. This mirrors platform's own root
+# argon2 stanza, which does NOT propagate downstream: Cargo honors [profile.*]
+# tables only from the workspace root, so DET must declare its own.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.test.package.argon2]
+opt-level = 3
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\", \"headless\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\"))"]
 
 
 [lints.clippy]

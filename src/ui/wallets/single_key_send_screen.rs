@@ -3,10 +3,11 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::wallet::single_key::SingleKeyWallet;
-use crate::spv::CoreBackendMode;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
@@ -14,7 +15,7 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::wallets::wallets_screen::SINGLE_KEY_REQUIRES_CORE;
+use crate::ui::wallets::wallets_screen::SINGLE_KEY_SEND_UNAVAILABLE;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -58,10 +59,6 @@ pub struct SingleKeyWalletSendScreen {
     recipients: Vec<SendRecipient>,
     next_recipient_id: usize,
 
-    // Common options
-    subtract_fee: bool,
-    memo: String,
-
     // State
     sending: bool,
 
@@ -74,11 +71,10 @@ pub struct SingleKeyWalletSendScreen {
     // Advanced options toggle
     show_advanced_options: bool,
 
-    /// Persistent warning banner rendered when the app is running on the SPV
-    /// backend. Stored on the screen (rather than constructed fresh each
-    /// frame) so the underlying tracing log fires once on mode entry instead
-    /// of every repaint.
-    spv_warning_banner: MessageBanner,
+    /// States the single-key send limitation up front. Stored on the screen
+    /// (rather than constructed fresh each frame) so the underlying tracing log
+    /// fires once on entry instead of every repaint.
+    send_unavailable_banner: MessageBanner,
 }
 
 impl SingleKeyWalletSendScreen {
@@ -88,13 +84,11 @@ impl SingleKeyWalletSendScreen {
             selected_wallet: Some(wallet),
             recipients: vec![SendRecipient::new(0)],
             next_recipient_id: 1,
-            subtract_fee: false,
-            memo: String::new(),
             sending: false,
             password_input: PasswordInput::new().with_hint_text("Enter password"),
             fee_dialog: FeeConfirmationDialog::default(),
             show_advanced_options: false,
-            spv_warning_banner: MessageBanner::new(),
+            send_unavailable_banner: MessageBanner::new(),
         }
     }
 
@@ -108,10 +102,6 @@ impl SingleKeyWalletSendScreen {
         if self.recipients.len() > 1 {
             self.recipients.retain(|r| r.id != id);
         }
-    }
-
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
     }
 
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
@@ -258,21 +248,14 @@ impl SingleKeyWalletSendScreen {
             if total_amount > wallet_guard.total_balance {
                 return Err(format!(
                     "Insufficient balance. Need {} but only have {}",
-                    Self::format_dash(total_amount),
-                    Self::format_dash(wallet_guard.total_balance)
+                    format_duffs_as_dash(total_amount),
+                    format_duffs_as_dash(wallet_guard.total_balance)
                 ));
             }
         }
 
-        let memo = self.memo.trim();
         let request = WalletPaymentRequest {
             recipients: payment_recipients,
-            subtract_fee_from_amount: self.subtract_fee,
-            memo: if memo.is_empty() {
-                None
-            } else {
-                Some(memo.to_string())
-            },
             override_fee: None,
         };
 
@@ -283,17 +266,25 @@ impl SingleKeyWalletSendScreen {
             self.fee_dialog.estimated_fee = estimated_fee;
         }
 
+        Ok(self.dispatch_send(wallet.clone(), request))
+    }
+
+    /// The single dispatch point for a send: arms the busy flag as it hands the
+    /// task off, so the flag cannot get out of step with what is in flight.
+    /// Every terminal result clears it again (see `display_message`).
+    fn dispatch_send(
+        &mut self,
+        wallet: Arc<RwLock<SingleKeyWallet>>,
+        request: WalletPaymentRequest,
+    ) -> AppAction {
         self.sending = true;
-        Ok(AppAction::BackendTask(BackendTask::CoreTask(
-            CoreTask::SendSingleKeyWalletPayment {
-                wallet: wallet.clone(),
-                request,
-            },
-        )))
+        AppAction::BackendTask(BackendTask::CoreTask(
+            CoreTask::SendSingleKeyWalletPayment { wallet, request },
+        ))
     }
 
     fn render_recipients(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.add_space(15.0);
 
@@ -395,7 +386,7 @@ impl SingleKeyWalletSendScreen {
     }
 
     fn render_options(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.add_space(15.0);
 
@@ -413,30 +404,6 @@ impl SingleKeyWalletSendScreen {
             .inner_margin(Margin::symmetric(12, 10))
             .corner_radius(5.0)
             .show(ui, |ui| {
-                // Memo field
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Memo (optional):")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(14.0),
-                    );
-                    ui.add_space(5.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.memo)
-                            .hint_text("Add a note...")
-                            .desired_width(300.0),
-                    );
-                });
-
-                ui.add_space(10.0);
-
-                // Subtract fee checkbox
-                ui.checkbox(
-                    &mut self.subtract_fee,
-                    RichText::new("Subtract fee from amount")
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-
                 // Fee estimation display
                 if let Some((estimated_fee, utxo_count, tx_size)) = self.estimate_fee() {
                     ui.add_space(10.0);
@@ -489,7 +456,7 @@ impl SingleKeyWalletSendScreen {
 
     /// Render the simple (beginner) send UI - single recipient, minimal options
     fn render_simple_send(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.add_space(15.0);
 
@@ -561,7 +528,7 @@ impl SingleKeyWalletSendScreen {
             return action;
         }
 
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
         egui::Window::new("Fee Confirmation Required")
             .collapsible(false)
@@ -647,7 +614,6 @@ impl SingleKeyWalletSendScreen {
                     if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
                         self.fee_dialog.is_open = false;
                         self.fee_dialog.pending_request = None;
-                        self.sending = false;
                     }
 
                     ui.add_space(20.0);
@@ -657,13 +623,8 @@ impl SingleKeyWalletSendScreen {
                             // Update the request to use the higher fee
                             request.override_fee = Some(self.fee_dialog.required_fee);
 
-                            if let Some(wallet) = &self.selected_wallet {
-                                action = AppAction::BackendTask(BackendTask::CoreTask(
-                                    CoreTask::SendSingleKeyWalletPayment {
-                                        wallet: wallet.clone(),
-                                        request,
-                                    },
-                                ));
+                            if let Some(wallet) = self.selected_wallet.clone() {
+                                action = self.dispatch_send(wallet, request);
                             }
                         }
                         self.fee_dialog.is_open = false;
@@ -677,7 +638,7 @@ impl SingleKeyWalletSendScreen {
     }
 
     fn render_wallet_info(&self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some(wallet_arc) = &self.selected_wallet
             && let Ok(wallet) = wallet_arc.read()
@@ -728,7 +689,7 @@ impl SingleKeyWalletSendScreen {
                                 .size(14.0),
                         );
                         ui.label(
-                            RichText::new(Self::format_dash(balance))
+                            RichText::new(format_duffs_as_dash(balance))
                                 .color(DashColors::SUCCESS)
                                 .strong()
                                 .size(14.0),
@@ -739,7 +700,7 @@ impl SingleKeyWalletSendScreen {
     }
 
     fn render_wallet_unlock(&mut self, ui: &mut Ui) -> AppAction {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
@@ -770,27 +731,32 @@ impl SingleKeyWalletSendScreen {
                     if ui.button("Unlock").clicked()
                         && let Some(wallet) = &self.selected_wallet
                     {
-                        match wallet.write() {
-                            Ok(mut wallet_guard) => {
-                                match wallet_guard.open(self.password_input.text()) {
-                                    Ok(_) => {
-                                        self.password_input.clear();
-                                    }
-                                    Err(e) => {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                            format!("Failed to unlock: {}", e),
-                                            MessageType::Error,
-                                        );
-                                    }
-                                }
-                            }
-                            Err(_) => {
+                        // Verify the passphrase against the encrypted vault
+                        // without opening the shared map entry: signing
+                        // decrypts just-in-time, so no plaintext is re-parked.
+                        let address = wallet.read().ok().map(|w| w.address.to_string());
+                        let verify_result = match address {
+                            Some(addr) => self
+                                .app_context
+                                .verify_single_key_passphrase(&addr, self.password_input.text()),
+                            None => Err(TaskError::ImportedKeyNotFound),
+                        };
+                        match verify_result {
+                            Ok(()) => {
+                                self.password_input.clear();
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    "Wallet lock error, please try again",
-                                    MessageType::Error,
+                                    "Password confirmed. This key is ready to use.",
+                                    MessageType::Success,
                                 );
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    e.to_string(),
+                                    MessageType::Error,
+                                )
+                                .with_details(&e);
                             }
                         }
                     }
@@ -813,36 +779,18 @@ impl SingleKeyWalletSendScreen {
 
             ui.add_space(20.0);
 
-            // Send button
-            let wallet_is_open = self
-                .selected_wallet
-                .as_ref()
-                .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-            let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
-
-            let button_enabled = wallet_is_open && !self.sending && is_rpc_mode;
-            // Only force white label text when the button is actually clickable;
-            // otherwise let egui's default disabled visuals take over so the
-            // greyed-out state is visually unambiguous.
+            // `CoreTask::SendSingleKeyWalletPayment` refuses every single-key
+            // send with `TaskError::SingleKeyWalletsUnsupported`, so the button
+            // stays disabled until that task can build, sign and broadcast a
+            // transaction. Mirrors the disabled Send in the wallets action bar;
+            // left unstyled so egui's default disabled visuals apply.
             let send_label =
                 RichText::new(if self.sending { "Sending..." } else { "Send" }).strong();
-            let send_label = if button_enabled {
-                send_label.color(Color32::WHITE)
-            } else {
-                send_label
-            };
-            let send_button = egui::Button::new(send_label)
-                .fill(if button_enabled {
-                    DashColors::DASH_BLUE
-                } else {
-                    DashColors::DASH_BLUE.gamma_multiply(0.5)
-                })
-                .min_size(egui::vec2(120.0, 36.0));
+            let send_button = egui::Button::new(send_label).min_size(egui::vec2(120.0, 36.0));
 
-            let mut response = ui.add_enabled(button_enabled, send_button);
-            if !is_rpc_mode {
-                response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE);
-            }
+            let response = ui
+                .add_enabled(false, send_button)
+                .on_disabled_hover_text(SINGLE_KEY_SEND_UNAVAILABLE);
             if response.clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
@@ -860,46 +808,40 @@ impl SingleKeyWalletSendScreen {
 }
 
 impl ScreenLike for SingleKeyWalletSendScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Wallets", AppAction::PopScreen), ("Send", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
-
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Message display is handled by the global MessageBanner.
 
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
-                    // Persistent warning banner for the SPV backend. Stored on
-                    // the screen so the underlying tracing log fires once on
-                    // mode entry instead of every repaint — see the matching
-                    // note in `single_key_view.rs`.
-                    if !is_rpc_mode {
-                        if !self.spv_warning_banner.has_message() {
-                            self.spv_warning_banner
-                                .set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning)
-                                .disable_auto_dismiss();
-                        }
-                        self.spv_warning_banner.show(ui);
-                        ui.add_space(10.0);
-                    } else if self.spv_warning_banner.has_message() {
-                        self.spv_warning_banner.clear();
+                    // States the limitation up front, so the disabled Send below
+                    // is never a surprise.
+                    if !self.send_unavailable_banner.has_message() {
+                        self.send_unavailable_banner
+                            .set_message(SINGLE_KEY_SEND_UNAVAILABLE, MessageType::Warning)
+                            .disable_auto_dismiss();
                     }
+                    self.send_unavailable_banner.show(ui);
+                    ui.add_space(10.0);
 
                     // Heading with Advanced Options checkbox
                     ui.horizontal(|ui| {
@@ -932,7 +874,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                     }
 
                     if self.show_advanced_options {
-                        // Advanced mode: multiple recipients, memo, subtract fee, detailed info
+                        // Advanced mode: multiple recipients, subtract fee, detailed info
                         self.render_recipients(ui);
                         self.render_options(ui);
                     } else {
@@ -954,23 +896,22 @@ impl ScreenLike for SingleKeyWalletSendScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Error/success display is handled by the global MessageBanner.
-        // Only side-effects are preserved here.
+        // Banner display is handled globally by AppState; this is only for
+        // side-effects. Always clear sending — the task that armed it is done,
+        // whatever it returned. A send refused by the backend (every single-key
+        // send is, today) must not strand the button on "Sending...".
+        self.sending = false;
 
-        // Check for success messages to reset sending state
-        if message.contains("Sent") || message.contains("TxID") {
-            self.sending = false;
-            self.fee_dialog.pending_request = None;
-        }
-
-        // Check for min relay fee error and show confirmation dialog
         if matches!(message_type, MessageType::Error | MessageType::Warning)
             && let Some(required_fee) = Self::parse_min_relay_fee_error(message)
         {
-            // Show the fee confirmation dialog instead of the error message
+            // The fee is the only recoverable send error: offer the higher fee
+            // instead of the raw message. Confirming re-dispatches, which arms
+            // the busy flag again.
             self.fee_dialog.required_fee = required_fee;
             self.fee_dialog.is_open = true;
-            // Keep sending state true until user confirms or cancels
+        } else {
+            self.fee_dialog.pending_request = None;
         }
     }
 
@@ -990,19 +931,19 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                     let (address, amount) = &recipients[0];
                     format!(
                         "Sent {} to {}\nTxID: {}",
-                        Self::format_dash(*amount),
+                        format_duffs_as_dash(*amount),
                         address,
                         txid
                     )
                 } else {
                     let recipient_list: String = recipients
                         .iter()
-                        .map(|(addr, amt)| format!("  {} to {}", Self::format_dash(*amt), addr))
+                        .map(|(addr, amt)| format!("  {} to {}", format_duffs_as_dash(*amt), addr))
                         .collect::<Vec<_>>()
                         .join("\n");
                     format!(
                         "Sent {} total to {} recipients:\n{}\nTxID: {}",
-                        Self::format_dash(total_amount),
+                        format_duffs_as_dash(total_amount),
                         recipients.len(),
                         recipient_list,
                         txid
@@ -1014,8 +955,6 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                 // Clear the form after successful send
                 self.recipients = vec![SendRecipient::new(0)];
                 self.next_recipient_id = 1;
-                self.memo.clear();
-                self.subtract_fee = false;
             }
             _ => {
                 // Ignore other results
@@ -1026,4 +965,117 @@ impl ScreenLike for SingleKeyWalletSendScreen {
     fn refresh_on_arrival(&mut self) {}
 
     fn refresh(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+
+    /// Build an offline `AppContext` (no network I/O, throwaway data dir).
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        use crate::app_dir::ensure_env_file;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    fn send_screen() -> (SingleKeyWalletSendScreen, tempfile::TempDir) {
+        let (ctx, temp_dir) = offline_ctx();
+        let wallet =
+            SingleKeyWallet::new([1u8; 32], Network::Testnet, None, None).expect("single key");
+        let screen = SingleKeyWalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet)));
+        (screen, temp_dir)
+    }
+
+    /// The busy flag means "a send is in flight". Every single-key send is
+    /// refused by the backend with `SingleKeyWalletsUnsupported`, so a flag
+    /// that only clears on success-shaped text would strand the button on
+    /// "Sending..." forever.
+    #[test]
+    fn busy_flag_clears_on_the_refusal_every_single_key_send_produces() {
+        let (mut screen, _tmp) = send_screen();
+        screen.sending = true;
+
+        screen.display_message(
+            &TaskError::SingleKeyWalletsUnsupported.to_string(),
+            MessageType::Error,
+        );
+
+        assert!(
+            !screen.sending,
+            "a refused send must not leave the screen stuck busy"
+        );
+    }
+
+    /// The busy flag is armed by the dispatch itself, so a new call site cannot
+    /// hand a task off without it.
+    #[test]
+    fn dispatching_a_send_arms_the_busy_flag() {
+        let (mut screen, _tmp) = send_screen();
+        let wallet = screen.selected_wallet.clone().expect("wallet");
+        let request = WalletPaymentRequest {
+            recipients: vec![PaymentRecipient {
+                address: "yWxJqW5Kt1bnJoLtvxDrTBcpqhFuBCVFEK".to_string(),
+                amount_duffs: 100_000,
+            }],
+            override_fee: None,
+        };
+
+        let action = screen.dispatch_send(wallet, request);
+
+        assert!(screen.sending, "dispatch must arm the busy flag");
+        assert!(matches!(
+            action,
+            AppAction::BackendTask(BackendTask::CoreTask(
+                CoreTask::SendSingleKeyWalletPayment { .. }
+            ))
+        ));
+    }
+
+    /// The min-relay-fee dialog is the one recoverable send error: it keeps the
+    /// stashed request so "Confirm & Send" can re-dispatch at the higher fee,
+    /// but no task is in flight while the user decides.
+    #[test]
+    fn min_relay_fee_error_offers_the_retry_and_ends_the_in_flight_send() {
+        let (mut screen, _tmp) = send_screen();
+        screen.sending = true;
+        screen.fee_dialog.pending_request = Some(WalletPaymentRequest {
+            recipients: vec![],
+            override_fee: None,
+        });
+
+        screen.display_message("min relay fee not met, 226 < 1000", MessageType::Error);
+
+        assert!(
+            !screen.sending,
+            "no task is in flight while the dialog waits"
+        );
+        assert!(screen.fee_dialog.is_open, "the retry dialog must open");
+        assert_eq!(screen.fee_dialog.required_fee, 1000);
+        assert!(
+            screen.fee_dialog.pending_request.is_some(),
+            "the stashed request must survive for the higher-fee retry"
+        );
+    }
 }

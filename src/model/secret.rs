@@ -3,6 +3,7 @@ use std::fmt;
 use std::ops::Range;
 
 use egui::TextBuffer;
+use egui::text::CharIndex;
 use zeroize::{Zeroize, Zeroizing};
 
 /// Default pre-allocation capacity for `Secret` buffers.
@@ -124,6 +125,14 @@ impl Secret {
         self.inner.is_empty()
     }
 
+    /// Whether the secret's trimmed value is empty.
+    ///
+    /// Prefer this over `expose_secret().trim().is_empty()` for presence
+    /// checks — it avoids exposing the raw bytes unnecessarily.
+    pub fn is_blank(&self) -> bool {
+        self.inner.trim().is_empty()
+    }
+
     /// Returns a new `Secret` containing the trimmed content.
     /// Keeps the data within the secure wrapper unlike `text().trim()`
     /// which returns a borrowed `&str`.
@@ -175,13 +184,13 @@ impl TextBuffer for Secret {
         self.inner.as_str()
     }
 
-    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+    fn insert_text(&mut self, text: &str, char_index: CharIndex) -> usize {
         let n = <String as TextBuffer>::insert_text(&mut *self.inner, text, char_index);
         self.relock_if_moved();
         n
     }
 
-    fn delete_char_range(&mut self, char_range: Range<usize>) {
+    fn delete_char_range(&mut self, char_range: Range<CharIndex>) {
         <String as TextBuffer>::delete_char_range(&mut *self.inner, char_range);
         // Zero deleted bytes in trailing capacity [len..capacity)
         let ptr = self.inner.as_mut_ptr();
@@ -205,7 +214,7 @@ impl TextBuffer for Secret {
     }
 
     fn take(&mut self) -> String {
-        // INTENTIONAL(SEC-003): Returns unprotected String — required by egui TextBuffer trait.
+        // Deliberately returns an unprotected String — required by egui TextBuffer trait.
         // The undoer is disabled in PasswordInput, limiting the call paths. Accepted as
         // inherent limitation of the egui framework for the desktop GUI threat model.
         let copy = self.inner.to_string();
@@ -270,6 +279,44 @@ impl From<&str> for Secret {
     }
 }
 
+// -- serde / schemars impls --------------------------------------------------
+//
+// `Secret` carries private-key / mnemonic material in MCP tool parameter
+// structs.  Adding `Deserialize` lets the params struct derive `Deserialize`
+// directly — the impl deserializes into a transient `String`, then moves it
+// into the zeroizing/mlock'd buffer and drops the transient, so no long-lived
+// plain `String` copy persists.  The `JsonSchema` impl (gated to
+// the features that bring in `rmcp`) exposes `Secret` as a JSON string in the
+// MCP tool schema so clients know what format to supply.
+//
+// `platform_wallet_storage::SecretString` offers the same security guarantees
+// but lacks both `Deserialize` and `JsonSchema`, and `IdentityInputToLoad`
+// already uses this local `Secret` type — switching would require a lossy
+// expose-then-rewrap at the boundary.  The local type is therefore preferred
+// for MCP parameters.
+
+impl<'de> serde::Deserialize<'de> for Secret {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Secret::new(s))
+    }
+}
+
+/// Expose as a plain JSON string schema — the secure wrapper is invisible to
+/// the caller; they just supply a string value.
+#[cfg(any(feature = "mcp", feature = "cli"))]
+impl rmcp::schemars::JsonSchema for Secret {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Secret".into()
+    }
+    fn json_schema(_gen: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+        rmcp::schemars::json_schema!({ "type": "string" })
+    }
+}
+
 // -- Tests -------------------------------------------------------------------
 
 #[cfg(test)]
@@ -298,12 +345,12 @@ mod tests {
         let mut secret = Secret::new("hello");
 
         // insert_text appends " world"
-        let inserted = secret.insert_text(" world", 5);
+        let inserted = secret.insert_text(" world", CharIndex(5));
         assert_eq!(inserted, 6);
         assert_eq!(secret.expose_secret(), "hello world");
 
         // delete_char_range removes " world"
-        secret.delete_char_range(5..11);
+        secret.delete_char_range(CharIndex(5)..CharIndex(11));
         assert_eq!(secret.expose_secret(), "hello");
     }
 
@@ -404,7 +451,7 @@ mod tests {
     #[test]
     fn test_delete_char_range_zeroes_trailing() {
         let mut secret = Secret::new("abcdef");
-        secret.delete_char_range(3..6);
+        secret.delete_char_range(CharIndex(3)..CharIndex(6));
         assert_eq!(secret.expose_secret(), "abc");
         // Trailing capacity bytes (after len) should be zeroed
         let len = secret.inner.len();

@@ -1,7 +1,10 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
+use crate::ui::helpers::clicked_outside_window_after_open_by_id;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
+
+pub use crate::ui::components::modal_chrome::NOTHING;
 
 /// Result of a selection dialog interaction
 #[derive(Debug, Clone, PartialEq)]
@@ -11,8 +14,6 @@ pub enum SelectionStatus {
     /// User cancelled the dialog
     Canceled,
 }
-
-pub const NOTHING: Option<&str> = None;
 
 /// Response struct for the SelectionDialog component following the Component trait pattern
 #[derive(Debug, Clone)]
@@ -57,6 +58,7 @@ impl ComponentResponse for SelectionDialogComponentResponse {
 /// for styling), and preselection. The dialog can be dismissed by pressing Escape
 /// (treated as cancel) or clicking the X button. Enter confirms the current selection.
 pub struct SelectionDialog {
+    id: egui::Id,
     title: WidgetText,
     message: WidgetText,
     options: Vec<String>,
@@ -97,13 +99,15 @@ impl Component for SelectionDialog {
 }
 
 impl SelectionDialog {
-    /// Create a new selection dialog with the given title, message, and options
+    /// Create a selection dialog with a stable ID unique to this instance.
     pub fn new(
+        id: egui::Id,
         title: impl Into<WidgetText>,
         message: impl Into<WidgetText>,
         options: Vec<String>,
     ) -> Self {
         Self {
+            id,
             title: title.into(),
             message: message.into(),
             options,
@@ -149,7 +153,7 @@ impl SelectionDialog {
         use crate::ui::components::component_trait::{Component, ComponentResponse};
 
         let mut selection_result: Option<SelectionStatus> = None;
-        egui::Area::new(egui::Id::new("selection_dialog_modal").with(self.title.text()))
+        egui::Area::new(self.id.with("modal_area"))
             .fixed_pos(egui::Pos2::ZERO)
             .order(egui::Order::Middle)
             .interactable(true)
@@ -167,48 +171,31 @@ impl SelectionDialog {
 impl SelectionDialog {
     /// Show the dialog and return the user's response
     fn show_dialog(&mut self, ui: &mut Ui) -> InnerResponse<Option<SelectionStatus>> {
-        let mut is_open = self.is_open;
-
-        if !is_open {
+        if !self.is_open {
             return InnerResponse::new(
                 None,
                 ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()),
             );
         }
 
-        // Draw dark overlay behind the dialog
-        let screen_rect = ui.ctx().content_rect();
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("selection_dialog_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
-
         let mut final_response = None;
         let mut combo_popup_id: Option<egui::Id> = None;
-        let window_response = egui::Window::new(self.title.clone())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .open(&mut is_open)
-            .frame(egui::Frame {
-                inner_margin: egui::Margin::same(16),
-                outer_margin: egui::Margin::same(0),
-                corner_radius: egui::CornerRadius::same(8),
-                shadow: egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 16,
-                    spread: 0,
-                    color: DashColors::popup_shadow(),
-                },
-                fill: ui.style().visuals.window_fill,
-                stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-            })
-            .show(ui.ctx(), |ui| {
+        let chrome = modal_chrome(
+            ui.ctx(),
+            ModalChromeConfig {
+                title: self.title.clone(),
+                overlay_id: self.id.with("overlay"),
+                overlay_order: egui::Order::Middle,
+                window_order: egui::Order::Foreground,
+                resizable: false,
+                show_close_button: true,
+                blocks_input: false,
+                inner_margin: 16,
+            },
+            |ui| {
                 ui.set_min_width(300.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Message
                 ui.add_space(10.0);
@@ -259,7 +246,7 @@ impl SelectionDialog {
 
                         // Cancel button
                         if let Some(cancel_text) = &self.cancel_text {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             if ComponentStyles::add_secondary_button(
                                 ui,
                                 cancel_text.clone(),
@@ -274,10 +261,11 @@ impl SelectionDialog {
                         }
                     });
                 });
-            });
+            },
+        );
 
         // Handle window closed via X button
-        if !is_open && final_response.is_none() {
+        if chrome.closed_via_x && final_response.is_none() {
             final_response = Some(SelectionStatus::Canceled);
         }
 
@@ -296,11 +284,19 @@ impl SelectionDialog {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
         }
 
-        // Handle click outside window (skip if ComboBox dropdown is open)
-        if let Some(ref wr) = window_response
+        // Handle click outside window (skip if ComboBox dropdown is open).
+        // SelectionDialog is value-constructed every frame, so the opening-frame
+        // skip is tracked in egui memory rather than a persistent guard field —
+        // otherwise the click that opened the dialog would cancel it on the same
+        // frame, before it is ever visible.
+        if let Some(ref wr) = chrome.window_response
             && final_response.is_none()
             && !combo_open
-            && clicked_outside_window(ui.ctx(), wr.response.rect)
+            && clicked_outside_window_after_open_by_id(
+                ui.ctx(),
+                wr.rect,
+                self.id.with("outside_click_pass"),
+            )
         {
             final_response = Some(SelectionStatus::Canceled);
         }
@@ -310,11 +306,11 @@ impl SelectionDialog {
             self.status = final_response.clone();
             self.is_open = false;
         } else {
-            self.is_open = is_open;
+            self.is_open = !chrome.closed_via_x;
         }
 
-        if let Some(window_response) = window_response {
-            InnerResponse::new(final_response, window_response.response)
+        if let Some(window_response) = chrome.window_response {
+            InnerResponse::new(final_response, window_response)
         } else {
             InnerResponse::new(
                 final_response,
@@ -331,6 +327,7 @@ mod tests {
     #[test]
     fn test_selection_dialog_creation() {
         let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_creation_test"),
             "Pick Wallet",
             "Choose the wallet to use",
             vec!["Wallet A".into(), "Wallet B".into(), "Wallet C".into()],
@@ -350,7 +347,12 @@ mod tests {
 
     #[test]
     fn test_selection_dialog_default_buttons() {
-        let dialog = SelectionDialog::new("Title", "Message", vec!["A".into(), "B".into()]);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_default_buttons_test"),
+            "Title",
+            "Message",
+            vec!["A".into(), "B".into()],
+        );
 
         assert!(dialog.confirm_text.is_some_and(|t| t.text() == "Select"));
         assert!(dialog.cancel_text.is_some_and(|t| t.text() == "Cancel"));
@@ -360,26 +362,46 @@ mod tests {
     #[test]
     fn test_selection_dialog_preselect() {
         // Normal preselection
-        let dialog =
-            SelectionDialog::new("Title", "Message", vec!["A".into(), "B".into(), "C".into()])
-                .preselect(2);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_preselect_test"),
+            "Title",
+            "Message",
+            vec!["A".into(), "B".into(), "C".into()],
+        )
+        .preselect(2);
         assert_eq!(dialog.selected_index, 2);
 
         // Out-of-bounds clamped to last index
-        let dialog =
-            SelectionDialog::new("Title", "Message", vec!["A".into(), "B".into()]).preselect(99);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_preselect_clamped_test"),
+            "Title",
+            "Message",
+            vec!["A".into(), "B".into()],
+        )
+        .preselect(99);
         assert_eq!(dialog.selected_index, 1);
 
         // Empty options: stays at 0
-        let dialog = SelectionDialog::new("Title", "Message", vec![]).preselect(5);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_preselect_empty_test"),
+            "Title",
+            "Message",
+            vec![],
+        )
+        .preselect(5);
         assert_eq!(dialog.selected_index, 0);
     }
 
     #[test]
     fn test_selection_dialog_no_buttons() {
-        let dialog = SelectionDialog::new("Title", "Message", vec!["Only".into()])
-            .confirm_text(NOTHING)
-            .cancel_text(NOTHING);
+        let dialog = SelectionDialog::new(
+            egui::Id::new("selection_dialog_no_buttons_test"),
+            "Title",
+            "Message",
+            vec!["Only".into()],
+        )
+        .confirm_text(NOTHING)
+        .cancel_text(NOTHING);
 
         assert!(dialog.confirm_text.is_none());
         assert!(dialog.cancel_text.is_none());

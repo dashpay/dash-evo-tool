@@ -6,7 +6,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
@@ -16,6 +16,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -176,7 +177,7 @@ impl PurchaseTokenScreen {
         if let Some(pricing_schedule) = &self.fetched_pricing_schedule {
             ui.add_space(5.0);
             ui.label("Current pricing:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             match pricing_schedule {
                 TokenPricingSchedule::SinglePrice(price_per_unit) => {
@@ -397,10 +398,12 @@ impl ScreenLike for PurchaseTokenScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Build a top panel
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -412,16 +415,16 @@ impl ScreenLike for PurchaseTokenScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+        island_central_panel(ui, |ui| {
+            let dark_mode = ui.style().visuals.dark_mode;
             // If we are in the "Complete" status, just show success screen
             if self.status == PurchaseTokensStatus::Complete {
                 action |= self.show_success_screen(ui);
@@ -432,7 +435,7 @@ impl ScreenLike for PurchaseTokenScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !self
                     .identity_token_info
                     .identity
@@ -491,8 +494,9 @@ impl ScreenLike for PurchaseTokenScreen {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -570,7 +574,7 @@ impl ScreenLike for PurchaseTokenScreen {
 
                 // Display estimated fee before action button
                 let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 egui::Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(egui::Margin::symmetric(10, 8))

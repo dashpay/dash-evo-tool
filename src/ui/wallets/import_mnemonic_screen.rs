@@ -1,8 +1,4 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
-use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::core::CoreTask;
-use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::left_panel::add_left_panel;
@@ -11,18 +7,13 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
-use eframe::egui::Context;
 
-use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::Wallet;
-use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
 use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::Arc;
-use std::sync::RwLock;
-use std::sync::atomic::Ordering;
 use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
 
@@ -41,7 +32,6 @@ pub struct ImportMnemonicScreen {
     estimated_time_to_crack: String,
     error: Option<String>,
     pub app_context: Arc<AppContext>,
-    use_password_for_app: bool,
     wallet_imported: bool,
     show_advanced_options: bool,
 
@@ -56,13 +46,6 @@ pub struct ImportMnemonicScreen {
 
     // Identity discovery options
     identity_scan_count: u32,
-
-    /// Cached list of Core wallets (fetched asynchronously via backend task)
-    core_wallets: Option<Vec<String>>,
-    /// Whether the backend task to fetch Core wallets has been dispatched
-    core_wallets_loading: bool,
-    /// Index of selected Core wallet in the ComboBox
-    selected_core_wallet_index: usize,
 }
 
 impl ImportMnemonicScreen {
@@ -76,7 +59,6 @@ impl ImportMnemonicScreen {
             estimated_time_to_crack: String::new(),
             error: None,
             app_context: app_context.clone(),
-            use_password_for_app: true,
             wallet_imported: false,
             show_advanced_options: false,
 
@@ -93,16 +75,7 @@ impl ImportMnemonicScreen {
 
             // Identity discovery options
             identity_scan_count: 5,
-
-            core_wallets: None,
-            core_wallets_loading: false,
-            selected_core_wallet_index: 0,
         }
-    }
-
-    pub fn reset_core_wallets_cache(&mut self) {
-        self.core_wallets = None;
-        self.core_wallets_loading = false;
     }
 
     fn try_parse_private_key(&mut self) {
@@ -130,19 +103,26 @@ impl ImportMnemonicScreen {
     }
 
     fn save_private_key_wallet(&mut self) -> Result<AppAction, String> {
+        use dash_sdk::dpp::dashcore::PrivateKey;
+
         let input = self.private_key_input.text().trim();
         if input.is_empty() {
             return Err("Please enter a private key".to_string());
         }
 
-        // Parse the key with password and alias
-        let password = if self.password_input.is_empty() {
-            None
-        } else {
-            Some(self.password_input.text())
-        };
+        // T-W-01b: imported keys live in the upstream `SecretStore` vault,
+        // which is scoped at the vault level — there is no per-key
+        // password layer here. The per-wallet password UX is deferred
+        // (T-MIG-03); until then, reject password-protected single-key
+        // imports rather than silently storing them in the clear.
+        if !self.password_input.is_empty() {
+            return Err(
+                "Per-key passwords are not supported in this version. Leave the password \
+                 field blank to import the key; your wallet vault protects all imported keys."
+                    .to_string(),
+            );
+        }
 
-        // Generate default wallet name if none provided
         let alias = if self.alias_input.trim().is_empty() {
             let existing_wallet_count = self
                 .app_context
@@ -155,37 +135,40 @@ impl ImportMnemonicScreen {
             Some(self.alias_input.clone())
         };
 
-        // Try WIF first, then hex
-        let mut wallet =
-            SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
-                SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
-            })?;
-
-        wallet.core_wallet_name = self
-            .core_wallets
-            .as_ref()
-            .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
-
-        let key_hash = wallet.key_hash();
-
-        // Store in database
-        self.app_context
-            .db
-            .store_single_key_wallet(&wallet, self.app_context.network)
-            .map_err(|e| {
-                if is_unique_constraint_violation(&e) {
-                    "This key has already been imported.".to_string()
-                } else {
-                    e.to_string()
+        // The single import path takes WIF only — normalise hex input to
+        // WIF first so users can paste either shape while every import
+        // still funnels through `AppContext::import_single_key_wif`.
+        let wif = match PrivateKey::from_wif(input) {
+            Ok(_) => input.to_string(),
+            Err(_) => {
+                let bytes = hex::decode(input).map_err(|_| {
+                    "This does not look like a valid WIF or hex private key. Check the input."
+                        .to_string()
+                })?;
+                if bytes.len() != 32 {
+                    return Err(format!(
+                        "Hex private keys must be exactly 32 bytes; got {} bytes.",
+                        bytes.len()
+                    ));
                 }
-            })?;
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&bytes);
+                PrivateKey::from_byte_array(&buf, self.app_context.network)
+                    .map_err(|e| format!("Invalid private key: {e}"))?
+                    .to_wif()
+            }
+        };
 
-        // Add to app context
-        let wallet_arc = Arc::new(RwLock::new(wallet));
-        if let Ok(mut single_key_wallets) = self.app_context.single_key_wallets.write() {
-            single_key_wallets.insert(key_hash, wallet_arc);
-            self.app_context.has_wallet.store(true, Ordering::Relaxed);
-        }
+        // Consolidated import: vault write + sidecar + in-memory mirror,
+        // shared with the advanced import dialog (#192). Per-key passwords
+        // are rejected above, so this screen always imports unprotected.
+        self.app_context
+            .import_single_key_wif(
+                &wif,
+                alias,
+                crate::wallet_backend::single_key::ImportPassphrase::default(),
+            )
+            .map_err(|e| e.to_string())?;
 
         self.wallet_imported = true;
         Ok(AppAction::None)
@@ -194,15 +177,6 @@ impl ImportMnemonicScreen {
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
-
-            // Handle app-level password encryption (UI concern, separate from wallet)
-            if !self.password_input.is_empty() && self.use_password_for_app {
-                let (encrypted_message, salt, nonce) =
-                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
-                self.app_context
-                    .update_main_password(&salt, &nonce, &encrypted_message)
-                    .map_err(|e| e.to_string())?;
-            }
 
             let password = if self.password_input.is_empty() {
                 None
@@ -223,7 +197,7 @@ impl ImportMnemonicScreen {
                 self.alias_input.clone()
             };
 
-            let mut wallet = Wallet::new_from_seed(
+            let wallet = Wallet::new_from_seed(
                 seed,
                 self.app_context.network,
                 Some(wallet_alias),
@@ -231,14 +205,13 @@ impl ImportMnemonicScreen {
             )
             .map_err(|e| e.to_string())?;
 
-            wallet.core_wallet_name = self
-                .core_wallets
-                .as_ref()
-                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
-
             let (new_wallet_seed_hash, wallet_arc) = self
                 .app_context
-                .register_wallet(wallet)
+                .register_wallet(
+                    wallet,
+                    &seed,
+                    crate::model::wallet::birth_height::WalletOrigin::Imported,
+                )
                 .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
@@ -366,7 +339,7 @@ impl ImportMnemonicScreen {
 
                             let mut word = self.seed_phrase_words[i].clone();
 
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             let response = ui.add_sized(
                                 Vec2::new(input_width, 20.0),
                                 egui::TextEdit::singleline(&mut word)
@@ -466,35 +439,11 @@ impl Drop for ImportMnemonicScreen {
 }
 
 impl ScreenLike for ImportMnemonicScreen {
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreWalletsList(wallets) = backend_task_success_result {
-            self.selected_core_wallet_index = self
-                .selected_core_wallet_index
-                .min(wallets.len().saturating_sub(1));
-            self.core_wallets = Some(wallets);
-        }
-    }
-
-    fn display_task_error(&mut self, _error: &TaskError) -> bool {
-        self.core_wallets_loading = false;
-        self.core_wallets = Some(vec![]);
-        false
-    }
-
-    fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut pending_action = AppAction::None;
-        if self.core_wallets.is_none() && !self.core_wallets_loading {
-            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                self.core_wallets = Some(vec![]);
-            } else {
-                self.core_wallets_loading = true;
-                pending_action =
-                    AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
-            }
-        }
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let pending_action = AppAction::None;
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::GoToMainScreen),
@@ -504,12 +453,12 @@ impl ScreenLike for ImportMnemonicScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show success screen if wallet was imported
@@ -698,46 +647,7 @@ impl ScreenLike for ImportMnemonicScreen {
                         self.estimated_time_to_crack
                     ));
 
-                    // if self.app_context.password_info.is_none() {
-                    //     ui.add_space(10.0);
-                    //     ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
-                    // }
-
                     step += 1;
-
-                    if self
-                        .core_wallets
-                        .as_ref()
-                        .is_some_and(|w| w.len() > 1)
-                    {
-                        let core_wallets = self.core_wallets.as_ref().unwrap();
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-
-                        ui.heading(format!(
-                            "{}. Select the Dash Core wallet to use for RPC operations.",
-                            step
-                        ));
-                        step += 1;
-                        ui.add_space(8.0);
-
-                        ui.horizontal(|ui| {
-                            ui.label("Dash Core Wallet:");
-                            let selected_name = &core_wallets[self.selected_core_wallet_index];
-                            ComboBox::from_id_salt("import_core_wallet_selector")
-                                .selected_text(selected_name)
-                                .show_ui(ui, |ui| {
-                                    for (i, name) in core_wallets.iter().enumerate() {
-                                        ui.selectable_value(
-                                            &mut self.selected_core_wallet_index,
-                                            i,
-                                            name,
-                                        );
-                                    }
-                                });
-                        });
-                    }
 
                     ui.add_space(10.0);
                     ui.separator();

@@ -1,19 +1,26 @@
 //! Parameter resolution helpers for MCP tools.
 
 use crate::context::AppContext;
-use crate::context::connection_status::OverallConnectionState;
 use crate::mcp::error::McpToolError;
 use crate::mcp::server::network_display_name;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use std::sync::{Arc, RwLock};
 
-/// Poll interval for waiting on SPV connection -- matches ConnectionStatus throttle.
-const SPV_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// Initial SPV sync (headers, masternodes, filters, blocks) can take several minutes.
 const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Maximum wait for a cold-start storage migration to complete.
+///
+/// Migration is fast (typically < 5 s) but bounded at 60 s to guard
+/// against a hung migrator.  If this elapses, `ensure_storage_ready`
+/// returns [`McpToolError::StorageNotReady`] so the caller gets an
+/// actionable error rather than a mysterious `WalletStorageNotReady`
+/// from deep inside `run_backend_task`.
+const STORAGE_MIGRATION_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Verify that the expected network matches the server's active network.
 ///
@@ -34,16 +41,21 @@ pub(crate) fn verify_network(
     Ok(())
 }
 
-/// Verify network is provided and matches (mandatory for destructive ops).
+/// Verify network is provided (non-blank) and matches (mandatory for
+/// destructive ops).
+///
+/// A missing or blank `network` is rejected as "required" rather than compared
+/// against the active network — an empty string means "not provided".
 pub(crate) fn require_network(
     app_context: &AppContext,
     network: Option<&str>,
 ) -> Result<(), McpToolError> {
-    let Some(expected) = network else {
-        return Err(McpToolError::InvalidParam {
+    let expected = network
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| McpToolError::InvalidParam {
             message: "The 'network' parameter is required for fund-sending operations to prevent accidental cross-network transfers.".to_owned(),
-        });
-    };
+        })?;
     let actual = network_display_name(app_context.network());
     if !expected.eq_ignore_ascii_case(actual) {
         return Err(McpToolError::NetworkMismatch {
@@ -91,20 +103,108 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
 }
 
 /// Get the `Arc<RwLock<Wallet>>` for a given seed hash.
+///
+/// Delegates the lookup + poison recovery to [`AppContext::wallet_arc`] (the
+/// single source of truth) and re-wraps its only failure —
+/// [`TaskError::WalletNotFound`] — as the id-bearing [`McpToolError`] MCP
+/// clients expect.
 pub(crate) fn wallet_arc(
     ctx: &AppContext,
     seed_hash: WalletSeedHash,
 ) -> Result<Arc<RwLock<crate::model::wallet::Wallet>>, McpToolError> {
-    let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
-    wallets
-        .get(&seed_hash)
-        .cloned()
-        .ok_or_else(|| McpToolError::WalletNotFound {
+    ctx.wallet_arc(&seed_hash)
+        .map_err(|_| McpToolError::WalletNotFound {
             id: hex::encode(seed_hash),
         })
 }
 
-/// Wait for SPV to reach fully-synced (green) state.
+/// Wire the wallet backend and finish any pending legacy-wallet migration so
+/// every persisted wallet is available in memory before returning.
+///
+/// Unlike [`ensure_spv_synced`], this does not start SPV or wait for chain sync.
+pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .map_err(McpToolError::TaskFailed)?;
+    ensure_legacy_storage_migrated(ctx).await
+}
+
+/// Poll until the cold-start storage update is fully complete.
+///
+/// On a fresh standalone process, the MCP readiness gates dispatch a
+/// legacy-data migration before the backend is fully usable.
+/// `AppContext::run_backend_task` short-circuits wallet-touching tasks while
+/// `migration_status().state().is_in_progress()`, returning
+/// [`TaskError::WalletStorageNotReady`]. Waiting here covers an active run that
+/// started between dispatch and this check.
+///
+/// Fast exit: returns immediately if migration is already done (the common
+/// case after the first gated tool has already waited).
+///
+/// A terminal [`MigrationState::Failed`] is never ready: it is converted back
+/// into its typed task error even when a concurrent retry changed state while
+/// another caller was waiting.
+async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    let migration = ctx.migration_status();
+
+    let poll = async {
+        loop {
+            let state = migration.state();
+            match state.as_ref() {
+                crate::context::migration_status::MigrationState::Failed { error } => {
+                    return Err(McpToolError::TaskFailed(
+                        crate::backend_task::migration::migration_task_error(Arc::clone(error)),
+                    ));
+                }
+                state if state.is_in_progress() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                _ => return Ok(()),
+            }
+        }
+    };
+
+    match tokio::time::timeout(STORAGE_MIGRATION_WAIT_TIMEOUT, poll).await {
+        Ok(Ok(())) => {
+            tracing::info!("Cold-start storage migration complete.");
+            Ok(())
+        }
+        Ok(Err(error)) => Err(error),
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = STORAGE_MIGRATION_WAIT_TIMEOUT.as_secs(),
+                "Timed out waiting for cold-start storage migration"
+            );
+            Err(McpToolError::StorageNotReady)
+        }
+    }
+}
+
+/// Dispatch or join the legacy-data migration before wallet reads.
+///
+/// Standalone/headless MCP has no GUI frame loop to dispatch `FinishUnwire`.
+/// Embedded MCP may race the GUI dispatch, so the AppContext run gate safely
+/// joins that run and the task's sentinel keeps repeated dispatch idempotent.
+async fn ensure_legacy_storage_migrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    let migration_state = ctx.migration_status().state();
+    if matches!(
+        migration_state.as_ref(),
+        crate::context::migration_status::MigrationState::Idle
+            | crate::context::migration_status::MigrationState::Failed { .. }
+    ) {
+        use crate::backend_task::migration::MigrationTask;
+        if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
+            tracing::warn!(error = ?e, "Standalone cold-start storage update failed");
+            return Err(McpToolError::TaskFailed(e));
+        }
+    }
+
+    ensure_storage_ready(ctx).await
+}
+
+/// Wait for SPV to reach the `Running` state (chain headers + filters synced).
 ///
 /// Required for **all wallet-facing tools** — both core-chain (UTXOs, sending
 /// Dash) and platform queries (address balances, withdrawals).  Even DAPI-only
@@ -114,33 +214,84 @@ pub(crate) fn wallet_arc(
 ///
 /// Only tools that make no network calls (e.g. `core_wallets_list`,
 /// `network_info`, `tool_describe`) skip this gate.
-pub(crate) async fn ensure_spv_synced(ctx: &AppContext) -> Result<(), McpToolError> {
-    let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
-    loop {
-        let _ = ctx.connection_status.trigger_refresh(ctx);
-        let state = ctx.connection_status.overall_state();
-        if state == OverallConnectionState::Synced {
-            return Ok(());
+///
+/// Wires the wallet backend and starts chain sync on first call before waiting —
+/// neither standalone (stdio) boot, the HTTP context swap, nor the
+/// post-network-switch path eagerly wires the backend the way the GUI does, so
+/// this is the single chokepoint that makes SPV actually start for every gated
+/// tool. Both steps are idempotent, so repeated tool calls are cheap.
+///
+/// Also dispatches or joins any pending cold-start storage migration and waits
+/// for a wallet-safe terminal state before polling SPV — this prevents the
+/// `WalletStorageNotReady` fast-fail that `run_backend_task` applies while
+/// migration is mid-flight.
+///
+/// ## Why `SpvStatus::Running`, not `OverallConnectionState::Synced`
+///
+/// `OverallConnectionState::Synced` requires both SPV running **and**
+/// `dapi_available == true`. In headless / MCP mode the DAPI availability
+/// counter is only refreshed by the frame-loop `trigger_refresh` call, which
+/// does not run here. Waiting for `Synced` would therefore block indefinitely
+/// in headless mode even after the chain is fully synced — the symptom that
+/// motivated this fix. `SpvStatus::Running` is push-based and sufficient: all
+/// proof-verifying SDK calls only require a synced chain, not a live DAPI
+/// counter at the `ensure_spv_synced` callsite.
+pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
+    // it, so the receiver is dropped. The `EventBridge` only does non-blocking
+    // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
+        tracing::warn!(error = %e, "wallet backend wiring / SPV start failed before sync wait");
+        return Err(McpToolError::TaskFailed(e));
+    }
+
+    ensure_legacy_storage_migrated(ctx).await?;
+
+    // Subscribe BEFORE reading the current value so no transition is lost
+    // between the `ensure_wallet_backend_and_start_spv` call above and the
+    // first `borrow_and_update` below. borrow_and_update marks the current
+    // value "seen", so the loop never spins — each iteration always sleeps on
+    // a real change.
+    let mut rx = ctx.connection_status().subscribe_spv_status();
+
+    let wait = async {
+        loop {
+            let status = *rx.borrow_and_update();
+            match status {
+                SpvStatus::Running => return Ok(()),
+                SpvStatus::Error => return Err(McpToolError::SpvSyncFailed),
+                // Idle / Starting / Syncing / Stopping / Stopped — keep waiting.
+                _ => {}
+            }
+            // changed() returns Err only if the sender is dropped, which is
+            // app-lifetime, so this is effectively unreachable in practice.
+            if rx.changed().await.is_err() {
+                return Err(McpToolError::SpvSyncFailed);
+            }
         }
-        if state == OverallConnectionState::Error {
-            return Err(McpToolError::SpvSyncFailed);
-        }
-        if tokio::time::Instant::now() >= deadline {
+    };
+
+    match tokio::time::timeout(SPV_WAIT_TIMEOUT, wait).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
             tracing::warn!(
-                "SPV sync timed out after {} seconds (state: {state:?})",
-                SPV_WAIT_TIMEOUT.as_secs()
+                "SPV sync timed out after {} seconds (status: {:?})",
+                SPV_WAIT_TIMEOUT.as_secs(),
+                ctx.connection_status().spv_status()
             );
-            return Err(McpToolError::SpvSyncFailed);
+            Err(McpToolError::SpvSyncFailed)
         }
-        tokio::time::sleep(SPV_WAIT_POLL_INTERVAL).await;
     }
 }
 
-/// Validate amount for sending operations.
-pub(crate) fn validate_amount(amount_duffs: u64) -> Result<(), McpToolError> {
-    if amount_duffs == 0 {
+/// Reject a zero send amount. `unit_label` names the JSON parameter's unit
+/// (e.g. `"duffs"` or `"credits"`) so the message points at the right field.
+pub(crate) fn validate_positive_amount(amount: u64, unit_label: &str) -> Result<(), McpToolError> {
+    if amount == 0 {
         return Err(McpToolError::InvalidParam {
-            message: "amount_duffs must be greater than zero".to_owned(),
+            message: format!("amount_{unit_label} must be greater than zero"),
         });
     }
     Ok(())
@@ -192,12 +343,31 @@ pub(crate) fn qualified_identity(
         })
 }
 
-/// Validate amount in credits for sending operations.
-pub(crate) fn validate_credits(amount_credits: u64) -> Result<(), McpToolError> {
-    if amount_credits == 0 {
-        return Err(McpToolError::InvalidParam {
-            message: "amount_credits must be greater than zero".to_owned(),
-        });
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn storage_ready_rejects_terminal_migration_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        let source =
+            Arc::new(crate::backend_task::migration::MigrationError::WalletBackendUnavailable);
+        ctx.migration_status().set_state(
+            crate::context::migration_status::MigrationState::Failed {
+                error: Arc::clone(&source),
+            },
+        );
+
+        let error = ensure_storage_ready(&ctx)
+            .await
+            .expect_err("a failed migration is not wallet-ready");
+
+        match error {
+            McpToolError::TaskFailed(crate::backend_task::error::TaskError::MigrationFailed {
+                source: actual,
+            }) => assert!(Arc::ptr_eq(&actual, &source)),
+            other => panic!("expected the typed migration failure, got {other:?}"),
+        }
     }
-    Ok(())
 }

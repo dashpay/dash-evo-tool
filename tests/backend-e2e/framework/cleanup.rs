@@ -55,8 +55,6 @@ pub async fn cleanup_test_wallets(
 
         // Derive a fresh receive address for each sweep to distribute UTXOs
         // across multiple addresses instead of concentrating on a single one.
-        // Clone the wallet Arc before dropping the read lock to avoid holding
-        // it across get_receive_address (which may acquire a write lock).
         let framework_wallet = {
             let wallets = app_context.wallets().read().expect("wallets lock");
             wallets
@@ -64,18 +62,15 @@ pub async fn cleanup_test_wallets(
                 .expect("framework wallet must exist")
                 .clone()
         };
-        let framework_address = get_receive_address(app_context, &framework_wallet);
+        let framework_address = get_receive_address(app_context, &framework_wallet).await;
 
         // Wait briefly for SPV to sync this wallet's balance.
         let _ =
             wait::wait_for_spendable_balance(app_context, hash, 1, Duration::from_secs(1)).await;
 
         let (spendable, total) = {
-            let wallet = wallet_arc.read().expect("wallet lock");
-            (
-                wallet.confirmed_balance_duffs(),
-                wallet.total_balance_duffs(),
-            )
+            let snap = app_context.snapshot_balance(&hash);
+            (snap.confirmed, snap.total)
         };
 
         // Delete wallets with no funds at all — they're fully spent orphans
@@ -100,14 +95,22 @@ pub async fn cleanup_test_wallets(
             continue;
         }
 
-        // Attempt to sweep spendable funds back to framework wallet
+        // Attempt to sweep spendable funds back to framework wallet. The
+        // wallet engine cannot subtract the fee from the amount, so reserve
+        // the estimated L1 fee here and send the remainder.
+        let utxo_count = app_context.snapshot_utxo_count(&hash);
+        let Some(sweep_amount) = dash_evo_tool::model::fee_estimation::core_max_send_amount_duffs(
+            spendable, utxo_count, 1,
+        ) else {
+            // Spendable funds do not cover the network fee — skip this run.
+            continue;
+        };
+
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
                 address: framework_address.clone(),
-                amount_duffs: spendable,
+                amount_duffs: sweep_amount,
             }],
-            subtract_fee_from_amount: true,
-            memo: Some("E2E cleanup: sweep orphaned wallet".to_string()),
             override_fee: None,
         };
 
@@ -121,7 +124,7 @@ pub async fn cleanup_test_wallets(
                 swept += 1;
                 tracing::info!(
                     "Cleanup: returned {} duffs from orphaned wallet {:?}",
-                    spendable,
+                    sweep_amount,
                     &hash[..4]
                 );
             }

@@ -110,7 +110,7 @@ fn seed_hd_wallets(
             .encode()
             .to_vec();
         let envelope = StoredSeedEnvelope {
-            encrypted_seed: seed.to_vec(),
+            encrypted_seed: seed.to_vec().into(),
             salt: Vec::new(),
             nonce: Vec::new(),
             password_hint: None,

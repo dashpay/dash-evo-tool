@@ -126,7 +126,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) {
                         app_context.repaint_animation(ui.ctx());
                     }
                     let tip = status.tooltip_text();
-                    let _resp = resp.info_tooltip(tip);
+                    resp.info_tooltip(tip);
                 });
             },
         );

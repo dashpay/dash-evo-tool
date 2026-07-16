@@ -14,7 +14,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
@@ -1403,10 +1403,10 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action = add_top_panel_with_global_nav(
             ui,
             self.current_app_context(),
-            vec![("Networks", AppAction::None)],
+            subdued_everyday_spec("Networks", RootScreenType::RootScreenNetworkChooser),
             vec![],
         );
 

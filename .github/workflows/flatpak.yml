@@ -48,16 +48,18 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_OVERRIDE_INPUT: ${{ inputs.version_override }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          ov="${{ inputs.version_override }}"
+          ov="$VERSION_OVERRIDE_INPUT"
           if [ -z "$ov" ] && [ "${{ github.event_name }}" = "release" ]; then
-            tag="${{ github.event.release.tag_name }}"
+            tag="$EVENT_RELEASE_TAG"
             # Recover the original version_override from the release notes marker
             # `finalize` (weekly-build.yml) writes at creation time. This works for
             # ANY accepted version shape (not just the canonical vX.Y.Z-weekly.YYYYMMDD
             # pattern), so a custom `version` dispatch input survives undrafting too.
-            body=$(gh release view "$tag" --json body --jq .body -R "$GITHUB_REPOSITORY" 2>/dev/null || echo "")
+            body=$(gh release view "$tag" --json body --jq .body -R "$GITHUB_REPOSITORY")
             marker=$(printf '%s' "$body" | grep -oE '<!-- weekly-version: [^ ]+ -->' | sed -E 's/<!-- weekly-version: (.+) -->/\1/' || true)
             if [ -n "$marker" ]; then
               ov="$marker"

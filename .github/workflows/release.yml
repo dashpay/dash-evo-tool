@@ -72,13 +72,20 @@ jobs:
         id: resolve_ref
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_INPUT: ${{ inputs.tag }}
+          DEFAULT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag }}"
-          if [ -n "$tag" ] && gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" >/dev/null 2>&1; then
+          tag="$TAG_INPUT"
+          if [ -z "$tag" ]; then
+            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
+          elif err=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" 2>&1 >/dev/null); then
             echo "ref=$tag" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$err" | grep -q "HTTP 404"; then
+            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
           else
-            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+            echo "::error::Failed to verify whether tag '$tag' exists (gh api error was not a 404, so this could be an auth/rate-limit/network problem rather than a genuinely missing tag): $err"
+            exit 1
           fi
 
       - name: Check out code
@@ -223,13 +230,20 @@ jobs:
         id: resolve_ref
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_INPUT: ${{ inputs.tag }}
+          DEFAULT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag }}"
-          if [ -n "$tag" ] && gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" >/dev/null 2>&1; then
+          tag="$TAG_INPUT"
+          if [ -z "$tag" ]; then
+            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
+          elif err=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" 2>&1 >/dev/null); then
             echo "ref=$tag" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$err" | grep -q "HTTP 404"; then
+            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
           else
-            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+            echo "::error::Failed to verify whether tag '$tag' exists (gh api error was not a 404, so this could be an auth/rate-limit/network problem rather than a genuinely missing tag): $err"
+            exit 1
           fi
 
       - name: Check out code
@@ -570,13 +584,20 @@ jobs:
         id: resolve_ref
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_INPUT: ${{ inputs.tag }}
+          DEFAULT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag }}"
-          if [ -n "$tag" ] && gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" >/dev/null 2>&1; then
+          tag="$TAG_INPUT"
+          if [ -z "$tag" ]; then
+            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
+          elif err=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" 2>&1 >/dev/null); then
             echo "ref=$tag" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$err" | grep -q "HTTP 404"; then
+            echo "ref=$DEFAULT_REF" >> "$GITHUB_OUTPUT"
           else
-            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+            echo "::error::Failed to verify whether tag '$tag' exists (gh api error was not a 404, so this could be an auth/rate-limit/network problem rather than a genuinely missing tag): $err"
+            exit 1
           fi
 
       - name: Check out code

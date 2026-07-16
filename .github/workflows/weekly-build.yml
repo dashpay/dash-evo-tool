@@ -57,6 +57,7 @@ jobs:
         env:
           FORCE: ${{ inputs.force || false }}
           MANUAL_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
@@ -69,7 +70,7 @@ jobs:
           # absent, not red.
           red=false
           for wf in tests.yml clippy.yml; do
-            concl=$(gh run list --workflow "$wf" --branch "${{ github.ref_name }}" --status completed \
+            concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --status completed \
                       --limit 1 --json conclusion --jq '.[0].conclusion // ""')
             case "$concl" in
               failure | cancelled | timed_out | startup_failure) red=true ;;
@@ -111,7 +112,7 @@ jobs:
               exit 0
             fi
             LAST=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq '[.[] | select(.draft == true and ((.body // "") | test("<!-- weekly-version:")))] | sort_by(.created_at) | reverse | .[0].tag_name // empty')
+              --jq '[.[] | select((.body // "") | test("<!-- weekly-version:"))] | sort_by(.created_at) | reverse | .[0].tag_name // empty')
             if [ -n "$LAST" ] && git rev-parse -q --verify "refs/tags/$LAST" >/dev/null && [ "$(git rev-list --count "${LAST}..HEAD")" -eq 0 ]; then
               {
                 echo "should_release=false"
@@ -146,6 +147,30 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify force-recut ownership
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            # Never force-move a tag we don't own, and never delete other
+            # releases before this check — otherwise force=true + a version
+            # matching an existing official release (e.g. 0.9.3) would first
+            # destroy the legitimate current weekly draft during cleanup
+            # below, THEN correctly refuse the hijack — needless collateral
+            # damage. Only proceed if a GH release for this tag exists, is
+            # still a draft, and carries our own weekly-version marker in its
+            # body (the same marker `finalize` writes) — i.e. it's provably
+            # one of THIS workflow's own not-yet-published drafts, never
+            # anything else.
+            owned=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true and ((.body // \"\") | test(\"<!-- weekly-version:\"))) | \"true\"" \
+              2>/dev/null | head -n1 || echo "")
+            if [ "$owned" != "true" ]; then
+              echo "::error::Refusing force re-cut: tag $TAG already exists and is not one of this workflow's own draft releases. This would collide with an existing or already-published release — pick a different version."
+              exit 1
+            fi
+            echo "Tag $TAG already exists as our own draft — safe to force re-cut."
+          fi
+
       - name: Delete stale weekly drafts
         run: |
           set -euo pipefail
@@ -162,22 +187,8 @@ jobs:
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            # Never force-move a tag we don't own. Without this guard,
-            # force=true + version=<existing-release-version> (e.g. version:
-            # 0.9.3) would silently rewrite — and a subsequent build failure
-            # could let `cleanup` delete — a real, already-published release
-            # tag. Only proceed if a GH release for this tag exists, is still
-            # a draft, and carries our own weekly-version marker in its body
-            # (the same marker `finalize` writes) — i.e. it's provably one of
-            # THIS workflow's own not-yet-published drafts, never anything
-            # else.
-            owned=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-              --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true and ((.body // \"\") | test(\"<!-- weekly-version:\"))) | \"true\"" \
-              2>/dev/null | head -n1 || echo "")
-            if [ "$owned" != "true" ]; then
-              echo "::error::Refusing force re-cut: tag $TAG already exists and is not one of this workflow's own draft releases. This would collide with an existing or already-published release — pick a different version."
-              exit 1
-            fi
+            # Ownership already verified by "Verify force-recut ownership"
+            # above, before any stale-draft deletion ran.
             echo "Tag $TAG already exists as our own draft — force re-cut: moving it to the current commit."
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

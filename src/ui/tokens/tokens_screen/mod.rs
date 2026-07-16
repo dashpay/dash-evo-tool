@@ -3081,6 +3081,7 @@ impl ScreenLike for TokensScreen {
             }
             BackendTaskSuccessResult::RegisteredTokenContract => {
                 self.token_creator_status = TokenCreatorStatus::Complete;
+                self.operation_banner.take_and_clear();
             }
             _ => {}
         }
@@ -3197,6 +3198,28 @@ mod tests {
                 std::env::set_var("LOCAL_core_rpc_password", "password");
             }
         });
+    }
+
+    #[test]
+    fn registered_token_contract_clears_creation_banner() {
+        let tmp = tempfile::tempdir().expect("test tmpdir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
+        let handle = MessageBanner::set_global(
+            app_context.egui_ctx(),
+            "Creating token...",
+            MessageType::Info,
+        );
+        screen.operation_banner = Some(handle.clone());
+
+        screen.display_backend_task_result(
+            &BackendTaskContext::Other,
+            BackendTaskSuccessResult::RegisteredTokenContract,
+        );
+
+        assert_eq!(screen.token_creator_status, TokenCreatorStatus::Complete);
+        assert!(screen.operation_banner.is_none());
+        assert!(handle.elapsed().is_none());
     }
 
     impl ChangeControlRulesUI {

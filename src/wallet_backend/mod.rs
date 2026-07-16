@@ -106,6 +106,32 @@ pub use token_balance::UpstreamTokenBalances;
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TokenBalanceSyncOutcome {
+    Performed,
+    AlreadyInFlight,
+}
+
+async fn run_token_balance_sync_if_idle<IsSyncing, SyncNow, SyncFuture>(
+    mut is_syncing: IsSyncing,
+    sync_now: SyncNow,
+) -> TokenBalanceSyncOutcome
+where
+    IsSyncing: FnMut() -> bool,
+    SyncNow: FnOnce() -> SyncFuture,
+    SyncFuture: std::future::Future<Output = ()>,
+{
+    if is_syncing() {
+        return TokenBalanceSyncOutcome::AlreadyInFlight;
+    }
+    sync_now().await;
+    if is_syncing() {
+        TokenBalanceSyncOutcome::AlreadyInFlight
+    } else {
+        TokenBalanceSyncOutcome::Performed
+    }
+}
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2424,13 +2450,19 @@ impl WalletBackend {
     }
 
     /// Force one immediate upstream token-balance sync pass, then republish
-    /// DET's snapshot. Use after registering watched tokens so a user-initiated
-    /// "Refresh" reflects the latest balances without waiting for the
-    /// background loop's next tick. A no-op pass (already syncing) still
-    /// refreshes the snapshot from whatever state is current.
-    pub async fn sync_token_balances_now(&self) {
-        self.inner.pwm.identity_sync().sync_now().await;
-        self.refresh_token_balances().await;
+    /// DET's snapshot. Reports when upstream skipped the request because
+    /// another pass already owns its single-flight slot.
+    pub(crate) async fn sync_token_balances_now(&self) -> TokenBalanceSyncOutcome {
+        let identity_sync = self.inner.pwm.identity_sync();
+        let outcome = run_token_balance_sync_if_idle(
+            || identity_sync.is_syncing(),
+            || identity_sync.sync_now(),
+        )
+        .await;
+        if outcome == TokenBalanceSyncOutcome::Performed {
+            self.refresh_token_balances().await;
+        }
+        outcome
     }
 
     /// Republish the lock-free token-balance snapshot from the upstream
@@ -2846,6 +2878,22 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn token_balance_sync_reports_an_already_running_upstream_pass() {
+        let sync_called = std::cell::Cell::new(false);
+
+        let outcome = run_token_balance_sync_if_idle(
+            || true,
+            || async {
+                sync_called.set(true);
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, TokenBalanceSyncOutcome::AlreadyInFlight);
+        assert!(!sync_called.get());
+    }
 
     /// A completed start flight remains current, so repeated calls reuse its
     /// result instead of spawning another SPV run loop.

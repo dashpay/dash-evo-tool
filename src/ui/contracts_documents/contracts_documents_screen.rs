@@ -169,6 +169,23 @@ impl DocumentQueryScreen {
         }
     }
 
+    fn correlate_fetch_action(&mut self, action: AppAction) -> AppAction {
+        let AppAction::BackendTask(task) = action else {
+            return action;
+        };
+        let operation = BackendTaskContext::from(&task);
+        if !matches!(
+            operation,
+            BackendTaskContext::FetchDocuments(_) | BackendTaskContext::FetchDocumentsPage(_)
+        ) {
+            return AppAction::BackendTask(task);
+        }
+
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.pending_fetch_context = Some(context.clone());
+        AppAction::BackendTaskWithContext { task, context }
+    }
+
     fn build_document_query_with_cursor(&self, cursor: &Start) -> DocumentQuery {
         let mut query = DocumentQuery::new(
             self.selected_data_contract.contract.clone(),
@@ -592,6 +609,14 @@ impl ScreenLike for DocumentQueryScreen {
         }
     }
 
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.dispatched_document_fetch() && self.pending_fetch_context.as_ref() != Some(context)
+    }
+
     fn display_backend_task_result(
         &mut self,
         context: &BackendTaskContext,
@@ -599,7 +624,7 @@ impl ScreenLike for DocumentQueryScreen {
     ) {
         match backend_task_success_result {
             BackendTaskSuccessResult::Documents(documents)
-                if matches!(context, BackendTaskContext::FetchDocuments(_))
+                if context.is_fetch_documents()
                     && self.document_query_status.complete_if_fetch_in_flight(
                         self.pending_fetch_context.as_ref(),
                         context,
@@ -613,7 +638,7 @@ impl ScreenLike for DocumentQueryScreen {
                     .collect();
             }
             BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor)
-                if matches!(context, BackendTaskContext::FetchDocumentsPage(_))
+                if context.is_fetch_documents_page()
                     && self.document_query_status.complete_if_fetch_in_flight(
                         self.pending_fetch_context.as_ref(),
                         context,
@@ -794,17 +819,7 @@ impl ScreenLike for DocumentQueryScreen {
                 .inner
         };
 
-        if let AppAction::BackendTask(task) = &action {
-            let context = BackendTaskContext::from(task);
-            if matches!(
-                context,
-                BackendTaskContext::FetchDocuments(_) | BackendTaskContext::FetchDocumentsPage(_)
-            ) {
-                self.pending_fetch_context = Some(context);
-            }
-        }
-
-        action
+        self.correlate_fetch_action(action)
     }
 }
 
@@ -929,5 +944,51 @@ mod tests {
 
         assert_eq!(screen.next_cursors, accepted_cursors);
         assert!(screen.has_next_page);
+    }
+
+    #[test]
+    fn identical_document_redispatch_ignores_the_first_error_and_accepts_the_second_success() {
+        let tmp = tempfile::tempdir().expect("temp data dir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = DocumentQueryScreen::new(&app_context);
+        let task = BackendTask::DocumentTask(Box::new(FetchDocumentsPage(query(10))));
+
+        screen.document_query_status = DocumentQueryStatus::WaitingForResult;
+        let first_action = screen.correlate_fetch_action(AppAction::BackendTask(task.clone()));
+        let AppAction::BackendTaskWithContext {
+            context: first_context,
+            ..
+        } = first_action
+        else {
+            panic!("document fetch must carry its dispatch context");
+        };
+        let second_action = screen.correlate_fetch_action(AppAction::BackendTask(task));
+        let AppAction::BackendTaskWithContext {
+            context: second_context,
+            ..
+        } = second_action
+        else {
+            panic!("document fetch must carry its dispatch context");
+        };
+
+        assert_ne!(first_context, second_context);
+        assert!(
+            screen
+                .should_suppress_backend_task_error(&first_context, &TaskError::NoIdentitiesFound)
+        );
+        screen.display_backend_task_error(&first_context, &TaskError::NoIdentitiesFound);
+        assert_eq!(
+            screen.document_query_status,
+            DocumentQueryStatus::WaitingForResult
+        );
+        assert_eq!(screen.pending_fetch_context.as_ref(), Some(&second_context));
+
+        screen.display_backend_task_result(
+            &second_context,
+            BackendTaskSuccessResult::PageDocuments(Default::default(), None),
+        );
+
+        assert_eq!(screen.document_query_status, DocumentQueryStatus::Complete);
+        assert_eq!(screen.pending_fetch_context, None);
     }
 }

@@ -14,6 +14,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_managed_network_request_with_timeout};
 use crate::context::AppContext;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::wallet_backend::TokenBalanceSyncOutcome;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
@@ -232,8 +233,16 @@ impl AppContext {
                 .register_identity_tokens(identity_id, token_ids)
                 .await;
         }
-        backend.sync_token_balances_now().await;
-        Ok(())
+        Self::require_confirmed_token_balance_sync(backend.sync_token_balances_now().await)
+    }
+
+    fn require_confirmed_token_balance_sync(
+        outcome: TokenBalanceSyncOutcome,
+    ) -> Result<(), TaskError> {
+        match outcome {
+            TokenBalanceSyncOutcome::Performed => Ok(()),
+            TokenBalanceSyncOutcome::AlreadyInFlight => Err(TaskError::TokenBalanceRefreshSkipped),
+        }
     }
 }
 
@@ -389,6 +398,51 @@ mod tests {
         .await
         .expect("the hung refresh must release its single-flight guard");
         drop(reacquired_guard);
+    }
+
+    #[tokio::test]
+    async fn expired_lease_does_not_report_success_while_upstream_refresh_is_still_running() {
+        let f = fixture().await;
+        let old_refresh_guard = f
+            .ctx
+            .begin_token_balance_refresh_with_timeout(std::time::Duration::from_millis(10))
+            .expect("old refresh must acquire the single-flight guard");
+        let old_result = await_managed_network_request_with_timeout(
+            f.ctx.subtasks.clone(),
+            "detached_pending_token_balance_refresh_test",
+            std::time::Duration::from_millis(1),
+            async move {
+                let _old_refresh_guard = old_refresh_guard;
+                std::future::pending::<Result<(), TaskError>>().await
+            },
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await;
+        assert!(matches!(
+            old_result,
+            Err(TaskError::TokenBalanceRefreshTimeout { .. })
+        ));
+
+        let retry_guard = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                match f.ctx.begin_token_balance_refresh() {
+                    Ok(guard) => break guard,
+                    Err(TaskError::TokenBalanceRefreshInProgress) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                    Err(error) => panic!("unexpected refresh error: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the expired lease must allow a retry attempt");
+
+        let result = AppContext::require_confirmed_token_balance_sync(
+            TokenBalanceSyncOutcome::AlreadyInFlight,
+        );
+
+        assert!(matches!(result, Err(TaskError::TokenBalanceRefreshSkipped)));
+        drop(retry_guard);
     }
 
     /// Dismissing a balance must survive "Refresh My Tokens": the pair stays

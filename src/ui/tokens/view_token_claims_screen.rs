@@ -84,6 +84,23 @@ impl ViewTokenClaimsScreen {
             pending_fetch_context: None,
         }
     }
+
+    fn correlate_fetch_action(&mut self, action: AppAction) -> AppAction {
+        let AppAction::BackendTask(task) = action else {
+            return action;
+        };
+        if !matches!(
+            BackendTaskContext::from(&task),
+            BackendTaskContext::FetchDocuments(_)
+        ) {
+            return AppAction::BackendTask(task);
+        }
+
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.pending_fetch_context = Some(context.clone());
+        self.fetch_status = FetchStatus::Fetching(Utc::now());
+        AppAction::BackendTaskWithContext { task, context }
+    }
 }
 
 impl ScreenLike for ViewTokenClaimsScreen {
@@ -96,6 +113,14 @@ impl ScreenLike for ViewTokenClaimsScreen {
         }
     }
 
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.dispatched_document_fetch() && self.pending_fetch_context.as_ref() != Some(context)
+    }
+
     fn display_backend_task_result(
         &mut self,
         context: &BackendTaskContext,
@@ -104,7 +129,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
         let BackendTaskSuccessResult::Documents(documents) = backend_task_success_result else {
             return;
         };
-        if !matches!(context, BackendTaskContext::FetchDocuments(_))
+        if !context.is_fetch_documents()
             || !self
                 .fetch_status
                 .stop_if_fetch_in_flight(self.pending_fetch_context.as_ref(), context)
@@ -249,15 +274,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
             }
         });
 
-        if let AppAction::BackendTask(task) = &action {
-            let context = BackendTaskContext::from(task);
-            if matches!(context, BackendTaskContext::FetchDocuments(_)) {
-                self.pending_fetch_context = Some(context);
-                self.fetch_status = FetchStatus::Fetching(Utc::now());
-            }
-        }
-
-        action
+        self.correlate_fetch_action(action)
     }
 }
 
@@ -340,6 +357,59 @@ mod tests {
 
         screen.display_backend_task_result(
             &expected,
+            BackendTaskSuccessResult::Documents(Default::default()),
+        );
+
+        assert_eq!(screen.fetch_status, FetchStatus::NotFetching);
+        assert_eq!(screen.pending_fetch_context, None);
+    }
+
+    #[test]
+    fn identical_claim_redispatch_ignores_the_first_error_and_accepts_the_second_success() {
+        let tmp = tempfile::tempdir().expect("temp data dir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = ViewTokenClaimsScreen::new(
+            IdentityTokenBasicInfo {
+                token_id: Identifier::from([1; 32]),
+                token_alias: "Test token".to_string(),
+                identity_id: Identifier::from([2; 32]),
+                contract_id: Identifier::from([3; 32]),
+                token_position: 0,
+            },
+            &app_context,
+        );
+        let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocuments(
+            screen.new_claims_query.clone(),
+        )));
+
+        let first_action = screen.correlate_fetch_action(AppAction::BackendTask(task.clone()));
+        let AppAction::BackendTaskWithContext {
+            context: first_context,
+            ..
+        } = first_action
+        else {
+            panic!("claim fetch must carry its dispatch context");
+        };
+        let second_action = screen.correlate_fetch_action(AppAction::BackendTask(task));
+        let AppAction::BackendTaskWithContext {
+            context: second_context,
+            ..
+        } = second_action
+        else {
+            panic!("claim fetch must carry its dispatch context");
+        };
+
+        assert_ne!(first_context, second_context);
+        assert!(
+            screen
+                .should_suppress_backend_task_error(&first_context, &TaskError::NoIdentitiesFound)
+        );
+        screen.display_backend_task_error(&first_context, &TaskError::NoIdentitiesFound);
+        assert!(matches!(screen.fetch_status, FetchStatus::Fetching(_)));
+        assert_eq!(screen.pending_fetch_context.as_ref(), Some(&second_context));
+
+        screen.display_backend_task_result(
+            &second_context,
             BackendTaskSuccessResult::Documents(Default::default()),
         );
 

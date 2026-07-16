@@ -90,15 +90,12 @@ local-only.**
   reconstructed from `memory` (search recalls "Faucet Cap PoW solver") since `/data/tmp` is
   wiped on reboot — the memory file now includes a full working Python reference, just paste
   it to a file and run it.
-- **Wallet mnemonic reference** (only if you need to re-import or verify — do not display
-  this to yourself unnecessarily, it's already saved in the wallet):
-  `evidence borrow mushroom garment expire sight man trip senior index strike unable toward
-  solution grunt duty nuclear arctic tide muscle short super spoon orbit` (24 words, English,
-  no password). A second, unrelated wallet also exists under **Mainnet** (not Testnet) named
-  "QA Wallet 1" with mnemonic `weird mercy trophy slice system you dove tone moment column
-  balance daring chest lesson figure outside silk weather swap say surround luggage surprise
-  crazy` — irrelevant to your Testnet work, ignore it unless a story specifically needs a
-  second wallet/cross-network scenario.
+- **Wallet mnemonic reference**: _[REDACTED — recovery phrases removed from this document.
+  Never commit seed phrases to the repository; re-import from the operator's secure store if a
+  wallet needs restoring.]_ The Testnet QA wallet and a separate Mainnet "QA Wallet 1" are
+  already saved in the app's wallet store, so no recovery phrase is needed here for normal QA
+  work. Ignore the Mainnet wallet unless a story specifically needs a second-wallet or
+  cross-network scenario.
 - **Crash logs**: `/data/tmp/det-qa-pr892-data/det.log` and `det-stderr.log`.
 
 ## ⚠️ KNOWN ENVIRONMENT BLOCKER: Testnet wallet-backend currently fails to connect

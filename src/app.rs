@@ -2070,23 +2070,31 @@ impl App for AppState {
                                             )
                                         })
                                         .count();
+                                    let diagnostics = active_context
+                                        .dpns_vote_operation_diagnostics(operation_id);
                                     if unconfirmed > 0 {
-                                        MessageBanner::set_global(
+                                        let handle = MessageBanner::set_global(
                                             ctx,
                                             "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.",
                                             MessageType::Warning,
-                                        )
-                                        .disable_auto_dismiss();
+                                        );
+                                        if !diagnostics.is_empty() {
+                                            handle.with_details(&diagnostics);
+                                        }
+                                        handle.disable_auto_dismiss();
                                     } else if rejected > 0 {
-                                        MessageBanner::set_global(
+                                        let handle = MessageBanner::set_global(
                                             ctx,
                                             format!(
                                                 "{confirmed} of {total} votes were confirmed. Review the remaining {}.",
                                                 total.saturating_sub(confirmed)
                                             ),
                                             MessageType::Warning,
-                                        )
-                                        .disable_auto_dismiss();
+                                        );
+                                        if !diagnostics.is_empty() {
+                                            handle.with_details(&diagnostics);
+                                        }
+                                        handle.disable_auto_dismiss();
                                     } else if scheduled == total && total > 0 {
                                         MessageBanner::set_global(
                                             ctx,

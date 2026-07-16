@@ -79,6 +79,19 @@ fn classify_vote_attempt(
     }
 }
 
+fn classify_reconciled_vote(
+    observed: Option<ResourceVoteChoice>,
+    requested: ResourceVoteChoice,
+) -> Option<DpnsVoteTargetStatus> {
+    observed.map(|choice| {
+        if choice == requested {
+            DpnsVoteTargetStatus::Confirmed
+        } else {
+            DpnsVoteTargetStatus::Rejected
+        }
+    })
+}
+
 /// Logs a Drive proof-verification failure raised by a contested-resource query.
 ///
 /// No-op unless `e` is a [`dash_sdk::Error::Proof`] carrying a GroveDB proof
@@ -112,6 +125,7 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.ensure_dpns_vote_recovery(sdk).await?;
         match task {
             ContestedResourceTask::QueryDPNSContests => self
                 .query_dpns_contested_resources(sdk, sender)
@@ -153,6 +167,33 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::Refresh)
             }
         }
+    }
+
+    async fn ensure_dpns_vote_recovery(self: &Arc<Self>, sdk: &Sdk) -> Result<(), TaskError> {
+        let mut recovered = self.dpns_vote_recovery.lock().await;
+        if *recovered {
+            return Ok(());
+        }
+        self.recover_interrupted_dpns_vote_operations()?;
+        let queued = self
+            .dpns_vote_operations()?
+            .into_iter()
+            .filter(|operation| {
+                operation
+                    .targets
+                    .iter()
+                    .any(|outcome| outcome.status == DpnsVoteTargetStatus::Queued)
+            })
+            .collect::<Vec<_>>();
+        if !queued.is_empty() {
+            let voters = self.load_local_voting_identities()?;
+            for operation in queued {
+                self.execute_dpns_vote_operation(operation, voters.clone(), sdk)
+                    .await?;
+            }
+        }
+        *recovered = true;
+        Ok(())
     }
 
     fn dpns_vote_target(
@@ -197,18 +238,44 @@ impl AppContext {
             operation.targets.iter().any(|outcome| {
                 outcome.target.key.voter_id == scheduled_vote.voter_id
                     && outcome.target.contested_name == scheduled_vote.contested_name
-                    && outcome.status == DpnsVoteTargetStatus::Scheduled
             })
         }) {
+            let mut target_queued = false;
             for outcome in &mut operation.targets {
-                if outcome.target.key.voter_id == scheduled_vote.voter_id
-                    && outcome.target.contested_name == scheduled_vote.contested_name
-                    && outcome.status == DpnsVoteTargetStatus::Scheduled
+                if outcome.target.key.voter_id != scheduled_vote.voter_id
+                    || outcome.target.contested_name != scheduled_vote.contested_name
                 {
-                    outcome.status = DpnsVoteTargetStatus::Queued;
+                    continue;
+                }
+                match outcome.status {
+                    DpnsVoteTargetStatus::Scheduled => {
+                        outcome.status = DpnsVoteTargetStatus::Queued;
+                        target_queued = true;
+                    }
+                    DpnsVoteTargetStatus::Unconfirmed
+                    | DpnsVoteTargetStatus::Queued
+                    | DpnsVoteTargetStatus::Submitting
+                    | DpnsVoteTargetStatus::Confirming => {
+                        return Err(TaskError::DpnsVoteTargetBusy);
+                    }
+                    DpnsVoteTargetStatus::Confirmed => {
+                        self.mark_vote_executed(
+                            scheduled_vote.voter_id.as_slice(),
+                            scheduled_vote.contested_name.clone(),
+                        )?;
+                        return Ok(operation);
+                    }
+                    DpnsVoteTargetStatus::Rejected
+                    | DpnsVoteTargetStatus::FailedBeforeSubmission
+                    | DpnsVoteTargetStatus::NotApplied => {
+                        // An explicit Cast now action is a deliberate retry and
+                        // may create a new operation below.
+                    }
                 }
             }
-            return Ok(operation);
+            if target_queued {
+                return Ok(operation);
+            }
         }
 
         let target = self.dpns_vote_target(
@@ -225,7 +292,7 @@ impl AppContext {
 
     async fn execute_dpns_vote_operation(
         self: &Arc<Self>,
-        operation: DpnsVoteOperation,
+        mut operation: DpnsVoteOperation,
         voters: Vec<QualifiedIdentity>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -234,8 +301,53 @@ impl AppContext {
                 operation.id,
             ));
         }
-        if self.dpns_vote_operation(operation.id)?.is_some() {
-            self.update_dpns_vote_operation(&operation)?;
+        let was_persisted = self.dpns_vote_operation(operation.id)?.is_some();
+        if operation
+            .targets
+            .iter()
+            .any(|outcome| outcome.status == DpnsVoteTargetStatus::Queued)
+        {
+            // A fresh proved snapshot is a submission precondition. This also
+            // prevents a due schedule from replaying a vote already observed.
+            self.refresh_dpns_vote_states(sdk).await;
+            let queued_keys = operation
+                .targets
+                .iter()
+                .filter(|outcome| outcome.status == DpnsVoteTargetStatus::Queued)
+                .map(|outcome| outcome.target.key.clone())
+                .collect::<Vec<_>>();
+            for key in queued_keys {
+                let state = self.dpns_current_vote_state(key.voter_id, key.vote_poll_id)?;
+                if was_persisted {
+                    self.revalidate_queued_dpns_vote_target(operation.id, &key, state)?;
+                    continue;
+                }
+                let Some(outcome) = operation
+                    .targets
+                    .iter_mut()
+                    .find(|outcome| outcome.target.key == key)
+                else {
+                    continue;
+                };
+                match state {
+                    DpnsCurrentVoteState::Available(current) => {
+                        outcome.target.current_choice = current;
+                        if current == Some(outcome.target.requested_choice) {
+                            outcome.status = DpnsVoteTargetStatus::Confirmed;
+                            outcome.failure = None;
+                        }
+                    }
+                    DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
+                        return Err(TaskError::DpnsCurrentVoteUnavailable);
+                    }
+                }
+            }
+        }
+
+        if was_persisted {
+            operation = self
+                .dpns_vote_operation(operation.id)?
+                .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
         } else {
             let scheduled_votes = operation
                 .targets
@@ -251,10 +363,29 @@ impl AppContext {
                     VoteTiming::Now => None,
                 })
                 .collect::<Vec<_>>();
-            if !scheduled_votes.is_empty() {
-                self.insert_scheduled_votes(&scheduled_votes)?;
-            }
             self.insert_dpns_vote_operation(&operation)?;
+            if !scheduled_votes.is_empty()
+                && let Err(error) = self.insert_scheduled_votes(&scheduled_votes)
+            {
+                // The journal is authoritative. The legacy table is a
+                // compatibility mirror, so its failure cannot turn a durable
+                // schedule into a reported failure that invites a duplicate.
+                tracing::warn!(
+                    ?error,
+                    operation_id = %operation.id,
+                    "DPNS vote schedule was journaled but its legacy mirror could not be updated"
+                );
+            }
+        }
+
+        for outcome in operation.targets.iter().filter(|outcome| {
+            outcome.status == DpnsVoteTargetStatus::Confirmed
+                && matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+        }) {
+            self.mark_vote_executed(
+                outcome.target.key.voter_id.as_slice(),
+                outcome.target.contested_name.clone(),
+            )?;
         }
 
         let voters_by_id: BTreeMap<Identifier, QualifiedIdentity> = voters
@@ -283,25 +414,25 @@ impl AppContext {
                 async move {
                     let Some(voter) = voter else {
                         for target in targets {
-                            app_context.update_dpns_vote_target(
-                                operation_id,
-                                &target.key,
-                                DpnsVoteTargetStatus::FailedBeforeSubmission,
-                                Some(DpnsVoteFailure::SubmissionFailed),
-                            )?;
+                            if app_context.claim_dpns_vote_target(operation_id, &target.key)? {
+                                app_context.update_dpns_vote_target(
+                                    operation_id,
+                                    &target.key,
+                                    DpnsVoteTargetStatus::FailedBeforeSubmission,
+                                    Some(DpnsVoteFailure::SubmissionFailed),
+                                )?;
+                            }
                         }
                         return Ok::<(), TaskError>(());
                     };
 
                     // One voter's targets are deliberately sequential: PutVote
                     // obtains and consumes the same masternode nonce.
+                    let _dispatch_guard = app_context.dpns_vote_dispatch.acquire(voter_id).await?;
                     for target in targets {
-                        app_context.update_dpns_vote_target(
-                            operation_id,
-                            &target.key,
-                            DpnsVoteTargetStatus::Submitting,
-                            None,
-                        )?;
+                        if !app_context.claim_dpns_vote_target(operation_id, &target.key)? {
+                            continue;
+                        }
                         let attempt = app_context
                             .submit_dpns_vote(
                                 &target.contested_name,
@@ -332,6 +463,11 @@ impl AppContext {
                                     contested_name = %target.contested_name,
                                     "DPNS vote was submitted but remains unconfirmed"
                                 );
+                                app_context.record_dpns_vote_diagnostic(
+                                    operation_id,
+                                    target.key.clone(),
+                                    error,
+                                );
                             }
                             Ok(vote_on_dpns_name::DpnsVoteAttempt::Rejected(error)) => {
                                 tracing::warn!(
@@ -340,6 +476,11 @@ impl AppContext {
                                     contested_name = %target.contested_name,
                                     "Platform rejected a DPNS vote"
                                 );
+                                app_context.record_dpns_vote_diagnostic(
+                                    operation_id,
+                                    target.key.clone(),
+                                    error,
+                                );
                             }
                             Err(error) => {
                                 tracing::warn!(
@@ -347,6 +488,11 @@ impl AppContext {
                                     voter_id = %target.key.voter_id,
                                     contested_name = %target.contested_name,
                                     "DPNS vote failed before a confirmed submission"
+                                );
+                                app_context.record_dpns_vote_diagnostic(
+                                    operation_id,
+                                    target.key.clone(),
+                                    error,
                                 );
                             }
                         }
@@ -396,12 +542,13 @@ impl AppContext {
             };
             match ResourceVote::fetch_many(sdk, query).await {
                 Ok(votes)
-                    if votes
-                        .get(&poll_id)
-                        .and_then(Option::as_ref)
-                        .is_some_and(|vote| {
-                            vote.resource_vote_choice() == outcome.target.requested_choice
-                        }) =>
+                    if classify_reconciled_vote(
+                        votes
+                            .get(&poll_id)
+                            .and_then(Option::as_ref)
+                            .map(ResourceVoteGettersV0::resource_vote_choice),
+                        outcome.target.requested_choice,
+                    ) == Some(DpnsVoteTargetStatus::Confirmed) =>
                 {
                     self.cache_confirmed_dpns_vote(
                         outcome.target.key.voter_id,
@@ -414,15 +561,45 @@ impl AppContext {
                         DpnsVoteTargetStatus::Confirmed,
                         None,
                     )?;
+                    if matches!(outcome.target.timing, VoteTiming::Scheduled(_)) {
+                        self.mark_vote_executed(
+                            outcome.target.key.voter_id.as_slice(),
+                            outcome.target.contested_name.clone(),
+                        )?;
+                    }
+                }
+                Ok(votes)
+                    if classify_reconciled_vote(
+                        votes
+                            .get(&poll_id)
+                            .and_then(Option::as_ref)
+                            .map(ResourceVoteGettersV0::resource_vote_choice),
+                        outcome.target.requested_choice,
+                    ) == Some(DpnsVoteTargetStatus::Rejected) =>
+                {
+                    self.update_dpns_vote_target(
+                        operation_id,
+                        &outcome.target.key,
+                        DpnsVoteTargetStatus::Rejected,
+                        Some(DpnsVoteFailure::PlatformRejected),
+                    )?;
                 }
                 Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    ?error,
-                    operation_id = %operation_id,
-                    voter_id = %outcome.target.key.voter_id,
-                    contested_name = %outcome.target.contested_name,
-                    "Could not reconcile an unconfirmed DPNS vote"
-                ),
+                Err(error) => {
+                    let error = TaskError::from(error);
+                    tracing::warn!(
+                        ?error,
+                        operation_id = %operation_id,
+                        voter_id = %outcome.target.key.voter_id,
+                        contested_name = %outcome.target.contested_name,
+                        "Could not reconcile an unconfirmed DPNS vote"
+                    );
+                    self.record_dpns_vote_diagnostic(
+                        operation_id,
+                        outcome.target.key.clone(),
+                        error,
+                    );
+                }
             }
         }
         Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated(
@@ -466,19 +643,38 @@ impl AppContext {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let due: Vec<ScheduledDPNSVote> = self
-            .get_scheduled_votes()?
-            .into_iter()
-            .filter(|vote| {
-                scheduled_vote_is_due(
-                    vote.unix_timestamp,
-                    vote.executed_successfully,
-                    now_ms,
-                    preserve_eligibility_since_ms,
-                )
-            })
-            .collect();
-        if due.is_empty() {
+        let mut due_operations = Vec::new();
+        let mut in_progress = Vec::new();
+        for mut operation in self.dpns_vote_operations()? {
+            let mut due = false;
+            for outcome in &mut operation.targets {
+                let VoteTiming::Scheduled(scheduled_at) = outcome.target.timing else {
+                    continue;
+                };
+                if outcome.status == DpnsVoteTargetStatus::Scheduled
+                    && scheduled_vote_is_due(
+                        scheduled_at,
+                        false,
+                        now_ms,
+                        preserve_eligibility_since_ms,
+                    )
+                {
+                    outcome.status = DpnsVoteTargetStatus::Queued;
+                    due = true;
+                    in_progress.push(ScheduledDPNSVote {
+                        contested_name: outcome.target.contested_name.clone(),
+                        voter_id: outcome.target.key.voter_id,
+                        choice: outcome.target.requested_choice,
+                        unix_timestamp: scheduled_at,
+                        executed_successfully: false,
+                    });
+                }
+            }
+            if due {
+                due_operations.push(operation);
+            }
+        }
+        if due_operations.is_empty() {
             return Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
                 network: self.network,
                 preserve_eligibility_since_ms,
@@ -486,67 +682,37 @@ impl AppContext {
         }
 
         let voters = self.load_local_voting_identities()?;
-        let mut castable: Vec<(ScheduledDPNSVote, QualifiedIdentity)> = Vec::new();
-        let mut first_error = None;
-        for vote in due {
-            match voters.iter().find(|i| i.identity.id() == vote.voter_id) {
-                Some(voter) => castable.push((vote, voter.clone())),
-                None => {
-                    tracing::warn!(
-                        contested_name = %vote.contested_name,
-                        "No local voting identity for a scheduled vote; skipping it"
-                    );
-                    first_error.get_or_insert_with(|| TaskError::NoVotingIdentity {
-                        identity_id: vote.voter_id.to_string(Encoding::Base58),
-                    });
-                }
-            }
-        }
-        if castable.is_empty() {
-            return Err(first_error.unwrap_or(TaskError::ScheduledVoteResultUnavailable));
-        }
-
         // Tell the Scheduled Votes screen which votes are now in flight.
-        let in_progress = castable.iter().map(|(v, _)| v.clone()).collect();
         let _ = sender
             .send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::ScheduledVotesInProgress(in_progress),
             ))
             .await;
 
-        let mut groups: BTreeMap<Identifier, Vec<(ScheduledDPNSVote, QualifiedIdentity)>> =
-            BTreeMap::new();
-        for (vote, voter) in castable {
-            groups.entry(vote.voter_id).or_default().push((vote, voter));
-        }
-        let results = stream::iter(groups)
-            .map(|(_, scheduled)| {
+        let results = stream::iter(due_operations)
+            .map(|operation| {
                 let app_context = Arc::clone(self);
                 let sdk = sdk.clone();
+                let voters = voters.clone();
+                let operation_id = operation.id;
                 async move {
-                    let mut results = Vec::with_capacity(scheduled.len());
-                    for (vote, voter) in scheduled {
-                        let result = match app_context.operation_for_scheduled_vote(&vote, &voter) {
-                            Ok(operation) => app_context
-                                .execute_dpns_vote_operation(operation, vec![voter], &sdk)
-                                .await
-                                .map(|_| ()),
-                            Err(error) => Err(error),
-                        };
-                        results.push((vote, result));
-                    }
-                    results
+                    let result = app_context
+                        .execute_dpns_vote_operation(operation, voters, &sdk)
+                        .await
+                        .map(|_| ());
+                    (operation_id, result)
                 }
             })
             .buffer_unordered(4)
             .collect::<Vec<_>>()
             .await;
-        for (vote, result) in results.into_iter().flatten() {
+        let mut first_error = None;
+        for (operation_id, result) in results {
             if let Err(error) = result {
                 tracing::error!(
                     error = %error,
-                    contested_name = %vote.contested_name,
-                    "Failed to cast a due scheduled vote; leaving it for the next sweep"
+                    operation_id = %operation_id,
+                    "Failed to execute a due DPNS vote operation; leaving it for recovery"
                 );
                 first_error.get_or_insert(error);
             }
@@ -602,6 +768,35 @@ mod tests {
         let (status, _) = classify_vote_attempt(&attempt);
         assert_eq!(status, DpnsVoteTargetStatus::Unconfirmed);
         assert!(status.holds_lock());
+    }
+
+    #[test]
+    fn exact_reconciliation_distinguishes_match_rejection_and_absence() {
+        assert_eq!(
+            classify_reconciled_vote(Some(ResourceVoteChoice::Lock), ResourceVoteChoice::Lock),
+            Some(DpnsVoteTargetStatus::Confirmed)
+        );
+        assert_eq!(
+            classify_reconciled_vote(Some(ResourceVoteChoice::Abstain), ResourceVoteChoice::Lock),
+            Some(DpnsVoteTargetStatus::Rejected)
+        );
+        assert_eq!(
+            classify_reconciled_vote(None, ResourceVoteChoice::Lock),
+            None,
+            "an absent exact row remains ambiguous and must not release its lock"
+        );
+    }
+
+    #[test]
+    fn scheduled_terminal_or_unconfirmed_targets_are_not_due_for_rebroadcast() {
+        for status in [
+            DpnsVoteTargetStatus::Unconfirmed,
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Confirmed,
+        ] {
+            assert_ne!(status, DpnsVoteTargetStatus::Scheduled);
+        }
     }
 
     /// Migration extends only eligibility windows that overlap its wait.

@@ -5,6 +5,7 @@ use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::DpnsCurrentVoteState;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::Sdk;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -21,8 +22,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CURRENT_VOTES_KEY: &str = "det:dpns_current_votes:v1";
+const LEGACY_CURRENT_VOTES_KEY: &str = "det:dpns_current_votes:v1";
+const CURRENT_VOTES_KEY_PREFIX: &str = "det:dpns_current_votes:v2:";
 const VOTE_QUERY_PAGE_SIZE: u16 = 100;
+const CURRENT_VOTE_MAX_AGE_MS: u64 = 120_000;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredCurrentVotes {
@@ -35,25 +38,68 @@ fn vote_state_err(source: KvAdapterError) -> TaskError {
     TaskError::DpnsVoteOperationStorage { source }
 }
 
+fn current_votes_key(network: Network) -> String {
+    let network = match network {
+        Network::Mainnet => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    };
+    format!("{CURRENT_VOTES_KEY_PREFIX}{network}")
+}
+
 fn load_snapshot(
     kv: &DetKv,
+    network: Network,
     voter_id: &Identifier,
 ) -> Result<Option<StoredCurrentVotes>, TaskError> {
-    kv.get(DetScope::Identity(&voter_id.to_buffer()), CURRENT_VOTES_KEY)
-        .map_err(vote_state_err)
+    let scope = DetScope::Identity(&voter_id.to_buffer());
+    if let Some(snapshot) = kv
+        .get(scope, &current_votes_key(network))
+        .map_err(vote_state_err)?
+    {
+        return Ok(Some(snapshot));
+    }
+    let legacy = kv
+        .get(scope, LEGACY_CURRENT_VOTES_KEY)
+        .map_err(vote_state_err)?;
+    if let Some(snapshot) = &legacy {
+        save_snapshot(kv, network, voter_id, snapshot)?;
+    }
+    Ok(legacy)
 }
 
 fn save_snapshot(
     kv: &DetKv,
+    network: Network,
     voter_id: &Identifier,
     snapshot: &StoredCurrentVotes,
 ) -> Result<(), TaskError> {
     kv.put(
         DetScope::Identity(&voter_id.to_buffer()),
-        CURRENT_VOTES_KEY,
+        &current_votes_key(network),
         snapshot,
     )
     .map_err(vote_state_err)
+}
+
+fn snapshot_vote_state(
+    snapshot: Option<StoredCurrentVotes>,
+    vote_poll_id: Identifier,
+    checked_at_ms: u64,
+) -> DpnsCurrentVoteState {
+    match snapshot {
+        None => DpnsCurrentVoteState::Checking,
+        Some(snapshot)
+            if checked_at_ms.saturating_sub(snapshot.updated_at) > CURRENT_VOTE_MAX_AGE_MS =>
+        {
+            DpnsCurrentVoteState::Checking
+        }
+        Some(snapshot) if !snapshot.available => DpnsCurrentVoteState::Unavailable,
+        Some(snapshot) => {
+            DpnsCurrentVoteState::Available(snapshot.votes.get(&vote_poll_id.to_buffer()).copied())
+        }
+    }
 }
 
 impl AppContext {
@@ -87,13 +133,11 @@ impl AppContext {
         voter_id: Identifier,
         vote_poll_id: Identifier,
     ) -> Result<DpnsCurrentVoteState, TaskError> {
-        Ok(match load_snapshot(&self.det_kv()?, &voter_id)? {
-            None => DpnsCurrentVoteState::Checking,
-            Some(snapshot) if !snapshot.available => DpnsCurrentVoteState::Unavailable,
-            Some(snapshot) => DpnsCurrentVoteState::Available(
-                snapshot.votes.get(&vote_poll_id.to_buffer()).copied(),
-            ),
-        })
+        Ok(snapshot_vote_state(
+            load_snapshot(&self.det_kv()?, self.network, &voter_id)?,
+            vote_poll_id,
+            now_ms(),
+        ))
     }
 
     /// Refresh proved vote state once per loaded masternode, paging only as needed.
@@ -117,6 +161,7 @@ impl AppContext {
             .map(|voter| {
                 let sdk = sdk.clone();
                 let kv = kv.clone();
+                let network = self.network;
                 async move {
                     let voter_id = voter.identity.id();
                     match fetch_votes_for_voter(&sdk, voter_id).await {
@@ -126,7 +171,7 @@ impl AppContext {
                                 updated_at: now_ms(),
                                 votes,
                             };
-                            if let Err(error) = save_snapshot(&kv, &voter_id, &snapshot) {
+                            if let Err(error) = save_snapshot(&kv, network, &voter_id, &snapshot) {
                                 tracing::warn!(
                                     ?error,
                                     voter_id = %voter_id,
@@ -140,7 +185,9 @@ impl AppContext {
                                 updated_at: now_ms(),
                                 votes: BTreeMap::new(),
                             };
-                            if let Err(storage_error) = save_snapshot(&kv, &voter_id, &snapshot) {
+                            if let Err(storage_error) =
+                                save_snapshot(&kv, network, &voter_id, &snapshot)
+                            {
                                 tracing::warn!(
                                     ?storage_error,
                                     voter_id = %voter_id,
@@ -169,11 +216,11 @@ impl AppContext {
         choice: ResourceVoteChoice,
     ) -> Result<(), TaskError> {
         let kv = self.det_kv()?;
-        let mut snapshot = load_snapshot(&kv, &voter_id)?.unwrap_or_default();
+        let mut snapshot = load_snapshot(&kv, self.network, &voter_id)?.unwrap_or_default();
         snapshot.available = true;
         snapshot.updated_at = now_ms();
         snapshot.votes.insert(vote_poll_id.to_buffer(), choice);
-        save_snapshot(&kv, &voter_id, &snapshot)
+        save_snapshot(&kv, self.network, &voter_id, &snapshot)
     }
 }
 
@@ -241,9 +288,12 @@ mod tests {
             updated_at: 3,
             votes: BTreeMap::from([(poll.to_buffer(), ResourceVoteChoice::Lock)]),
         };
-        save_snapshot(&kv, &voter, &snapshot).unwrap();
+        save_snapshot(&kv, Network::Testnet, &voter, &snapshot).unwrap();
 
-        assert_eq!(load_snapshot(&kv, &voter).unwrap(), Some(snapshot));
+        assert_eq!(
+            load_snapshot(&kv, Network::Testnet, &voter).unwrap(),
+            Some(snapshot)
+        );
     }
 
     /// VOTE-TC-007: query failure is represented explicitly, never as no vote.
@@ -259,5 +309,38 @@ mod tests {
         };
 
         assert_ne!(unavailable, empty);
+    }
+
+    #[test]
+    fn current_vote_snapshots_are_network_qualified() {
+        let kv = kv();
+        let voter = Identifier::from([1; 32]);
+        let snapshot = StoredCurrentVotes {
+            available: true,
+            updated_at: now_ms(),
+            votes: BTreeMap::new(),
+        };
+        save_snapshot(&kv, Network::Testnet, &voter, &snapshot).unwrap();
+
+        assert_eq!(
+            load_snapshot(&kv, Network::Testnet, &voter).unwrap(),
+            Some(snapshot)
+        );
+        assert_eq!(load_snapshot(&kv, Network::Mainnet, &voter).unwrap(), None);
+    }
+
+    #[test]
+    fn stale_proved_snapshot_cannot_authorize_submission() {
+        let poll = Identifier::from([2; 32]);
+        let snapshot = StoredCurrentVotes {
+            available: true,
+            updated_at: 1,
+            votes: BTreeMap::from([(poll.to_buffer(), ResourceVoteChoice::Lock)]),
+        };
+
+        assert_eq!(
+            snapshot_vote_state(Some(snapshot), poll, CURRENT_VOTE_MAX_AGE_MS + 2),
+            DpnsCurrentVoteState::Checking
+        );
     }
 }

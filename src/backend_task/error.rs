@@ -660,6 +660,32 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// An indexed journal row could not be decoded, so unresolved target locks
+    /// cannot be reconstructed safely.
+    #[error(
+        "Saved DPNS voting progress is unreadable. Restore the saved data or remove the damaged voting record before trying again."
+    )]
+    DpnsVoteOperationUnreadable {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// An operation index referenced a missing row, so target locks are unknown.
+    #[error(
+        "Saved DPNS voting progress is incomplete. Restore the saved data or remove the damaged voting record before trying again."
+    )]
+    DpnsVoteOperationRecordMissing,
+
+    /// A non-terminal operation was found under a different network namespace.
+    #[error(
+        "Saved DPNS voting progress belongs to another network. Switch back to that network or resolve the pending vote there."
+    )]
+    DpnsVoteJournalNetworkMismatch,
+
+    /// The bounded in-process vote coordinator was shut down unexpectedly.
+    #[error("DPNS voting is stopping. Wait for DET to finish closing, then try again.")]
+    DpnsVoteCoordinatorUnavailable,
+
     /// Another unresolved operation already owns this exact node and contest.
     #[error(
         "This node's vote for this name is already in progress. Wait for its result or check again."

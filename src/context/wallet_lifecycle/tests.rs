@@ -416,6 +416,55 @@ async fn chokepoint_wiring_failure_flips_indicator_to_error() {
     );
 }
 
+/// A failure inside `WalletBackend::start` must be returned, mark the
+/// indicator as `Error`, and re-arm the start latch for a retry.
+///
+/// Wiring succeeds first. A directory is then planted at dash-spv's lock-file
+/// path, so `DiskStorageManager::new` fails during `SpvRuntime::start`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chokepoint_spv_start_failure_is_returned_and_retryable() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    ctx.ensure_wallet_backend(sender.clone())
+        .await
+        .expect("backend wiring should succeed before the start failure");
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired before start");
+    let spv_lock_path = backend.spv_storage_dir().with_extension("lock");
+    std::fs::create_dir(&spv_lock_path)
+        .expect("plant a directory where dash-spv expects its lock file");
+
+    let err = ctx
+        .ensure_wallet_backend_and_start_spv(sender.clone())
+        .await
+        .expect_err("SPV initialization failure must be returned");
+    assert!(
+        matches!(err, TaskError::WalletBackend { .. }),
+        "expected a WalletBackend start error, got: {err:?}"
+    );
+    assert_eq!(
+        ctx.connection_status.spv_status(),
+        SpvStatus::Error,
+        "SPV initialization failure must flip the indicator to Error"
+    );
+    assert!(
+        !backend.is_started(),
+        "failed SPV initialization must re-arm the start latch"
+    );
+
+    ctx.ensure_wallet_backend_and_start_spv(sender)
+        .await
+        .expect_err("a retry must reach the still-failing SPV initialization");
+    assert!(
+        ctx.connection_status.begin_spv_stop(),
+        "Disconnect must claim teardown from the Error state"
+    );
+    ctx.stop_spv().await;
+
+    backend.shutdown().await;
+}
+
 /// Cold-boot signability regression, adapted to the JIT secret model: a
 /// no-password wallet must remain signable after a cold-boot hydration
 /// without any seed ever being parked in a long-lived cache.

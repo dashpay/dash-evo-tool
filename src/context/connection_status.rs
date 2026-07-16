@@ -219,17 +219,22 @@ impl ConnectionStatus {
 
     /// Atomically claim a disconnect: transition the SPV indicator to
     /// [`SpvStatus::Stopping`] iff it is currently in a stoppable state
-    /// (`Starting`/`Syncing`/`Running`), returning `true` for the single caller
-    /// that won the transition.
+    /// (`Starting`/`Syncing`/`Running`/`Error`), returning `true` for the
+    /// single caller that won the transition.
     ///
     /// Returns `false` when no stop is needed or one is already in flight (the
-    /// status is already `Stopping`, or it is `Idle`/`Stopped`/`Error`). This is
-    /// the synchronous dedupe guard the Disconnect button relies on: the winning
-    /// dispatch flips the indicator to `Stopping` on the same frame as the
-    /// click — so the button disables immediately — and a fast second click
-    /// loses the race and spawns no second teardown.
+    /// status is already `Stopping`, or it is `Idle`/`Stopped`). This is the
+    /// synchronous dedupe guard the Disconnect button relies on: the winning
+    /// dispatch flips the indicator to `Stopping` on the same frame as the click
+    /// — so the button disables immediately — and a fast second click loses the
+    /// race and spawns no second teardown.
     pub fn begin_spv_stop(&self) -> bool {
-        for current in [SpvStatus::Starting, SpvStatus::Syncing, SpvStatus::Running] {
+        for current in [
+            SpvStatus::Starting,
+            SpvStatus::Syncing,
+            SpvStatus::Running,
+            SpvStatus::Error,
+        ] {
             if self
                 .spv_status
                 .compare_exchange(
@@ -933,6 +938,22 @@ mod tests {
     }
 
     #[test]
+    fn begin_spv_stop_transitions_error_to_stopping() {
+        let status = ConnectionStatus::new();
+        status.set_spv_status(SpvStatus::Error);
+
+        assert!(
+            status.begin_spv_stop(),
+            "a stop from Error must win the claim"
+        );
+        assert_eq!(
+            status.spv_status(),
+            SpvStatus::Stopping,
+            "winning claim must flip the indicator to Stopping synchronously"
+        );
+    }
+
+    #[test]
     fn begin_spv_stop_mirrors_stopping_to_watch_receivers() {
         let status = ConnectionStatus::new();
         status.set_spv_status(SpvStatus::Running);
@@ -958,7 +979,7 @@ mod tests {
     /// when there is nothing to stop: already inactive or already stopping.
     #[test]
     fn begin_spv_stop_noop_when_not_stoppable() {
-        for inactive in [SpvStatus::Idle, SpvStatus::Stopped, SpvStatus::Error] {
+        for inactive in [SpvStatus::Idle, SpvStatus::Stopped] {
             let status = ConnectionStatus::new();
             status.set_spv_status(inactive);
             assert!(

@@ -113,8 +113,8 @@ story it maps to; noting the cross-reference here since it was discovered during
 ## WAL-002: Import wallet via mnemonic — PASS
 
 Steps:
-1. Used the Create Wallet entropy-grid flow to generate a fresh 12-word mnemonic (`sail
-   eager shrug goose primary position under shuffle swarm occur fall diet`), noted the
+1. Used the Create Wallet entropy-grid flow to generate a fresh 12-word mnemonic
+   (redacted — see CLAUDE.md secrets policy), noted the
    words, then navigated away via the "Wallets" breadcrumb **without** clicking "Save
    Wallet" — confirmed no wallet was created from this abandoned flow.
 2. Clicked "Import Wallet", left seed length at the default 12, entered all 12 words in
@@ -136,8 +136,7 @@ Steps:
 1. Generated a fresh zero-balance receiving address on `QA Wallet 1` via "+ Add Receiving
    Address" (index 31, `yZjRFx4KmGB3h36LGbf4xSAzK51cU1hQML`) — used a zero-balance address
    deliberately, to avoid any UTXO-sharing ambiguity with the funded index-0 address.
-2. Exported its WIF via "View Key" → "Show Key":
-   `cV1mQB3GMvXy7sZstnkTqG1Z2Boqi6P6Nvxwo8tCe8ut3iP9NbTq`.
+2. Exported its WIF via "View Key" → "Show Key" (redacted — see CLAUDE.md secrets policy).
 3. Opened "Import key (advanced)", pasted the WIF. The dialog live-derived
    `yZjRFx4KmGB3h36LGbf4xSAzK51cU1hQML` and labeled it "This is a Testnet address." —
    exact match to the source address, cryptographically confirming the exported WIF round-

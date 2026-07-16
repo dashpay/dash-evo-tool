@@ -9,6 +9,7 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+use std::sync::Arc;
 
 use super::{
     DetPlatformSigner, DetSigner, PlatformPathIndex, WalletBackend, map_shielded_op_error,
@@ -54,7 +55,7 @@ impl WalletBackend {
             .bind_shielded(seed, &[0], &coordinator)
             .await
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             })
     }
 
@@ -299,7 +300,7 @@ impl WalletBackend {
             .shielded_balances(&coordinator)
             .await
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             })
     }
 

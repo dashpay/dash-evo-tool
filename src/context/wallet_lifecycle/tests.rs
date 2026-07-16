@@ -465,6 +465,47 @@ async fn chokepoint_spv_start_failure_is_returned_and_retryable() {
     backend.shutdown().await;
 }
 
+/// Concurrent callers that join the same failing SPV start must both receive
+/// its typed error rather than letting the start-latch loser report success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_spv_start_failure_is_returned_to_every_caller() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("backend wiring should succeed before the start failure");
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired before start");
+    let spv_lock_path = backend.spv_storage_dir().with_extension("lock");
+    std::fs::create_dir(&spv_lock_path)
+        .expect("plant a directory where dash-spv expects its lock file");
+
+    let backend_a = Arc::clone(&backend);
+    let backend_b = Arc::clone(&backend);
+    let (result_a, result_b) = tokio::join!(backend_a.start(), backend_b.start());
+
+    let error_a = result_a.expect_err("first caller must receive the SPV start failure");
+    let error_b = result_b.expect_err("second caller must receive the SPV start failure");
+    let (source_a, source_b) = match (&error_a, &error_b) {
+        (
+            TaskError::WalletBackend { source: source_a },
+            TaskError::WalletBackend { source: source_b },
+        ) => (source_a, source_b),
+        _ => panic!("expected WalletBackend start errors, got: {error_a:?}, {error_b:?}"),
+    };
+    assert!(
+        Arc::ptr_eq(source_a, source_b),
+        "both callers must receive the same shared SPV start error"
+    );
+    assert!(
+        !backend.is_started(),
+        "failed shared SPV start must re-arm the start latch"
+    );
+
+    backend.shutdown().await;
+}
+
 /// Cold-boot signability regression, adapted to the JIT secret model: a
 /// no-password wallet must remain signable after a cold-boot hydration
 /// without any seed ever being parked in a long-lived cache.

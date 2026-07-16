@@ -115,7 +115,7 @@ pub(crate) fn derive_contact_xpub_material(
 
     let data = derive_contact_xpub(&wallet, network, account_index, sender_id, recipient_id)
         .map_err(|e| TaskError::WalletBackend {
-            source: Box::new(e),
+            source: Arc::new(e),
         })?;
 
     let account_reference =
@@ -847,12 +847,12 @@ impl WalletBackend {
         let dashpay = identity.dashpay();
         dashpay.sync_contact_requests().await.map_err(|e| {
             crate::backend_task::error::TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             }
         })?;
         dashpay.sync_profiles().await.map_err(|e| {
             crate::backend_task::error::TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Arc::new(e),
             }
         })?;
         Ok(())
@@ -913,7 +913,7 @@ impl WalletBackend {
         managed
             .record_dashpay_payment(tx_id, entry, &persister)
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e.into()),
+                source: Arc::new(e.into()),
             })?;
         Ok(())
     }

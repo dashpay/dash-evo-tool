@@ -185,7 +185,7 @@ pub enum TaskError {
     #[error("The wallet service could not complete this operation. Please retry in a moment.")]
     WalletBackend {
         #[source]
-        source: Box<platform_wallet::error::PlatformWalletError>,
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
     },
 
     /// The wallet could not assemble and sign a payment transaction, for a

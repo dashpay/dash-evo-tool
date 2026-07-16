@@ -21,6 +21,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -220,6 +221,11 @@ struct FeePreview {
     recipient_receives_credits: Option<u64>,
 }
 
+struct PendingSendConfirmation {
+    dialog: ConfirmationDialog,
+    action: Box<AppAction>,
+}
+
 impl FeePreview {
     /// The fee is paid on top of the amount: the recipient receives the full
     /// amount and the balance is debited amount + fee.
@@ -290,6 +296,7 @@ pub struct WalletSendScreen {
     // State
     send_status: SendStatus,
     send_banner: Option<BannerHandle>,
+    send_confirmation: Option<PendingSendConfirmation>,
 
     /// Preset flow this screen was opened for. `General` is the full send
     /// screen; the shielded presets lock source/destination for that flow.
@@ -325,6 +332,7 @@ impl WalletSendScreen {
             selected_identity: None,
             send_status: SendStatus::NotStarted,
             send_banner: None,
+            send_confirmation: None,
             flow: SendFlow::General,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -413,6 +421,7 @@ impl WalletSendScreen {
         self.amount = None;
         self.amount_input = None;
         self.invalidate_address_input();
+        self.send_confirmation = None;
     }
 
     fn reset_form(&mut self) {
@@ -432,6 +441,7 @@ impl WalletSendScreen {
         }];
         self.fee_strategy = PlatformFeeStrategy::default();
         self.send_status = SendStatus::NotStarted;
+        self.send_confirmation = None;
     }
 
     fn mark_sending(&mut self) {
@@ -834,8 +844,6 @@ impl WalletSendScreen {
             amount_duffs,
         };
 
-        self.mark_sending();
-
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
             CoreTask::SendWalletPayment {
                 wallet,
@@ -874,8 +882,6 @@ impl WalletSendScreen {
                 format_duffs_as_dash(balance)
             ));
         }
-
-        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -1005,8 +1011,6 @@ impl WalletSendScreen {
             allocation.fee_payer_index
         );
 
-        self.mark_sending();
-
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
                 seed_hash,
@@ -1118,8 +1122,6 @@ impl WalletSendScreen {
             format_credits_as_dash(allocation.estimated_fee),
             allocation.fee_payer_index
         );
-
-        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
@@ -1545,7 +1547,6 @@ impl WalletSendScreen {
             ));
         }
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
             crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
                 seed_hash,
@@ -1598,7 +1599,6 @@ impl WalletSendScreen {
             .ok_or("No wallet selected")?
             .clone();
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::TopUpIdentity(IdentityTopUpInfo {
                 qualified_identity,
@@ -1650,7 +1650,6 @@ impl WalletSendScreen {
             ));
         }
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
             crate::backend_task::shielded::ShieldedTask::ShieldFromBalance {
                 seed_hash,
@@ -1700,7 +1699,6 @@ impl WalletSendScreen {
             ));
         }
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity: qualified_identity,
@@ -1727,7 +1725,6 @@ impl WalletSendScreen {
             .and_then(|v| v.as_core().cloned())
             .ok_or_else(|| "Invalid Core address".to_string())?;
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
             crate::backend_task::shielded::ShieldedTask::ShieldedWithdrawal {
                 seed_hash,
@@ -1766,7 +1763,6 @@ impl WalletSendScreen {
             .and_then(|v| v.as_core().cloned())
             .ok_or_else(|| "Invalid Core address".to_string())?;
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::WithdrawFromIdentity(
                 qualified_identity,
@@ -1809,7 +1805,6 @@ impl WalletSendScreen {
         let mut outputs = BTreeMap::new();
         outputs.insert(platform_addr, amount_credits);
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::TransferToAddresses {
                 identity: qualified_identity,
@@ -1856,7 +1851,6 @@ impl WalletSendScreen {
             );
         }
 
-        self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::Transfer(qualified_identity, to_identity_id, amount_credits, None),
         )))
@@ -2363,9 +2357,9 @@ impl WalletSendScreen {
                                 &destination,
                             );
                             max = max.map(|amount| amount.saturating_sub(estimated_fee));
+                            let fee = format_credits_as_dash(estimated_fee);
                             Some(format!(
-                                "Estimated platform fee ~{} (deducted from amount)",
-                                format_credits_as_dash(estimated_fee)
+                                "A Platform fee of approximately {fee} is reserved from your balance and deducted from the amount."
                             ))
                         } else {
                             None
@@ -2377,9 +2371,9 @@ impl WalletSendScreen {
                         let total_fee_credits =
                             (platform_fee_duffs + l1_tx_fee_duffs) * CREDITS_PER_DUFF;
                         max = max.map(|amount| amount.saturating_sub(total_fee_credits));
+                        let fee = format_credits_as_dash(total_fee_credits);
                         Some(format!(
-                            "~{} reserved for shield fees",
-                            format_credits_as_dash(total_fee_credits)
+                            "Shielding fees of approximately {fee} are reserved from your balance."
                         ))
                     }
                     Some(AddressKind::Core) => {
@@ -2405,9 +2399,9 @@ impl WalletSendScreen {
                                         1,
                                     )
                                     .unwrap_or(0);
+                                    let fee = format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF);
                                     Some(format!(
-                                        "~{} reserved for the network fee",
-                                        format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF)
+                                        "A network fee of approximately {fee} is reserved from your balance."
                                     ))
                                 }
                                 None => {
@@ -2441,11 +2435,11 @@ impl WalletSendScreen {
                     self.app_context.platform_version(),
                     self.app_context.fee_multiplier_permille(),
                 );
+                let fee = format_credits_as_dash(headroom);
                 (
                     Some(total.saturating_sub(headroom)),
                     Some(format!(
-                        "~{} reserved for the shield fee",
-                        format_credits_as_dash(headroom)
+                        "A shielding fee of approximately {fee} is reserved from your balance."
                     )),
                 )
             }
@@ -2477,29 +2471,29 @@ impl WalletSendScreen {
                 );
 
                 // Build hint explaining the limit
+                let fee = format_credits_as_dash(max_fee);
                 let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
                     format!(
-                        "Limited to {} input addresses per transaction, ~{} reserved for fees",
-                        MAX_PLATFORM_INPUTS,
-                        format_credits_as_dash(max_fee)
+                        "This transaction is limited to {MAX_PLATFORM_INPUTS} input addresses, and fees of approximately {fee} are reserved from your balance."
                     )
                 } else {
-                    format!("~{} reserved for fees", format_credits_as_dash(max_fee))
+                    format!("Fees of approximately {fee} are reserved from your balance.")
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
-            Some(SourceSelection::Shielded(_, balance)) => {
-                (Some(*balance), Some("Shielded pool balance".to_string()))
-            }
+            Some(SourceSelection::Shielded(_, balance)) => (
+                Some(*balance),
+                Some("The maximum is based on your shielded pool balance.".to_string()),
+            ),
             Some(SourceSelection::Identity(qi)) => {
                 let balance = qi.identity.balance();
                 let estimated_fee = fee_estimator.estimate_credit_transfer();
                 let available = balance.saturating_sub(estimated_fee);
+                let fee = format_credits_as_dash(estimated_fee);
                 (
                     Some(available),
                     Some(format!(
-                        "~{} reserved for fees",
-                        format_credits_as_dash(estimated_fee)
+                        "Fees of approximately {fee} are reserved from your balance."
                     )),
                 )
             }
@@ -2529,9 +2523,9 @@ impl WalletSendScreen {
                         .with_desired_width(150.0)
                 });
 
-                // Update max/min amount and hint dynamically
+                // Update the amount limits and reserve caption dynamically.
                 amount_input.set_max_amount(max_amount_credits);
-                amount_input.set_max_exceeded_hint(max_hint);
+                amount_input.set_caption(max_hint);
                 amount_input.set_min_amount(min_amount);
 
                 let response = amount_input.show(ui);
@@ -2974,6 +2968,127 @@ impl WalletSendScreen {
             });
     }
 
+    fn confirmation_fee_sentence(estimated_fee_credits: Option<u64>) -> String {
+        match estimated_fee_credits {
+            Some(fee) => {
+                let estimated_fee = format_credits_as_dash(fee);
+                format!("The estimated network fee is approximately {estimated_fee}.")
+            }
+            None => "The network fee will be calculated when you confirm this send.".to_string(),
+        }
+    }
+
+    fn simple_send_confirmation_message(&self) -> String {
+        let destination = self.destination_address_string();
+        let amount = self
+            .amount
+            .as_ref()
+            .map(|amount| format_credits_as_dash(amount.value()))
+            .unwrap_or_else(|| "0 DASH".to_string());
+        let fee = Self::confirmation_fee_sentence(
+            self.current_fee_preview()
+                .map(|preview| preview.fee_credits),
+        );
+
+        format!(
+            "You are about to send {amount} to {destination}. {fee} Confirm this transaction only if the destination, amount, and fee are correct."
+        )
+    }
+
+    fn advanced_send_confirmation_message(&self) -> String {
+        let recipients: Vec<_> = self
+            .advanced_outputs
+            .iter()
+            .filter_map(|output| {
+                let amount_credits = match self.detect_address_kind(&output.address) {
+                    Some(AddressKind::Core) => Self::parse_amount_to_duffs(&output.amount)
+                        .ok()
+                        .map(|duffs| duffs.saturating_mul(CREDITS_PER_DUFF)),
+                    Some(AddressKind::Platform) => {
+                        Self::parse_amount_to_credits(&output.amount).ok()
+                    }
+                    _ => None,
+                }?;
+                (amount_credits > 0).then(|| {
+                    (
+                        output.address.trim().to_string(),
+                        format_credits_as_dash(amount_credits),
+                    )
+                })
+            })
+            .collect();
+        let destinations = recipients
+            .iter()
+            .enumerate()
+            .map(|(index, (destination, amount))| {
+                let output_number = index + 1;
+                format!(
+                    "Output {output_number} sends an entered amount of {amount} to {destination}."
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fee = Self::confirmation_fee_sentence(self.advanced_fee_estimate_credits());
+        let output_fee_effect = if self.advanced_source_type == AdvancedSourceType::Core
+            && self.advanced_outputs.iter().any(|output| {
+                self.detect_address_kind(&output.address) == Some(AddressKind::Platform)
+            }) {
+            if matches!(
+                self.fee_strategy,
+                PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
+            ) {
+                "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount."
+            } else {
+                "The network fee will be paid from the selected inputs, so the recipient will receive the entered amount."
+            }
+        } else {
+            ""
+        };
+        let fee_details = if output_fee_effect.is_empty() {
+            fee
+        } else {
+            format!("{output_fee_effect} {fee}")
+        };
+
+        format!(
+            "You are about to send the following outputs.\n{destinations}\n{fee_details} Confirm this transaction only if every destination, amount, and fee is correct."
+        )
+    }
+
+    fn open_send_confirmation(&mut self, action: AppAction, message: String) {
+        self.send_confirmation = Some(PendingSendConfirmation {
+            dialog: ConfirmationDialog::new("Confirm this send.", message)
+                .confirm_text(Some("Confirm and Send"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(true)
+                .blocks_input(true),
+            action: Box::new(action),
+        });
+    }
+
+    fn render_send_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        let response = self
+            .send_confirmation
+            .as_mut()
+            .and_then(|pending| pending.dialog.show(ui).inner.dialog_response);
+
+        match response {
+            Some(ConfirmationStatus::Confirmed) => {
+                let Some(pending) = self.send_confirmation.take() else {
+                    return AppAction::None;
+                };
+                self.mark_sending();
+                self.set_send_progress_banner(ui.ctx());
+                *pending.action
+            }
+            Some(ConfirmationStatus::Canceled) => {
+                self.send_confirmation = None;
+                AppAction::None
+            }
+            None => AppAction::None,
+        }
+    }
+
     fn render_send_button(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -3014,8 +3129,8 @@ impl WalletSendScreen {
             if ui.add_enabled(can_send, send_button).clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
-                        self.set_send_progress_banner(ui.ctx());
-                        action = send_action;
+                        let message = self.simple_send_confirmation_message();
+                        self.open_send_confirmation(send_action, message);
                     }
                     Err(e) => {
                         MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
@@ -3603,8 +3718,8 @@ impl WalletSendScreen {
             if ui.add_enabled(can_send, send_button).clicked() {
                 match self.validate_and_send_advanced() {
                     Ok(send_action) => {
-                        self.set_send_progress_banner(ui.ctx());
-                        action = send_action;
+                        let message = self.advanced_send_confirmation_message();
+                        self.open_send_confirmation(send_action, message);
                     }
                     Err(e) => {
                         MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
@@ -3640,6 +3755,16 @@ impl WalletSendScreen {
             .iter()
             .map(|o| self.detect_address_kind(&o.address))
             .collect();
+
+        if output_kinds
+            .iter()
+            .any(|kind| !matches!(kind, Some(AddressKind::Core | AddressKind::Platform)))
+        {
+            return Err(
+                "Each output must use a valid Core or Platform address. Correct the invalid destination and try again."
+                    .to_string(),
+            );
+        }
 
         let has_core_output = output_kinds.contains(&Some(AddressKind::Core));
         let has_platform_output = output_kinds.contains(&Some(AddressKind::Platform));
@@ -3732,8 +3857,6 @@ impl WalletSendScreen {
             ));
         }
 
-        self.mark_sending();
-
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
             CoreTask::SendWalletPayment {
                 wallet,
@@ -3792,8 +3915,6 @@ impl WalletSendScreen {
             PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
         );
 
-        self.mark_sending();
-
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
                 seed_hash,
@@ -3832,8 +3953,6 @@ impl WalletSendScreen {
             .max_by_key(|(_, (_, amount))| *amount)
             .map(|(idx, _)| idx as u16)
             .unwrap_or(0);
-
-        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
@@ -3884,8 +4003,6 @@ impl WalletSendScreen {
             .max_by_key(|(_, (_, amount))| *amount)
             .map(|(idx, _)| idx as u16)
             .unwrap_or(0);
-
-        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
@@ -3940,50 +4057,56 @@ impl ScreenLike for WalletSendScreen {
                 return status_action;
             }
 
-            egui::ScrollArea::vertical()
-                .auto_shrink([true; 2])
-                .show(ui, |ui| {
-                    // Heading. Advanced options apply to the free-form send only;
-                    // shielded presets hide the toggle.
-                    ui.horizontal(|ui| {
-                        ui.heading(
-                            RichText::new(self.flow.heading())
-                                .color(DashColors::text_primary(dark_mode))
-                                .size(24.0),
-                        );
-                        if !self.flow.is_preset() {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.checkbox(
-                                        &mut self.show_advanced_options,
-                                        "Advanced Options",
-                                    );
-                                },
+            let form_enabled = self.send_confirmation.is_none();
+            ui.add_enabled_ui(form_enabled, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([true; 2])
+                    .show(ui, |ui| {
+                        // Heading. Advanced options apply to the free-form send only;
+                        // shielded presets hide the toggle.
+                        ui.horizontal(|ui| {
+                            ui.heading(
+                                RichText::new(self.flow.heading())
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(24.0),
+                            );
+                            if !self.flow.is_preset() {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.checkbox(
+                                            &mut self.show_advanced_options,
+                                            "Advanced Options",
+                                        );
+                                    },
+                                );
+                            }
+                        });
+
+                        if let Some(description) = self.flow.description() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(description)
+                                    .color(DashColors::text_secondary(dark_mode)),
                             );
                         }
+
+                        ui.add_space(15.0);
+
+                        if self.flow.is_preset() {
+                            inner_action |= self.render_flow_send(ui);
+                        } else if self.show_advanced_options {
+                            inner_action |= self.render_advanced_send(ui);
+                        } else {
+                            inner_action |= self.render_unified_send(ui);
+                        }
                     });
-
-                    if let Some(description) = self.flow.description() {
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(description).color(DashColors::text_secondary(dark_mode)),
-                        );
-                    }
-
-                    ui.add_space(15.0);
-
-                    if self.flow.is_preset() {
-                        inner_action |= self.render_flow_send(ui);
-                    } else if self.show_advanced_options {
-                        inner_action |= self.render_advanced_send(ui);
-                    } else {
-                        inner_action |= self.render_unified_send(ui);
-                    }
-                });
+            });
 
             inner_action
         });
+
+        action |= self.render_send_confirmation(ui);
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
@@ -4150,9 +4273,16 @@ impl ScreenLike for WalletSendScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::utils::tasks::TaskManager;
     use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
     use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     fn testnet_core_address(key_byte: u8) -> Address {
         let secp = Secp256k1::new();
@@ -4173,6 +4303,265 @@ mod tests {
             ]
             .as_slice(),
         )
+    }
+
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        use crate::app_dir::ensure_env_file;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    fn send_screen() -> (WalletSendScreen, tempfile::TempDir) {
+        let (ctx, temp_dir) = offline_ctx();
+        let wallet = Wallet::new_from_seed(
+            [1u8; 64],
+            Network::Testnet,
+            Some("Test wallet".to_string()),
+            None,
+        )
+        .expect("wallet from seed");
+        (
+            WalletSendScreen::new(&ctx, Arc::new(RwLock::new(wallet))),
+            temp_dir,
+        )
+    }
+
+    fn click_in_one_frame(harness: &mut Harness<'_, WalletSendScreen>, label: &str) {
+        let pos = harness.get_by_label(label).rect().center();
+        harness.input_mut().events.extend([
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]);
+        harness.step();
+    }
+
+    #[test]
+    fn simple_send_click_opens_confirmation_without_dispatching() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(2);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        let destination =
+            PlatformAddress::try_from(testnet_core_address(3)).expect("platform destination");
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            2 * CREDITS_PER_DUFF * 100_000_000,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Platform {
+            address: destination,
+            bech32m: destination.to_bech32m_string(Network::Testnet),
+        });
+        screen.amount = Some(Amount::new_dash(1.0));
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let captured_action = observed_action.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 500.0))
+            .build_ui_state(
+                move |ui, screen: &mut WalletSendScreen| {
+                    let form_enabled = screen.send_confirmation.is_none();
+                    let mut action = ui
+                        .add_enabled_ui(form_enabled, |ui| {
+                            ui.checkbox(&mut screen.show_advanced_options, "Background control");
+                            screen.render_send_button(ui)
+                        })
+                        .inner;
+                    action |= screen.render_send_confirmation(ui);
+                    if !matches!(action, AppAction::None) {
+                        *captured_action.borrow_mut() = action;
+                    }
+                },
+                screen,
+            );
+        harness.run();
+
+        click_in_one_frame(&mut harness, "Transfer Credits");
+
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "the original simple Send click must not dispatch a backend task"
+        );
+        assert!(harness.query_by_label("Confirm and Send").is_some());
+
+        harness.get_by_label("Background control").click_accesskit();
+        harness.step();
+        assert!(
+            !harness.state().show_advanced_options,
+            "the confirmation dialog must block controls behind it"
+        );
+
+        harness.get_by_label("Confirm and Send").click_accesskit();
+        harness.step();
+
+        assert!(
+            harness.state().send_confirmation.is_none(),
+            "the confirmation dialog must close after confirmation"
+        );
+        let observed_action = observed_action.borrow();
+        assert!(
+            matches!(*observed_action, AppAction::BackendTask(_)),
+            "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
+        );
+    }
+
+    #[test]
+    fn advanced_send_click_opens_confirmation_without_dispatching() {
+        let (mut screen, _temp_dir) = send_screen();
+        let input_address = testnet_core_address(4);
+        screen.advanced_source_type = AdvancedSourceType::Core;
+        screen.core_inputs = vec![CoreAddressInput {
+            address: input_address,
+            amount: "2".to_string(),
+        }];
+        screen.advanced_outputs = vec![AdvancedOutput {
+            address: testnet_core_address(5).to_string(),
+            amount: "1".to_string(),
+        }];
+
+        let observed_action = Rc::new(RefCell::new(AppAction::None));
+        let captured_action = observed_action.clone();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 500.0))
+            .build_ui_state(
+                move |ui, screen: &mut WalletSendScreen| {
+                    let form_enabled = screen.send_confirmation.is_none();
+                    let mut action = ui
+                        .add_enabled_ui(form_enabled, |ui| screen.render_advanced_send_button(ui))
+                        .inner;
+                    action |= screen.render_send_confirmation(ui);
+                    if !matches!(action, AppAction::None) {
+                        *captured_action.borrow_mut() = action;
+                    }
+                },
+                screen,
+            );
+        harness.run();
+
+        click_in_one_frame(&mut harness, "Send");
+
+        assert!(
+            matches!(*observed_action.borrow(), AppAction::None),
+            "the original advanced Send click must not dispatch a backend task"
+        );
+        assert!(harness.query_by_label("Confirm and Send").is_some());
+
+        harness.get_by_label("Confirm and Send").click_accesskit();
+        harness.step();
+
+        let observed_action = observed_action.borrow();
+        assert!(
+            matches!(*observed_action, AppAction::BackendTask(_)),
+            "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
+        );
+    }
+
+    #[test]
+    fn advanced_send_rejects_every_invalid_output_address() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.advanced_source_type = AdvancedSourceType::Core;
+        screen.core_inputs = vec![CoreAddressInput {
+            address: testnet_core_address(6),
+            amount: "3".to_string(),
+        }];
+        screen.advanced_outputs = vec![
+            AdvancedOutput {
+                address: testnet_core_address(7).to_string(),
+                amount: "1".to_string(),
+            },
+            AdvancedOutput {
+                address: "not-a-valid-address".to_string(),
+                amount: "1".to_string(),
+            },
+        ];
+
+        let error = screen
+            .validate_and_send_advanced()
+            .expect_err("every advanced output must have a valid destination");
+
+        assert_eq!(
+            error,
+            "Each output must use a valid Core or Platform address. Correct the invalid destination and try again."
+        );
+    }
+
+    #[test]
+    fn advanced_send_rejects_unsupported_output_address_kinds() {
+        let (mut screen, _temp_dir) = send_screen();
+        screen.advanced_source_type = AdvancedSourceType::Core;
+        screen.core_inputs = vec![CoreAddressInput {
+            address: testnet_core_address(9),
+            amount: "3".to_string(),
+        }];
+        screen.advanced_outputs = vec![
+            AdvancedOutput {
+                address: testnet_core_address(10).to_string(),
+                amount: "1".to_string(),
+            },
+            AdvancedOutput {
+                address: "00".repeat(43),
+                amount: "1".to_string(),
+            },
+        ];
+
+        let error = screen
+            .validate_and_send_advanced()
+            .expect_err("advanced sends must reject unsupported address kinds");
+
+        assert_eq!(
+            error,
+            "Each output must use a valid Core or Platform address. Correct the invalid destination and try again."
+        );
+    }
+
+    #[test]
+    fn advanced_confirmation_discloses_when_the_fee_reduces_the_output() {
+        let (mut screen, _temp_dir) = send_screen();
+        let destination = PlatformAddress::try_from(testnet_core_address(8))
+            .expect("platform destination")
+            .to_bech32m_string(Network::Testnet);
+        screen.advanced_source_type = AdvancedSourceType::Core;
+        screen.fee_strategy = PlatformFeeStrategy::ReduceFirstOutput;
+        screen.advanced_outputs = vec![AdvancedOutput {
+            address: destination,
+            amount: "1".to_string(),
+        }];
+
+        let message = screen.advanced_send_confirmation_message();
+
+        assert!(message.contains(
+            "The network fee will be deducted from the output amount, so the recipient will receive less than the entered amount."
+        ));
+        assert!(!message.contains("will receive 1 DASH"));
     }
 
     #[test]

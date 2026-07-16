@@ -35,11 +35,9 @@ pub struct ContestedName {
 }
 
 impl ContestedName {
-    /// Whether `voter_id` still has an actionable vote to cast on this contest:
-    /// the contest is in a votable state and the voter has not already recorded
-    /// a vote on it. Drives the Masternodes card DPNS status line (§10.1).
-    pub fn is_open_for_voter(&self, voter_id: &Identifier) -> bool {
-        self.state.state_is_votable() && !self.my_votes.keys().any(|(id, _, _)| id == voter_id)
+    /// Whether the contest still accepts this node's initial vote or a change.
+    pub fn is_open_for_voter(&self, _voter_id: &Identifier) -> bool {
+        self.state.state_is_votable()
     }
 }
 
@@ -51,8 +49,10 @@ impl ContestedName {
 /// (requirements §10.1).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MasternodeContestSummary {
-    /// Number of open contests this node can still vote on.
+    /// Number of active contests, including contests with an existing vote.
     pub open_contest_count: usize,
+    /// Number of active contests whose proved state is `Not voted`.
+    pub needs_vote_count: usize,
     /// Whether the node has at least one pending (not-yet-executed) scheduled
     /// vote, reusing the DPNS Scheduled Votes screen's existing state.
     pub has_scheduled_vote: bool,
@@ -107,14 +107,14 @@ mod tests {
     }
 
     #[test]
-    fn not_open_when_voter_already_voted() {
+    fn existing_vote_remains_actionable_while_contest_is_votable() {
         let voter = Identifier::from([7u8; 32]);
         let mut c = contest(ContestState::Ongoing);
         c.my_votes.insert(
             (voter, PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0),
             ResourceVoteChoice::Abstain,
         );
-        assert!(!c.is_open_for_voter(&voter));
+        assert!(c.is_open_for_voter(&voter));
     }
 
     #[test]

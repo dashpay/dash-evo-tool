@@ -172,6 +172,13 @@ The existing generic `PlatformResultUnconfirmed` classification remains useful,
 but vote operations convert it into target-level coordinator state instead of a
 screen-local banner.
 
+At the SDK revision used by DET, exact `Vote::fetch(VoteQuery)` is affected by
+[dashpay/platform#4138](https://github.com/dashpay/platform/issues/4138).
+Reconciliation therefore uses the proved per-identity range query starting at
+the exact poll ID and accepts only an exact-key match. Retaining a signed
+transition for wait-only recovery remains dependent on
+[dashpay/platform#4137](https://github.com/dashpay/platform/issues/4137).
+
 ## Scheduling
 
 Migrate `ScheduledDPNSVote` into the shared target model:
@@ -235,9 +242,14 @@ Create one vote-specific formatter over typed target outcomes. It produces:
 
 Never parse error strings. Unconfirmed outcomes never offer an immediate retry.
 
-## Implementation sequence
+## One-PR implementation workstreams
 
-### PR A — Authoritative state and typed models
+This experience ships as one pull request. The workstreams below are logical
+commit and review boundaries inside that PR, not independently managed PRs.
+They land together so no release can expose two submit paths or a coordinator
+without every voting entry point using it.
+
+### Workstream A — Authoritative state and typed models
 
 - Add domain types and vote-state store.
 - Query proved votes per node.
@@ -245,7 +257,7 @@ Never parse error strings. Unconfirmed outcomes never offer an immediate retry.
 - Update user stories: current vote visibility and vote changes.
 - Covers VOTE-TC-001 through VOTE-TC-008.
 
-### PR B — Coordinator and safe executor
+### Workstream B — Coordinator and safe executor
 
 - Add operation journal, locks, structured task context/results.
 - Serialize targets per node; bound concurrency across nodes.
@@ -253,7 +265,7 @@ Never parse error strings. Unconfirmed outcomes never offer an immediate retry.
 - Fix scheduled false-success behavior at the executor boundary.
 - Covers VOTE-TC-030 through VOTE-TC-056.
 
-### PR C — Shared Voting Center
+### Workstream C — Shared Voting Center
 
 - Add shared composer and Masternodes Voting view.
 - Integrate quick node flow.
@@ -261,15 +273,15 @@ Never parse error strings. Unconfirmed outcomes never offer an immediate retry.
 - Route DPNS Active Contests into the shared workspace.
 - Covers VOTE-TC-010 through VOTE-TC-025 and VOTE-TC-070 through VOTE-TC-076.
 
-### PR D — Scheduled consolidation and migration
+### Workstream D — Scheduled consolidation and migration
 
 - Migrate existing schedules into operation targets.
 - Replace legacy scheduled execution/status UI.
 - Remove obsolete popup/state code after migration coverage passes.
 - Covers VOTE-TC-060 through VOTE-TC-065.
 
-Each PR is independently testable and must not expose two active submit
-implementations for the same stage.
+Each workstream remains independently testable, but the branch is published and
+reviewed as one atomic UX change.
 
 ## Verification
 

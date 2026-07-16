@@ -682,9 +682,11 @@ As a power user, I want to review past DPNS contests so that I can see outcomes 
 
 As a masternode operator, I want to vote on contested DPNS name registrations so that I can participate in network governance.
 
-- Cast, change, or abstain votes (max 4 vote changes per contest).
+- See the node's proved current choice before casting, changing, or abstaining.
+- A node may vote five times in total per contest: the initial vote plus up to four changes.
+- Choosing the current choice submits nothing.
 - Evonode/masternode identity required.
-- Note: The max 4 vote changes constraint is enforced at the Platform protocol level, not validated in the app UI.
+- The vote limit is enforced by Platform; DET does not invent a remaining-change count.
 
 ### DPN-006: Schedule votes [Implemented]
 **Persona:** Priya
@@ -693,6 +695,8 @@ As a masternode operator, I want to schedule votes for later execution so that I
 
 - Set vote to be cast at a future time.
 - View and manage scheduled votes.
+- Scheduled and immediate votes share the same target locks and result states.
+- An ambiguous result remains visible for checking and is never automatically rebroadcast.
 
 ### DPN-007: Batch voting across contests [Implemented]
 **Persona:** Priya
@@ -700,6 +704,20 @@ As a masternode operator, I want to schedule votes for later execution so that I
 As a masternode operator, I want to apply voting choices across multiple contests in bulk so that I do not have to vote on each contest individually.
 
 - "Set all" option for batch vote assignment.
+- Per-node timing overrides and multi-contest selections create exact node × contest targets.
+- Immediate and scheduled targets submitted together belong to one operation.
+
+### DPN-010: Recover an ambiguous vote result [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want DET to keep checking a submitted vote whose
+result was temporarily unavailable so that I do not spend credits by submitting
+the same vote again.
+
+- The exact network, node, and contest remain locked while the result is unconfirmed.
+- Navigation and restart preserve the operation and its target-level progress.
+- DET reconciles against proved current vote state without rebroadcasting.
+- A confirmed match updates the current vote and releases the target lock.
 
 ### DPN-008: Set an alias for an owned username [Implemented]
 **Persona:** Alex, Priya
@@ -1492,7 +1510,9 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 As a masternode operator, I want to open a node and vote on the DPNS contests it can vote on, so that I can fulfil my node's governance role.
 
 - Clicking a card opens a detail view with a keys summary, the voter identity, and a collapsible DPNS-voting section (collapsed by default, open-contest count shown in its header).
-- Votes (Abstain, Lock, or a candidate) are cast inline through the existing DPNS voting backend.
+- Every active contest remains visible with the node's proved current vote, including contests where the node already voted.
+- Votes (Abstain, Lock, or a candidate) use the shared durable voting operation path.
+- The affected controls disable immediately and show progress until the target is confirmed, rejected, or remains under explicit checking.
 - A node with no voter identity is told a voting key is required, with a way to add one, instead of a raw error.
 
 ### MN-004: Remove a masternode [Implemented]

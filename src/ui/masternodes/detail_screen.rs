@@ -24,6 +24,9 @@ use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
+use crate::model::dpns_voting::{
+    DpnsCurrentVoteState, DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming,
+};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
@@ -91,6 +94,9 @@ fn candidate_choice_label(candidate_name: &str, votes: u32) -> String {
 struct ContestVoteRow {
     name: String,
     end_time: Option<TimestampMillis>,
+    vote_poll_id: dash_sdk::platform::Identifier,
+    current_vote: DpnsCurrentVoteState,
+    locked: bool,
     /// `(candidate id, candidate name, votes so far)` for each contestant.
     candidates: Vec<(dash_sdk::platform::Identifier, String, u32)>,
 }
@@ -232,6 +238,11 @@ pub enum DetailOutcome {
     Back,
     /// The node was removed — return to the list and reload.
     Removed,
+    /// Open the shared full-page composer prefiltered to this node.
+    OpenVotingCenter {
+        voter_id: dash_sdk::platform::Identifier,
+        choices: BTreeMap<String, ResourceVoteChoice>,
+    },
     /// Push a reused screen / navigate. Boxed because `AppAction` is large.
     Forward(Box<AppAction>),
 }
@@ -250,6 +261,9 @@ pub struct MasternodeDetailView {
     open_contests: Vec<ContestedName>,
     /// Per-contest pending vote choice, keyed by normalized contested name.
     vote_selections: BTreeMap<String, ResourceVoteChoice>,
+    /// One-shot automatic proved-state refresh for a newly opened detail view.
+    vote_state_refresh_dispatched: bool,
+    open_voting_center_requested: Option<BTreeMap<String, ResourceVoteChoice>>,
     /// The scoped, in-place "Add voting key" prompt (US-3 / §10.8) — distinct
     /// from FR-4's load form. `Some` while the prompt is open.
     voter_key_prompt: Option<PasswordInput>,
@@ -279,7 +293,7 @@ impl MasternodeDetailView {
         let voter_id = identity
             .associated_voter_identity
             .as_ref()
-            .map(|(voter, _)| voter.id());
+            .map(|_| identity.identity.id());
         let contest_summary = app_context
             .masternode_contest_summary(voter_id)
             .unwrap_or_default();
@@ -293,6 +307,8 @@ impl MasternodeDetailView {
             contest_summary,
             open_contests,
             vote_selections: BTreeMap::new(),
+            vote_state_refresh_dispatched: false,
+            open_voting_center_requested: None,
             voter_key_prompt: None,
             remove_dialog: None,
         }
@@ -321,7 +337,7 @@ impl MasternodeDetailView {
             .identity
             .associated_voter_identity
             .as_ref()
-            .map(|(voter, _)| voter.id());
+            .map(|_| self.identity.identity.id());
         self.contest_summary = self
             .app_context
             .masternode_contest_summary(voter_id)
@@ -439,6 +455,12 @@ impl MasternodeDetailView {
                 outcome = DetailOutcome::Removed;
             }
         });
+        if let Some(choices) = self.open_voting_center_requested.take() {
+            outcome = DetailOutcome::OpenVotingCenter {
+                voter_id: self.identity.identity.id(),
+                choices,
+            };
+        }
 
         outcome
     }
@@ -820,16 +842,29 @@ impl MasternodeDetailView {
         )))
     }
 
-    /// Per-contest voting choices + Cast votes, dispatching the existing
-    /// `VoteOnDPNSNames` backend for the selected choices.
+    /// Per-contest choices backed by the shared durable voting coordinator.
     fn render_vote_table(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
         let mut action = None;
         // Collect the render data up front so the choice-writing loop does not
         // borrow `self.open_contests` while mutating `self.vote_selections`.
+        let voter_id = self.identity.identity.id();
         let contests: Vec<ContestVoteRow> = self
             .open_contests
             .iter()
-            .map(|contest| {
+            .filter_map(|contest| {
+                let vote_poll_id = self
+                    .app_context
+                    .dpns_vote_poll_id(&contest.normalized_contested_name)
+                    .ok()?;
+                let current_vote = self
+                    .app_context
+                    .dpns_current_vote_state(voter_id, vote_poll_id)
+                    .unwrap_or(DpnsCurrentVoteState::Unavailable);
+                let key = DpnsVoteTargetKey {
+                    network: self.app_context.network(),
+                    voter_id,
+                    vote_poll_id,
+                };
                 let candidates = contest
                     .contestants
                     .as_ref()
@@ -839,13 +874,31 @@ impl MasternodeDetailView {
                             .collect()
                     })
                     .unwrap_or_default();
-                ContestVoteRow {
+                Some(ContestVoteRow {
                     name: contest.normalized_contested_name.clone(),
                     end_time: contest.end_time,
+                    vote_poll_id,
+                    current_vote,
+                    locked: self
+                        .app_context
+                        .dpns_vote_target_status(&key)
+                        .ok()
+                        .flatten()
+                        .is_some(),
                     candidates,
-                }
+                })
             })
             .collect();
+        if !self.vote_state_refresh_dispatched
+            && contests
+                .iter()
+                .any(|contest| contest.current_vote == DpnsCurrentVoteState::Checking)
+        {
+            self.vote_state_refresh_dispatched = true;
+            action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContests,
+            )));
+        }
 
         ui.label(RichText::new(CONTEST_INTRO_MESSAGE).color(DashColors::text_secondary(dark_mode)));
 
@@ -863,37 +916,73 @@ impl MasternodeDetailView {
                 ))
                 .color(DashColors::text_secondary(dark_mode)),
             );
+            let current_label = match contest.current_vote {
+                DpnsCurrentVoteState::Checking => "Checking current vote…".to_owned(),
+                DpnsCurrentVoteState::Unavailable => "Current vote unavailable".to_owned(),
+                DpnsCurrentVoteState::Available(None) => "Not voted".to_owned(),
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)) => {
+                    "Current vote: Abstain".to_owned()
+                }
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)) => {
+                    "Current vote: Lock".to_owned()
+                }
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::TowardsIdentity(id))) => {
+                    let candidate = contest
+                        .candidates
+                        .iter()
+                        .find(|(candidate_id, _, _)| *candidate_id == id)
+                        .map(|(_, name, _)| name.as_str())
+                        .unwrap_or("candidate");
+                    format!("Current vote: {candidate}")
+                }
+            };
+            ui.label(RichText::new(current_label).color(DashColors::text_secondary(dark_mode)));
             let selected = self.vote_selections.get(&contest.name).copied();
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
-                    .clicked()
-                {
-                    self.vote_selections
-                        .insert(contest.name.clone(), ResourceVoteChoice::Abstain);
-                }
-                if ui
-                    .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock")
-                    .clicked()
-                {
-                    self.vote_selections
-                        .insert(contest.name.clone(), ResourceVoteChoice::Lock);
-                }
-                // Candidate choices are scoped to THIS contest's contestants.
-                for (candidate_id, candidate_name, votes) in &contest.candidates {
-                    let choice = ResourceVoteChoice::TowardsIdentity(*candidate_id);
+            let controls_enabled =
+                matches!(contest.current_vote, DpnsCurrentVoteState::Available(_))
+                    && !contest.locked;
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
-                        .selectable_label(
-                            selected == Some(choice),
-                            candidate_choice_label(candidate_name, *votes),
-                        )
+                        .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
                         .clicked()
                     {
-                        self.vote_selections.insert(contest.name.clone(), choice);
+                        self.vote_selections
+                            .insert(contest.name.clone(), ResourceVoteChoice::Abstain);
                     }
-                }
+                    if ui
+                        .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock")
+                        .clicked()
+                    {
+                        self.vote_selections
+                            .insert(contest.name.clone(), ResourceVoteChoice::Lock);
+                    }
+                    // Candidate choices are scoped to THIS contest's contestants.
+                    for (candidate_id, candidate_name, votes) in &contest.candidates {
+                        let choice = ResourceVoteChoice::TowardsIdentity(*candidate_id);
+                        if ui
+                            .selectable_label(
+                                selected == Some(choice),
+                                candidate_choice_label(candidate_name, *votes),
+                            )
+                            .clicked()
+                        {
+                            self.vote_selections.insert(contest.name.clone(), choice);
+                        }
+                    }
+                });
             });
-            if selected.is_none() {
+            if contest.locked {
+                ui.label(
+                    RichText::new("This node's vote for this name is still being confirmed.")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            } else if matches!(contest.current_vote, DpnsCurrentVoteState::Unavailable) {
+                ui.label(
+                    RichText::new("Refresh vote state before choosing a vote for this node.")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            } else if selected.is_none() {
                 ui.label(
                     RichText::new(NO_SELECTION_HINT).color(DashColors::text_secondary(dark_mode)),
                 );
@@ -901,22 +990,51 @@ impl MasternodeDetailView {
         }
 
         ui.separator();
-        let votes: Vec<(String, ResourceVoteChoice)> = self
+        let targets: Vec<DpnsVoteTarget> = self
             .vote_selections
             .iter()
-            .filter(|(name, _)| contests.iter().any(|c| &c.name == *name))
-            .map(|(name, choice)| (name.clone(), *choice))
+            .filter_map(|(name, choice)| {
+                let contest = contests.iter().find(|contest| &contest.name == name)?;
+                let DpnsCurrentVoteState::Available(current_choice) = contest.current_vote else {
+                    return None;
+                };
+                if current_choice == Some(*choice) || contest.locked {
+                    return None;
+                }
+                Some(DpnsVoteTarget {
+                    key: DpnsVoteTargetKey {
+                        network: self.app_context.network(),
+                        voter_id,
+                        vote_poll_id: contest.vote_poll_id,
+                    },
+                    voter_alias: self.identity.alias.clone(),
+                    contested_name: name.clone(),
+                    requested_choice: *choice,
+                    current_choice,
+                    timing: VoteTiming::Now,
+                })
+            })
             .collect();
-        let has_votes = !votes.is_empty();
-        if ui
-            .add_enabled(has_votes, egui::Button::new("Cast votes"))
-            .on_hover_text(CAST_ENABLED_HINT)
-            .on_disabled_hover_text(CAST_DISABLED_HINT)
+        let has_votes = !targets.is_empty();
+        let review_label = if targets.len() == 1 {
+            "Review 1 vote".to_owned()
+        } else {
+            format!("Review {} votes", targets.len())
+        };
+        if ComponentStyles::add_primary_button_enabled(ui, has_votes, review_label)
+            .clickable_tooltip(CAST_ENABLED_HINT)
+            .disabled_tooltip(CAST_DISABLED_HINT)
             .clicked()
         {
-            action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::VoteOnDPNSNames(votes, vec![self.identity.clone()]),
-            )));
+            self.open_voting_center_requested = Some(
+                targets
+                    .into_iter()
+                    .map(|target| (target.contested_name, target.requested_choice))
+                    .collect(),
+            );
+        }
+        if ComponentStyles::add_secondary_button(ui, "Open Voting Center", dark_mode).clicked() {
+            self.open_voting_center_requested = Some(BTreeMap::new());
         }
         action
     }

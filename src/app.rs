@@ -16,6 +16,7 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
+use crate::model::dpns_voting::DpnsVoteTargetStatus;
 use crate::model::settings::AppSettings;
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
@@ -2033,19 +2034,106 @@ impl App for AppState {
                                 MessageType::Success,
                             );
                         }
-                        BackendTaskSuccessResult::CastScheduledVote(ref vote) => {
-                            let _ = self.current_app_context().mark_vote_executed(
-                                vote.voter_id.as_slice(),
-                                vote.contested_name.clone(),
-                            );
-                            MessageBanner::set_global(
-                                ctx,
-                                "Successfully cast scheduled vote",
-                                MessageType::Success,
-                            );
-                            self.visible_screen_mut().display_message(
-                                "Successfully cast scheduled vote",
-                                MessageType::Success,
+                        BackendTaskSuccessResult::DpnsVoteOperationUpdated(operation_id) => {
+                            match active_context.dpns_vote_operation(operation_id) {
+                                Ok(Some(operation)) => {
+                                    let total = operation.targets.len();
+                                    let confirmed = operation
+                                        .targets
+                                        .iter()
+                                        .filter(|outcome| {
+                                            outcome.status == DpnsVoteTargetStatus::Confirmed
+                                        })
+                                        .count();
+                                    let scheduled = operation
+                                        .targets
+                                        .iter()
+                                        .filter(|outcome| {
+                                            outcome.status == DpnsVoteTargetStatus::Scheduled
+                                        })
+                                        .count();
+                                    let unconfirmed = operation
+                                        .targets
+                                        .iter()
+                                        .filter(|outcome| {
+                                            outcome.status == DpnsVoteTargetStatus::Unconfirmed
+                                        })
+                                        .count();
+                                    let rejected = operation
+                                        .targets
+                                        .iter()
+                                        .filter(|outcome| {
+                                            matches!(
+                                                outcome.status,
+                                                DpnsVoteTargetStatus::Rejected
+                                                    | DpnsVoteTargetStatus::FailedBeforeSubmission
+                                            )
+                                        })
+                                        .count();
+                                    if unconfirmed > 0 {
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.",
+                                            MessageType::Warning,
+                                        )
+                                        .disable_auto_dismiss();
+                                    } else if rejected > 0 {
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            format!(
+                                                "{confirmed} of {total} votes were confirmed. Review the remaining {}.",
+                                                total.saturating_sub(confirmed)
+                                            ),
+                                            MessageType::Warning,
+                                        )
+                                        .disable_auto_dismiss();
+                                    } else if scheduled == total && total > 0 {
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            format!("{scheduled} votes were scheduled."),
+                                            MessageType::Success,
+                                        );
+                                    } else if confirmed + scheduled == total
+                                        && confirmed > 0
+                                        && scheduled > 0
+                                    {
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            format!(
+                                                "{confirmed} votes were cast and {scheduled} votes were scheduled."
+                                            ),
+                                            MessageType::Success,
+                                        );
+                                    } else if confirmed == total && total == 1 {
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            "Vote cast successfully.",
+                                            MessageType::Success,
+                                        );
+                                    } else if confirmed == total && total > 1 {
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            format!("{confirmed} votes were cast successfully."),
+                                            MessageType::Success,
+                                        );
+                                    }
+                                }
+                                Ok(None) => {
+                                    MessageBanner::set_global(
+                                        ctx,
+                                        "This node already has that vote. Nothing was submitted.",
+                                        MessageType::Info,
+                                    );
+                                }
+                                Err(error) => tracing::warn!(
+                                    ?error,
+                                    operation_id = %operation_id,
+                                    "Could not load DPNS vote operation feedback"
+                                ),
+                            }
+                            self.visible_screen_mut().display_backend_task_result(
+                                &context,
+                                BackendTaskSuccessResult::DpnsVoteOperationUpdated(operation_id),
                             );
                             self.visible_screen_mut().refresh();
                         }

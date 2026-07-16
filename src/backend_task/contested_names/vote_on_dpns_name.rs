@@ -1,5 +1,3 @@
-use crate::app::TaskResult;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -21,6 +19,13 @@ use dash_sdk::platform::transition::vote::PutVote;
 use dash_sdk::query_types::ContestedResource;
 use std::sync::Arc;
 
+#[derive(Debug)]
+pub(super) enum DpnsVoteAttempt {
+    Confirmed,
+    Unconfirmed(TaskError),
+    Rejected(TaskError),
+}
+
 /// Build `[Value::from("dash"), Value::Text(normalized_label.to_owned())]` for a DPNS vote poll.
 ///
 /// Caller must pre-normalize the label via `convert_to_homograph_safe_chars`
@@ -33,19 +38,13 @@ fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
 }
 
 impl AppContext {
-    pub(super) async fn vote_on_dpns_name(
+    pub(super) async fn submit_dpns_vote(
         self: &Arc<Self>,
         name: &str,
         vote_choice: ResourceVoteChoice,
-        voters: &[QualifiedIdentity],
+        qualified_identity: &QualifiedIdentity,
         sdk: &Sdk,
-        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        sender
-            .send(TaskResult::Refresh)
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
-
+    ) -> Result<DpnsVoteAttempt, TaskError> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
@@ -95,37 +94,49 @@ impl AppContext {
             });
         }
 
-        let mut vote_results = vec![];
+        let Some((_, public_key)) = &qualified_identity.associated_voter_identity else {
+            return Err(TaskError::NoVotingIdentity {
+                identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),
+            });
+        };
+        let resource_vote = ResourceVoteV0 {
+            vote_poll: vote_poll.into(),
+            resource_vote_choice: vote_choice,
+        };
+        let vote = Vote::ResourceVote(ResourceVote::V0(resource_vote));
 
-        for qualified_identity in voters.iter() {
-            if let Some((_, public_key)) = &qualified_identity.associated_voter_identity {
-                let resource_vote = ResourceVoteV0 {
-                    vote_poll: vote_poll.clone().into(),
-                    resource_vote_choice: vote_choice,
-                };
-                let vote = Vote::ResourceVote(ResourceVote::V0(resource_vote));
-
-                let result = vote
-                    .put_to_platform_and_wait_for_response(
-                        qualified_identity.identity.id(),
-                        public_key,
-                        sdk,
-                        qualified_identity,
-                        None,
-                    )
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| std::sync::Arc::new(TaskError::from(e)));
-
-                vote_results.push((name.to_owned(), vote_choice, result));
-            } else {
-                return Err(TaskError::NoVotingIdentity {
-                    identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),
-                });
+        match vote
+            .put_to_platform_and_wait_for_response(
+                qualified_identity.identity.id(),
+                public_key,
+                sdk,
+                qualified_identity,
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(DpnsVoteAttempt::Confirmed),
+            Err(error) => {
+                let unconfirmed = matches!(
+                    &error,
+                    dash_sdk::Error::StateTransitionBroadcastError(broadcast_error)
+                        if broadcast_error.cause.is_none()
+                );
+                let rejected = matches!(
+                    &error,
+                    dash_sdk::Error::StateTransitionBroadcastError(broadcast_error)
+                        if broadcast_error.cause.is_some()
+                );
+                let error = TaskError::from(error);
+                if unconfirmed {
+                    Ok(DpnsVoteAttempt::Unconfirmed(error))
+                } else if rejected {
+                    Ok(DpnsVoteAttempt::Rejected(error))
+                } else {
+                    Err(error)
+                }
             }
         }
-
-        Ok(BackendTaskSuccessResult::DPNSVoteResults(vote_results))
     }
 }
 

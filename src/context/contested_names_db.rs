@@ -208,10 +208,22 @@ impl AppContext {
             return Ok(crate::model::contested_name::MasternodeContestSummary::default());
         };
 
-        let open_contest_count = self
-            .ongoing_contested_names()?
+        let contests = self.ongoing_contested_names()?;
+        let open_contest_count = contests
             .iter()
             .filter(|contest| contest.is_open_for_voter(&voter_id))
+            .count();
+        let needs_vote_count = contests
+            .iter()
+            .filter(|contest| contest.is_open_for_voter(&voter_id))
+            .filter(|contest| {
+                self.dpns_vote_poll_id(&contest.normalized_contested_name)
+                    .ok()
+                    .and_then(|poll_id| self.dpns_current_vote_state(voter_id, poll_id).ok())
+                    == Some(crate::model::dpns_voting::DpnsCurrentVoteState::Available(
+                        None,
+                    ))
+            })
             .count();
 
         let has_scheduled_vote = self
@@ -221,6 +233,7 @@ impl AppContext {
 
         Ok(crate::model::contested_name::MasternodeContestSummary {
             open_contest_count,
+            needs_vote_count,
             has_scheduled_vote,
         })
     }

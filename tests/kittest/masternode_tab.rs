@@ -261,6 +261,36 @@ fn empty_state_renders_canonical_copy() {
     });
 }
 
+/// VOTE-TC-023: operator navigation exposes Nodes, Voting, and Scheduled and
+/// opens the shared full-page composer.
+#[test]
+fn voting_navigation_routes_to_shared_workspaces() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        assert!(harness.query_by_label("Nodes").is_some());
+        assert!(harness.query_by_label("Voting").is_some());
+        assert!(harness.query_by_label("Scheduled").is_some());
+
+        harness.get_by_label("Voting").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert!(
+            harness
+                .query_by_label("Step 1 of 3: Nodes and timing")
+                .is_some()
+        );
+    });
+}
+
 /// TC-FR3-01/15, TC-FR7-01, TC-NFR6-01 — with nodes loaded the grid renders one
 /// card per node (not the empty state), each card is a single accessible click
 /// target labelled `Open {node}`, the status label pairs with its colour, and

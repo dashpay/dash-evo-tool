@@ -13,6 +13,7 @@ use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
+use crate::model::dpns_voting::DpnsVoteOperationId;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
@@ -31,7 +32,6 @@ use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
@@ -257,6 +257,8 @@ pub enum BackendTaskContext {
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
+    /// One durable DPNS vote operation.
+    DpnsVoteOperation(DpnsVoteOperationId),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -326,6 +328,13 @@ impl From<&BackendTask> for BackendTaskContext {
                 _ => Self::Other,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::ContestedResourceTask(ContestedResourceTask::SubmitDpnsVoteOperation(
+                operation,
+                _,
+            )) => Self::DpnsVoteOperation(operation.id),
+            BackendTask::ContestedResourceTask(
+                ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id),
+            ) => Self::DpnsVoteOperation(*operation_id),
             _ => Self::Other,
         }
     }
@@ -368,8 +377,6 @@ pub enum BackendTaskSuccessResult {
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
-    CastScheduledVote(ScheduledDPNSVote),
     /// A scheduled-vote sweep finished without a query, identity or Platform
     /// failure. The app uses this acknowledgement to retire a preserved
     /// migration eligibility cutoff only after the recovery attempt succeeds.
@@ -377,6 +384,7 @@ pub enum BackendTaskSuccessResult {
         network: Network,
         preserve_eligibility_since_ms: Option<u64>,
     },
+    DpnsVoteOperationUpdated(DpnsVoteOperationId),
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
     /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
     ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),

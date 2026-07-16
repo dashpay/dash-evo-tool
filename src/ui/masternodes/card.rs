@@ -59,7 +59,19 @@ pub fn voter_readiness_label(voting_present: bool) -> &'static str {
 /// (actionable), then a pending scheduled vote, then none.
 pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
     if summary.open_contest_count > 0 {
-        format!("{} contests to vote on", summary.open_contest_count)
+        if summary.needs_vote_count == 0 {
+            "Votes cast in all active contests".to_owned()
+        } else if summary.needs_vote_count == 1 {
+            format!(
+                "{} active contests · 1 needs a vote",
+                summary.open_contest_count
+            )
+        } else {
+            format!(
+                "{} active contests · {} need votes",
+                summary.open_contest_count, summary.needs_vote_count
+            )
+        }
     } else if summary.has_scheduled_vote {
         "Vote scheduled".to_string()
     } else {
@@ -368,9 +380,13 @@ mod tests {
     fn tc_fr3_09_dpns_open_contest_count() {
         let summary = MasternodeContestSummary {
             open_contest_count: 3,
+            needs_vote_count: 1,
             has_scheduled_vote: false,
         };
-        assert_eq!(dpns_status_line(summary), "3 contests to vote on");
+        assert_eq!(
+            dpns_status_line(summary),
+            "3 active contests · 1 needs a vote"
+        );
     }
 
     #[test]
@@ -386,15 +402,20 @@ mod tests {
         // Both an open contest AND a scheduled vote present → count wins.
         let summary = MasternodeContestSummary {
             open_contest_count: 2,
+            needs_vote_count: 1,
             has_scheduled_vote: true,
         };
-        assert_eq!(dpns_status_line(summary), "2 contests to vote on");
+        assert_eq!(
+            dpns_status_line(summary),
+            "2 active contests · 1 needs a vote"
+        );
     }
 
     #[test]
     fn dpns_scheduled_shown_only_when_no_open_contests() {
         let summary = MasternodeContestSummary {
             open_contest_count: 0,
+            needs_vote_count: 0,
             has_scheduled_vote: true,
         };
         assert_eq!(dpns_status_line(summary), "Vote scheduled");

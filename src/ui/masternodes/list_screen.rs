@@ -17,6 +17,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::dpns_voting::DpnsVoteTargetStatus;
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
@@ -29,6 +30,7 @@ use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::{MasternodeCard, card_heading};
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
+use crate::ui::masternodes::voting_center::{DpnsVotingCenter, VotingCenterOutcome};
 use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -60,6 +62,10 @@ enum MasternodesView {
     Load(Box<MasternodeLoadForm>),
     /// A node's detail / voting view (FR-5).
     Detail(Box<MasternodeDetailView>),
+    /// Shared full-page immediate, bulk, and scheduled composer.
+    Voting(Box<DpnsVotingCenter>),
+    /// Shared scheduled-target management.
+    Scheduled,
 }
 
 /// A load this screen dispatched and has not yet seen finish. The token names
@@ -145,7 +151,7 @@ impl MasternodesScreen {
                 let voter_id = qi
                     .associated_voter_identity
                     .as_ref()
-                    .map(|(identity, _)| identity.id());
+                    .map(|_| qi.identity.id());
                 let contest_summary = self
                     .app_context
                     .masternode_contest_summary(voter_id)
@@ -307,12 +313,98 @@ impl MasternodesScreen {
         AppAction::None
     }
 
+    /// Operator-level Nodes / Voting / Scheduled navigation.
+    fn render_voting_navigation(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let action = AppAction::None;
+        ui.horizontal(|ui| {
+            if matches!(self.view, MasternodesView::Voting(_)) {
+                if ComponentStyles::add_secondary_button(ui, "Nodes", dark_mode).clicked() {
+                    self.view = MasternodesView::List;
+                }
+                ComponentStyles::add_primary_button(ui, "Voting");
+            } else {
+                if ComponentStyles::add_primary_button(ui, "Nodes").clicked() {
+                    self.view = MasternodesView::List;
+                }
+                if ComponentStyles::add_secondary_button(ui, "Voting", dark_mode).clicked() {
+                    self.open_voting_center(None, Vec::new());
+                }
+            }
+            if matches!(self.view, MasternodesView::Scheduled) {
+                ComponentStyles::add_primary_button(ui, "Scheduled");
+            } else if ComponentStyles::add_secondary_button(ui, "Scheduled", dark_mode).clicked() {
+                self.view = MasternodesView::Scheduled;
+            }
+        });
+        ui.separator();
+        action
+    }
+
+    /// Shared target-correlated progress, visible regardless of the active node.
+    fn render_voting_activity(&self, ui: &mut egui::Ui) -> AppAction {
+        let Ok(mut operations) = self.app_context.dpns_vote_operations() else {
+            return AppAction::None;
+        };
+        operations.sort_by_key(|operation| operation.created_at);
+        let operations = operations
+            .into_iter()
+            .rev()
+            .filter(|operation| !operation.targets.is_empty())
+            .take(5)
+            .collect::<Vec<_>>();
+        if operations.is_empty() {
+            return AppAction::None;
+        }
+
+        let dark_mode = ui.style().visuals.dark_mode;
+        let mut action = AppAction::None;
+        ui.add_space(16.0);
+        ui.heading(RichText::new("Voting activity").color(DashColors::text_primary(dark_mode)));
+        for operation in operations {
+            for outcome in &operation.targets {
+                let voter = outcome.target.voter_alias.clone().unwrap_or_else(|| {
+                    shorten_id(&outcome.target.key.voter_id.to_string(Encoding::Base58))
+                });
+                let status = match outcome.status {
+                    DpnsVoteTargetStatus::Scheduled => "Scheduled",
+                    DpnsVoteTargetStatus::Queued => "Queued",
+                    DpnsVoteTargetStatus::Submitting => "Submitting",
+                    DpnsVoteTargetStatus::Confirming => "Confirming",
+                    DpnsVoteTargetStatus::Confirmed => "Confirmed",
+                    DpnsVoteTargetStatus::Unconfirmed => "Checking result",
+                    DpnsVoteTargetStatus::Rejected => "Rejected",
+                    DpnsVoteTargetStatus::FailedBeforeSubmission => "Failed before submission",
+                    DpnsVoteTargetStatus::NotApplied => "Not applied",
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "{voter} / {} — {status}",
+                        outcome.target.contested_name
+                    ));
+                    if outcome.status == DpnsVoteTargetStatus::Unconfirmed
+                        && ComponentStyles::add_secondary_button(ui, "Check again", dark_mode)
+                            .clicked()
+                    {
+                        action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::ReconcileDpnsVoteOperation(operation.id),
+                        ));
+                    }
+                });
+            }
+        }
+        action
+    }
+
     /// The node the page currently operates on — the one whose detail view is
     /// open. The list and load views operate on no single node.
     fn selected_node_id(&self) -> Option<Identifier> {
         match &self.view {
             MasternodesView::Detail(detail) => Some(detail.node_id()),
-            MasternodesView::List | MasternodesView::Load(_) => None,
+            MasternodesView::List
+            | MasternodesView::Load(_)
+            | MasternodesView::Voting(_)
+            | MasternodesView::Scheduled => None,
         }
     }
 
@@ -384,8 +476,143 @@ impl MasternodesScreen {
                 self.reload();
                 AppAction::None
             }
+            DetailOutcome::OpenVotingCenter { voter_id, choices } => {
+                self.view = if choices.is_empty() {
+                    MasternodesView::Voting(Box::new(DpnsVotingCenter::new(
+                        &self.app_context,
+                        Some(voter_id),
+                        Vec::new(),
+                    )))
+                } else {
+                    MasternodesView::Voting(Box::new(DpnsVotingCenter::for_quick_votes(
+                        &self.app_context,
+                        voter_id,
+                        choices,
+                    )))
+                };
+                AppAction::None
+            }
             DetailOutcome::Forward(action) => *action,
         }
+    }
+
+    fn open_voting_center(
+        &mut self,
+        preselected_voter: Option<Identifier>,
+        preselected_contests: Vec<String>,
+    ) {
+        self.view = MasternodesView::Voting(Box::new(DpnsVotingCenter::new(
+            &self.app_context,
+            preselected_voter,
+            preselected_contests,
+        )));
+    }
+
+    fn render_voting_center(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let outcome = match &mut self.view {
+            MasternodesView::Voting(center) => center.show(ui),
+            _ => return AppAction::None,
+        };
+        match outcome {
+            VotingCenterOutcome::None => AppAction::None,
+            VotingCenterOutcome::BackToNodes => {
+                self.view = MasternodesView::List;
+                AppAction::None
+            }
+            VotingCenterOutcome::Action(action) => *action,
+        }
+    }
+
+    fn render_scheduled_votes(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let mut action = AppAction::None;
+        ui.heading("Scheduled votes");
+        ui.label(
+            "Upcoming and unresolved targets use the same operation locks as immediate votes.",
+        );
+        let votes = self.app_context.get_scheduled_votes().unwrap_or_default();
+        if votes.is_empty() {
+            ui.label("No scheduled votes.");
+            return action;
+        }
+        for vote in votes {
+            let status = self
+                .app_context
+                .dpns_vote_poll_id(&vote.contested_name)
+                .ok()
+                .and_then(|vote_poll_id| {
+                    self.app_context
+                        .dpns_vote_target_status(&crate::model::dpns_voting::DpnsVoteTargetKey {
+                            network: self.app_context.network(),
+                            voter_id: vote.voter_id,
+                            vote_poll_id,
+                        })
+                        .ok()
+                        .flatten()
+                });
+            ui.group(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{}.dash / {}",
+                        vote.contested_name,
+                        vote.voter_id.to_string(Encoding::Base58)
+                    ))
+                    .strong(),
+                );
+                ui.label(format!("Choice: {}", vote.choice));
+                ui.label(format!(
+                    "Scheduled time: {} UTC milliseconds",
+                    vote.unix_timestamp
+                ));
+                ui.label(match status {
+                    Some(DpnsVoteTargetStatus::Unconfirmed) => "Status: Checking result",
+                    Some(
+                        DpnsVoteTargetStatus::Queued
+                        | DpnsVoteTargetStatus::Submitting
+                        | DpnsVoteTargetStatus::Confirming,
+                    ) => "Status: Submitting",
+                    Some(DpnsVoteTargetStatus::Scheduled) => "Status: Scheduled",
+                    _ if vote.executed_successfully => "Status: Completed",
+                    _ => "Status: Needs attention",
+                });
+                let editable = status == Some(DpnsVoteTargetStatus::Scheduled);
+                if ComponentStyles::add_secondary_button(ui, "Edit schedule", dark_mode).clicked()
+                    && editable
+                {
+                    self.view = MasternodesView::Voting(Box::new(
+                        DpnsVotingCenter::for_scheduled_edit(&self.app_context, &vote),
+                    ));
+                }
+                if ComponentStyles::add_secondary_button(ui, "Cancel scheduled vote", dark_mode)
+                    .clicked()
+                    && editable
+                {
+                    action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::DeleteScheduledVote(
+                            vote.voter_id,
+                            vote.contested_name.clone(),
+                        ),
+                    ));
+                }
+                if status == Some(DpnsVoteTargetStatus::Unconfirmed)
+                    && ComponentStyles::add_secondary_button(ui, "Check again", dark_mode).clicked()
+                    && let Ok(Some(operation)) =
+                        self.app_context.dpns_vote_operations().map(|operations| {
+                            operations.into_iter().find(|operation| {
+                                operation.targets.iter().any(|outcome| {
+                                    outcome.target.key.voter_id == vote.voter_id
+                                        && outcome.target.contested_name == vote.contested_name
+                                })
+                            })
+                        })
+                {
+                    action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::ReconcileDpnsVoteOperation(operation.id),
+                    ));
+                }
+            });
+        }
+        action
     }
 
     /// Render the list view: toolbar (`+ Load`, `Refresh`) + empty state or grid.
@@ -514,6 +741,9 @@ impl ScreenLike for MasternodesScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload();
         self.reconcile_pending_load();
+        if let Some(contests) = self.app_context.take_dpns_voting_center_route() {
+            self.open_voting_center(None, contests);
+        }
     }
 
     /// Drop every secret the open view holds — the load form's keys and
@@ -531,7 +761,7 @@ impl ScreenLike for MasternodesScreen {
         match &mut self.view {
             MasternodesView::Load(form) => form.clear_secrets(),
             MasternodesView::Detail(detail) => detail.clear_secrets(),
-            MasternodesView::List => {}
+            MasternodesView::List | MasternodesView::Voting(_) | MasternodesView::Scheduled => {}
         }
     }
 
@@ -575,11 +805,16 @@ impl ScreenLike for MasternodesScreen {
 
         action |= island_central_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
+            let mut action = self.render_voting_navigation(ui);
             match self.view {
-                MasternodesView::Load(_) => self.render_load_view(ui),
-                MasternodesView::Detail(_) => self.render_detail_view(ui, network_accent),
-                MasternodesView::List => self.render_list_view(ui, network_accent),
+                MasternodesView::Load(_) => action |= self.render_load_view(ui),
+                MasternodesView::Detail(_) => action |= self.render_detail_view(ui, network_accent),
+                MasternodesView::Voting(_) => action |= self.render_voting_center(ui),
+                MasternodesView::Scheduled => action |= self.render_scheduled_votes(ui),
+                MasternodesView::List => action |= self.render_list_view(ui, network_accent),
             }
+            action |= self.render_voting_activity(ui);
+            action
         });
 
         action

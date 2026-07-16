@@ -1,6 +1,8 @@
 pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
+mod dpns_vote_operations;
+mod dpns_vote_state;
 pub mod feature_gate;
 mod identity_db;
 pub(crate) mod identity_load_registry;
@@ -157,6 +159,8 @@ pub struct AppContext {
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
+    /// Serializes operation journal writes and target-lock acquisition.
+    dpns_vote_operation_guard: Mutex<()>,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -171,6 +175,8 @@ pub struct AppContext {
     /// the hub adopts it on return (forward-courier, mirrors
     /// `pending_wallet_selection`).
     pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
+    /// One-shot DPNS deep link consumed by the Masternodes Voting Center.
+    pending_dpns_voting_contests: Mutex<Option<Vec<String>>>,
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
@@ -434,11 +440,13 @@ impl AppContext {
             migration_status: Arc::new(MigrationStatus::new_idle()),
             migration_run: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
+            dpns_vote_operation_guard: Mutex::new(()),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
             selected_identity_id: Mutex::new(None),
             pending_identity_selection: Mutex::new(None),
+            pending_dpns_voting_contests: Mutex::new(None),
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
@@ -602,6 +610,22 @@ impl AppContext {
 
     pub fn network(&self) -> Network {
         self.network
+    }
+
+    /// Route DPNS contest browsing into the shared Masternodes Voting Center.
+    pub fn route_to_dpns_voting_center(&self, contested_names: Vec<String>) {
+        *self
+            .pending_dpns_voting_contests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(contested_names);
+    }
+
+    /// Consume a one-shot DPNS → Masternodes Voting Center deep link.
+    pub fn take_dpns_voting_center_route(&self) -> Option<Vec<String>> {
+        self.pending_dpns_voting_contests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     pub fn connection_status(&self) -> &ConnectionStatus {

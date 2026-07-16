@@ -651,6 +651,27 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A DPNS vote operation or current-vote snapshot could not be persisted.
+    #[error(
+        "Could not save DPNS voting progress. Check available disk space and try again."
+    )]
+    DpnsVoteOperationStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// Another unresolved operation already owns this exact node and contest.
+    #[error(
+        "This node's vote for this name is already in progress. Wait for its result or check again."
+    )]
+    DpnsVoteTargetBusy,
+
+    /// Current proved state is required to suppress duplicate/no-op votes safely.
+    #[error(
+        "This node's current vote could not be checked. Refresh vote state before submitting."
+    )]
+    DpnsCurrentVoteUnavailable,
+
     /// A local identity record could not be read or written in the
     /// per-network wallet k/v store.
     #[error("Could not access your saved identities. Check available disk space and try again.")]

@@ -2,7 +2,7 @@
 //! `identity_picker_card.rs`'s visual language, adding voter-readiness,
 //! key-presence, and DPNS-status rows (colour always paired with text, NFR-6).
 
-use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::contested_name::{MasternodeContestSummary, MasternodeVoteStateSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::ui::identity::identity_picker_card::{
@@ -59,7 +59,17 @@ pub fn voter_readiness_label(voting_present: bool) -> &'static str {
 /// (actionable), then a pending scheduled vote, then none.
 pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
     if summary.open_contest_count > 0 {
-        if summary.needs_vote_count == 0 {
+        if summary.vote_state == MasternodeVoteStateSummary::Checking {
+            format!(
+                "Checking votes for {} active contests",
+                summary.open_contest_count
+            )
+        } else if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
+            format!(
+                "Vote state unavailable for {} active contests",
+                summary.open_contest_count
+            )
+        } else if summary.needs_vote_count == 0 {
             "Votes cast in all active contests".to_owned()
         } else if summary.needs_vote_count == 1 {
             format!(
@@ -382,6 +392,7 @@ mod tests {
             open_contest_count: 3,
             needs_vote_count: 1,
             has_scheduled_vote: false,
+            ..Default::default()
         };
         assert_eq!(
             dpns_status_line(summary),
@@ -404,6 +415,7 @@ mod tests {
             open_contest_count: 2,
             needs_vote_count: 1,
             has_scheduled_vote: true,
+            ..Default::default()
         };
         assert_eq!(
             dpns_status_line(summary),
@@ -417,8 +429,37 @@ mod tests {
             open_contest_count: 0,
             needs_vote_count: 0,
             has_scheduled_vote: true,
+            ..Default::default()
         };
         assert_eq!(dpns_status_line(summary), "Vote scheduled");
+    }
+
+    #[test]
+    fn dpns_status_reports_checking_instead_of_all_votes_cast() {
+        let summary = MasternodeContestSummary {
+            open_contest_count: 3,
+            vote_state: MasternodeVoteStateSummary::Checking,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dpns_status_line(summary),
+            "Checking votes for 3 active contests"
+        );
+    }
+
+    #[test]
+    fn dpns_status_reports_unavailable_instead_of_all_votes_cast() {
+        let summary = MasternodeContestSummary {
+            open_contest_count: 2,
+            vote_state: MasternodeVoteStateSummary::Unavailable,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            dpns_status_line(summary),
+            "Vote state unavailable for 2 active contests"
+        );
     }
 
     #[test]

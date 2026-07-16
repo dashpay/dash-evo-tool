@@ -29,10 +29,6 @@ pub fn add_dpns_subscreen_chooser_panel(ui: &mut Ui, app_context: &AppContext) -
             DPNSSubscreen::Owned,
             RootScreenType::RootScreenDPNSOwnedNames,
         ),
-        (
-            DPNSSubscreen::ScheduledVotes,
-            RootScreenType::RootScreenDPNSScheduledVotes,
-        ),
     ]
     .into_iter()
     .map(|(subscreen, target)| {

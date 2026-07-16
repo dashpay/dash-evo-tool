@@ -19,7 +19,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
-use crate::context::AppContext;
+use crate::context::{AppContext, DpnsOperatorRoute};
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey,
@@ -1991,6 +1991,11 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        if self.dpns_subscreen == DPNSSubscreen::ScheduledVotes {
+            self.app_context
+                .route_to_dpns_operator(DpnsOperatorRoute::Scheduled);
+            return AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
+        }
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let has_identity_that_can_register = !self.user_identities.is_empty();
@@ -2083,12 +2088,14 @@ impl ScreenLike for DPNSScreen {
 
         // If user clicked "Apply Votes" in the top bar
         if action == AppAction::Custom("Vote".to_string()) {
-            self.app_context.route_to_dpns_voting_center(
-                self.selected_votes
-                    .iter()
-                    .map(|vote| vote.contested_name.clone())
-                    .collect(),
-            );
+            self.app_context
+                .route_to_dpns_operator(DpnsOperatorRoute::Voting {
+                    choices: self
+                        .selected_votes
+                        .iter()
+                        .map(|vote| (vote.contested_name.clone(), vote.vote_choice))
+                        .collect(),
+                });
             action = AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
         }
 

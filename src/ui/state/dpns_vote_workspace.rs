@@ -2,7 +2,7 @@
 
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Current step of the full-page voting composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,6 @@ pub enum ComposerKeyAction {
 /// Per-node timing override in the draft.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DraftVoteTiming {
-    Excluded,
     Now,
     Scheduled { days: u32, hours: u32, minutes: u32 },
 }
@@ -32,6 +31,7 @@ pub enum DraftVoteTiming {
 #[derive(Debug, Clone)]
 pub struct DpnsVoteWorkspace {
     pub step: DpnsVoteComposerStep,
+    selected_nodes: BTreeSet<Identifier>,
     pub node_timing: BTreeMap<Identifier, DraftVoteTiming>,
     pub contest_choices: BTreeMap<String, ResourceVoteChoice>,
     pub set_all_timing: DraftVoteTiming,
@@ -41,6 +41,7 @@ impl DpnsVoteWorkspace {
     pub fn new(node_ids: impl IntoIterator<Item = Identifier>) -> Self {
         Self {
             step: DpnsVoteComposerStep::Nodes,
+            selected_nodes: BTreeSet::new(),
             node_timing: node_ids
                 .into_iter()
                 .map(|node_id| (node_id, DraftVoteTiming::Now))
@@ -52,25 +53,36 @@ impl DpnsVoteWorkspace {
 
     /// Restrict the initial draft to one node from a detail-page deep link.
     pub fn prefilter_node(&mut self, selected: Identifier) {
-        for (node_id, timing) in &mut self.node_timing {
-            *timing = if *node_id == selected {
-                DraftVoteTiming::Now
-            } else {
-                DraftVoteTiming::Excluded
-            };
+        self.selected_nodes.clear();
+        if let Some(timing) = self.node_timing.get_mut(&selected) {
+            *timing = DraftVoteTiming::Now;
+            self.selected_nodes.insert(selected);
         }
     }
 
     pub fn selected_node_count(&self) -> usize {
-        self.node_timing
-            .values()
-            .filter(|timing| **timing != DraftVoteTiming::Excluded)
-            .count()
+        self.selected_nodes.len()
     }
 
-    pub fn apply_timing_to_all(&mut self) {
-        for timing in self.node_timing.values_mut() {
-            *timing = self.set_all_timing;
+    pub fn is_node_selected(&self, node_id: &Identifier) -> bool {
+        self.selected_nodes.contains(node_id)
+    }
+
+    pub fn set_node_selected(&mut self, node_id: Identifier, selected: bool) {
+        if selected {
+            if self.node_timing.contains_key(&node_id) {
+                self.selected_nodes.insert(node_id);
+            }
+        } else {
+            self.selected_nodes.remove(&node_id);
+        }
+    }
+
+    pub fn apply_timing_to_selected(&mut self) {
+        for node_id in &self.selected_nodes {
+            if let Some(timing) = self.node_timing.get_mut(node_id) {
+                *timing = self.set_all_timing;
+            }
         }
     }
 
@@ -109,7 +121,9 @@ mod tests {
             hours: 2,
             minutes: 3,
         };
-        workspace.apply_timing_to_all();
+        workspace.set_node_selected(first, true);
+        workspace.set_node_selected(second, true);
+        workspace.apply_timing_to_selected();
         workspace.node_timing.insert(first, DraftVoteTiming::Now);
 
         assert_eq!(workspace.node_timing[&first], DraftVoteTiming::Now);
@@ -129,7 +143,41 @@ mod tests {
 
         assert_eq!(workspace.selected_node_count(), 1);
         assert_eq!(workspace.node_timing[&selected], DraftVoteTiming::Now);
-        assert_eq!(workspace.node_timing[&other], DraftVoteTiming::Excluded);
+        assert!(!workspace.is_node_selected(&other));
+    }
+
+    /// VOTE-TC-020: an unfiltered bulk draft starts with no nodes selected.
+    #[test]
+    fn bulk_draft_starts_without_selected_nodes() {
+        let first = Identifier::from([1; 32]);
+        let second = Identifier::from([2; 32]);
+        let workspace = DpnsVoteWorkspace::new([first, second]);
+
+        assert_eq!(workspace.selected_node_count(), 0);
+        assert!(!workspace.is_node_selected(&first));
+        assert!(!workspace.is_node_selected(&second));
+    }
+
+    /// VOTE-TC-021: set-all changes timing only for explicitly selected nodes.
+    #[test]
+    fn set_all_timing_ignores_unselected_nodes() {
+        let selected = Identifier::from([1; 32]);
+        let unselected = Identifier::from([2; 32]);
+        let mut workspace = DpnsVoteWorkspace::new([selected, unselected]);
+        workspace.set_node_selected(selected, true);
+        workspace.set_all_timing = DraftVoteTiming::Scheduled {
+            days: 1,
+            hours: 2,
+            minutes: 3,
+        };
+
+        workspace.apply_timing_to_selected();
+
+        assert!(matches!(
+            workspace.node_timing[&selected],
+            DraftVoteTiming::Scheduled { .. }
+        ));
+        assert_eq!(workspace.node_timing[&unselected], DraftVoteTiming::Now);
     }
 
     /// VOTE-TC-071: Enter advances drafts but submits only from Review; Escape closes drafts.

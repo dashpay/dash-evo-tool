@@ -48,11 +48,21 @@ impl ContestedName {
 /// take precedence, then a pending scheduled vote, then "no open contests"
 /// (requirements §10.1).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MasternodeVoteStateSummary {
+    #[default]
+    Ready,
+    Checking,
+    Unavailable,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MasternodeContestSummary {
     /// Number of active contests, including contests with an existing vote.
     pub open_contest_count: usize,
     /// Number of active contests whose proved state is `Not voted`.
     pub needs_vote_count: usize,
+    /// Whether every active contest has a proved current-vote state.
+    pub vote_state: MasternodeVoteStateSummary,
     /// Whether the node has at least one pending (not-yet-executed) scheduled
     /// vote, reusing the DPNS Scheduled Votes screen's existing state.
     pub has_scheduled_vote: bool,

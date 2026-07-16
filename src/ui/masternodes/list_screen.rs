@@ -5,22 +5,27 @@
 
 use std::sync::Arc;
 
+use chrono::{LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
-use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::identity::IdentityTask;
-use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
+use crate::context::{AppContext, DpnsOperatorRoute};
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::dpns_voting::DpnsVoteTargetStatus;
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::global_nav_switcher::GlobalNavEffect;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -33,7 +38,7 @@ use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::masternodes::voting_center::{DpnsVotingCenter, VotingCenterOutcome};
 use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{RootScreenType, ScreenLike};
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
@@ -105,6 +110,7 @@ pub struct MasternodesScreen {
     /// [`TaskError::IdentityLoadInProgress`](crate::backend_task::error::TaskError::IdentityLoadInProgress)
     /// instead of racing.
     pending_load: Option<PendingLoad>,
+    pending_schedule_cancellation: Option<(ScheduledDPNSVote, ConfirmationDialog)>,
 }
 
 #[cfg(test)]
@@ -128,6 +134,7 @@ impl MasternodesScreen {
             nodes: Vec::new(),
             view: MasternodesView::List,
             pending_load: None,
+            pending_schedule_cancellation: None,
         };
         screen.reload();
         screen
@@ -210,6 +217,7 @@ impl MasternodesScreen {
     pub fn reset_for_network_change(&mut self) {
         self.view = MasternodesView::List;
         self.pending_load = None;
+        self.pending_schedule_cancellation = None;
         self.reload();
     }
 
@@ -342,7 +350,7 @@ impl MasternodesScreen {
     }
 
     /// Shared target-correlated progress, visible regardless of the active node.
-    fn render_voting_activity(&self, ui: &mut egui::Ui) -> AppAction {
+    fn render_voting_activity(&mut self, ui: &mut egui::Ui) -> AppAction {
         let Ok(mut operations) = self.app_context.dpns_vote_operations() else {
             return AppAction::None;
         };
@@ -361,7 +369,21 @@ impl MasternodesScreen {
         let mut action = AppAction::None;
         ui.add_space(16.0);
         ui.heading(RichText::new("Voting activity").color(DashColors::text_primary(dark_mode)));
+        let mut open_operation = None;
         for operation in operations {
+            let total = operation.targets.len();
+            let complete = operation
+                .targets
+                .iter()
+                .filter(|outcome| !outcome.status.holds_lock())
+                .count();
+            ui.label(
+                RichText::new(format!(
+                    "Operation {} · {complete} of {total} targets settled",
+                    operation.id
+                ))
+                .strong(),
+            );
             for outcome in &operation.targets {
                 let voter = outcome.target.voter_alias.clone().unwrap_or_else(|| {
                     shorten_id(&outcome.target.key.voter_id.to_string(Encoding::Base58))
@@ -379,8 +401,10 @@ impl MasternodesScreen {
                 };
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!(
-                        "{voter} / {} — {status}",
-                        outcome.target.contested_name
+                        "{voter} / {}.dash — {} → {} — {status}",
+                        outcome.target.contested_name,
+                        vote_choice_summary(outcome.target.current_choice),
+                        vote_choice_summary(Some(outcome.target.requested_choice)),
                     ));
                     if outcome.status == DpnsVoteTargetStatus::Unconfirmed
                         && ComponentStyles::add_secondary_button(ui, "Check again", dark_mode)
@@ -392,6 +416,16 @@ impl MasternodesScreen {
                     }
                 });
             }
+            if ComponentStyles::add_secondary_button(ui, "View operation", dark_mode).clicked() {
+                open_operation = Some(operation.id);
+            }
+            ui.separator();
+        }
+        if let Some(operation_id) = open_operation {
+            self.view = MasternodesView::Voting(Box::new(DpnsVotingCenter::for_operation(
+                &self.app_context,
+                operation_id,
+            )));
         }
         action
     }
@@ -559,11 +593,11 @@ impl MasternodesScreen {
                     ))
                     .strong(),
                 );
-                ui.label(format!("Choice: {}", vote.choice));
                 ui.label(format!(
-                    "Scheduled time: {} UTC milliseconds",
-                    vote.unix_timestamp
+                    "Choice: {}",
+                    vote_choice_summary(Some(vote.choice))
                 ));
+                ui.label(format_scheduled_time(vote.unix_timestamp));
                 ui.label(match status {
                     Some(DpnsVoteTargetStatus::Unconfirmed) => "Status: Checking result",
                     Some(
@@ -576,22 +610,37 @@ impl MasternodesScreen {
                     _ => "Status: Needs attention",
                 });
                 let editable = status == Some(DpnsVoteTargetStatus::Scheduled);
-                if ComponentStyles::add_secondary_button(ui, "Edit schedule", dark_mode).clicked()
-                    && editable
+                let disabled_reason =
+                    "This scheduled vote cannot be changed after submission has started.";
+                if ui
+                    .add_enabled(
+                        editable,
+                        ComponentStyles::secondary_button("Edit schedule", dark_mode),
+                    )
+                    .disabled_tooltip(disabled_reason)
+                    .clicked()
                 {
                     self.view = MasternodesView::Voting(Box::new(
                         DpnsVotingCenter::for_scheduled_edit(&self.app_context, &vote),
                     ));
                 }
-                if ComponentStyles::add_secondary_button(ui, "Cancel scheduled vote", dark_mode)
+                if ui
+                    .add_enabled(
+                        editable,
+                        ComponentStyles::secondary_button("Cancel scheduled vote", dark_mode),
+                    )
+                    .disabled_tooltip(disabled_reason)
                     .clicked()
-                    && editable
                 {
-                    action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::DeleteScheduledVote(
-                            vote.voter_id,
-                            vote.contested_name.clone(),
-                        ),
+                    let message = format!(
+                        "Cancel the scheduled vote for {}.dash? This removes it before submission.",
+                        vote.contested_name
+                    );
+                    self.pending_schedule_cancellation = Some((
+                        vote.clone(),
+                        ConfirmationDialog::new("Cancel scheduled vote", message)
+                            .danger_mode(true)
+                            .confirm_text(Some("Cancel scheduled vote")),
                     ));
                 }
                 if status == Some(DpnsVoteTargetStatus::Unconfirmed)
@@ -611,6 +660,21 @@ impl MasternodesScreen {
                     ));
                 }
             });
+        }
+        if let Some((vote, dialog)) = self.pending_schedule_cancellation.as_mut() {
+            let result = dialog.show(ui).inner.dialog_response;
+            if let Some(result) = result {
+                let vote = vote.clone();
+                self.pending_schedule_cancellation = None;
+                if result == ConfirmationStatus::Confirmed {
+                    action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::DeleteScheduledVote(
+                            vote.voter_id,
+                            vote.contested_name,
+                        ),
+                    ));
+                }
+            }
         }
         action
     }
@@ -733,6 +797,31 @@ impl MasternodesScreen {
     }
 }
 
+fn vote_choice_summary(choice: Option<ResourceVoteChoice>) -> String {
+    match choice {
+        None => "Not voted".to_owned(),
+        Some(ResourceVoteChoice::Abstain) => "Abstain".to_owned(),
+        Some(ResourceVoteChoice::Lock) => "Lock".to_owned(),
+        Some(ResourceVoteChoice::TowardsIdentity(identity)) => {
+            format!(
+                "Candidate {}",
+                shorten_id(&identity.to_string(Encoding::Base58))
+            )
+        }
+    }
+}
+
+fn format_scheduled_time(timestamp: u64) -> String {
+    match Utc.timestamp_millis_opt(timestamp as i64) {
+        LocalResult::Single(date_time) => format!(
+            "Scheduled time: {} UTC ({})",
+            date_time.format("%Y-%m-%d %H:%M"),
+            HumanTime::from(date_time)
+        ),
+        _ => "Scheduled time: Unavailable".to_owned(),
+    }
+}
+
 impl ScreenLike for MasternodesScreen {
     fn refresh(&mut self) {
         self.reload();
@@ -741,8 +830,15 @@ impl ScreenLike for MasternodesScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload();
         self.reconcile_pending_load();
-        if let Some(contests) = self.app_context.take_dpns_voting_center_route() {
-            self.open_voting_center(None, contests);
+        if let Some(route) = self.app_context.take_dpns_operator_route() {
+            match route {
+                DpnsOperatorRoute::Voting { choices } => {
+                    self.view = MasternodesView::Voting(Box::new(
+                        DpnsVotingCenter::for_bulk_choices(&self.app_context, choices),
+                    ));
+                }
+                DpnsOperatorRoute::Scheduled => self.view = MasternodesView::Scheduled,
+            }
         }
     }
 

@@ -24,9 +24,7 @@ use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
-use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming,
-};
+use crate::model::dpns_voting::{DpnsCurrentVoteState, DpnsVoteTargetKey};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
@@ -94,7 +92,6 @@ fn candidate_choice_label(candidate_name: &str, votes: u32) -> String {
 struct ContestVoteRow {
     name: String,
     end_time: Option<TimestampMillis>,
-    vote_poll_id: dash_sdk::platform::Identifier,
     current_vote: DpnsCurrentVoteState,
     locked: bool,
     /// `(candidate id, candidate name, votes so far)` for each contestant.
@@ -877,7 +874,6 @@ impl MasternodeDetailView {
                 Some(ContestVoteRow {
                     name: contest.normalized_contested_name.clone(),
                     end_time: contest.end_time,
-                    vote_poll_id,
                     current_vote,
                     locked: self
                         .app_context
@@ -931,8 +927,12 @@ impl MasternodeDetailView {
                         .candidates
                         .iter()
                         .find(|(candidate_id, _, _)| *candidate_id == id)
-                        .map(|(_, name, _)| name.as_str())
-                        .unwrap_or("candidate");
+                        .map(|(_, name, _)| {
+                            format!("{name} ({})", shorten_id(&id.to_string(Encoding::Base58)))
+                        })
+                        .unwrap_or_else(|| {
+                            format!("candidate {}", shorten_id(&id.to_string(Encoding::Base58)))
+                        });
                     format!("Current vote: {candidate}")
                 }
             };
@@ -982,6 +982,19 @@ impl MasternodeDetailView {
                     RichText::new("Refresh vote state before choosing a vote for this node.")
                         .color(DashColors::text_secondary(dark_mode)),
                 );
+                if ComponentStyles::add_secondary_button(ui, "Refresh vote state", dark_mode)
+                    .clicked()
+                {
+                    self.vote_state_refresh_dispatched = true;
+                    action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::QueryDPNSContests,
+                    )));
+                }
+            } else if matches!(contest.current_vote, DpnsCurrentVoteState::Checking) {
+                ui.label(
+                    RichText::new("DET is checking this node's current vote.")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
             } else if selected.is_none() {
                 ui.label(
                     RichText::new(NO_SELECTION_HINT).color(DashColors::text_secondary(dark_mode)),
@@ -990,48 +1003,19 @@ impl MasternodeDetailView {
         }
 
         ui.separator();
-        let targets: Vec<DpnsVoteTarget> = self
-            .vote_selections
-            .iter()
-            .filter_map(|(name, choice)| {
-                let contest = contests.iter().find(|contest| &contest.name == name)?;
-                let DpnsCurrentVoteState::Available(current_choice) = contest.current_vote else {
-                    return None;
-                };
-                if current_choice == Some(*choice) || contest.locked {
-                    return None;
-                }
-                Some(DpnsVoteTarget {
-                    key: DpnsVoteTargetKey {
-                        network: self.app_context.network(),
-                        voter_id,
-                        vote_poll_id: contest.vote_poll_id,
-                    },
-                    voter_alias: self.identity.alias.clone(),
-                    contested_name: name.clone(),
-                    requested_choice: *choice,
-                    current_choice,
-                    timing: VoteTiming::Now,
-                })
-            })
-            .collect();
-        let has_votes = !targets.is_empty();
-        let review_label = if targets.len() == 1 {
+        let selection_count = self.vote_selections.len();
+        let has_selections = selection_count > 0;
+        let review_label = if selection_count == 1 {
             "Review 1 vote".to_owned()
         } else {
-            format!("Review {} votes", targets.len())
+            format!("Review {selection_count} votes")
         };
-        if ComponentStyles::add_primary_button_enabled(ui, has_votes, review_label)
+        if ComponentStyles::add_primary_button_enabled(ui, has_selections, review_label)
             .clickable_tooltip(CAST_ENABLED_HINT)
             .disabled_tooltip(CAST_DISABLED_HINT)
             .clicked()
         {
-            self.open_voting_center_requested = Some(
-                targets
-                    .into_iter()
-                    .map(|target| (target.contested_name, target.requested_choice))
-                    .collect(),
-            );
+            self.open_voting_center_requested = Some(self.vote_selections.clone());
         }
         if ComponentStyles::add_secondary_button(ui, "Open Voting Center", dark_mode).clicked() {
             self.open_voting_center_requested = Some(BTreeMap::new());

@@ -694,7 +694,8 @@ As a masternode operator, I want to vote on contested DPNS name registrations so
 As a masternode operator, I want to schedule votes for later execution so that I can plan my voting strategy in advance.
 
 - Set vote to be cast at a future time.
-- View and manage scheduled votes.
+- View and manage scheduled votes under Masternodes → Scheduled; the former DPNS
+  scheduled-votes entry redirects to this shared operator view.
 - Scheduled and immediate votes share the same target locks and result states.
 - An ambiguous result remains visible for checking and is never automatically rebroadcast.
 
@@ -704,6 +705,8 @@ As a masternode operator, I want to schedule votes for later execution so that I
 As a masternode operator, I want to apply voting choices across multiple contests in bulk so that I do not have to vote on each contest individually.
 
 - "Set all" option for batch vote assignment.
+- Nodes are selected explicitly; "Set all" changes timing only for selected nodes.
+- Nodes without a loaded voting key remain visible but cannot be selected.
 - Per-node timing overrides and multi-contest selections create exact node × contest targets.
 - Immediate and scheduled targets submitted together belong to one operation.
 

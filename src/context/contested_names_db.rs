@@ -8,7 +8,10 @@
 
 use super::AppContext;
 use crate::backend_task::error::TaskError;
-use crate::model::contested_name::{ContestState, Contestant, ContestedName};
+use crate::model::contested_name::{
+    ContestState, Contestant, ContestedName, MasternodeVoteStateSummary,
+};
+use crate::model::dpns_voting::DpnsCurrentVoteState;
 use crate::wallet_backend::{DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
@@ -72,6 +75,16 @@ fn contest_duration_for_network(network: Network) -> Duration {
         MAINNET_CONTEST_DURATION
     } else {
         NON_MAINNET_CONTEST_DURATION
+    }
+}
+
+fn vote_state_summary(states: &[DpnsCurrentVoteState]) -> MasternodeVoteStateSummary {
+    if states.contains(&DpnsCurrentVoteState::Checking) {
+        MasternodeVoteStateSummary::Checking
+    } else if states.contains(&DpnsCurrentVoteState::Unavailable) {
+        MasternodeVoteStateSummary::Unavailable
+    } else {
+        MasternodeVoteStateSummary::Ready
     }
 }
 
@@ -213,18 +226,21 @@ impl AppContext {
             .iter()
             .filter(|contest| contest.is_open_for_voter(&voter_id))
             .count();
-        let needs_vote_count = contests
+        let states = contests
             .iter()
             .filter(|contest| contest.is_open_for_voter(&voter_id))
-            .filter(|contest| {
+            .map(|contest| {
                 self.dpns_vote_poll_id(&contest.normalized_contested_name)
                     .ok()
                     .and_then(|poll_id| self.dpns_current_vote_state(voter_id, poll_id).ok())
-                    == Some(crate::model::dpns_voting::DpnsCurrentVoteState::Available(
-                        None,
-                    ))
+                    .unwrap_or(DpnsCurrentVoteState::Unavailable)
             })
+            .collect::<Vec<_>>();
+        let needs_vote_count = states
+            .iter()
+            .filter(|state| **state == DpnsCurrentVoteState::Available(None))
             .count();
+        let vote_state = vote_state_summary(&states);
 
         let has_scheduled_vote = self
             .get_scheduled_votes()?
@@ -234,6 +250,7 @@ impl AppContext {
         Ok(crate::model::contested_name::MasternodeContestSummary {
             open_contest_count,
             needs_vote_count,
+            vote_state,
             has_scheduled_vote,
         })
     }
@@ -552,5 +569,29 @@ mod tests {
     #[test]
     fn contest_key_is_prefixed_with_normalized_name() {
         assert_eq!(contested_name_key("dash"), "det:contested_name:dash");
+    }
+
+    #[test]
+    fn card_summary_does_not_treat_checking_as_all_votes_cast() {
+        assert_eq!(
+            vote_state_summary(&[
+                DpnsCurrentVoteState::Available(Some(
+                    dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock,
+                )),
+                DpnsCurrentVoteState::Checking,
+            ]),
+            MasternodeVoteStateSummary::Checking
+        );
+    }
+
+    #[test]
+    fn card_summary_does_not_treat_unavailable_as_all_votes_cast() {
+        assert_eq!(
+            vote_state_summary(&[
+                DpnsCurrentVoteState::Available(None),
+                DpnsCurrentVoteState::Unavailable,
+            ]),
+            MasternodeVoteStateSummary::Unavailable
+        );
     }
 }

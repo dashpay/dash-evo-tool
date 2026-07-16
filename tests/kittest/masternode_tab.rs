@@ -288,6 +288,33 @@ fn voting_navigation_routes_to_shared_workspaces() {
                 .query_by_label("Step 1 of 3: Nodes and timing")
                 .is_some()
         );
+        harness.get_by_label("Next: Choose votes").click();
+        harness.run_steps(2);
+        assert!(
+            harness
+                .query_by_label("Step 1 of 3: Nodes and timing")
+                .is_some(),
+            "an unfiltered bulk draft must not select every node by default"
+        );
+    });
+}
+
+/// VOTE-TC-023/075: the retired DPNS scheduled surface redirects to the shared
+/// Masternodes scheduled view instead of exposing a second submit path.
+#[test]
+fn legacy_dpns_scheduled_route_opens_masternodes_scheduled_view() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSScheduledVotes);
+        harness.run_steps(5);
+
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
+        assert!(harness.query_by_label("Scheduled votes").is_some());
     });
 }
 

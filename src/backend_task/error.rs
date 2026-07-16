@@ -1095,6 +1095,15 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// Platform accepted the request, but its result could not be confirmed.
+    #[error(
+        "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
+    )]
+    PlatformResultUnconfirmed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Object already exists on Platform (SdkError::AlreadyExists).
     #[error("This object already exists on the platform.")]
     PlatformAlreadyExists {
@@ -2529,8 +2538,8 @@ impl From<SdkError> for TaskError {
         // after the borrow-checked match on the consensus cause ends.
         type SdkErrorMapper = Box<dyn FnOnce(Box<SdkError>) -> TaskError>;
 
-        let mapper: Option<SdkErrorMapper> = consensus_cause(&error)
-            .and_then(|ce| -> Option<SdkErrorMapper> {
+        let mapper: Option<SdkErrorMapper> =
+            consensus_cause(&error).and_then(|ce| -> Option<SdkErrorMapper> {
                 match ce {
                     ConsensusError::StateError(
                         StateError::DuplicatedIdentityPublicKeyStateError(_),
@@ -2672,17 +2681,6 @@ impl From<SdkError> for TaskError {
                     }
                     _ => None,
                 }
-            })
-            .or_else(|| -> Option<SdkErrorMapper> {
-                if let SdkError::StateTransitionBroadcastError(broadcast_err) = &error
-                    && broadcast_err.cause.is_none()
-                    && broadcast_err.message.to_lowercase().contains("duplicate")
-                {
-                    return Some(Box::new(|source_error| {
-                        TaskError::DuplicateIdentityPublicKey { source_error }
-                    }));
-                }
-                None
             });
 
         if let Some(mapper) = mapper {
@@ -2751,6 +2749,13 @@ impl From<SdkError> for TaskError {
                 source_error: boxed,
             },
             // SDK-level errors
+            SdkError::StateTransitionBroadcastError(broadcast_error)
+                if broadcast_error.cause.is_none() =>
+            {
+                TaskError::PlatformResultUnconfirmed {
+                    source_error: boxed,
+                }
+            }
             SdkError::StateTransitionBroadcastError(_) => TaskError::PlatformRejected {
                 source_error: boxed,
             },
@@ -3111,7 +3116,7 @@ mod tests {
     }
 
     #[test]
-    fn from_sdk_error_broadcast_cause_none_message_duplicate_falls_back_to_duplicate_key() {
+    fn from_sdk_error_broadcast_cause_none_message_duplicate_remains_unconfirmed() {
         let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
             code: 40206,
             message: "DuplicateIdentityPublicKeyStateError".to_string(),
@@ -3120,9 +3125,30 @@ mod tests {
         let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
         let err = TaskError::from(sdk_err);
         assert!(
-            matches!(err, TaskError::DuplicateIdentityPublicKey { .. }),
-            "Expected DuplicateIdentityPublicKey, got: {err:?}"
+            matches!(err, TaskError::PlatformResultUnconfirmed { .. }),
+            "A message without a structured consensus cause must remain unconfirmed: {err:?}"
         );
+        assert!(err.to_string().contains("could not be confirmed"));
+    }
+
+    #[test]
+    fn from_sdk_error_broadcast_cause_none_unavailable_is_not_a_rejection() {
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: Code::Unavailable as u32,
+            message: "Tenderdash is not available".to_string(),
+            cause: None,
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+
+        assert!(
+            matches!(err, TaskError::PlatformResultUnconfirmed { .. }),
+            "A failed result wait after broadcast must not be presented as rejection: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("submitted"));
+        assert!(message.contains("could not be confirmed"));
+        assert!(message.contains("before trying again"));
     }
 
     #[test]

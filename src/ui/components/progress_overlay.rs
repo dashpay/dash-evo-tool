@@ -798,9 +798,13 @@ impl ProgressOverlay {
     /// after the panels and before the secret prompt. Early-outs to a single
     /// `ctx.data` read when no overlay is active (NFR-6).
     ///
-    /// `secret_prompt_active` mirrors the [`claim_input`](Self::claim_input)
-    /// secret-prompt gate: when `true` the block suppresses its own focus management
-    /// so the passphrase modal rendered above it keeps the keyboard.
+    /// `blocking_secret_prompt_active` mirrors the
+    /// [`claim_input`](Self::claim_input) gate. The overlay remains in its stack
+    /// but paints no dimmer, pointer sink, card, or focus trap while a passphrase
+    /// prompt owns the interaction surface. Every passphrase prompt — cancellable
+    /// or not — installs its own outside-window input barrier
+    /// ([`passphrase_modal`](super::passphrase_modal::passphrase_modal)), so the
+    /// barrier is handed over, never dropped.
     ///
     /// Unlike [`MessageBanner`](super::message_banner::MessageBanner), whose global
     /// path pairs `set_global` with [`show_global`](super::message_banner::MessageBanner::show_global)
@@ -808,11 +812,14 @@ impl ProgressOverlay {
     /// [`set_global`](Self::set_global) with `render_global`: it owns a full-window
     /// dim, input sink, and focus trap that must be painted every frame from the app
     /// loop on `Order::Foreground`, not lazily from within a panel.
-    pub fn render_global(ctx: &egui::Context, secret_prompt_active: bool) {
+    pub fn render_global(ctx: &egui::Context, blocking_secret_prompt_active: bool) {
         let mut stack = get_overlay_state(ctx);
         let Some(top) = stack.last_mut() else {
             return;
         };
+        if blocking_secret_prompt_active {
+            return;
+        }
 
         // NB: render_global does NO keyboard stripping. All key/text claiming
         // happens in `claim_input` at frame start, which the app loop gates on no
@@ -882,7 +889,7 @@ impl ProgressOverlay {
                     stuck,
                     watchdog,
                     true,
-                    secret_prompt_active,
+                    false,
                 );
             });
 

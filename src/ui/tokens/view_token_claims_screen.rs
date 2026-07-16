@@ -1,6 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::document::DocumentTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
@@ -22,6 +23,14 @@ use super::tokens_screen::IdentityTokenBasicInfo;
 pub enum FetchStatus {
     NotFetching,
     Fetching(DateTime<Utc>),
+}
+
+impl FetchStatus {
+    fn stop_on_failure(&mut self, expected: &BackendTaskContext, failed: &BackendTaskContext) {
+        if matches!(self, Self::Fetching(_)) && expected == failed {
+            *self = Self::NotFetching;
+        }
+    }
 }
 
 pub struct ViewTokenClaimsScreen {
@@ -69,16 +78,9 @@ impl ViewTokenClaimsScreen {
 }
 
 impl ScreenLike for ViewTokenClaimsScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        match message_type {
-            MessageType::Error | MessageType::Warning => {
-                if message.contains("Error fetching documents") {
-                    self.fetch_status = FetchStatus::NotFetching;
-                }
-            }
-            _ => {}
-        }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        let expected = BackendTaskContext::FetchDocuments(Box::new(self.new_claims_query.clone()));
+        self.fetch_status.stop_on_failure(&expected, context);
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -223,5 +225,44 @@ impl ScreenLike for ViewTokenClaimsScreen {
         });
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_task::BackendTaskContext;
+    use dash_sdk::dpp::data_contracts::SystemDataContract;
+    use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    fn query(limit: u32) -> DocumentQuery {
+        let contract =
+            load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
+                .expect("token history contract");
+        let mut query = DocumentQuery::new(Arc::new(contract), "claim").expect("claim query");
+        query.limit = limit;
+        query
+    }
+
+    #[test]
+    fn in_flight_claim_fetch_failure_requires_the_matching_backend_task() {
+        let expected = BackendTaskContext::FetchDocuments(Box::new(query(10)));
+        let different_query = BackendTaskContext::FetchDocuments(Box::new(query(20)));
+        let mut status = FetchStatus::Fetching(Utc::now());
+        status.stop_on_failure(&expected, &BackendTaskContext::Other);
+        status.stop_on_failure(&expected, &BackendTaskContext::Unknown);
+        status.stop_on_failure(&expected, &different_query);
+        status.stop_on_failure(
+            &expected,
+            &BackendTaskContext::FetchDocumentsPage(Box::new(query(10))),
+        );
+        assert!(matches!(status, FetchStatus::Fetching(_)));
+
+        status.stop_on_failure(&expected, &expected);
+        assert_eq!(status, FetchStatus::NotFetching);
+
+        status.stop_on_failure(&expected, &expected);
+        assert_eq!(status, FetchStatus::NotFetching);
     }
 }

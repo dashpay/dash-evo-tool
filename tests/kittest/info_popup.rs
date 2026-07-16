@@ -2,12 +2,16 @@ use dash_evo_tool::ui::components::info_popup::InfoPopup;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
+fn info_popup(title: impl Into<egui::WidgetText>, message: impl Into<String>) -> InfoPopup {
+    InfoPopup::new(egui::Id::new("kittest_info_popup"), title, message)
+}
+
 #[test]
 fn test_renders_title_and_message() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Help", "This is helpful information.");
+            let mut popup = info_popup("Help", "This is helpful information.");
             popup.show(ui);
         });
     harness.run();
@@ -24,7 +28,7 @@ fn test_renders_default_close_button() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Title", "Message");
+            let mut popup = info_popup("Title", "Message");
             popup.show(ui);
         });
     harness.run();
@@ -36,7 +40,7 @@ fn test_custom_close_text() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Title", "Message").close_text("Dismiss");
+            let mut popup = info_popup("Title", "Message").close_text("Dismiss");
             popup.show(ui);
         });
     harness.run();
@@ -49,7 +53,7 @@ fn test_open_false_renders_nothing() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Title", "Message").open(false);
+            let mut popup = info_popup("Title", "Message").open(false);
             popup.show(ui);
         });
     harness.run();
@@ -60,16 +64,16 @@ fn test_open_false_renders_nothing() {
 
 #[test]
 fn test_is_open_returns_correct_state() {
-    let popup_open = InfoPopup::new("Title", "Message").open(true);
+    let popup_open = info_popup("Title", "Message").open(true);
     assert!(popup_open.is_open());
 
-    let popup_closed = InfoPopup::new("Title", "Message").open(false);
+    let popup_closed = info_popup("Title", "Message").open(false);
     assert!(!popup_closed.is_open());
 }
 
 #[test]
 fn test_is_open_default_is_true() {
-    let popup = InfoPopup::new("Title", "Message");
+    let popup = info_popup("Title", "Message");
     assert!(popup.is_open());
 }
 
@@ -79,7 +83,7 @@ fn test_plain_text_paragraph_splits() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Info", message);
+            let mut popup = info_popup("Info", message);
             popup.show(ui);
         });
     harness.run();
@@ -94,7 +98,7 @@ fn test_markdown_mode_renders() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Markdown Info", message).markdown(true);
+            let mut popup = info_popup("Markdown Info", message).markdown(true);
             popup.show(ui);
         });
     harness.run();
@@ -108,7 +112,7 @@ fn test_show_returns_false_when_open_no_interaction() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Title", "Message");
+            let mut popup = info_popup("Title", "Message");
             let response = popup.show(ui);
             // No interaction happened, popup should not be closed
             assert!(!response.inner);
@@ -121,7 +125,7 @@ fn test_show_returns_false_when_not_open() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Title", "Message").open(false);
+            let mut popup = info_popup("Title", "Message").open(false);
             let response = popup.show(ui);
             // Already closed, show returns false (was not freshly closed)
             assert!(!response.inner);
@@ -131,7 +135,7 @@ fn test_show_returns_false_when_not_open() {
 
 #[test]
 fn test_builder_chaining() {
-    let popup = InfoPopup::new("Title", "Message")
+    let popup = info_popup("Title", "Message")
         .close_text("OK")
         .markdown(false)
         .open(true);
@@ -144,7 +148,7 @@ fn test_single_paragraph_no_split() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Info", message);
+            let mut popup = info_popup("Info", message);
             popup.show(ui);
         });
     harness.run();
@@ -161,7 +165,7 @@ fn test_single_newline_replaced_with_space() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(|ui| {
-            let mut popup = InfoPopup::new("Info", message);
+            let mut popup = info_popup("Info", message);
             popup.show(ui);
         });
     harness.run();

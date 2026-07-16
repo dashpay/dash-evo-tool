@@ -4,7 +4,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window_after_open;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -217,7 +217,11 @@ impl TokensScreen {
                 if !is_open || close_popup {
                     self.show_token_info_popup = None;
                 } else if let Some(ref wr) = window_response
-                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                    && clicked_outside_window_after_open(
+                        ui.ctx(),
+                        wr.response.rect,
+                        &mut self.token_info_popup_opening_guard,
+                    )
                 {
                     self.show_token_info_popup = None;
                 }
@@ -485,6 +489,7 @@ impl TokensScreen {
                                                                 };
                                                                 if crate::ui::helpers::info_icon_button(ui, "Show reward calculation explanation").clicked() {
                                                                     self.show_explanation_popup = Some(identity_token_id);
+                                                                    self.explanation_popup_opening_guard.arm();
                                                                 }
                                                                 ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                                                                     ui.add_space(-9.0);
@@ -651,7 +656,11 @@ impl TokensScreen {
                 // Handle click outside window
                 if let Some(ref wr) = window_response
                     && self.show_explanation_popup.is_some()
-                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                    && clicked_outside_window_after_open(
+                        ui.ctx(),
+                        wr.response.rect,
+                        &mut self.explanation_popup_opening_guard,
+                    )
                 {
                     self.show_explanation_popup = None;
                 }
@@ -1071,6 +1080,7 @@ impl TokensScreen {
                                 // Info button
                                 if ui.button("More Info").clicked() {
                                     self.show_token_info_popup = Some(*token_id);
+                                    self.token_info_popup_opening_guard.arm();
                                 }
 
                                 // Remove button

@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -421,8 +422,11 @@ impl ScreenLike for SendPaymentScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup =
-                        InfoPopup::new("Payment Guidelines", PAYMENT_GUIDELINES_INFO_TEXT);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_send_payment_info_popup"),
+                        "Payment Guidelines",
+                        PAYMENT_GUIDELINES_INFO_TEXT,
+                    );
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }
@@ -472,6 +476,9 @@ pub struct PaymentHistory {
 pub struct PaymentRecord {
     pub tx_id: String,
     pub contact_name: String,
+    /// Payment amount in **duffs** (1 DASH = 100,000,000 duffs), as provided by
+    /// `DashPayPaymentHistory`. Despite the `Credits` alias this is a duff value,
+    /// so render it with `format_duffs_as_dash`.
     pub amount: Credits,
     pub is_incoming: bool,
     pub timestamp: u64,
@@ -682,8 +689,8 @@ impl PaymentHistory {
                                             .color(DashColors::text_primary(dark_mode)),
                                     );
 
-                                    // Amount
-                                    let amount_str = format!("{} Dash", payment.amount);
+                                    // Amount (payment.amount is in duffs)
+                                    let amount_str = format_duffs_as_dash(payment.amount);
                                     if payment.is_incoming {
                                         ui.label(
                                             RichText::new(format!("+{}", amount_str))

@@ -1,6 +1,7 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
+use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::context::AppContext;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
@@ -179,7 +180,13 @@ impl AppContext {
         };
 
         // Fetch the identity using the SDK
-        let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
+        let identity = match await_network_request_with_timeout(
+            NETWORK_REQUEST_TIMEOUT,
+            Identity::fetch_by_identifier(sdk, identity_id),
+            |source| TaskError::IdentityLoadTimeout { source },
+        )
+        .await?
+        {
             Ok(Some(identity)) => identity,
             // For masternode/evonode loads the input is a ProTxHash, so surface a
             // node-specific message instead of the generic identity-not-found copy
@@ -266,12 +273,17 @@ impl AppContext {
                     );
 
                     // Fetch the voter identifier
-                    let voter_identity =
-                        match Identity::fetch_by_identifier(sdk, voter_identifier).await {
-                            Ok(Some(identity)) => identity,
-                            Ok(None) => return Err(TaskError::IdentityNotFound),
-                            Err(e) => return Err(TaskError::from(e)),
-                        };
+                    let voter_identity = match await_network_request_with_timeout(
+                        NETWORK_REQUEST_TIMEOUT,
+                        Identity::fetch_by_identifier(sdk, voter_identifier),
+                        |source| TaskError::IdentityLoadTimeout { source },
+                    )
+                    .await?
+                    {
+                        Ok(Some(identity)) => identity,
+                        Ok(None) => return Err(TaskError::IdentityNotFound),
+                        Err(e) => return Err(TaskError::from(e)),
+                    };
 
                     let key = self.verify_voting_key_exists_on_identity(
                         &voter_identity,
@@ -404,36 +416,40 @@ impl AppContext {
             start: None,
         };
 
-        let maybe_owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
-            .await
-            .map(|document_map| {
-                document_map
-                    .values()
-                    .filter_map(|maybe_doc| {
-                        maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc
-                                .get("label")
-                                .map(|label| label.to_str().unwrap_or_default());
-                            let acquired_at = doc
-                                .created_at()
-                                .into_iter()
-                                .chain(doc.transferred_at())
-                                .max();
+        let maybe_owned_dpns_names = await_network_request_with_timeout(
+            NETWORK_REQUEST_TIMEOUT,
+            Document::fetch_many(sdk, dpns_names_document_query),
+            |source| TaskError::IdentityLoadTimeout { source },
+        )
+        .await?
+        .map(|document_map| {
+            document_map
+                .values()
+                .filter_map(|maybe_doc| {
+                    maybe_doc.as_ref().and_then(|doc| {
+                        let name = doc
+                            .get("label")
+                            .map(|label| label.to_str().unwrap_or_default());
+                        let acquired_at = doc
+                            .created_at()
+                            .into_iter()
+                            .chain(doc.transferred_at())
+                            .max();
 
-                            match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                    name: name.to_string(),
-                                    acquired_at,
-                                }),
-                                _ => None,
-                            }
-                        })
+                        match (name, acquired_at) {
+                            (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
+                                name: name.to_string(),
+                                acquired_at,
+                            }),
+                            _ => None,
+                        }
                     })
-                    .collect::<Vec<DPNSNameInfo>>()
-            })
-            .map_err(|e| TaskError::DpnsFetchError {
-                source: Box::new(e),
-            })?;
+                })
+                .collect::<Vec<DPNSNameInfo>>()
+        })
+        .map_err(|e| TaskError::DpnsFetchError {
+            source: Box::new(e),
+        })?;
 
         // Determine alias: use user input, or fall back to first DPNS name if available
         let alias = if !alias_input.is_empty() {
@@ -781,6 +797,20 @@ mod tests {
 
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    #[tokio::test]
+    async fn identity_network_timeout_is_typed_and_actionable() {
+        let error = crate::backend_task::await_network_request_with_timeout(
+            std::time::Duration::from_millis(1),
+            std::future::pending::<()>(),
+            |source| TaskError::IdentityLoadTimeout { source },
+        )
+        .await
+        .expect_err("a pending identity request must time out");
+
+        assert!(matches!(error, TaskError::IdentityLoadTimeout { .. }));
+        assert!(error.to_string().contains("Check your connection"));
+    }
 
     /// A keyless masternode-shaped identity: an owner key + an identity auth key
     /// on the main identity, plus a voting key on the voter identity — the shape

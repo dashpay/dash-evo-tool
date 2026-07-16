@@ -76,6 +76,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_duffs, "duffs")?;
 
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         resolve::ensure_spv_synced(&ctx).await?;
 
@@ -164,6 +165,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
 
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         // Pre-flight: verify the wallet's total platform balance can cover the
@@ -271,6 +273,7 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let recipient_bytes =
@@ -366,6 +369,7 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let platform_addr =
@@ -463,6 +467,7 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         resolve::validate_address(&param.to_address)?;
         // INTENTIONAL: no SPV sync needed — this tool dispatches a Platform state transition
         // (withdrawal is queued on Platform and settles after confirmation)
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let core_address = param
@@ -553,12 +558,11 @@ impl AsyncTool<DashMcpService> for ShieldedInit {
     ) -> Result<ShieldedInitOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        // Binding rehydrates from the local shielded store and does not need a
-        // fully-synced chain, but the wallet backend must be wired so the
-        // coordinator exists and the wallet resolves. `ensure_spv_synced` is the
-        // single MCP chokepoint that wires it (idempotent on later calls).
+        // Hydration wires the backend so the wallet and shielded coordinator
+        // exist. This control tool also waits for SPV before coordinator work.
         resolve::ensure_spv_synced(&ctx).await?;
 
         let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
@@ -627,6 +631,7 @@ impl AsyncTool<DashMcpService> for ShieldedSync {
     ) -> Result<ShieldedSyncOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -686,6 +691,7 @@ impl AsyncTool<DashMcpService> for ShieldedBalanceGet {
     ) -> Result<ShieldedBalanceGetOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         // INTENTIONAL: a pure snapshot read — no SPV gate, no sync. The figure
@@ -740,6 +746,7 @@ impl AsyncTool<DashMcpService> for ShieldedAddressGet {
     ) -> Result<ShieldedAddressGetOutput, McpToolError> {
         let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;

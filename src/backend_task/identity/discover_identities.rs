@@ -83,7 +83,7 @@ impl AppContext {
                     .saturating_add(1)
                     .min(IDENTITY_SCAN_HARD_CAP);
                 sender
-                    .send(TaskResult::Success(Box::new(
+                    .send(TaskResult::unattributed_success(
                         BackendTaskSuccessResult::Progress {
                             message: format!(
                                 "Searching wallet identity index {next} of about {soft_total}."
@@ -91,7 +91,7 @@ impl AppContext {
                             current: next,
                             total: soft_total,
                         },
-                    )))
+                    ))
                     .await
                     .map_err(|_| TaskError::InternalSendError)?;
             }

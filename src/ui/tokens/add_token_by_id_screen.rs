@@ -414,20 +414,15 @@ impl ScreenLike for AddTokenByIdScreen {
 mod tests {
     use super::*;
     use crate::app::AppState;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    fn data_dir_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-    }
+    use crate::test_support::DASH_EVO_DATA_DIR_LOCK;
 
     /// Runs `f` in a unique temp data dir with a Tokio runtime in context, so
     /// `AppState::new()` neither touches the real user data dir nor races other
     /// test threads on `DASH_EVO_DATA_DIR`.
     fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
-        let lock = data_dir_lock();
+        let lock = DASH_EVO_DATA_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = tempfile::tempdir().expect("create temp data dir");
         let prior = std::env::var("DASH_EVO_DATA_DIR").ok();
         // Safety: serialized by `lock`; env var is restored below before it drops.

@@ -515,7 +515,11 @@ impl ScreenLike for ContactProfileViewerScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup = InfoPopup::new(title, text);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_contact_profile_viewer_info_popup"),
+                        title,
+                        text,
+                    );
                     if popup.show(ui).inner {
                         self.show_info_popup = None;
                     }

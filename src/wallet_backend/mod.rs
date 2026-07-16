@@ -71,14 +71,17 @@ pub mod wallet_seed_store;
 pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
-pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpub_material};
+pub(crate) use dashpay::{
+    ContactRequestActionKind, ContactRequestActionPhase, derive_contact_info_encryption_keys,
+    derive_contact_xpub_material,
+};
 
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;
 pub use identity_meta::IdentityMetaView;
 pub use secret_access::{
-    PromptMeta, SecretAccess, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
+    PromptMeta, SecretAccess, SecretLease, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
 };
 pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
@@ -183,11 +186,11 @@ const DEFAULT_BIP44_ACCOUNT: u32 = 0;
 /// Tolerates the brief window where a concurrent registration has created the
 /// wallet upstream but the manager has not finished exposing it via
 /// `get_wallet` — the loser of that race must not spuriously fail.
-const REGISTRATION_RESOLVE_RETRIES: u32 = 5;
+const REGISTRATION_RESOLVE_RETRIES: u32 = 50;
 
 /// Delay between the re-probes counted by [`REGISTRATION_RESOLVE_RETRIES`].
-/// Five tries at 20ms bound the wait to ~80ms in the (rare) genuinely-absent
-/// case while comfortably covering the in-flight-registration window.
+/// Fifty tries at 20ms bound the wait below one second in the (rare)
+/// genuinely-absent case while covering slower concurrent registrations.
 const REGISTRATION_RESOLVE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Upstream `WalletId` = `SHA256(root_xpub || root_chain_code)`, distinct
@@ -202,6 +205,20 @@ type PlatformWarmStartSeed = Vec<(
     Vec<PlatformAddressEntry>,
     Option<(u64, u64)>,
 )>;
+
+type RegistrationFlightOutcome = Result<(), Arc<TaskError>>;
+
+struct RegistrationFlight {
+    outcome: tokio::sync::OnceCell<RegistrationFlightOutcome>,
+}
+
+impl RegistrationFlight {
+    fn new() -> Self {
+        Self {
+            outcome: tokio::sync::OnceCell::new(),
+        }
+    }
+}
 
 struct Inner {
     pwm: PlatformWalletManager<DetPersister>,
@@ -219,6 +236,20 @@ struct Inner {
     token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
+    #[cfg(test)]
+    registration_attempts: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    registration_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    registration_test_failure: std::sync::atomic::AtomicBool,
+    /// Per-wallet shared-result flights for upstream registration. Every caller
+    /// that joins an active flight awaits the same success or typed error.
+    registration_flights:
+        std::sync::Mutex<std::collections::BTreeMap<WalletSeedHash, Arc<RegistrationFlight>>>,
+    /// Request-wide async locks for paid DashPay actions. The Hub and legacy
+    /// DashPay screens have separate UI state, so backend serialization is the
+    /// final guard against two callers paying for the same request concurrently.
+    dashpay_request_action_locks: dashpay::ContactRequestActionLocks,
     /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
     /// registration. Lets sync code reach an upstream wallet handle without an
     /// async hop (e.g. DashPay address-pool scanning).
@@ -239,8 +270,9 @@ struct Inner {
     dashpay_address_index_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
-    /// BIP-39 seeds (`envelope.v1` labels under `WalletId(seed_hash)`, see
-    /// [`wallet_seed_store`]). [`Self::secret_access`] decrypts seeds
+    /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
+    /// under `WalletId(seed_hash)`; see [`wallet_seed_store`]).
+    /// [`Self::secret_access`] decrypts seeds
     /// just-in-time from this vault for each signing operation; no
     /// long-lived plaintext seed cache exists.
     secret_store: Arc<SecretStore>,
@@ -282,6 +314,15 @@ struct Inner {
 #[derive(Clone)]
 pub struct WalletBackend {
     inner: Arc<Inner>,
+}
+
+/// Outcome of the [`WalletBackend::forget_all_wallets_local`] "delete all local
+/// data" sweep: the upstream wallet ids whose watch-only persistor rows still
+/// need async removal, plus every delete failure so the caller reports a
+/// partial wipe instead of a false success.
+pub(crate) struct ClearAllOutcome {
+    pub(crate) upstream_ids: Vec<WalletId>,
+    pub(crate) failures: Vec<TaskError>,
 }
 
 impl std::fmt::Debug for WalletBackend {
@@ -377,6 +418,14 @@ impl WalletBackend {
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                #[cfg(test)]
+                registration_attempts: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(test)]
+                registration_test_barrier: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                registration_test_failure: std::sync::atomic::AtomicBool::new(false),
+                registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+                dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -571,6 +620,7 @@ impl WalletBackend {
                 continue;
             };
 
+            self.hydrate_persisted_transactions(&wallet_id)?;
             self.inner.id_map.write()?.insert(seed_hash, wallet_id);
             self.inner
                 .wallets
@@ -579,6 +629,7 @@ impl WalletBackend {
             self.inner
                 .snapshots
                 .register_wallet(seed_hash, wallet_id, pw);
+            self.inner.snapshots.recompute(&wallet_id);
             tracing::debug!(
                 wallet = %hex::encode(seed_hash),
                 "Watch-only wallet registered with backend (seedless)"
@@ -776,12 +827,99 @@ impl WalletBackend {
         if self.inner.id_map.read()?.contains_key(seed_hash) {
             return Ok(());
         }
-        self.register_wallet_from_seed(
-            seed_hash,
-            seed,
-            registration_birth_height(WalletOrigin::Imported),
-        )
-        .await
+        let flight = {
+            let mut flights = self
+                .inner
+                .registration_flights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(
+                flights
+                    .entry(*seed_hash)
+                    .or_insert_with(|| Arc::new(RegistrationFlight::new())),
+            )
+        };
+        #[cfg(test)]
+        let registration_test_barrier = {
+            self.inner
+                .registration_test_barrier
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        };
+        #[cfg(test)]
+        if let Some(barrier) = registration_test_barrier {
+            barrier.wait().await;
+        }
+        let outcome = flight
+            .outcome
+            .get_or_init(|| async {
+                #[cfg(test)]
+                self.inner
+                    .registration_attempts
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(test)]
+                if self
+                    .inner
+                    .registration_test_failure
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    return Err(Arc::new(TaskError::WalletRegistrationXpubMismatch));
+                }
+                self.register_wallet_from_seed(
+                    seed_hash,
+                    seed,
+                    registration_birth_height(WalletOrigin::Imported),
+                )
+                .await
+                .map_err(Arc::new)
+            })
+            .await;
+
+        {
+            let mut flights = self
+                .inner
+                .registration_flights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if flights
+                .get(seed_hash)
+                .is_some_and(|active| Arc::ptr_eq(active, &flight))
+            {
+                flights.remove(seed_hash);
+            }
+        }
+
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(source) => Err(TaskError::WalletRegistrationFlightFailed {
+                source: Arc::clone(source),
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registration_attempt_count(&self) -> usize {
+        self.inner
+            .registration_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_registration_test_barrier(&self, parties: usize) {
+        *self
+            .inner
+            .registration_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Arc::new(tokio::sync::Barrier::new(parties)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_registration_test_failure(&self, fail: bool) {
+        self.inner
+            .registration_test_failure
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Resolve one just-registered upstream wallet into the DET-keyed maps via
@@ -832,6 +970,7 @@ impl WalletBackend {
             return Err(TaskError::WalletRegistrationXpubMismatch);
         }
 
+        self.hydrate_persisted_transactions(&wallet_id)?;
         self.inner.id_map.write()?.insert(seed_hash, wallet_id);
         self.inner
             .wallets
@@ -840,6 +979,73 @@ impl WalletBackend {
         self.inner
             .snapshots
             .register_wallet(seed_hash, wallet_id, pw);
+        self.inner.snapshots.recompute(&wallet_id);
+        Ok(())
+    }
+
+    /// Restore persisted public transaction records before publishing a
+    /// wallet's first display snapshot. This path never touches wallet secrets.
+    fn hydrate_persisted_transactions(&self, wallet_id: &WalletId) -> Result<(), TaskError> {
+        use crate::backend_task::error::WalletTransactionHistoryError;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        use platform_wallet_storage::WalletStorageError;
+
+        let storage_error = |source: rusqlite::Error| TaskError::WalletTransactionHistoryLoad {
+            source: WalletTransactionHistoryError::Persistence {
+                source: WalletStorageError::Sqlite(source).into(),
+            },
+        };
+        let database_path = self.inner.spv_storage_dir.join("platform-wallet.sqlite");
+        let connection = rusqlite::Connection::open_with_flags(
+            database_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(&storage_error)?;
+        let txid_bytes = {
+            // Upstream's public API decodes full records one txid at a time.
+            // Enumerate only its keys here, then delegate every record read.
+            // Project invalid widths to an empty blob before materialization;
+            // `Txid::from_slice` below then returns the typed hash error.
+            let mut statement = connection
+                .prepare(
+                    "SELECT CASE WHEN length(txid) = 32 THEN txid ELSE X'' END \
+                     FROM core_transactions WHERE wallet_id = ?1 ORDER BY txid",
+                )
+                .map_err(&storage_error)?;
+            let rows = statement
+                .query_map([wallet_id.as_slice()], |row| row.get::<_, Vec<u8>>(0))
+                .map_err(&storage_error)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(&storage_error)?
+        };
+        drop(connection);
+
+        let mut records = Vec::with_capacity(txid_bytes.len());
+        for bytes in txid_bytes {
+            let txid = dash_sdk::dpp::dashcore::Txid::from_slice(&bytes).map_err(|source| {
+                TaskError::WalletTransactionHistoryLoad {
+                    source: WalletTransactionHistoryError::Persistence {
+                        source: WalletStorageError::HashDecode { source }.into(),
+                    },
+                }
+            })?;
+            let record = self
+                .inner
+                .persister
+                .get_core_tx_record(*wallet_id, &txid)
+                .map_err(|source| TaskError::WalletTransactionHistoryLoad {
+                    source: WalletTransactionHistoryError::Persistence { source },
+                })?
+                .ok_or(TaskError::WalletTransactionHistoryLoad {
+                    source: WalletTransactionHistoryError::RecordMissing { txid },
+                })?;
+            records.push(record);
+        }
+
+        self.inner
+            .snapshots
+            .hydrate_transactions(wallet_id, records.iter());
         Ok(())
     }
 
@@ -855,12 +1061,16 @@ impl WalletBackend {
     /// state is removed before the in-memory handle, so a mid-failure crash
     /// never leaves a recoverable seed behind a forgotten in-memory entry.
     /// Resilient to partial failure: each step is logged and the rest still
-    /// run. Idempotent — forgetting an unknown wallet is a no-op success.
+    /// run. Idempotent — forgetting an unknown wallet is a no-op success. If any
+    /// delete fails, the first failure is returned so the caller never reports a
+    /// clean wipe when a recoverable secret may survive on disk.
     pub(crate) fn forget_wallet_local_state(
         &self,
         seed_hash: &WalletSeedHash,
         wallet_id: Option<WalletId>,
     ) -> Result<(), TaskError> {
+        let mut first_error: Option<TaskError> = None;
+
         // Seed vault — delete BOTH the raw `seed.raw.v1` (the current form) and
         // the legacy `envelope.v1`. Idempotent on both; a wallet may be in
         // either form (raw post-migration, legacy pre-migration), so removal
@@ -871,6 +1081,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to delete raw seed from vault"
             );
+            first_error.get_or_insert(e);
         }
         if let Err(e) = self.wallet_seeds().delete(seed_hash) {
             tracing::warn!(
@@ -878,6 +1089,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to delete seed envelope from vault"
             );
+            first_error.get_or_insert(e);
         }
 
         // Session secret cache (any remembered plaintext seed).
@@ -890,6 +1102,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to delete wallet-meta sidecar"
             );
+            first_error.get_or_insert(e);
         }
 
         // Plaintext Orchard state (notes + nullifier cursor) now lives in the
@@ -906,6 +1119,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to clear avatar cache during wallet removal"
             );
+            first_error.get_or_insert(e);
         }
 
         // In-memory maps + snapshot registration.
@@ -915,7 +1129,10 @@ impl WalletBackend {
             self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);
         }
 
-        Ok(())
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// The upstream `WalletId` DET has registered for `seed_hash`, if any.
@@ -966,27 +1183,27 @@ impl WalletBackend {
     ///
     /// Synchronous: it wipes the secret-bearing state (seed-envelope vault,
     /// single-key vault, sidecars, shielded notes, session cache, in-memory
-    /// maps) with no runtime. Returns the upstream `WalletId`s whose watch-only
-    /// persistor rows still need the async [`Self::remove_upstream_wallet`]
-    /// removal — the caller drives those off-thread. Resilient to partial
-    /// failure.
-    pub(crate) fn forget_all_wallets_local(&self) -> Vec<WalletId> {
+    /// maps) with no runtime. Returns a [`ClearAllOutcome`] carrying the
+    /// upstream `WalletId`s whose watch-only persistor rows still need the async
+    /// [`Self::remove_upstream_wallet`] removal — the caller drives those
+    /// off-thread — plus every delete failure. Resilient to partial failure:
+    /// every wallet is attempted even after one fails.
+    pub(crate) fn forget_all_wallets_local(&self) -> ClearAllOutcome {
         let network = self.inner.network;
 
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
         // never-loaded wallet is still wiped.
         let mut upstream_ids = Vec::new();
+        let mut failures: Vec<TaskError> = Vec::new();
         for (seed_hash, _meta) in self.wallet_meta().list(network) {
             let wallet_id = self.registered_wallet_id(&seed_hash);
             if let Some(id) = wallet_id {
                 upstream_ids.push(id);
             }
+            // `forget_wallet_local_state` logs each failed step; keep only the
+            // returned first failure so the caller can report a partial wipe.
             if let Err(e) = self.forget_wallet_local_state(&seed_hash, wallet_id) {
-                tracing::warn!(
-                    wallet = %hex::encode(seed_hash),
-                    error = ?e,
-                    "Failed to wipe local HD wallet state during clear-all"
-                );
+                failures.push(e);
             }
         }
 
@@ -1000,6 +1217,7 @@ impl WalletBackend {
                     error = ?e,
                     "Failed to forget single-key wallet during clear-all"
                 );
+                failures.push(e);
             }
         }
 
@@ -1007,7 +1225,10 @@ impl WalletBackend {
         // (single-key forget does not clear the session cache).
         self.forget_all_secrets();
 
-        upstream_ids
+        ClearAllOutcome {
+            upstream_ids,
+            failures,
+        }
     }
 
     /// Start chain sync and the periodic upstream coordinators.
@@ -1099,9 +1320,9 @@ impl WalletBackend {
             // (single-winner gate): a full 256-deep channel would drop this and
             // the sweep would not run until a reconnect re-arms the gate, but the
             // user can always run discovery manually, so the drop is tolerated.
-            let _ = task_result_sender.try_send(TaskResult::Success(Box::new(
+            let _ = task_result_sender.try_send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::PlatformReadyDiscoverIdentities,
-            )));
+            ));
         }));
 
         Ok(())

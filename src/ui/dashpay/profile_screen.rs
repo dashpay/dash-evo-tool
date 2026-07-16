@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::state::AvatarCache;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -69,6 +69,7 @@ pub struct ProfileScreen {
     show_info_popup: bool,
     show_avatar_info_popup: bool,
     show_avatar_url_popup: bool, // Show avatar URL when clicking on avatar in view mode
+    avatar_url_popup_opening_guard: ModalOpeningGuard,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -101,6 +102,7 @@ impl ProfileScreen {
             show_info_popup: false,
             show_avatar_info_popup: false,
             show_avatar_url_popup: false,
+            avatar_url_popup_opening_guard: ModalOpeningGuard::default(),
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -784,6 +786,7 @@ impl ProfileScreen {
                                         }
                                         if response.clicked {
                                             self.show_avatar_url_popup = true;
+                                            self.avatar_url_popup_opening_guard.arm();
                                         }
                                     });
                                 });
@@ -908,8 +911,11 @@ impl ProfileScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup =
-                        InfoPopup::new("Profile Guidelines", PROFILE_GUIDELINES_INFO_TEXT);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_profile_guidelines_info_popup"),
+                        "Profile Guidelines",
+                        PROFILE_GUIDELINES_INFO_TEXT,
+                    );
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
                     }
@@ -921,7 +927,11 @@ impl ProfileScreen {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui, |ui| {
-                    let mut popup = InfoPopup::new("Avatar Image Guidelines", AVATAR_URL_INFO_TEXT);
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("dashpay_profile_avatar_guidelines_info_popup"),
+                        "Avatar Image Guidelines",
+                        AVATAR_URL_INFO_TEXT,
+                    );
                     if popup.show(ui).inner {
                         self.show_avatar_info_popup = false;
                     }
@@ -989,7 +999,11 @@ impl ProfileScreen {
                     });
 
                 if let Some(ref resp) = window_response
-                    && clicked_outside_window(ui.ctx(), resp.response.rect)
+                    && clicked_outside_window_after_open(
+                        ui.ctx(),
+                        resp.response.rect,
+                        &mut self.avatar_url_popup_opening_guard,
+                    )
                 {
                     self.show_avatar_url_popup = false;
                 }

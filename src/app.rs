@@ -10,13 +10,14 @@ use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::context::feature_gate::FeatureGate;
-use crate::context::migration_status::MigrationStep;
+use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 use crate::model::settings::AppSettings;
+use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
@@ -40,14 +41,14 @@ use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
-use derive_more::From;
+use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
 
@@ -80,6 +81,23 @@ pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_i
 pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
     "migration:ack:unreadable_identities_and_votes";
 
+fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
+    matches!(
+        state,
+        MigrationState::Success
+            | MigrationState::SucceededWithUnreadableVotes { .. }
+            | MigrationState::SucceededWithUnreadableIdentities { .. }
+            | MigrationState::SucceededWithUnreadableIdentitiesAndVotes { .. }
+    )
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
 /// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
 /// with no terminal signal — so a button-less hard block would trap the user
@@ -100,6 +118,10 @@ pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
 /// no way onward. `left_panel::tests::fallback_root_screen_has_an_ungated_nav_entry`
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
+
+fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool) -> bool {
+    selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
+}
 
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
 /// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
@@ -124,6 +146,124 @@ enum SpvBlockStep {
     Stand,
     /// Not armed (ambient sync, or already disarmed): ensure no block is shown.
     Idle,
+}
+
+#[cfg(test)]
+mod backend_task_join_tests {
+    use super::*;
+    use crate::backend_task::BackendTaskContext;
+    use crate::backend_task::tokens::TokenTask;
+    use crate::utils::egui_mpsc::SenderAsync;
+
+    #[test]
+    fn backend_task_error_retains_originating_context() {
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+
+        let result = TaskResult::from_backend_task_result(
+            BackendTaskContext::from(&task),
+            Err(TaskError::NoIdentitiesFound),
+        );
+
+        let TaskResult::Error {
+            context,
+            error: TaskError::NoIdentitiesFound,
+        } = result
+        else {
+            panic!("expected an attributed backend-task error");
+        };
+        assert_eq!(context, BackendTaskContext::TokenBalanceRefresh);
+        assert_eq!(
+            BackendTaskContext::from(&BackendTask::None),
+            BackendTaskContext::Other
+        );
+    }
+
+    #[test]
+    fn backend_task_success_retains_originating_context() {
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+
+        let result = TaskResult::from_backend_task_result(
+            BackendTaskContext::from(&task),
+            Ok(BackendTaskSuccessResult::FetchedTokenBalances),
+        );
+
+        let TaskResult::Success { context, result } = result else {
+            panic!("expected an attributed backend-task success");
+        };
+        assert_eq!(context, BackendTaskContext::TokenBalanceRefresh);
+        assert!(matches!(
+            *result,
+            BackendTaskSuccessResult::FetchedTokenBalances
+        ));
+    }
+
+    #[test]
+    fn unattributed_error_has_unknown_context() {
+        let result = TaskResult::unattributed_error(TaskError::NoIdentitiesFound);
+
+        let TaskResult::Error { context, .. } = result else {
+            panic!("expected an unattributed task error");
+        };
+        assert_eq!(context, BackendTaskContext::Unknown);
+    }
+
+    #[tokio::test]
+    async fn panicking_backend_task_is_forwarded_as_typed_error() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = SenderAsync::new(tx, egui::Context::default());
+        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
+
+        forward_backend_task_join_error(join_handle, sender, None, BackendTaskContext::Unknown)
+            .await;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("join failure must be reported promptly")
+            .expect("join failure result must be sent");
+        let TaskResult::Error {
+            error: error @ TaskError::BackendTaskFailed { .. },
+            ..
+        } = result
+        else {
+            panic!("expected typed backend task failure, got {result:?}");
+        };
+        assert!(
+            !format!("{error:?}").contains("backend task panic"),
+            "panic payload must be redacted from diagnostics"
+        );
+    }
+
+    #[tokio::test]
+    async fn panicking_paid_contact_action_keeps_its_request_correlation() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = SenderAsync::new(tx, egui::Context::default());
+        let request_id = Identifier::from([0x44; 32]);
+        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
+
+        forward_backend_task_join_error(
+            join_handle,
+            sender,
+            Some(request_id),
+            BackendTaskContext::Unknown,
+        )
+        .await;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("join failure must be reported promptly")
+            .expect("join failure result must be sent");
+        assert!(matches!(
+            result,
+            TaskResult::Error {
+                error: TaskError::DashPayContactRequestActionFailed {
+                    request_id: correlated,
+                    source,
+                },
+                ..
+            } if correlated == request_id
+                && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
+        ));
+    }
 }
 
 /// Pure SPV-sync block policy (F-SPV-A scope gate + C1/C2). The block is **scoped
@@ -158,14 +298,14 @@ fn spv_block_step(armed: bool, dismissed: bool, state: OverallConnectionState) -
 /// coverage so a regression in the label table fails the test suite.
 pub fn migration_running_text(step: MigrationStep) -> &'static str {
     match step {
-        MigrationStep::Detecting => "Checking your wallet data.",
-        MigrationStep::AppData => "Restoring your scheduled votes.",
-        MigrationStep::SingleKey => "Updating imported keys.",
-        MigrationStep::Shielded => "Verifying shielded balance.",
-        MigrationStep::WalletSeeds => "Moving your wallets into the new vault.",
-        MigrationStep::WalletMeta => "Updating wallet names.",
-        MigrationStep::Identities => "Restoring your identities and their keys.",
-        MigrationStep::Finalize => "Finishing storage update.",
+        MigrationStep::Detecting => "The app is checking your wallet data.",
+        MigrationStep::AppData => "The app is restoring your scheduled votes.",
+        MigrationStep::SingleKey => "The app is updating your imported keys.",
+        MigrationStep::Shielded => "The app is verifying your shielded balance.",
+        MigrationStep::WalletSeeds => "The app is moving your wallets into secure storage.",
+        MigrationStep::WalletMeta => "The app is updating your wallet names.",
+        MigrationStep::Identities => "The app is restoring your identities and their keys.",
+        MigrationStep::Finalize => "The app is finishing the storage update.",
     }
 }
 
@@ -266,19 +406,68 @@ fn cold_start_backend_wait_timed_out(waited: Option<Duration>, timeout: Duration
     waited.is_some_and(|elapsed| elapsed >= timeout)
 }
 
-#[derive(Debug, From)]
+#[derive(Debug)]
 pub enum TaskResult {
     Repaint,
     Refresh,
-    Success(Box<BackendTaskSuccessResult>),
-    Error(TaskError),
+    Success {
+        context: BackendTaskContext,
+        result: Box<BackendTaskSuccessResult>,
+    },
+    Error {
+        context: BackendTaskContext,
+        error: TaskError,
+    },
 }
 
-impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
-    fn from(value: Result<BackendTaskSuccessResult, TaskError>) -> Self {
+impl TaskResult {
+    fn from_backend_task_result(
+        context: BackendTaskContext,
+        value: Result<BackendTaskSuccessResult, TaskError>,
+    ) -> Self {
         match value {
-            Ok(value) => TaskResult::Success(Box::new(value)),
-            Err(e) => TaskResult::Error(e),
+            Ok(value) => TaskResult::Success {
+                context,
+                result: Box::new(value),
+            },
+            Err(error) => TaskResult::Error { context, error },
+        }
+    }
+
+    pub(crate) fn unattributed_success(result: BackendTaskSuccessResult) -> Self {
+        Self::Success {
+            context: BackendTaskContext::Unknown,
+            result: Box::new(result),
+        }
+    }
+
+    pub(crate) fn unattributed_error(error: TaskError) -> Self {
+        Self::Error {
+            context: BackendTaskContext::Unknown,
+            error,
+        }
+    }
+}
+
+async fn forward_backend_task_join_error(
+    join_handle: tokio::task::JoinHandle<()>,
+    sender: egui_mpsc::SenderAsync<TaskResult>,
+    request_id: Option<Identifier>,
+    context: BackendTaskContext,
+) {
+    if let Err(source) = join_handle.await {
+        let stopped = TaskError::BackendTaskFailed {
+            source: source.into(),
+        };
+        let error = match request_id {
+            Some(request_id) => TaskError::DashPayContactRequestActionFailed {
+                request_id,
+                source: Box::new(stopped),
+            },
+            None => stopped,
+        };
+        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
+            tracing::error!(%error, "Failed to report a stopped backend task");
         }
     }
 }
@@ -360,8 +549,10 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
-    last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
-    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
+    /// Per-network start of a migration wait that deferred scheduled-vote casting.
+    scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
+    last_repaint_request: Instant, // Throttle periodic repaint scheduling to once per second
+    pub subtasks: Arc<TaskManager>, // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
@@ -397,6 +588,10 @@ pub struct AppState {
     /// The passphrase prompt currently shown, if any. Exactly one is active at
     /// a time; further requests wait in `secret_prompt_receiver` (FIFO).
     active_secret_prompt: Option<ActivePrompt>,
+    /// Whether a blocking passphrase prompt owned the previous frame. Drives the
+    /// one-shot pointer-drop on the frame a prompt first becomes active — see
+    /// [`passphrase_modal::drop_activation_frame_pointer_click`].
+    prompt_was_blocking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -600,16 +795,22 @@ impl AppState {
 
     /// Prepare the boot inputs (data dir, env file, logging, database).
     ///
-    /// The non-testing build opens and initializes the on-disk production
-    /// database; the `testing` build substitutes an in-memory database so
-    /// tests never read or write production data.
+    /// The non-testing build opens an existing pre-update database read-only.
+    /// A fresh install may create its empty compatibility database; the
+    /// `testing` build substitutes an in-memory database so tests never read or
+    /// write production data.
     #[cfg(not(feature = "testing"))]
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = crate::boot::prepare_environment()?;
         let db_file_path = data_file_path(&data_dir, "data.db")?;
-        let db = Arc::new(Database::new(&db_file_path)?);
-        db.initialize(&db_file_path)?;
+        let db = if db_file_path.exists() {
+            Arc::new(Database::open_legacy_read_only(&db_file_path)?)
+        } else {
+            let db = Arc::new(Database::new(&db_file_path)?);
+            db.initialize(&db_file_path)?;
+            db
+        };
         Ok((data_dir, db))
     }
 
@@ -1010,6 +1211,7 @@ impl AppState {
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
             last_scheduled_vote_check: Instant::now(),
+            scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: !onboarding_completed,
@@ -1027,6 +1229,7 @@ impl AppState {
             secret_prompt_host,
             secret_prompt_receiver,
             active_secret_prompt: None,
+            prompt_was_blocking: false,
         };
 
         // Initialize welcome screen if needed (uses whichever context is active)
@@ -1127,26 +1330,47 @@ impl AppState {
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&mut self, task: BackendTask) {
+        let request_id = crate::backend_task::dashpay_request_id(&task);
         let sender = self.task_result_sender.clone();
+        let watcher_sender = sender.clone();
+        let context = BackendTaskContext::from(&task);
+        let watcher_context = context.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
+        let join_handle = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 let result = app_context.run_backend_task(task, sender.clone()).await;
-                if let Err(e) = sender.send(result.into()).await {
+                if let Err(e) = sender
+                    .send(TaskResult::from_backend_task_result(context, result))
+                    .await
+                {
                     tracing::error!("Failed to send task result: {}", e);
                 }
             });
         });
+        self.subtasks.spawn_sync(
+            "backend_task_join_watcher",
+            forward_backend_task_join_error(
+                join_handle,
+                watcher_sender,
+                request_id,
+                watcher_context,
+            ),
+        );
     }
 
     /// Handle the backend tasks and send the results through the channel
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
+        let watcher_sender = sender.clone();
+        let contexts = tasks
+            .iter()
+            .map(BackendTaskContext::from)
+            .collect::<Vec<_>>();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
 
-        tokio::task::spawn_blocking(move || {
+        let join_handle = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 let results = match mode {
                     BackendTasksExecutionMode::Sequential => {
@@ -1161,13 +1385,25 @@ impl AppState {
                     }
                 };
 
-                for result in results {
-                    if let Err(e) = sender.send(result.into()).await {
+                for (context, result) in contexts.into_iter().zip(results) {
+                    if let Err(e) = sender
+                        .send(TaskResult::from_backend_task_result(context, result))
+                        .await
+                    {
                         tracing::error!("Failed to send task result: {}", e);
                     }
                 }
             });
         });
+        self.subtasks.spawn_sync(
+            "backend_tasks_join_watcher",
+            forward_backend_task_join_error(
+                join_handle,
+                watcher_sender,
+                None,
+                BackendTaskContext::Unknown,
+            ),
+        );
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
@@ -1301,14 +1537,13 @@ impl AppState {
             .ok();
     }
 
-    /// Claim all keyboard + text input for an active blocking overlay at frame
-    /// start — UNLESS a secret prompt is active above it. The prompt
-    /// renders above the overlay and needs the keyboard (Enter to submit, Esc to
-    /// cancel, Tab to navigate), so the overlay must yield to it.
-    /// Extracted from `update` so the gate is exercised by a kittest (RQ-1):
-    /// removing the `active_secret_prompt.is_none()` guard must fail that test.
-    fn claim_overlay_input(&self, ctx: &egui::Context) {
-        if self.active_secret_prompt.is_none() {
+    /// Whether a passphrase prompt owns the frame's full interaction surface.
+    fn has_blocking_secret_prompt(&self, migration_state: &MigrationState) -> bool {
+        self.active_secret_prompt.is_some() || MigrationReconciler::is_prompting(migration_state)
+    }
+
+    fn claim_overlay_input(&self, ctx: &egui::Context, migration_state: &MigrationState) {
+        if !self.has_blocking_secret_prompt(migration_state) {
             ProgressOverlay::claim_input(ctx);
         }
     }
@@ -1387,17 +1622,41 @@ impl AppState {
         }
     }
 
-    /// Drain at most one pending passphrase request and render the active
-    /// prompt modal. Exactly one prompt is shown at a time; on submit/cancel
-    /// the host's one-shot is answered (inside [`ActivePrompt`]) and the slot
-    /// frees for the next queued request next frame.
-    fn render_secret_prompt(&mut self, ctx: &egui::Context) {
+    fn route_contact_request_result_to_hidden_hub(&mut self, result: &BackendTaskSuccessResult) {
+        if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
+            return;
+        }
+        if let Some(Screen::IdentityHubScreen(hub)) = self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenIdentityHub)
+        {
+            hub.handle_contact_request_result(result);
+        }
+    }
+
+    fn route_contact_request_error_to_hidden_hub(&mut self, error: &TaskError) {
+        if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
+            return;
+        }
+        if let Some(Screen::IdentityHubScreen(hub)) = self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenIdentityHub)
+        {
+            hub.handle_contact_request_error(error);
+        }
+    }
+
+    /// Promote at most one queued passphrase request before overlay handling.
+    fn activate_secret_prompt(&mut self, ctx: &egui::Context) {
         if self.active_secret_prompt.is_none()
             && let Ok(queued) = self.secret_prompt_receiver.try_recv()
         {
             self.active_secret_prompt = Some(ActivePrompt::new(queued));
+            ctx.request_repaint();
         }
+    }
 
+    fn render_secret_prompt(&mut self, ctx: &egui::Context) {
         if let Some(prompt) = &mut self.active_secret_prompt {
             let resolved = prompt.show(ctx);
             if resolved {
@@ -1514,6 +1773,7 @@ impl App for AppState {
 
         self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
+        let migration_state = active_context.migration_status().state();
 
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
@@ -1523,8 +1783,12 @@ impl App for AppState {
 
             // Handle the result on the main thread
             match task_result {
-                TaskResult::Success(message) => {
+                TaskResult::Success {
+                    context,
+                    result: message,
+                } => {
                     let unboxed_message = *message;
+                    self.route_contact_request_result_to_hidden_hub(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::Refresh => {
@@ -1554,7 +1818,7 @@ impl App for AppState {
                             // See https://github.com/dashpay/dash-evo-tool/issues/660 .
                             MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::AssetLockBroadcast { ref txid } => {
                             let msg = format!(
@@ -1562,7 +1826,7 @@ impl App for AppState {
                             );
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::DashPayAddressesRegistered {
                             addresses,
@@ -1580,7 +1844,7 @@ impl App for AppState {
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::IdentitiesLoaded { count } => {
                             let msg = if count == 1 {
@@ -1590,7 +1854,7 @@ impl App for AppState {
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::Progress { .. } => {
                             // Progress updates only go to the screen — no global banner.
@@ -1600,7 +1864,7 @@ impl App for AppState {
                             // updates land on the wrong screen. Adding task-to-screen
                             // affinity would fix this (same limitation as Message).
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             let detection_failed = self.theme.apply_new_preference(ctx, new_theme);
@@ -1663,30 +1927,47 @@ impl App for AppState {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                     }
                 }
-                TaskResult::Error(err @ TaskError::CoreWalletAutoDetected { .. }) => {
+                TaskResult::Error {
+                    error: err @ TaskError::CoreWalletAutoDetected { .. },
+                    ..
+                } => {
                     let msg = err.to_string();
                     MessageBanner::set_global(ctx, &msg, MessageType::Success);
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
-                TaskResult::Error(err @ TaskError::NetworkContextCreationFailed { .. }) => {
+                TaskResult::Error {
+                    error: err @ TaskError::NetworkContextCreationFailed { .. },
+                    ..
+                } => {
                     self.network_switch_pending = None;
                     self.network_switch_banner.take_and_clear();
                     MessageBanner::set_global(ctx, err.to_string(), MessageType::Error)
                         .disable_auto_dismiss();
                 }
-                TaskResult::Error(TaskError::MigrationFailed { .. }) => {
-                    // The migration task already published `MigrationState::Failed`,
-                    // which the migration reconciler surfaces with the typed
-                    // details and a "Retry now" action. Suppress the generic
-                    // error banner here so the user sees one banner, not two.
+                TaskResult::Error {
+                    error:
+                        TaskError::MigrationFailed { .. }
+                        | TaskError::SavedDataTooOld { .. }
+                        | TaskError::SavedDataTooNew { .. },
+                    ..
+                } => {
+                    // The migration task already published `MigrationState::Failed`.
+                    // Its reconciler supplies the typed details and applicable
+                    // recovery path, so suppress the duplicate generic banner.
                 }
-                TaskResult::Error(err) => {
+                TaskResult::Error {
+                    context,
+                    error: err,
+                } => {
+                    self.route_contact_request_error_to_hidden_hub(&err);
+                    self.visible_screen_mut()
+                        .display_backend_task_error(&context, &err);
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = self.visible_screen_mut().display_task_error(&err);
@@ -1727,10 +2008,26 @@ impl App for AppState {
         // screen learns which votes are in progress / cast via
         // `display_task_result`, so a slow or failing query never stalls a frame.
         let now = Instant::now();
-        if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
+        let network = active_context.network;
+        if !migration_allows_scheduled_vote_sweep(migration_state.as_ref()) {
+            self.scheduled_vote_sweep_deferred_since_ms
+                .entry(network)
+                .or_insert_with(unix_time_ms);
+        } else if let Some(preserve_eligibility_since_ms) =
+            self.scheduled_vote_sweep_deferred_since_ms.remove(&network)
+        {
             self.last_scheduled_vote_check = now;
             self.handle_backend_task(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::CastDueScheduledVotes,
+                ContestedResourceTask::CastDueScheduledVotes {
+                    preserve_eligibility_since_ms: Some(preserve_eligibility_since_ms),
+                },
+            ));
+        } else if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
+            self.last_scheduled_vote_check = now;
+            self.handle_backend_task(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::CastDueScheduledVotes {
+                    preserve_eligibility_since_ms: None,
+                },
             ));
         }
 
@@ -1743,10 +2040,26 @@ impl App for AppState {
         // Connecting/Syncing copy while the block is up).
         self.spv_block.update(ctx, &active_context);
 
+        // Promote a queued prompt before the overlay input/render decision so
+        // its first visible frame never shares a pointer sink or focus trap.
+        self.activate_secret_prompt(ctx);
+
+        // On the frame a passphrase prompt first becomes active — a just-in-time
+        // unlock promoted above, or the migration password prompt — egui has
+        // already resolved this frame's click against the previous, prompt-less
+        // frame, before the modal installs its input sink. Drop that one pending
+        // click so it cannot fall through to the screen beneath; the sink covers
+        // every later frame.
+        let prompt_blocking = self.has_blocking_secret_prompt(migration_state.as_ref());
+        if prompt_blocking && !self.prompt_was_blocking {
+            passphrase_modal::drop_activation_frame_pointer_click(ctx);
+        }
+        self.prompt_was_blocking = prompt_blocking;
+
         // Total input block at frame start: while a blocking overlay is up, claim
         // all keyboard + text input BEFORE the panels run — unless a
         // secret prompt is active above the overlay (it needs the keyboard).
-        self.claim_overlay_input(ctx);
+        self.claim_overlay_input(ctx, migration_state.as_ref());
 
         // Show welcome screen if onboarding not completed
         let mut actions = Vec::new();
@@ -1758,13 +2071,14 @@ impl App for AppState {
             actions.push(self.visible_screen_mut().ui(ui));
         };
 
-        // Blocking progress overlay: above banners, below the secret prompt.
-        // It consumes Esc/Tab/Enter while active, so it must render before the
-        // secret prompt (which is focus-raised and stays interactive above it)
-        // and before the migration banner's Esc handling so the overlay wins Esc.
-        // The secret-prompt flag (mirroring the `claim_overlay_input` gate) tells
-        // the block to suppress its focus management so the prompt keeps the keyboard.
-        ProgressOverlay::render_global(ctx, self.active_secret_prompt.is_some());
+        // A blocking progress overlay remains active underneath a secret prompt,
+        // but renders no dimmer, card, or focus trap until the prompt resolves.
+        // Every passphrase prompt — cancellable or not — supplies its own
+        // outside-window input barrier in its place (`passphrase_modal`).
+        ProgressOverlay::render_global(
+            ctx,
+            self.has_blocking_secret_prompt(migration_state.as_ref()),
+        );
 
         // Render any just-in-time passphrase prompt on top of the screen.
         self.render_secret_prompt(ctx);
@@ -1790,7 +2104,8 @@ impl App for AppState {
         if let Some(task) = self.migration.dispatch_cold_start(&active_context) {
             self.handle_backend_task(task);
         }
-        self.migration.update_banner(ctx, &active_context);
+        self.migration
+            .update_banner(ctx, &active_context, migration_state.as_ref());
         self.migration.handle_esc(ctx);
         if let Some(task) = self.migration.drain_actions(ctx, self.chosen_network) {
             self.handle_backend_task(task);
@@ -1928,6 +2243,63 @@ impl App for AppState {
 #[cfg(test)]
 mod migration_banner_tests {
     use super::*;
+
+    /// A frame owns one migration snapshot even if the task publishes mid-frame.
+    #[test]
+    fn migration_frame_snapshot_is_stable_after_async_publish() {
+        let status = crate::context::migration_status::MigrationStatus::new_idle();
+        let frame_state = status.state();
+
+        status.set_state(
+            crate::context::migration_status::MigrationState::AwaitingWalletPasswords {
+                wallets: Vec::new(),
+            },
+        );
+
+        assert!(
+            !MigrationReconciler::is_prompting(&frame_state),
+            "a transition published mid-frame must wait for the next frame",
+        );
+        assert!(
+            MigrationReconciler::is_prompting(&status.state()),
+            "the next frame snapshot must observe the prompt",
+        );
+    }
+
+    /// Scheduled-vote work resumes only after every migration pass has finished.
+    #[test]
+    fn scheduled_vote_sweep_waits_for_successful_migration_completion() {
+        use crate::context::migration_status::{MigrationState, MigrationStep};
+
+        assert!(!migration_allows_scheduled_vote_sweep(
+            &MigrationState::Idle
+        ));
+        assert!(!migration_allows_scheduled_vote_sweep(
+            &MigrationState::Running {
+                step: MigrationStep::Identities,
+            },
+        ));
+        assert!(!migration_allows_scheduled_vote_sweep(
+            &MigrationState::AwaitingWalletPasswords {
+                wallets: Vec::new(),
+            },
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::Success,
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::SucceededWithUnreadableVotes { count: 1 },
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                identities: 1,
+                votes: 1,
+            },
+        ));
+    }
 
     /// TC-MIG-014 — every `MigrationStep` exposes a non-empty,
     /// sentence-shaped label so i18n extraction picks it up as one
@@ -2088,6 +2460,27 @@ mod migration_banner_tests {
             cold_start_backend_wait_timed_out(Some(timeout * 4), timeout),
             "a wait well past the timeout must fire",
         );
+    }
+}
+
+#[cfg(test)]
+mod contact_request_routing_tests {
+    use super::*;
+
+    #[test]
+    fn hidden_hub_needs_authoritative_contact_result_forwarding() {
+        assert!(!identity_hub_is_visible(
+            RootScreenType::RootScreenWalletsBalances,
+            true
+        ));
+        assert!(!identity_hub_is_visible(
+            RootScreenType::RootScreenIdentityHub,
+            false
+        ));
+        assert!(identity_hub_is_visible(
+            RootScreenType::RootScreenIdentityHub,
+            true
+        ));
     }
 }
 

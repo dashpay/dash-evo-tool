@@ -12,7 +12,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -69,6 +69,7 @@ pub struct IdentitiesScreen {
     total_refresh_count: usize,
     // Alias editing state
     editing_alias_identity: Option<Identifier>,
+    editing_alias_opening_guard: ModalOpeningGuard,
     editing_alias_value: String,
 }
 
@@ -96,6 +97,7 @@ impl IdentitiesScreen {
             pending_refresh_count: 0,
             total_refresh_count: 0,
             editing_alias_identity: None,
+            editing_alias_opening_guard: ModalOpeningGuard::default(),
             editing_alias_value: String::new(),
         };
 
@@ -241,6 +243,7 @@ impl IdentitiesScreen {
 
             if ui.add(button).clicked() {
                 self.editing_alias_identity = Some(qualified_identity.identity.id());
+                self.editing_alias_opening_guard.arm();
                 self.editing_alias_value.clear();
             }
         }
@@ -696,6 +699,7 @@ impl IdentitiesScreen {
 
                                                         if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("✏ Update Alias")).clickable_tooltip("Change the display name for this identity").clicked() {
                                                             self.editing_alias_identity = Some(qualified_identity.identity.id());
+                                                            self.editing_alias_opening_guard.arm();
                                                             self.editing_alias_value = qualified_identity.alias.clone().unwrap_or_default();
                                                             ui.close_kind(egui::UiKind::Menu);
                                                         }
@@ -1017,7 +1021,11 @@ impl IdentitiesScreen {
             });
 
         if let Some(ref resp) = window_response
-            && clicked_outside_window(ctx, resp.response.rect)
+            && clicked_outside_window_after_open(
+                ctx,
+                resp.response.rect,
+                &mut self.editing_alias_opening_guard,
+            )
         {
             self.editing_alias_identity = None;
             self.editing_alias_value.clear();

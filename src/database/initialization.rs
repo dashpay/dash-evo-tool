@@ -677,28 +677,33 @@ impl Database {
         }
     }
 
-    /// Checks version of the database.
+    /// Reads the saved data version as SQLite stores it.
     ///
-    /// Returns the current version as `Ok(Some(version))`.
-    ///
-    /// Note it returns Ok(Some(version)) even is the current database is above the default version.
-    /// This is to allow the app to detect when database version is too high and to prevent
-    /// the app from running with an unsupported database version.
-    fn db_schema_version(&self) -> rusqlite::Result<u16> {
+    /// `None` means the settings table is absent. An existing table without its
+    /// singleton row is version `0`, which predates every supported migration.
+    pub(crate) fn stored_data_version(&self) -> rusqlite::Result<Option<i64>> {
         let conn = self.locked_conn();
-        let result: rusqlite::Result<u16> = conn.query_row(
+        if !self.table_exists(&conn, "settings")? {
+            return Ok(None);
+        }
+
+        match conn.query_row(
             "SELECT database_version FROM settings WHERE id = 1",
             [],
             |row| row.get(0),
-        );
-
-        match result {
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                tracing::debug!("No database version found, returning default version 0");
-                Ok(0)
-            }
-            x => x,
+        ) {
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Some(0)),
+            result => result.map(Some),
         }
+    }
+
+    /// Checks the version used by the writable legacy migration ladder.
+    ///
+    /// Versions above the current default are returned unchanged so callers can
+    /// detect data written by a newer build.
+    fn db_schema_version(&self) -> rusqlite::Result<u16> {
+        let version = self.stored_data_version()?.unwrap_or(0);
+        u16::try_from(version).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, version))
     }
 
     /// Backs up the existing database with a unique timestamped filename in backups directory.

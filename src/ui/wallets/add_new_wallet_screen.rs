@@ -6,7 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -67,6 +67,7 @@ pub struct AddNewWalletScreen {
     receive_address_string: Option<String>,
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
+    receive_popup_opening_guard: ModalOpeningGuard,
     funds_received: bool,
 }
 
@@ -90,6 +91,7 @@ impl AddNewWalletScreen {
             receive_address_string: None,
             receive_qr_texture: None,
             show_receive_popup: false,
+            receive_popup_opening_guard: ModalOpeningGuard::default(),
             funds_received: false,
         }
     }
@@ -258,6 +260,7 @@ impl AddNewWalletScreen {
             if !self.funds_received {
                 if ui.button("Fund Wallet").clicked() {
                     self.show_receive_popup = true;
+                    self.receive_popup_opening_guard.arm();
                 }
                 ui.add_space(8.0);
             }
@@ -357,7 +360,11 @@ impl AddNewWalletScreen {
             });
 
         if let Some(ref resp) = window_response
-            && clicked_outside_window(ctx, resp.response.rect)
+            && clicked_outside_window_after_open(
+                ctx,
+                resp.response.rect,
+                &mut self.receive_popup_opening_guard,
+            )
         {
             open = false;
         }

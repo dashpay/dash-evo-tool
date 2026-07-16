@@ -1,5 +1,6 @@
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_network_request_with_timeout};
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
@@ -491,7 +492,13 @@ impl AppContext {
                     .await
             }
             TokenTask::FetchTokenByContractId(contract_id) => {
-                match DataContract::fetch_by_identifier(sdk, contract_id).await {
+                match await_network_request_with_timeout(
+                    NETWORK_REQUEST_TIMEOUT,
+                    DataContract::fetch_by_identifier(sdk, contract_id),
+                    |source| TaskError::TokenLookupTimeout { source },
+                )
+                .await?
+                {
                     Ok(Some(data_contract)) => {
                         Ok(BackendTaskSuccessResult::FetchedContract(data_contract))
                     }
@@ -503,7 +510,13 @@ impl AppContext {
                 use dash_sdk::dpp::tokens::contract_info::TokenContractInfo;
                 use dash_sdk::dpp::tokens::contract_info::v0::TokenContractInfoV0Accessors;
 
-                match TokenContractInfo::fetch(sdk, token_id).await {
+                match await_network_request_with_timeout(
+                    NETWORK_REQUEST_TIMEOUT,
+                    TokenContractInfo::fetch(sdk, token_id),
+                    |source| TaskError::TokenLookupTimeout { source },
+                )
+                .await?
+                {
                     Ok(Some(token_contract_info)) => {
                         // Extract the contract ID and token position from token_contract_info
                         let (contract_id, token_position) = match &token_contract_info {
@@ -513,7 +526,13 @@ impl AppContext {
                         };
 
                         // Fetch the full contract
-                        match DataContract::fetch_by_identifier(sdk, contract_id).await {
+                        match await_network_request_with_timeout(
+                            NETWORK_REQUEST_TIMEOUT,
+                            DataContract::fetch_by_identifier(sdk, contract_id),
+                            |source| TaskError::TokenLookupTimeout { source },
+                        )
+                        .await?
+                        {
                             Ok(Some(data_contract)) => {
                                 // Return the contract with the specific token position
                                 Ok(BackendTaskSuccessResult::FetchedContractWithTokenPosition(
@@ -752,5 +771,65 @@ impl AppContext {
 
         // 8) Wrap the whole struct in DataContract::V1
         Ok(DataContract::V1(contract_v1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn token_lookup_timeout_is_typed_and_actionable() {
+        let error = crate::backend_task::await_network_request_with_timeout(
+            std::time::Duration::from_millis(1),
+            std::future::pending::<()>(),
+            |source| TaskError::TokenLookupTimeout { source },
+        )
+        .await
+        .expect_err("a pending token lookup must time out");
+
+        assert!(matches!(error, TaskError::TokenLookupTimeout { .. }));
+        assert!(error.to_string().contains("Check your connection"));
+
+        let error = crate::backend_task::await_network_request_with_timeout(
+            std::time::Duration::from_millis(1),
+            std::future::pending::<()>(),
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await
+        .expect_err("a pending token balance refresh must time out");
+
+        assert!(matches!(
+            error,
+            TaskError::TokenBalanceRefreshTimeout { .. }
+        ));
+        assert!(error.to_string().contains("refresh the Tokens screen"));
+    }
+
+    #[tokio::test]
+    async fn timed_out_managed_request_is_reaped_after_completion() {
+        let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+        let task_manager = std::sync::Arc::new(crate::utils::tasks::TaskManager::new());
+        let error = crate::backend_task::await_managed_network_request_with_timeout(
+            task_manager,
+            "test_request_reaper",
+            std::time::Duration::from_millis(1),
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                let _ = completed_tx.send(());
+            },
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await
+        .expect_err("the UI wait must time out before the request completes");
+
+        assert!(matches!(
+            error,
+            TaskError::TokenBalanceRefreshTimeout { .. }
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), completed_rx)
+            .await
+            .expect("the managed request must keep running")
+            .expect("the managed request must report completion");
     }
 }

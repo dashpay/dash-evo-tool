@@ -38,6 +38,7 @@ Config precedence (highest to lowest):
 ### Standalone (default)
 
 When no `MCP_API_KEY` is set, `det-cli` runs its own backend in-process. No running GUI app or server required.
+Saved wallets are hydrated from the shared data directory on demand, so one-shot commands can see wallets imported by earlier `det-cli` or GUI runs.
 
 ### Connected to Dash Evo Tool GUI
 
@@ -218,4 +219,3 @@ det-cli shielded-balance-get wallet-id=shielded-test
 The `mnemonic` for the framework wallet is read from `E2E_WALLET_MNEMONIC`
 (shell env or the project-root `.env`) in the backend-e2e harness; for the
 standalone `det-cli` loop above, pass it directly to `core-wallet-import`.
-

@@ -31,12 +31,12 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::MessageType;
-use crate::ui::ScreenType;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::{RootScreenType, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{Id, Margin, RichText, TextEdit, Ui};
@@ -59,6 +59,8 @@ const TIP_REMOVE_ALIAS: &str = "Remove this alias. You will keep your other user
 const TIP_ADD_ALIAS: &str = "Register another DPNS name that points to this identity.";
 const TIP_ADD_KEY: &str =
     "Register a new key for this identity. You will choose its purpose and type.";
+const TIP_MANAGE_KEYS: &str = "View this identity's keys and their security settings.";
+const TIP_VIEW_USERNAMES: &str = "Open the complete list of your registered usernames.";
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
 const TIP_UNLOAD: &str = "Remove this identity from this device. It remains on Dash Platform — you can load it \
      again later.";
@@ -459,6 +461,14 @@ impl SettingsTab {
                 });
         }
 
+        ui.add_space(6.0);
+        if ComponentStyles::add_secondary_button(ui, "View all usernames", dark_mode)
+            .clickable_tooltip(TIP_VIEW_USERNAMES)
+            .clicked()
+        {
+            action = usernames_screen_action();
+        }
+
         ui.add_space(12.0);
 
         action |= self.render_local_alias(ui, app_context, identity);
@@ -655,6 +665,12 @@ impl SettingsTab {
             .color(DashColors::text_primary(dark_mode)),
         );
         ui.add_space(4.0);
+        let manage_keys = ComponentStyles::add_secondary_button(ui, "Manage keys", dark_mode)
+            .clickable_tooltip(TIP_MANAGE_KEYS);
+        if manage_keys.clicked() {
+            action = AppAction::AddScreen(keys_screen_type(identity).create_screen(app_context));
+        }
+        ui.add_space(4.0);
         // `Add a new key` routes to the existing AddKeyScreen — no new
         // backend work required, and the screen handles its own dispatch.
         let add_key =
@@ -728,8 +744,6 @@ impl SettingsTab {
     // -----------------------------------------------------------------
 
     fn show_gated_dialogs(&mut self, ui: &mut Ui) -> AppAction {
-        let action = AppAction::None;
-
         if let Some(dialog) = self.confirm_delete_profile.as_mut() {
             match dialog.show(ui).inner.dialog_response {
                 Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
@@ -748,7 +762,7 @@ impl SettingsTab {
             }
         }
 
-        action
+        AppAction::None
     }
 
     // -----------------------------------------------------------------
@@ -768,11 +782,7 @@ impl SettingsTab {
         // does not flip-flop across frames (D4).
         let incoming = app_context.resolve_selected_identity();
 
-        let changed = match (&self.selected_identity, &incoming) {
-            (Some(a), Some(b)) => a.identity.id() != b.identity.id(),
-            (None, Some(_)) | (Some(_), None) => true,
-            (None, None) => false,
-        };
+        let changed = self.reconcile_selected_identity(&incoming);
 
         if changed {
             // The local alias lives on the identity record itself, so it is
@@ -800,6 +810,20 @@ impl SettingsTab {
         if self.selected_identity.is_some() && !self.profile_loaded {
             self.load_cached_profile(profiles);
         }
+    }
+
+    fn reconcile_selected_identity(&mut self, incoming: &Option<QualifiedIdentity>) -> bool {
+        let changed = match (&self.selected_identity, incoming) {
+            (Some(a), Some(b)) => a.identity.id() != b.identity.id(),
+            (None, Some(_)) | (Some(_), None) => true,
+            (None, None) => false,
+        };
+
+        if !changed {
+            self.selected_identity = incoming.clone();
+        }
+
+        changed
     }
 
     /// Populate the editor from the hub's async profile cache. The local DB
@@ -898,6 +922,14 @@ impl SettingsTab {
     }
 }
 
+fn keys_screen_type(identity: &QualifiedIdentity) -> ScreenType {
+    ScreenType::Keys(identity.identity.clone())
+}
+
+fn usernames_screen_action() -> AppAction {
+    AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSOwnedNames)
+}
+
 // ---------------------------------------------------------------------------
 // Small layout helpers
 // ---------------------------------------------------------------------------
@@ -973,11 +1005,84 @@ fn identity_type_badge(kind: IdentityType) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
+    fn qualified_identity() -> QualifiedIdentity {
+        let identity = Identity::create_basic_identity(
+            Identifier::from_bytes(&[7; 32]).expect("32-byte identifier"),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
 
     #[test]
     fn default_has_no_identity_selected() {
         let tab = SettingsTab::new();
         assert!(tab.selected_identity.is_none());
+    }
+
+    #[test]
+    fn advanced_keys_action_opens_the_keys_screen() {
+        let identity = qualified_identity();
+
+        assert!(matches!(
+            keys_screen_type(&identity),
+            ScreenType::Keys(screen_identity)
+                if screen_identity.id() == identity.identity.id()
+        ));
+    }
+
+    #[test]
+    fn usernames_action_opens_the_owned_names_screen() {
+        assert!(matches!(
+            usernames_screen_action(),
+            AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSOwnedNames)
+        ));
+    }
+
+    #[test]
+    fn same_selected_identity_is_replaced_with_refreshed_key_state() {
+        let stale = qualified_identity();
+        let mut refreshed = stale.clone();
+        let key = IdentityPublicKey::random_key(7, Some(7), PlatformVersion::latest());
+        refreshed.identity.public_keys_mut().insert(7, key);
+        let mut tab = SettingsTab::new();
+        tab.selected_identity = Some(stale);
+
+        let changed_identity = tab.reconcile_selected_identity(&Some(refreshed));
+
+        assert!(!changed_identity, "the selected identity ID did not change");
+        assert_eq!(
+            tab.selected_identity
+                .as_ref()
+                .expect("identity remains selected")
+                .identity
+                .public_keys()
+                .len(),
+            1,
+            "a refresh must replace the selected identity's complete key set",
+        );
     }
 
     #[test]

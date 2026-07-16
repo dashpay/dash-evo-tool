@@ -473,6 +473,19 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
     ) {
+        let ctx = Arc::clone(self);
+        let wallet = Arc::clone(wallet);
+        self.subtasks
+            .spawn_sync("unlocked_wallet_identity_discovery", async move {
+                ctx.discover_unlocked_wallet_identities(&wallet).await;
+            });
+    }
+
+    /// Discover identities after unlock while the wallet seed remains available.
+    pub(super) async fn discover_unlocked_wallet_identities(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+    ) {
         if !self.connection_status.masternodes_ready() {
             tracing::debug!(
                 "Platform not ready yet; deferring unlocked-wallet identity discovery to the all-wallets sweep"
@@ -480,20 +493,15 @@ impl AppContext {
             return;
         }
 
-        let ctx = Arc::clone(self);
-        let wallet = Arc::clone(wallet);
-        self.subtasks
-            .spawn_sync("unlocked_wallet_identity_discovery", async move {
-                if let Err(error) = ctx
-                    .discover_identities_gap_limited(&wallet, 0, true, None)
-                    .await
-                {
-                    tracing::warn!(
-                        %error,
-                        "Identity discovery failed for the just-unlocked wallet"
-                    );
-                }
-            });
+        if let Err(error) = self
+            .discover_identities_gap_limited(wallet, 0, true, None)
+            .await
+        {
+            tracing::warn!(
+                %error,
+                "Identity discovery failed for the just-unlocked wallet"
+            );
+        }
     }
 
     /// Queue automatic discovery of identities derived from a wallet.

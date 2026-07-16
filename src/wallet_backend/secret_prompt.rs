@@ -204,9 +204,7 @@ pub trait SecretPrompt: Send + Sync {
     /// `false` for [`NullSecretPrompt`] (headless MCP / CLI). The chokepoint
     /// uses this to distinguish a genuine user cancel from "no prompt exists
     /// here", surfacing the right typed error for each.
-    fn is_interactive(&self) -> bool {
-        true
-    }
+    fn is_interactive(&self) -> bool;
 }
 
 /// The [`SecretPrompt`] for non-interactive hosts (MCP server, CLI).
@@ -333,6 +331,10 @@ pub(crate) mod test_support {
                 )),
                 ScriptedAnswer::Cancel => Err(SecretPromptCancelled),
             }
+        }
+
+        fn is_interactive(&self) -> bool {
+            true
         }
     }
 }

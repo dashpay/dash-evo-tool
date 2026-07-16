@@ -14,6 +14,8 @@ pub mod mcp;
 pub mod model;
 pub mod platform;
 pub mod sdk_wrapper;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod ui;
 pub mod utils;
 pub mod wallet_backend;

@@ -7,14 +7,15 @@ use crate::ui::contracts_documents::contracts_documents_screen::DOCUMENT_PRIVATE
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dash_sdk::dpp::data_contract::document_type::Index;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::data_contract::{
     accessors::v0::DataContractV0Getters, document_type::DocumentType,
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
+use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use egui::{Color32, Frame, Margin, Panel, RichText, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -198,8 +199,12 @@ pub fn add_contract_chooser_panel(
                                         ui.close();
                                     }
                                     if ui.button("Copy (JSON)").clicked() {
-                                        if let Ok(json_value) =
-                                            contract.contract.to_json(app_context.platform_version())
+                                        if let Ok(fmt) =
+                                            DataContractInSerializationFormat::try_from_platform_versioned(
+                                                &contract.contract,
+                                                app_context.platform_version(),
+                                            )
+                                            && let Ok(json_value) = serde_json::to_value(&fmt)
                                             && let Ok(json_string) =
                                                 serde_json::to_string_pretty(&json_value)
                                         {
@@ -447,7 +452,14 @@ pub fn add_contract_chooser_panel(
 
                                             if json_expanded {
                                                 ui.vertical(|ui| {
-                                                    match contract.contract.to_json(app_context.platform_version()) {
+                                                    match DataContractInSerializationFormat::try_from_platform_versioned(
+                                                        &contract.contract,
+                                                        app_context.platform_version(),
+                                                    )
+                                                    .map_err(|e| e.to_string())
+                                                    .and_then(|fmt| {
+                                                        serde_json::to_value(&fmt).map_err(|e| e.to_string())
+                                                    }) {
                                                         Ok(json_value) => {
                                                             let pretty_str = serde_json::to_string_pretty(&json_value)
                                                                 .unwrap_or_else(|_| "Error formatting JSON".to_string());

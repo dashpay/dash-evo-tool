@@ -17,7 +17,70 @@ use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+use std::fmt;
 use thiserror::Error;
+
+/// Why an existing DashPay `contactInfo` payload could not be preserved.
+#[derive(Debug, Error)]
+pub enum ContactInfoReadError {
+    /// The private payload was present with a shape this client does not understand.
+    #[error("contactInfo privateData has an unexpected type")]
+    UnexpectedPrivateDataType,
+    /// The private payload was present but could not be decrypted with its derived key.
+    #[error("contactInfo privateData decryption failed")]
+    DecryptFailed,
+    /// Decryption succeeded, but the plaintext is not a format this client understands.
+    #[error("contactInfo privateData deserialization failed")]
+    DeserializeFailed,
+}
+
+/// Typed failures while restoring persisted Core transaction history.
+#[derive(Debug, Error)]
+pub enum WalletTransactionHistoryError {
+    /// The upstream persistence implementation could not read or decode data.
+    #[error("upstream transaction persistence failed")]
+    Persistence {
+        #[source]
+        source: platform_wallet::changeset::PersistenceError,
+    },
+    /// A record was removed between key enumeration and the record lookup.
+    #[error("transaction record {txid} disappeared during hydration")]
+    RecordMissing { txid: dash_sdk::dpp::dashcore::Txid },
+}
+
+/// Redacted diagnostic for a backend task that panicked or was cancelled.
+pub struct BackendTaskJoinError {
+    source: tokio::task::JoinError,
+}
+
+impl From<tokio::task::JoinError> for BackendTaskJoinError {
+    fn from(source: tokio::task::JoinError) -> Self {
+        Self { source }
+    }
+}
+
+impl fmt::Debug for BackendTaskJoinError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BackendTaskJoinError")
+            .field("task_id", &self.source.id())
+            .field("cancelled", &self.source.is_cancelled())
+            .field("panicked", &self.source.is_panic())
+            .finish()
+    }
+}
+
+impl fmt::Display for BackendTaskJoinError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.source.is_cancelled() {
+            formatter.write_str("backend task was cancelled")
+        } else {
+            formatter.write_str("backend task panicked")
+        }
+    }
+}
+
+impl std::error::Error for BackendTaskJoinError {}
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
@@ -31,6 +94,25 @@ pub enum TaskError {
     /// identity task degrades through it until the backend is ready.
     #[error("Your wallet is still starting up. Please wait a moment and try again.")]
     WalletBackendNotYetWired,
+
+    /// Clearing saved wallet data requires the fully-wired backend because it
+    /// owns the complete set of secret-bearing stores and live secret caches.
+    #[error(
+        "Your saved wallet data cannot be cleared because your wallet is not ready. Please wait a moment, or restart the application, then try again."
+    )]
+    WalletDataClearUnavailable,
+
+    /// Clearing saved wallet data ran to completion, but at least one
+    /// secret-bearing delete failed, so some data may still be on disk.
+    #[error(
+        "Some of your saved wallet data could not be deleted. Restart the application, then try clearing your data again."
+    )]
+    WalletDataClearIncomplete {
+        /// Number of individual deletes that failed during the clear.
+        failed: usize,
+        #[source]
+        first_error: Box<TaskError>,
+    },
 
     /// A wallet operation was requested before its wallet had finished loading
     /// into the wallet backend. Distinct from
@@ -205,6 +287,16 @@ pub enum TaskError {
     WalletStorage {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// Persisted Core transaction rows could not be read through the upstream
+    /// wallet persistence API during wallet registration.
+    #[error(
+        "Could not load this wallet's transaction history. Restart the application and try again."
+    )]
+    WalletTransactionHistoryLoad {
+        #[source]
+        source: WalletTransactionHistoryError,
     },
 
     /// The on-disk wallet database was written by a newer build of the app
@@ -601,6 +693,43 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// An existing contact's encrypted details could not be read safely.
+    #[error(
+        "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."
+    )]
+    DashPayContactInfoRead {
+        #[source]
+        source: ContactInfoReadError,
+    },
+
+    /// A direct contact-details update failed. The identity/contact envelope
+    /// lets screens correlate a delayed failure with the exact pending write.
+    #[error("{source}")]
+    DashPayContactInfoActionFailed {
+        identity_id: Identifier,
+        contact_id: Identifier,
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A request-card action failed after the UI disabled that request's paid
+    /// action buttons. The request ID lets the screen release only its guard.
+    ///
+    /// A naming envelope only: it adds the request ID the screen needs and
+    /// forwards the underlying failure's own message, which already tells the
+    /// user what went wrong and what to do about it.
+    #[error("{source}")]
+    DashPayContactRequestActionFailed {
+        request_id: Identifier,
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A second UI surface dispatched the same paid request action while its
+    /// first backend execution still owns the app-scoped claim.
+    #[error("This contact request action is already running. Wait for it to finish.")]
+    DashPayContactRequestActionInProgress,
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."
@@ -619,6 +748,14 @@ pub enum TaskError {
         "This wallet could not be safely linked to your saved wallet, so it was not activated. Remove and re-import it from its recovery phrase."
     )]
     WalletRegistrationXpubMismatch,
+
+    /// A caller joined an in-flight upstream wallet registration that failed.
+    /// The shared source is the exact typed result produced by the one leader,
+    /// so every caller in that flight observes the same failure.
+    #[error(transparent)]
+    WalletRegistrationFlightFailed {
+        source: std::sync::Arc<TaskError>,
+    },
 
     /// A stored wallet seed could not be decrypted (wrong password or
     /// corrupted seed store).
@@ -662,6 +799,13 @@ pub enum TaskError {
     /// Tokio task join errors.
     #[error("An internal operation failed unexpectedly. Please restart the application.")]
     JoinError(#[from] tokio::task::JoinError),
+
+    /// A backend task panicked or was cancelled before returning a result.
+    #[error("The requested action stopped before it finished. Please try again. If it keeps stopping, restart the app.")]
+    BackendTaskFailed {
+        #[source]
+        source: BackendTaskJoinError,
+    },
 
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]
@@ -895,6 +1039,48 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// Loading an identity exceeded the app's network-request deadline.
+    #[error(
+        "The identity could not be loaded because the network took too long to respond. Check your connection and try again."
+    )]
+    IdentityLoadTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// Fetching documents exceeded the app's network-request deadline.
+    #[error(
+        "The documents could not be loaded because the network took too long to respond. Check your connection and try again."
+    )]
+    DocumentFetchTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// Looking up a token exceeded the app's network-request deadline.
+    #[error(
+        "The token or contract could not be found because the network took too long to respond. Check your connection and try again."
+    )]
+    TokenLookupTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// Refreshing token balances exceeded the app's network-request deadline.
+    #[error(
+        "Token balances could not be refreshed because the network took too long to respond. Check your connection and refresh the Tokens screen."
+    )]
+    TokenBalanceRefreshTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// A token-balance refresh was requested while the previous pass was still running.
+    #[error(
+        "Token balances are still refreshing. Try again in a moment. If this continues, restart the app and try again."
+    )]
+    TokenBalanceRefreshInProgress,
+
     /// Connected server is behind (SdkError::StaleNode).
     #[error("The server you connected to is behind. Please retry.")]
     DapiStaleNode {
@@ -905,6 +1091,15 @@ pub enum TaskError {
     /// Platform rejected the request (StateTransitionBroadcastError, unclassified cause).
     #[error("The platform rejected this request. Please check your input and try again.")]
     PlatformRejected {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Platform accepted the request, but its result could not be confirmed.
+    #[error(
+        "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
+    )]
+    PlatformResultUnconfirmed {
         #[source]
         source_error: Box<SdkError>,
     },
@@ -1602,6 +1797,13 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Shielded pool errors
     // ──────────────────────────────────────────────────────────────────────────
+    /// A fund-moving shielded operation was requested while the shielded
+    /// operations feature gate was closed.
+    #[error(
+        "Shielding, sending, or withdrawing shielded funds is not available right now. Use a regular payment instead, or try again after a future update."
+    )]
+    ShieldedOperationsUnavailable,
+
     /// No unspent shielded notes are available.
     #[error("You have no shielded funds available. Please shield some credits first.")]
     ShieldedNoUnspentNotes,
@@ -1826,8 +2028,27 @@ pub enum TaskError {
     /// from the legacy `data.db` and a task tried to touch it before
     /// the migration finished. The user can retry once the migration
     /// banner clears.
-    #[error("Your data is still being updated. Please wait a moment and try again.")]
+    #[error("The storage update is still running. Please wait a moment and try again.")]
     WalletStorageNotReady,
+
+    /// The legacy database is older than the direct storage update supports.
+    /// Version diagnostics stay in the typed source and out of the banner text.
+    #[error(
+        "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version."
+    )]
+    SavedDataTooOld {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
+    /// The legacy database was written by a newer build than this one.
+    #[error(
+        "Your saved data was created by a newer version of Dash Evo Tool. Update to the latest version to open it."
+    )]
+    SavedDataTooNew {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
 
     /// The post-unwire data migration failed. The user is asked to
     /// restart so the migration can re-attempt cleanly — legacy
@@ -1836,8 +2057,18 @@ pub enum TaskError {
     /// Wrapped as `Arc<MigrationError>` so the typed error chain can be
     /// shared with the `MigrationState::Failed` UI banner state without
     /// re-cloning the (non-`Clone`) `MigrationError` source.
-    #[error("Your data could not finish updating. Please restart the application to try again.")]
+    #[error("The storage update could not finish. Please restart the application to try again.")]
     MigrationFailed {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
+    /// A standalone process found password-protected data whose storage update
+    /// requires the desktop application's interactive password prompt.
+    #[error(
+        "Open the Dash Evo Tool desktop app once to finish the storage update, then try again."
+    )]
+    StorageUpdateNeedsDesktop {
         #[source]
         source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
@@ -2307,8 +2538,8 @@ impl From<SdkError> for TaskError {
         // after the borrow-checked match on the consensus cause ends.
         type SdkErrorMapper = Box<dyn FnOnce(Box<SdkError>) -> TaskError>;
 
-        let mapper: Option<SdkErrorMapper> = consensus_cause(&error)
-            .and_then(|ce| -> Option<SdkErrorMapper> {
+        let mapper: Option<SdkErrorMapper> =
+            consensus_cause(&error).and_then(|ce| -> Option<SdkErrorMapper> {
                 match ce {
                     ConsensusError::StateError(
                         StateError::DuplicatedIdentityPublicKeyStateError(_),
@@ -2450,17 +2681,6 @@ impl From<SdkError> for TaskError {
                     }
                     _ => None,
                 }
-            })
-            .or_else(|| -> Option<SdkErrorMapper> {
-                if let SdkError::StateTransitionBroadcastError(broadcast_err) = &error
-                    && broadcast_err.cause.is_none()
-                    && broadcast_err.message.to_lowercase().contains("duplicate")
-                {
-                    return Some(Box::new(|source_error| {
-                        TaskError::DuplicateIdentityPublicKey { source_error }
-                    }));
-                }
-                None
             });
 
         if let Some(mapper) = mapper {
@@ -2529,6 +2749,13 @@ impl From<SdkError> for TaskError {
                 source_error: boxed,
             },
             // SDK-level errors
+            SdkError::StateTransitionBroadcastError(broadcast_error)
+                if broadcast_error.cause.is_none() =>
+            {
+                TaskError::PlatformResultUnconfirmed {
+                    source_error: boxed,
+                }
+            }
             SdkError::StateTransitionBroadcastError(_) => TaskError::PlatformRejected {
                 source_error: boxed,
             },
@@ -2584,6 +2811,58 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn a_request_action_failure_shows_the_underlying_reason_to_the_user() {
+        let cause = TaskError::DocumentNotFound;
+        let wrapped = TaskError::DashPayContactRequestActionFailed {
+            request_id: Identifier::from([7; 32]),
+            source: Box::new(TaskError::DocumentNotFound),
+        };
+
+        assert_eq!(
+            wrapped.to_string(),
+            cause.to_string(),
+            "the request ID is for the screen; the user must still read why the action failed"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_clear_reports_a_partial_wipe_and_preserves_the_first_failure() {
+        let error = TaskError::WalletDataClearIncomplete {
+            failed: 3,
+            first_error: Box::new(TaskError::WalletBackendNotYetWired),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Some of your saved wallet data could not be deleted. Restart the application, then try clearing your data again.",
+            "the user must be told the wipe was incomplete and what to do, with no raw count or jargon"
+        );
+
+        let source = std::error::Error::source(&error).expect("a preserved first-failure source");
+        assert_eq!(
+            source.to_string(),
+            TaskError::WalletBackendNotYetWired.to_string(),
+            "the first underlying failure must remain reachable for diagnostics"
+        );
+    }
+
+    #[test]
+    fn a_contact_info_action_failure_shows_the_underlying_reason_to_the_user() {
+        let cause = TaskError::DashPayContactInfoRead {
+            source: ContactInfoReadError::DeserializeFailed,
+        };
+        let wrapped = TaskError::DashPayContactInfoActionFailed {
+            identity_id: Identifier::from([6; 32]),
+            contact_id: Identifier::from([7; 32]),
+            source: Box::new(TaskError::DashPayContactInfoRead {
+                source: ContactInfoReadError::DeserializeFailed,
+            }),
+        };
+
+        assert_eq!(wrapped.to_string(), cause.to_string());
+    }
 
     #[test]
     fn wrong_passphrase_classifier_matches_only_secret_store_wrong_passphrase() {
@@ -2837,7 +3116,7 @@ mod tests {
     }
 
     #[test]
-    fn from_sdk_error_broadcast_cause_none_message_duplicate_falls_back_to_duplicate_key() {
+    fn from_sdk_error_broadcast_cause_none_message_duplicate_remains_unconfirmed() {
         let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
             code: 40206,
             message: "DuplicateIdentityPublicKeyStateError".to_string(),
@@ -2846,9 +3125,30 @@ mod tests {
         let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
         let err = TaskError::from(sdk_err);
         assert!(
-            matches!(err, TaskError::DuplicateIdentityPublicKey { .. }),
-            "Expected DuplicateIdentityPublicKey, got: {err:?}"
+            matches!(err, TaskError::PlatformResultUnconfirmed { .. }),
+            "A message without a structured consensus cause must remain unconfirmed: {err:?}"
         );
+        assert!(err.to_string().contains("could not be confirmed"));
+    }
+
+    #[test]
+    fn from_sdk_error_broadcast_cause_none_unavailable_is_not_a_rejection() {
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: Code::Unavailable as u32,
+            message: "Tenderdash is not available".to_string(),
+            cause: None,
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+
+        assert!(
+            matches!(err, TaskError::PlatformResultUnconfirmed { .. }),
+            "A failed result wait after broadcast must not be presented as rejection: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("submitted"));
+        assert!(message.contains("could not be confirmed"));
+        assert!(message.contains("before trying again"));
     }
 
     #[test]
@@ -4062,7 +4362,7 @@ mod tests {
             source: std::sync::Arc::new(inner),
         };
         let msg = err.to_string();
-        assert!(msg.contains("could not finish updating"));
+        assert!(msg.contains("storage update could not finish"));
         assert!(msg.contains("restart"));
         assert!(
             std::error::Error::source(&err).is_some(),

@@ -19,7 +19,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
 /// TC-MIG-001 — when the migration enters its first step the banner
-/// surfaces an Info-typed banner with the "Checking your wallet data."
+/// surfaces an Info-typed banner with the "The app is checking your wallet data."
 /// label per Diziet §2.2 D-1.
 #[test]
 fn tc_mig_001_running_banner_shows_step_label() {

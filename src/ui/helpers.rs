@@ -4,6 +4,27 @@ use std::sync::Arc;
 // Re-export from the model layer so existing callers don't break.
 pub use crate::model::address::is_platform_address_string;
 
+#[derive(Clone, Default)]
+pub(crate) struct ModalOpeningGuard {
+    skip_outside_click_once: bool,
+}
+
+impl ModalOpeningGuard {
+    pub(crate) fn armed() -> Self {
+        Self {
+            skip_outside_click_once: true,
+        }
+    }
+
+    pub(crate) fn arm(&mut self) {
+        self.skip_outside_click_once = true;
+    }
+
+    fn consume(&mut self) -> bool {
+        std::mem::take(&mut self.skip_outside_click_once)
+    }
+}
+
 /// Returns true if the user left-clicked outside the given window rect this frame.
 /// Use after painting a modal overlay and showing the dialog window.
 pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> bool {
@@ -13,6 +34,40 @@ pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> b
                 .interact_pos()
                 .is_some_and(|pos| !window_rect.contains(pos))
     })
+}
+
+/// Ignores the opening frame once, then delegates to [`clicked_outside_window`].
+pub(crate) fn clicked_outside_window_after_open(
+    ctx: &egui::Context,
+    window_rect: egui::Rect,
+    opening_guard: &mut ModalOpeningGuard,
+) -> bool {
+    !opening_guard.consume() && clicked_outside_window(ctx, window_rect)
+}
+
+/// Opening-frame–safe outside-click check for modals that are **value-constructed
+/// every frame** (e.g. `InfoPopup`, `SelectionDialog`), where a persistent
+/// [`ModalOpeningGuard`] field cannot survive across frames.
+///
+/// Uses egui temp memory keyed by `id` to record the pass on which the modal
+/// last rendered. The modal is on its opening frame when it did **not** render
+/// on the immediately-preceding pass — the frame its own opening click is still
+/// live — so the outside-click check is skipped that frame only. Because the
+/// arming is derived from a gap in rendering, it re-arms automatically however
+/// the modal was previously dismissed and needs no explicit teardown.
+///
+/// `id` must be stable across frames and unique to the modal instance so one
+/// modal's render history cannot disarm another modal's opening-frame guard.
+pub(crate) fn clicked_outside_window_after_open_by_id(
+    ctx: &egui::Context,
+    window_rect: egui::Rect,
+    id: egui::Id,
+) -> bool {
+    let this_pass = ctx.cumulative_pass_nr();
+    let last_pass: Option<u64> = ctx.data(|d| d.get_temp(id));
+    ctx.data_mut(|d| d.insert_temp(id, this_pass));
+    let is_opening_frame = last_pass != Some(this_pass.wrapping_sub(1));
+    !is_opening_frame && clicked_outside_window(ctx, window_rect)
 }
 
 use crate::{
@@ -1042,4 +1097,80 @@ pub fn show_group_token_success_screen_with_fee(
         ui.add_space(if fee_info.is_some() { 60.0 } else { 100.0 });
     });
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outside_press() -> egui::RawInput {
+        let outside_pos = egui::pos2(0.0, 0.0);
+        egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(outside_pos),
+                egui::Event::PointerButton {
+                    pos: outside_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// A value-constructed modal must survive its own opening click: the first
+    /// pass it renders (its opening frame) skips the outside-click check, and a
+    /// later pass then honours a genuine outside click.
+    #[test]
+    fn by_id_skips_opening_frame_then_closes_on_a_later_outside_click() {
+        let ctx = egui::Context::default();
+        let window_rect =
+            egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
+        let id = egui::Id::new("test_modal_outside_click_pass");
+
+        // Opening frame (first render): the outside press must be ignored.
+        let mut closed = true;
+        let _ = ctx.run_ui(outside_press(), |ui| {
+            closed = clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
+        });
+        assert!(!closed, "the modal must survive its opening click");
+
+        // Continuation frame: the same outside press now closes it.
+        let _ = ctx.run_ui(outside_press(), |ui| {
+            closed = clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
+        });
+        assert!(
+            closed,
+            "an outside click after opening must close the modal"
+        );
+    }
+
+    /// A gap in rendering (the modal was dismissed and later reopened) re-arms
+    /// the guard, so the reopening click is ignored too — no teardown needed.
+    #[test]
+    fn by_id_rearms_after_a_render_gap() {
+        let ctx = egui::Context::default();
+        let window_rect =
+            egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
+        let id = egui::Id::new("test_modal_rearm_pass");
+
+        // First open + a continuation pass so the guard is disarmed.
+        let _ = ctx.run_ui(outside_press(), |ui| {
+            clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
+        });
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
+        });
+
+        // A pass where the modal does NOT render (no call), creating a gap.
+        let _ = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+
+        // Reopening frame: the guard must be re-armed and ignore the click.
+        let mut closed = true;
+        let _ = ctx.run_ui(outside_press(), |ui| {
+            closed = clicked_outside_window_after_open_by_id(ui.ctx(), window_rect, id);
+        });
+        assert!(!closed, "reopening after a render gap must skip the click");
+    }
 }

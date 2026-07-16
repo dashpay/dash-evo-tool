@@ -19,7 +19,7 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::dashpay::AcceptedAccounts;
+use dash_evo_tool::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -381,7 +381,7 @@ async fn step_send_contact_request(
         BackendTaskSuccessResult::DashPayContactRequestSent(username) => {
             tracing::info!("Step 1: contact request sent to '{}'", username);
         }
-        BackendTaskSuccessResult::DashPayContactAlreadyEstablished(id) => {
+        BackendTaskSuccessResult::DashPayContactAlreadyEstablished { contact_id: id, .. } => {
             tracing::info!(
                 "Step 1: contact already established with {:?} (previous test run)",
                 id
@@ -688,13 +688,16 @@ async fn step_update_contact_info(
         );
     }
 
+    let identity_b_id = identity_b.identity.id();
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
         identity: identity_b,
         contact_id,
-        nickname: Some("Test Nickname".into()),
-        note: Some("E2E note".into()),
-        is_hidden: false,
-        accepted_accounts: AcceptedAccounts::Replace(vec![0]),
+        update: ContactInfoUpdate::replace_all(
+            Some("Test Nickname".into()),
+            Some("E2E note".into()),
+            false,
+            vec![0],
+        ),
     }));
 
     let result = run_task_with_nonce_retry(&ctx.app_context, task)
@@ -702,7 +705,11 @@ async fn step_update_contact_info(
         .expect("Step 5: UpdateContactInfo should succeed");
 
     match result {
-        BackendTaskSuccessResult::DashPayContactInfoUpdated(id) => {
+        BackendTaskSuccessResult::DashPayContactInfoUpdated {
+            identity,
+            contact_id: id,
+        } => {
+            assert_eq!(identity, identity_b_id, "update should belong to B");
             assert_eq!(
                 id, contact_id,
                 "Updated contact info ID should match contact A"
@@ -1098,6 +1105,7 @@ async fn tc_043_reject_contact_request() {
     let reject_task = BackendTask::DashPayTask(Box::new(DashPayTask::RejectContactRequest {
         identity: qi_c,
         request_id,
+        unreadable: UnreadableContactInfoPolicy::Abort,
     }));
     let reject_result = run_task(&ctx.app_context, reject_task)
         .await

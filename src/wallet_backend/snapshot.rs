@@ -430,6 +430,23 @@ impl SnapshotStore {
         }
     }
 
+    /// Seed persisted history without overwriting a record already observed
+    /// live during registration. Later live accumulation replaces by txid.
+    pub(super) fn hydrate_transactions<'a, I>(&self, wallet_id: &WalletId, records: I)
+    where
+        I: IntoIterator<Item = &'a TransactionRecord>,
+    {
+        let Ok(mut log) = self.tx_log.lock() else {
+            return;
+        };
+        let per_wallet = log.entry(*wallet_id).or_default();
+        for record in records {
+            per_wallet
+                .entry(record.txid)
+                .or_insert_with(|| map_transaction_record(record));
+        }
+    }
+
     /// Upgrade a previously-accumulated record's status to
     /// `InstantSendLocked`.
     ///
@@ -466,6 +483,15 @@ impl SnapshotStore {
                 .and_then(|m| m.get(txid))
                 .map(|tx| tx.status)
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn transaction_count(&self, wallet_id: &WalletId) -> usize {
+        self.tx_log
+            .lock()
+            .ok()
+            .and_then(|log| log.get(wallet_id).map(BTreeMap::len))
+            .unwrap_or_default()
     }
 
     /// Recompute and atomically publish the snapshot for one wallet, off the

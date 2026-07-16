@@ -342,9 +342,9 @@ mod tests {
     use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use crate::test_support::DASH_EVO_DATA_DIR_LOCK;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     // ── Isolation helpers ─────────────────────────────────────────────────────
     //
@@ -353,19 +353,14 @@ mod tests {
     // redirect to a throwaway temp dir to avoid opening the real user data dir or
     // racing with parallel test threads.
 
-    fn data_dir_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-    }
-
     /// Runs `f` in a unique temp data dir with a Tokio runtime in context.
-    /// Serialized by a module-level lock so that parallel test threads don't
+    /// Serialized by the crate-level lock so that parallel test threads don't
     /// race on `DASH_EVO_DATA_DIR`. `make_ctx` wires the wallet backend via an
     /// `.await`, so a multi-thread runtime must be entered before calling it.
     fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
-        let lock = data_dir_lock();
+        let lock = DASH_EVO_DATA_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = tempfile::tempdir().expect("create temp data dir");
         let prior = std::env::var("DASH_EVO_DATA_DIR").ok();
         // Safety: serialized by `lock`; env var restored below before drop.

@@ -73,6 +73,91 @@ it wastes the next run re-discovering the drift. If a run surfaces a new gotcha
 (timing, an unexpected intermediate screen, a naming mismatch), fold it back
 into the scenario file rather than letting it live only in that run's report.
 
+## Sequencing many scenarios in one session
+
+A large regression pass runs dozens of scenarios back-to-back against the same
+app instance and data directory. Practices that keep this efficient and avoid
+one scenario silently invalidating another:
+
+- **Order by dependency, not catalog order.** Identify the handful of
+  scenarios that create prerequisite state (wallet funding, identity
+  registration, contract registration) and run those first — everything
+  downstream goes faster and produces fewer false BLOCKED results.
+- **Reuse one running instance by default.** Only restart the app when a
+  scenario's own acceptance criteria specifically require a cold boot (e.g.
+  "settings persist across restart"). Restarting between every scenario wastes
+  wall-clock time for no benefit on scenarios that don't need it.
+- **Hold state-destroying scenarios until last**, and only once nothing
+  remaining in the queue depends on current state. Running a data wipe/reset
+  mid-campaign can silently invalidate hours of already-established fixture
+  state for scenarios still to come.
+- **Watch for restart-triggered failure modes.** Some defects only manifest on
+  the *next* app launch, not immediately (e.g. a row written once that only
+  fails to decode on a later rehydration). If a scenario creates new durable
+  state, treat any later restart in the same session as elevated risk until
+  that state has been sanity-checked.
+- **End every handoff with a state dump.** When a campaign passes from one
+  agent/session to the next with no shared memory, record the app's PID, the
+  binary's hash, and every piece of fixture state already created (wallet/
+  identity names and balances, contract/token IDs, established contacts). A
+  vague handoff costs the next session real time rediscovering what already
+  exists.
+- **For "two users" scenarios**, register a second identity/contact in the
+  same wallet rather than treating the scenario as untestable solo — this is
+  normally fully sufficient and avoids fabricating a "needs another tester"
+  excuse.
+
+## Telling a real defect from a log/DB-reading artifact
+
+- **A generic-looking log line isn't proof the details don't exist.** A call
+  site can log a typed error with `Display`-only formatting (`%error` in a
+  `tracing::error!` call) instead of `Debug` (`?error`), silently discarding
+  the structured detail you need. If a log line reads suspiciously generic
+  given how specific the underlying error type should be, find the call site
+  and check which format specifier it uses before concluding "the logs don't
+  say more than this."
+- **Verify persistence independently of the UI.** For anything claiming to
+  write data, a direct read-only query against the underlying SQLite file
+  confirms whether the write actually landed — this is the only way to tell
+  "the feature is broken" apart from "the write worked but its own display has
+  an unrelated rendering/cache bug."
+- **Always open a live app's SQLite file with `sqlite3 -readonly`** when
+  inspecting it out-of-band. A plain (non-readonly) `sqlite3 file.db "SELECT
+  ..."` can still trigger a WAL checkpoint on open/close, mutating the
+  `-wal`/`-shm` sidecar files even for a pure read — this can silently destroy
+  the exact on-disk state you're trying to preserve as evidence.
+- **Rule out an environmental cause before committing to a root-cause
+  theory.** Reproduce against a brand-new, zero-state data directory. If the
+  failure still occurs there, whatever theory tied it to specific prior test
+  data or fixture state is wrong.
+- **Hold competing root-cause theories loosely until they agree.** A narrower
+  differential test and a later, more precise investigation can both be
+  correct while answering different-scoped questions — write up findings so a
+  later contradiction doesn't require silently discarding earlier work.
+
+## Known UI/environment quirks
+
+- **Default window is small (800×600) and clips controls** (sidebar items,
+  settings sections below the fold). Resize immediately after launch — see the
+  `desktop-gui` skill's launch recipe. Some settings sections are collapsible
+  *and* below the fold even after resizing: expect to expand a section, then
+  scroll, before a control becomes visible — don't conclude a control doesn't
+  exist from the first screenshot after expanding.
+- **Confirmation dialogs can self-dismiss on a very fast synthetic click.**
+  Several dialogs share a common "click outside closes the dialog" helper
+  (`clicked_outside_window()` in `src/ui/helpers.rs`). A scripted click (e.g.
+  `xdotool click`) can register its press+release within the same UI frame the
+  dialog opens in, which some call sites read as a click "outside" the dialog
+  and dismiss it immediately. If a dialog flashes shut the instant it opens,
+  suspect this pattern before assuming a mis-click — take a screenshot a frame
+  later and retry with the click and the opening action clearly separated.
+- **The shared `/data/target` build output is not campaign-exclusive.** If
+  other worktrees/sessions on the same box can rebuild concurrently, the
+  binary under test can be silently overwritten mid-campaign by an unrelated
+  build. For any run spanning hours, build to a private path and hash-verify
+  (`sha256sum`) before each relaunch rather than trusting the shared path
+  throughout.
+
 ## Scenario index
 
 | Scenario | What it verifies |

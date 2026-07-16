@@ -748,6 +748,15 @@ impl std::fmt::Debug for ClosedKeyItem {
 pub type ClosedWalletSeed = ClosedKeyItem;
 
 impl WalletSeed {
+    /// Mark this seed open after the wallet secret chokepoint verified its password.
+    pub(crate) fn mark_open_after_verification(&mut self) {
+        if let WalletSeed::Closed(closed_seed) = self {
+            *self = WalletSeed::Open(OpenWalletSeed {
+                wallet_info: closed_seed.clone(),
+            });
+        }
+    }
+
     /// Verify the passphrase and mark the wallet unlocked, **without parking
     /// the seed**.
     ///
@@ -758,7 +767,12 @@ impl WalletSeed {
     /// [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint; the
     /// caller that wants the session kept unlocked promotes the seed there
     /// (see [`AppContext::handle_wallet_unlocked`](crate::context::AppContext::handle_wallet_unlocked)).
-    pub fn open(&mut self, password: &str) -> Result<(), String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed encryption error when the password is wrong or the
+    /// stored protected envelope is malformed.
+    pub fn open(&mut self, password: &str) -> Result<(), encryption::EncryptionError> {
         match self {
             WalletSeed::Open(_) => {
                 // Wallet is already open
@@ -766,17 +780,9 @@ impl WalletSeed {
             }
             WalletSeed::Closed(closed_seed) => {
                 // Decrypt to PROVE the password is correct, then drop the
-                // plaintext (`Zeroizing`) without parking it. `decrypt_seed` is
-                // fully typed; this method's `String` return is pre-existing
-                // model/wallet debt tracked for a later type-through, so the
-                // typed error is rendered through its `Display` here.
-                let _verified = closed_seed
-                    .decrypt_seed(password)
-                    .map_err(|e| e.to_string())?;
-                let open_wallet_seed = OpenWalletSeed {
-                    wallet_info: closed_seed.clone(),
-                };
-                *self = WalletSeed::Open(open_wallet_seed);
+                // plaintext (`Zeroizing`) without parking it.
+                let _verified = closed_seed.decrypt_seed(password)?;
+                self.mark_open_after_verification();
                 Ok(())
             }
         }
@@ -840,6 +846,11 @@ impl Wallet {
 
     pub fn is_open(&self) -> bool {
         matches!(self.wallet_seed, WalletSeed::Open(_))
+    }
+
+    /// Whether this password-protected wallet still needs an unlock gesture.
+    pub fn requires_password_unlock(&self) -> bool {
+        self.uses_password && !self.is_open()
     }
     /// Derive and register the wallet's full bootstrap address set from a
     /// borrowed HD seed.

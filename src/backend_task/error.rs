@@ -1190,6 +1190,31 @@ pub enum TaskError {
     #[error("The amount is too large to process. Please use a smaller amount.")]
     CreditCalculationOverflow { amount: u64, credits_per_duff: u64 },
 
+    /// An advanced-send Platform amount could not be parsed.
+    #[error("One of the Platform amounts is not valid. Check each amount and try again.")]
+    AdvancedPlatformAmountInvalid,
+
+    /// An advanced-send Platform output address could not be parsed.
+    #[error(
+        "One of the Platform output addresses is not valid. Check each address and try again."
+    )]
+    AdvancedPlatformOutputAddressInvalid {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Duplicate advanced-send output rows exceed the Platform credit range.
+    #[error(
+        "The combined outputs to one Platform address exceed the maximum amount this app can process. Reduce the amounts or remove duplicate output rows, then try again."
+    )]
+    AdvancedPlatformOutputsOverflow,
+
+    /// Duplicate advanced-send input rows exceed the Platform credit range.
+    #[error(
+        "The combined inputs from one Platform address exceed the maximum amount this app can process. Reduce the amounts or remove duplicate input rows, then try again."
+    )]
+    AdvancedPlatformInputsOverflow,
+
     /// A change address could not be derived or located in the outputs map.
     #[error("Could not prepare a change address for this transaction. Please retry.")]
     ChangeAddressUnavailable { reason: &'static str },

@@ -1,5 +1,6 @@
 use crate::model::amount::Amount;
 use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::theme::DashColors;
 use dash_sdk::dpp::balances::credits::MAX_CREDITS;
 use dash_sdk::dpp::fee::Credits;
 use egui::{Color32, InnerResponse, Response, TextEdit, Ui, WidgetText};
@@ -17,18 +18,6 @@ pub struct AmountInputResponse {
     pub max_clicked: bool,
     /// The parsed amount if the input is valid (None for empty input or validation errors)
     pub parsed_amount: Option<Amount>,
-}
-
-impl AmountInputResponse {
-    /// Returns whether the input is valid (no error message)
-    pub fn is_valid(&self) -> bool {
-        self.error_message.is_none()
-    }
-
-    /// Returns whether the input has changed
-    pub fn has_changed(&self) -> bool {
-        self.changed
-    }
 }
 
 impl ComponentResponse for AmountInputResponse {
@@ -91,8 +80,10 @@ pub struct AmountInput {
     show_validation_errors: bool,
     // When true, we enforce that the input was changed, even if text edit didn't change.
     changed: bool,
-    /// Optional hint explaining why the maximum is set (e.g., "fees reserved")
+    /// Optional hint appended to an exceeds-maximum validation error.
     max_exceeded_hint: Option<String>,
+    /// Optional persistent caption rendered below the amount field.
+    caption: Option<String>,
 }
 
 impl AmountInput {
@@ -123,6 +114,7 @@ impl AmountInput {
             show_validation_errors: true, // Default to showing validation errors
             changed: true,                // Start as changed to force initial validation
             max_exceeded_hint: None,
+            caption: None,
         }
     }
 
@@ -233,6 +225,18 @@ impl AmountInput {
         self
     }
 
+    /// Sets a persistent caption rendered below the amount field.
+    pub fn with_caption(mut self, caption: impl Into<String>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+
+    /// Sets a persistent caption rendered below the amount field.
+    pub fn set_caption(&mut self, caption: Option<String>) -> &mut Self {
+        self.caption = caption;
+        self
+    }
+
     /// Sets the minimum amount allowed. Defaults to 1 (must be greater than zero).
     /// Set to Some(0) to allow zero amounts, or None to disable minimum validation.
     pub fn with_min_amount(mut self, min_amount: Option<Credits>) -> Self {
@@ -325,73 +329,88 @@ impl AmountInput {
 
     /// Renders the amount input widget and returns an `InnerResponse` for use with `show()`.
     fn show_internal(&mut self, ui: &mut Ui) -> InnerResponse<AmountInputResponse> {
-        ui.horizontal(|ui| {
-            if self.show_max_button {
-                // ensure we have height predefined to correctly vertically align the input field;
-                // see StyledButton::show() to see how y is calculated
-                ui.set_min_height(30.0);
-            }
-            // Show label if provided
-            if let Some(label) = &self.label {
-                ui.label(label.clone());
-            }
-            // Create the text edit widget
-            let mut text_edit = TextEdit::singleline(&mut self.amount_str);
-
-            if let Some(hint) = &self.hint_text {
-                // Use RichText with gray color for proper hint text styling
-                let hint_text = egui::RichText::new(hint).color(Color32::GRAY);
-                text_edit = text_edit.hint_text(hint_text);
-            }
-
-            if let Some(width) = self.desired_width {
-                text_edit = text_edit.desired_width(width);
-            }
-
-            let text_response = ui.add(text_edit);
-
-            let mut changed = text_response.changed() && ui.is_enabled();
-
-            // Show max button if max amount is available
-            let mut max_clicked = false;
-            if self.show_max_button {
-                if let Some(max_amount) = self.max_amount {
-                    if ui.button("Max").clicked() {
-                        self.amount_str = Amount::new(max_amount, self.decimal_places).to_string();
-                        max_clicked = true;
-                        changed = true;
-                    }
-                } else if ui.button("Max").clicked() {
-                    // Max button clicked but no max amount set - still report the click
-                    max_clicked = true;
+        ui.vertical(|ui| {
+            let response = ui.horizontal(|ui| {
+                if self.show_max_button {
+                    // ensure we have height predefined to correctly vertically align the input field;
+                    // see StyledButton::show() to see how y is calculated
+                    ui.set_min_height(30.0);
                 }
+                // Show label if provided
+                if let Some(label) = &self.label {
+                    ui.label(label.clone());
+                }
+                // Create the text edit widget
+                let mut text_edit = TextEdit::singleline(&mut self.amount_str);
+
+                if let Some(hint) = &self.hint_text {
+                    // Use RichText with gray color for proper hint text styling
+                    let hint_text = egui::RichText::new(hint).color(Color32::GRAY);
+                    text_edit = text_edit.hint_text(hint_text);
+                }
+
+                if let Some(width) = self.desired_width {
+                    text_edit = text_edit.desired_width(width);
+                }
+
+                let text_response = ui.add(text_edit);
+
+                let mut changed = text_response.changed() && ui.is_enabled();
+
+                // Show max button if max amount is available
+                let mut max_clicked = false;
+                if self.show_max_button {
+                    if let Some(max_amount) = self.max_amount {
+                        if ui.button("Max").clicked() {
+                            self.amount_str =
+                                Amount::new(max_amount, self.decimal_places).to_string();
+                            max_clicked = true;
+                            changed = true;
+                        }
+                    } else if ui.button("Max").clicked() {
+                        // Max button clicked but no max amount set - still report the click
+                        max_clicked = true;
+                    }
+                }
+
+                // Validate the amount
+                let (error_message, parsed_amount) = match self.validate_amount() {
+                    Ok(amount) => (None, amount),
+                    Err(error) => (Some(error), None),
+                };
+
+                // Show validation error if enabled and error exists
+                if self.show_validation_errors
+                    && let Some(error_msg) = &error_message
+                {
+                    ui.colored_label(ui.visuals().error_fg_color, error_msg);
+                }
+
+                if self.changed {
+                    changed = true; // Force changed if set
+                    self.changed = false; // Reset after use
+                }
+
+                AmountInputResponse {
+                    response: text_response,
+                    changed,
+                    error_message,
+                    max_clicked,
+                    parsed_amount,
+                }
+            });
+
+            if let Some(caption) = &self.caption {
+                let dark_mode = ui.style().visuals.dark_mode;
+                ui.label(
+                    egui::RichText::new(caption)
+                        .color(DashColors::text_secondary(dark_mode))
+                        .italics()
+                        .size(12.0),
+                );
             }
 
-            // Validate the amount
-            let (error_message, parsed_amount) = match self.validate_amount() {
-                Ok(amount) => (None, amount),
-                Err(error) => (Some(error), None),
-            };
-
-            // Show validation error if enabled and error exists
-            if self.show_validation_errors
-                && let Some(error_msg) = &error_message
-            {
-                ui.colored_label(ui.visuals().error_fg_color, error_msg);
-            }
-
-            if self.changed {
-                changed = true; // Force changed if set
-                self.changed = false; // Reset after use
-            }
-
-            AmountInputResponse {
-                response: text_response,
-                changed,
-                error_message,
-                max_clicked,
-                parsed_amount,
-            }
+            response.inner
         })
     }
 }
@@ -417,6 +436,8 @@ impl Component for AmountInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     #[test]
     fn test_initialization_with_non_zero_amount_and_unit() {
@@ -576,6 +597,59 @@ mod tests {
         assert!(
             validation_result.unwrap().is_some(),
             "Amount within range should have parsed amount"
+        );
+    }
+
+    #[test]
+    fn fee_reserve_hint_is_visible_at_the_maximum_amount() {
+        let hint = "A network fee of approximately 0.00001 DASH is reserved from your balance.";
+        let input = AmountInput::new(Amount::new(0, 2))
+            .with_max_amount(Some(100))
+            .with_max_button(true)
+            .with_caption(hint);
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, input: &mut AmountInput| {
+                input.show(ui);
+            },
+            input,
+        );
+
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert!(
+            harness.query_by_label(hint).is_some(),
+            "the fee reserve must remain visible when Max produces a valid amount"
+        );
+        assert_eq!(
+            harness
+                .state()
+                .current_value()
+                .expect("Max sets a valid amount")
+                .value(),
+            100
+        );
+    }
+
+    #[test]
+    fn low_balance_hint_is_visible_without_a_maximum_amount() {
+        let hint = "Your balance is too low to cover the network fee.";
+        let input = AmountInput::new(Amount::new(0, 2))
+            .with_max_amount(None)
+            .with_caption(hint);
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, input: &mut AmountInput| {
+                input.show(ui);
+            },
+            input,
+        );
+
+        harness.run();
+
+        assert!(
+            harness.query_by_label(hint).is_some(),
+            "the low-balance explanation must not depend on a Max value"
         );
     }
 }

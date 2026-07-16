@@ -12,72 +12,25 @@ pub enum DashPayError {
     #[error("Username '{username}' was not found. Please check the spelling and try again.")]
     UsernameResolutionFailed { username: String },
 
-    #[error("A required security key is missing. Please refresh your identity and retry.")]
-    KeyNotFound {
-        key_id: u32,
-        identity_id: Identifier,
-    },
-
-    #[error("A required security key has been disabled. Please refresh your identity and retry.")]
-    KeyDisabled {
-        key_id: u32,
-        identity_id: Identifier,
-    },
-
-    #[error(
-        "A security key cannot be used for this operation. Please refresh your identity and retry."
-    )]
-    UnsuitableKeyType {
-        key_id: u32,
-        key_type: String,
-        operation: String,
-    },
-
     #[error(
         "Your identity is missing an encryption key required for contacts. Please add a compatible encryption key."
     )]
     MissingEncryptionKey,
 
+    /// The **recipient** identity has no DashPay DECRYPTION key, so it cannot
+    /// receive contact requests yet. Raised from the send path when
+    /// `to_identity` lacks the key — attributed to the recipient, never the
+    /// sender (whose own keys are fine).
     #[error(
-        "Your identity is missing a decryption key required for contacts. Please add a compatible decryption key."
+        "This person is not set up to receive contact requests yet. Ask them to finish setting up their Dash profile, then try again."
     )]
-    MissingDecryptionKey,
-
-    #[error("Could not establish a secure connection with this contact. Please retry.")]
-    EcdhFailed { reason: String },
-
-    #[error("Could not encrypt the message. Please retry.")]
-    EncryptionFailed { reason: String },
-
-    #[error("Could not decrypt the message. Please retry.")]
-    DecryptionFailed { reason: String },
+    RecipientMissingDecryptionKey,
 
     // Document/Platform Errors
-    #[error("Could not send the contact request. Please retry.")]
-    DocumentCreationFailed { reason: String },
-
-    #[error("Could not send this request to the network. Please retry.")]
-    BroadcastFailed { reason: String },
-
-    #[error(
-        "Could not retrieve the requested information. Please check your connection and retry."
-    )]
-    QueryFailed { reason: String },
-
     #[error("The received data has an unexpected format. Please retry or update the application.")]
     InvalidDocument { reason: String },
 
     // Validation Errors
-    #[error("The network data could not be verified. Please retry in a few moments.")]
-    InvalidCoreHeight {
-        height: u32,
-        current: Option<u32>,
-        reason: String,
-    },
-
-    #[error("The account reference is not valid. Please check the details and retry.")]
-    InvalidAccountReference { account: u32, reason: String },
-
     #[error("The contact request could not be verified. Please check the details and try again.")]
     ValidationFailed { errors: Vec<String> },
 
@@ -88,15 +41,9 @@ pub enum DashPayError {
     #[error("This QR code has expired. Please ask for a new one.")]
     QrCodeExpired { expired_at: u64, current_time: u64 },
 
-    #[error("The automatic verification could not be completed. Please retry.")]
-    ProofVerificationFailed { reason: String },
-
     // Network/SDK Errors
-    #[error("Could not reach the network. Please check your connection and retry.")]
-    PlatformError { reason: String },
-
     #[error("Network connection failed. Please check your internet connection and retry.")]
-    NetworkError { reason: String },
+    NetworkError,
 
     #[error("An unexpected error occurred while communicating with the network. Please retry.")]
     SdkError {
@@ -116,26 +63,6 @@ pub enum DashPayError {
 
     #[error("A required field is missing. Please fill in all fields and try again.")]
     MissingField { field: String },
-
-    // Contact Info Errors
-    #[error("Contact information could not be found. Please refresh and try again.")]
-    ContactInfoNotFound { contact_id: Identifier },
-
-    #[error("Contact information could not be read. Please refresh and try again.")]
-    ContactInfoDecryptionFailed {
-        contact_id: Identifier,
-        reason: String,
-    },
-
-    // General Errors
-    #[error("An unexpected error occurred. Please retry.")]
-    Internal { message: String },
-
-    #[error("This operation is not available. Please update the application.")]
-    NotSupported { operation: String },
-
-    #[error("Too many requests. Please wait a moment and try again.")]
-    RateLimited { operation: String },
 
     /// Failed to build a document query (schema / configuration error).
     #[error("Could not prepare the data request. Please retry or update the application.")]
@@ -174,87 +101,43 @@ pub enum DashPayError {
     #[error("You have already sent a contact request to '{to}'. Please wait for them to respond.")]
     ContactRequestAlreadySent { to: String },
 
+    /// The request selected for cancellation was sent by a different identity.
+    /// Almost always a stale list: the user switched identity while the
+    /// Contacts tab still showed the previous identity's sent requests.
+    #[error(
+        "This request was not sent by the identity you are using. Refresh your contacts and try again."
+    )]
+    ContactRequestNotSentByYou,
+
+    /// The request selected for acceptance or decline was addressed to a
+    /// different identity. Almost always a stale list: the user switched
+    /// identity while the Contacts tab still showed the previous identity's
+    /// received requests.
+    #[error(
+        "This request was not sent to the identity you are using. Refresh your contacts and try again."
+    )]
+    ContactRequestNotAddressedToYou,
+
     /// Encrypted contact info fields exceed DashPay contract limits.
     #[error("Contact info is too large to save. Try shortening your nickname or note.")]
     ContactInfoValidationFailed { errors: Vec<String> },
+
+    /// DashPay HD key derivation failed.
+    #[error("The payment keys for this contact could not be derived. Please retry.")]
+    Derivation(#[from] crate::model::dashpay_derivation::DerivationError),
+
+    /// The system clock is set before the Unix epoch, so an expiry time
+    /// cannot be computed.
+    #[error(
+        "Your device clock appears to be incorrect. Please set the correct date and time, then retry."
+    )]
+    SystemClockInvalid,
 }
 
 impl DashPayError {
-    // TODO: `user_message()` is largely redundant now that Display messages are
-    // user-friendly. Consider removing it once the two UI callsites
-    // (contact_requests.rs:617, add_contact_screen.rs:350) are migrated to use
-    // Display directly.
-
-    /// Convert to user-friendly error message
-    pub fn user_message(&self) -> String {
-        match self {
-            DashPayError::UsernameResolutionFailed { username } => {
-                format!(
-                    "Username '{}' not found. Please check the spelling.",
-                    username
-                )
-            }
-            DashPayError::IdentityNotFound { .. } => {
-                "Contact not found. They may not be registered on Dash Platform.".to_string()
-            }
-            DashPayError::InvalidQrCode { .. } => {
-                "Invalid QR code. Please scan a valid DashPay contact QR code.".to_string()
-            }
-            DashPayError::QrCodeExpired { .. } => {
-                "QR code has expired. Please ask for a new one.".to_string()
-            }
-            DashPayError::NetworkError { .. } => {
-                "Network connection error. Please check your internet connection.".to_string()
-            }
-            DashPayError::ValidationFailed { errors } => {
-                if errors.len() == 1 {
-                    format!("Validation error: {}", errors[0])
-                } else {
-                    format!("Multiple validation errors: {}", errors.join(", "))
-                }
-            }
-            DashPayError::AccountLabelTooLong { max, .. } => {
-                format!(
-                    "Account label too long. Maximum {} characters allowed.",
-                    max
-                )
-            }
-            DashPayError::InvalidUsername { .. } => {
-                "Invalid username format. Usernames must end with '.dash'.".to_string()
-            }
-            DashPayError::RateLimited { .. } => {
-                "Too many requests. Please wait a moment before trying again.".to_string()
-            }
-            DashPayError::Internal { message } => {
-                message.clone()
-            }
-            DashPayError::MissingEncryptionKey => {
-                "Your identity is missing an encryption key required for contacts. Please add a compatible encryption key.".to_string()
-            }
-            DashPayError::MissingDecryptionKey => {
-                "Your identity is missing a decryption key required for contacts. Please add a compatible decryption key.".to_string()
-            }
-            DashPayError::ContactInfoValidationFailed { .. } => {
-                "Contact info is too large to save. Try shortening your nickname or note."
-                    .to_string()
-            }
-            DashPayError::CannotContactSelf => {
-                "You cannot send a contact request to yourself.".to_string()
-            }
-            _ => "An error occurred. Please try again.".to_string(),
-        }
-    }
-
     /// Check if error is recoverable (user can retry)
     pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
-            DashPayError::NetworkError { .. }
-                | DashPayError::PlatformError { .. }
-                | DashPayError::RateLimited { .. }
-                | DashPayError::BroadcastFailed { .. }
-                | DashPayError::QueryFailed { .. }
-        )
+        matches!(self, DashPayError::NetworkError)
     }
 
     /// Check if error requires user action (not a system error)
@@ -269,59 +152,8 @@ impl DashPayError {
                 | DashPayError::InvalidUsername { .. }
                 | DashPayError::MissingField { .. }
                 | DashPayError::MissingEncryptionKey
-                | DashPayError::MissingDecryptionKey
                 | DashPayError::ContactInfoValidationFailed { .. }
                 | DashPayError::CannotContactSelf
         )
-    }
-}
-
-/// Result type for DashPay operations
-pub type DashPayResult<T> = Result<T, DashPayError>;
-
-/// Helper to convert string errors to DashPayError
-impl From<String> for DashPayError {
-    fn from(error: String) -> Self {
-        DashPayError::Internal { message: error }
-    }
-}
-
-/// Trait for converting various SDK errors to DashPayError
-pub trait ToDashPayError<T> {
-    fn to_dashpay_error(self, context: &str) -> DashPayResult<T>;
-}
-
-impl<T> ToDashPayError<T> for Result<T, dash_sdk::Error> {
-    fn to_dashpay_error(self, _context: &str) -> DashPayResult<T> {
-        self.map_err(|e| DashPayError::SdkError {
-            source: Box::new(e),
-        })
-    }
-}
-
-impl<T> ToDashPayError<T> for Result<T, String> {
-    fn to_dashpay_error(self, context: &str) -> DashPayResult<T> {
-        self.map_err(|e| DashPayError::Internal {
-            message: format!("{}: {}", context, e),
-        })
-    }
-}
-
-/// Helper to create validation errors
-pub fn validation_error(errors: Vec<String>) -> DashPayError {
-    DashPayError::ValidationFailed { errors }
-}
-
-/// Helper to create network errors
-pub fn network_error(reason: impl Into<String>) -> DashPayError {
-    DashPayError::NetworkError {
-        reason: reason.into(),
-    }
-}
-
-/// Helper to create platform errors
-pub fn platform_error(reason: impl Into<String>) -> DashPayError {
-    DashPayError::PlatformError {
-        reason: reason.into(),
     }
 }

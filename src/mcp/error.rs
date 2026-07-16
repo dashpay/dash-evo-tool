@@ -15,10 +15,23 @@ pub enum McpToolError {
     NetworkMismatch { expected: String, actual: String },
     #[error("SPV sync incomplete — please wait and retry")]
     SpvSyncFailed,
+    /// Cold-start storage migration did not complete within the wait
+    /// window.  Returned when `ensure_spv_synced` times out waiting for
+    /// the migration that runs after the wallet backend is first wired.
+    #[error("Wallet storage is still starting up. Please wait a moment and retry.")]
+    StorageNotReady,
     #[error("Backend task failed: {0}")]
     TaskFailed(#[source] TaskError),
     #[error("{0}")]
     Internal(String),
+}
+
+impl From<crate::model::masternode_input::MasternodeInputError> for McpToolError {
+    fn from(e: crate::model::masternode_input::MasternodeInputError) -> Self {
+        McpToolError::InvalidParam {
+            message: e.to_string(),
+        }
+    }
 }
 
 /// MCP error codes for each variant (using JSON-RPC custom code range).
@@ -27,6 +40,7 @@ const CODE_INVALID_PARAM: i32 = -32602; // standard JSON-RPC invalid params
 const CODE_NETWORK_MISMATCH: i32 = -32002;
 const CODE_SPV_SYNC_FAILED: i32 = -32003;
 const CODE_TASK_FAILED: i32 = -32004;
+const CODE_STORAGE_NOT_READY: i32 = -32005;
 const CODE_INTERNAL: i32 = -32603; // standard JSON-RPC internal error
 
 impl From<McpToolError> for McpError {
@@ -36,6 +50,7 @@ impl From<McpToolError> for McpError {
             McpToolError::InvalidParam { .. } => (CODE_INVALID_PARAM, e.to_string(), None),
             McpToolError::NetworkMismatch { .. } => (CODE_NETWORK_MISMATCH, e.to_string(), None),
             McpToolError::SpvSyncFailed => (CODE_SPV_SYNC_FAILED, e.to_string(), None),
+            McpToolError::StorageNotReady => (CODE_STORAGE_NOT_READY, e.to_string(), None),
             McpToolError::TaskFailed(task_err) => {
                 // Include the full Debug error chain so MCP clients can see
                 // the underlying cause (e.g. SDK/DAPI errors) instead of just

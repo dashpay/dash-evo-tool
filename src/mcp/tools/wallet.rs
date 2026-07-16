@@ -8,6 +8,7 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::mcp::dispatch::dispatch_task;
@@ -61,20 +62,12 @@ impl AsyncTool<DashMcpService> for GenerateReceiveAddress {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<GenerateReceiveAddressOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
-
-        if ctx.spv_manager.wallet_id_for_seed(seed_hash).is_none() {
-            return Err(McpToolError::Internal(
-                "Wallet is not loaded into SPV. Please retry in a moment.".to_string(),
-            ));
-        }
 
         let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
         let result = dispatch_task(&ctx, task)
@@ -134,23 +127,29 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<WalletBalancesOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
 
         let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
-        let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+        let alias = wallet_arc
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .alias
+            .clone();
+
+        // Balances come from the display-only WalletBackend snapshot (P4a);
+        // upstream owns chain UTXO/balance bookkeeping.
+        let balance = ctx.snapshot_balance(&seed_hash);
 
         Ok(WalletBalancesOutput {
-            alias: wallet.alias.clone(),
-            total_duffs: wallet.total_balance_duffs(),
-            confirmed_duffs: wallet.confirmed_balance_duffs(),
-            unconfirmed_duffs: wallet.unconfirmed_balance_duffs(),
+            alias,
+            total_duffs: balance.total,
+            confirmed_duffs: balance.confirmed,
+            unconfirmed_duffs: balance.unconfirmed,
         })
     }
 }
@@ -222,25 +221,16 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
         service: &DashMcpService,
         param: SendFundsParams,
     ) -> Result<SendFundsOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
 
-        // Network is mandatory for destructive operations
-        if param.network.is_empty() {
-            return Err(McpToolError::InvalidParam {
-                message: "The 'network' parameter must not be empty. \
-                          Use \"mainnet\", \"testnet\", \"devnet\", or \"local\"."
-                    .to_owned(),
-            });
-        }
+        // Network is mandatory for destructive operations.
         resolve::require_network(&ctx, Some(&param.network))?;
 
         // Validate inputs before dispatching
-        resolve::validate_amount(param.amount_duffs)?;
+        resolve::validate_positive_amount(param.amount_duffs, "duffs")?;
         resolve::validate_address(&param.address)?;
 
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -252,8 +242,6 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
                 address: param.address,
                 amount_duffs: param.amount_duffs,
             }],
-            subtract_fee_from_amount: false,
-            memo: None,
             override_fee: None,
         };
 
@@ -335,11 +323,9 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<PlatformBalancesOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         // SPV is required: DAPI proof verification needs quorum/masternode list
@@ -373,10 +359,137 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
 }
 
 // ---------------------------------------------------------------------------
+// ImportWallet (BIP-39 mnemonic -> registered wallet)
+// ---------------------------------------------------------------------------
+
+/// Import a wallet from a BIP-39 recovery phrase.
+pub struct ImportWallet;
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct ImportWalletParams {
+    /// BIP-39 recovery phrase (12 or 24 words, space-separated)
+    pub mnemonic: String,
+    /// Expected network (required so addresses are derived for the right chain)
+    pub network: String,
+    /// Optional human-readable wallet name
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
+// Hand-written so the recovery phrase can never reach a log sink. A derived
+// `Debug` would print the mnemonic verbatim, and the BIP-39 phrase is the
+// highest-value secret in the app (full, irreversible wallet compromise).
+impl std::fmt::Debug for ImportWalletParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportWalletParams")
+            .field("mnemonic", &"<redacted>")
+            .field("network", &self.network)
+            .field("alias", &self.alias)
+            .finish()
+    }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ImportWalletOutput {
+    seed_hash: String,
+    alias: Option<String>,
+    /// True when this seed was already present (the import was a no-op).
+    already_imported: bool,
+}
+
+impl ToolBase for ImportWallet {
+    type Parameter = ImportWalletParams;
+    type Output = ImportWalletOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "core_wallet_import".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Import a wallet from a BIP-39 recovery phrase and register it on the \
+             active network, returning its seed hash. Imports unprotected (no \
+             passphrase) for headless use. Idempotent: re-importing the same \
+             phrase is a no-op that returns the existing seed hash. \
+             The 'network' parameter is required."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for ImportWallet {
+    async fn invoke(
+        service: &DashMcpService,
+        param: ImportWalletParams,
+    ) -> Result<ImportWalletOutput, McpToolError> {
+        let ctx = service.tool_ctx().await?;
+
+        resolve::require_network(&ctx, Some(&param.network))?;
+
+        // Hold the phrase in a zeroizing buffer so the cleartext seed words are
+        // scrubbed from memory on drop rather than lingering in a freed String.
+        // `bip39` is built with its `zeroize` feature, so the parsed `Mnemonic`
+        // scrubs its word indices on drop too.
+        let mnemonic_phrase = zeroize::Zeroizing::new(param.mnemonic);
+        let mnemonic = bip39::Mnemonic::parse_normalized(mnemonic_phrase.trim()).map_err(|e| {
+            McpToolError::InvalidParam {
+                message: format!("The recovery phrase is not valid: {e}"),
+            }
+        })?;
+        // The derived 64-byte HD seed is the spend secret; keep it zeroizing so
+        // it never outlives this call in freed heap/stack memory.
+        let seed = zeroize::Zeroizing::new(mnemonic.to_seed(""));
+
+        let alias = param
+            .alias
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned);
+
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(*seed, ctx.network(), alias.clone(), None)
+                .map_err(|e| McpToolError::TaskFailed(e.into()))?;
+        // Capture the seed hash before `register_wallet` consumes the wallet so
+        // the already-imported branch can still report it.
+        let seed_hash = wallet.seed_hash();
+
+        match ctx.register_wallet(
+            wallet,
+            &seed,
+            crate::model::wallet::birth_height::WalletOrigin::Imported,
+        ) {
+            Ok((hash, _)) => Ok(ImportWalletOutput {
+                seed_hash: hex::encode(hash),
+                alias,
+                already_imported: false,
+            }),
+            Err(TaskError::WalletAlreadyImported) => Ok(ImportWalletOutput {
+                seed_hash: hex::encode(seed_hash),
+                alias,
+                already_imported: true,
+            }),
+            Err(e) => Err(McpToolError::TaskFailed(e)),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ListWalletsTool
 // ---------------------------------------------------------------------------
 
-/// List wallet names currently loaded in the application.
+/// List wallets saved for the active network.
 pub struct ListWalletsTool;
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -400,7 +513,7 @@ impl ToolBase for ListWalletsTool {
     }
 
     fn description() -> Option<Cow<'static, str>> {
-        Some("List wallet names currently loaded in the application".into())
+        Some("List wallets saved for the active network".into())
     }
 
     fn annotations() -> Option<ToolAnnotations> {
@@ -413,11 +526,9 @@ impl AsyncTool<DashMcpService> for ListWalletsTool {
         service: &DashMcpService,
         param: NetworkParams,
     ) -> Result<ListWalletsOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
         let entries: Vec<WalletEntry> = wallets
             .iter()

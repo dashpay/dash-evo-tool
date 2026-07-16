@@ -8,7 +8,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, ScreenLike};
-use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 pub struct AddressBalanceScreen {
@@ -153,22 +153,22 @@ impl ScreenLike for AddressBalanceScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenToolsAddressBalanceScreen,
         );
-        action |= add_tools_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tools_subscreen_chooser_panel(ui, &self.app_context);
 
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 action |= self.render_input(ui);
                 self.render_result(ui);

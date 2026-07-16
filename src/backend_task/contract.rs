@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
 use crate::context::AppContext;
-use crate::database::contracts::InsertTokensToo;
-use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
+use crate::model::qualified_contract::InsertTokensToo;
+use crate::model::qualified_contract::InsertTokensToo::NoTokensShouldBeAdded;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
@@ -20,7 +20,7 @@ use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::group_actions::GroupActionsQuery;
 use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
@@ -52,11 +52,10 @@ impl AppContext {
                         let mut results = vec![];
                         for data_contract in data_contracts {
                             if let Some(contract) = &data_contract.1 {
-                                self.db.insert_contract_if_not_exists(
+                                self.insert_contract_if_not_exists(
                                     contract,
                                     None,
                                     NoTokensShouldBeAdded,
-                                    self,
                                 )?;
                                 results.push(Some(contract.clone()));
                             } else {
@@ -79,6 +78,7 @@ impl AppContext {
                                 // Fetch the contract description from the Search Contract
                                 let search_contract = &self.keyword_search_contract;
                                 let document_query = DocumentQuery {
+                                    select: SelectProjection::documents(),
                                     data_contract: search_contract.clone(),
                                     document_type_name: "fullDescription".to_string(),
                                     limit: 1,
@@ -88,6 +88,8 @@ impl AppContext {
                                         operator: WhereOperator::Equal,
                                         value: Value::Identifier(contract.id().into()),
                                     }],
+                                    group_by: Vec::new(),
+                                    having: Vec::new(),
                                     order_by_clauses: vec![],
                                 };
                                 let document_option = Document::fetch(sdk, document_query)
@@ -208,14 +210,12 @@ impl AppContext {
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
-                .map(|_| BackendTaskSuccessResult::RemovedContract)
-                .map_err(crate::backend_task::error::TaskError::from),
+                .map(|_| BackendTaskSuccessResult::RemovedContract),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
-                self.db.insert_contract_if_not_exists(
+                self.insert_contract_if_not_exists(
                     &data_contract,
                     alias.as_deref(),
                     insert_tokens_too,
-                    self,
                 )?;
                 Ok(BackendTaskSuccessResult::SavedContract)
             }

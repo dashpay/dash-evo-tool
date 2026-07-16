@@ -1,25 +1,13 @@
-use std::time::Duration;
-
 use dash_sdk::{
     Error, Sdk,
-    dpp::{dashcore::Network, data_contract::accessors::v0::DataContractV0Getters},
-    platform::{DataContract, Fetch, IdentityPublicKey, transition::put_contract::PutContract},
+    dpp::data_contract::accessors::v0::DataContractV0Getters,
+    platform::{DataContract, IdentityPublicKey, transition::put_contract::PutContract},
 };
-use tokio::time::sleep;
 
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::error::TaskError;
-use crate::backend_task::update_data_contract::extract_contract_id_from_error;
-use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::{
-    app::TaskResult,
-    context::AppContext,
-    model::{proof_log_item::RequestType, qualified_identity::QualifiedIdentity},
-};
-use crate::{
-    database::contracts::InsertTokensToo::AllTokensShouldBeAdded,
-    model::proof_log_item::ProofLogItem,
-};
+use crate::model::qualified_contract::InsertTokensToo::AllTokensShouldBeAdded;
+use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 
 impl AppContext {
     pub async fn register_data_contract(
@@ -31,8 +19,8 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Estimate fee for contract creation
-        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_create_base();
+        let estimated_fee = self.fee_estimator().estimate_contract_create_base();
+        let contract_id = data_contract.id();
 
         match data_contract
             .put_to_platform_and_wait_for_response(sdk, signing_key.clone(), &identity, None)
@@ -43,73 +31,38 @@ impl AppContext {
                     true => None,
                     false => Some(alias),
                 };
-                self.db.insert_contract_if_not_exists(
+                self.insert_contract_if_not_exists(
                     &returned_contract,
                     optional_alias.as_deref(),
                     AllTokensShouldBeAdded,
-                    self,
                 )?;
-                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-                Ok(BackendTaskSuccessResult::RegisteredContract(fee_result))
+                Ok(BackendTaskSuccessResult::RegisteredContract(
+                    FeeResult::estimated_only(estimated_fee),
+                ))
             }
-            Err(e) => match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    let proof_error_str = proof_error.to_string();
-                    // Log the proof error first, before any other operations
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error_str.clone()),
-                        })
+            Err(e @ Error::DriveProofError(..)) => {
+                self.recover_contract_after_proof_error(
+                    sdk,
+                    contract_id,
+                    e,
+                    &sender,
+                    |ctx, contract| {
+                        let optional_alias = ctx
+                            .get_contract_by_id(&contract.id())
+                            .ok()
+                            .flatten()
+                            .and_then(|c| c.alias);
+                        ctx.insert_contract_if_not_exists(
+                            contract,
+                            optional_alias.as_deref(),
+                            AllTokensShouldBeAdded,
+                        )
                         .ok();
-
-                    // Reconstruct the SDK error to preserve as source
-                    let source_error =
-                        Box::new(Error::DriveProofError(proof_error, proof_bytes, block_info));
-
-                    sender
-                        .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::ProofErrorLogged,
-                        )))
-                        .await
-                        .map_err(|_| TaskError::InternalSendError)?;
-
-                    // Try to extract contract ID and fetch the contract if it exists
-                    // This handles the case where the contract was actually created despite the proof error
-                    if let Ok(id) = extract_contract_id_from_error(&proof_error_str) {
-                        match self.network {
-                            Network::Regtest => sleep(Duration::from_secs(3)).await,
-                            _ => sleep(Duration::from_secs(10)).await,
-                        }
-                        if let Ok(Some(contract)) = DataContract::fetch(sdk, id).await {
-                            let optional_alias = self
-                                .get_contract_by_id(&contract.id())
-                                .ok()
-                                .flatten()
-                                .and_then(|c| c.alias);
-
-                            self.db
-                                .insert_contract_if_not_exists(
-                                    &contract,
-                                    optional_alias.as_deref(),
-                                    AllTokensShouldBeAdded,
-                                    self,
-                                )
-                                .ok();
-
-                            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
-                        }
-                    }
-
-                    Err(TaskError::ProofError { source_error })
-                }
-                e => Err(TaskError::from(e)),
-            },
+                    },
+                )
+                .await
+            }
+            Err(e) => Err(TaskError::from(e)),
         }
     }
 }

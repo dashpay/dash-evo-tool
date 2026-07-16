@@ -1,5 +1,6 @@
 //! Polling helpers for waiting on async state changes.
 
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
@@ -18,18 +19,7 @@ pub async fn wait_for_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // Trigger reconcile so DET wallet model reflects latest SPV state
-            if let Err(e) = app_context.reconcile_spv_wallets().await {
-                tracing::warn!("reconcile_spv_wallets failed: {e}");
-            }
-
-            let balance = {
-                let wallets = app_context.wallets().read().expect("wallets lock");
-                wallets.get(&wallet_hash).map(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    wallet.total_balance_duffs()
-                })
-            };
+            let balance = Some(app_context.snapshot_balance(&wallet_hash).total);
             poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
@@ -63,11 +53,15 @@ pub async fn wait_for_balance(
     })
 }
 
-/// Wait until a wallet has at least `min_balance` **spendable** (confirmed/IS-locked) duffs.
+/// Wait until a wallet has at least `min_balance` **spendable** duffs.
 ///
-/// This is stricter than `wait_for_balance()` — it ensures the funds are actually
-/// available for transaction building, not just visible as unconfirmed balance.
-/// Triggers SPV reconciliation on each poll.
+/// "Spendable" is `DetWalletBalance::spendable()` — the exact set the upstream
+/// `CoinSelector` draws from (confirmed + unconfirmed), excluding the immature
+/// and locked duffs that only `total` counts. This is the right gate for "can
+/// this wallet fund a transaction now": funds that are IS-locked but not yet
+/// flagged as instant-locked locally land in `unconfirmed`, so polling
+/// `confirmed` alone would miss them and time out even though coin selection
+/// could already spend them. Triggers SPV reconciliation on each poll.
 pub async fn wait_for_spendable_balance(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
@@ -78,18 +72,7 @@ pub async fn wait_for_spendable_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // Trigger reconcile so DET wallet model reflects latest SPV state
-            if let Err(e) = app_context.reconcile_spv_wallets().await {
-                tracing::warn!("reconcile_spv_wallets failed: {e}");
-            }
-
-            let balance = {
-                let wallets = app_context.wallets().read().expect("wallets lock");
-                wallets.get(&wallet_hash).and_then(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    wallet.spv_confirmed_balance()
-                })
-            };
+            let balance = Some(app_context.snapshot_balance(&wallet_hash).spendable());
             poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
@@ -116,45 +99,60 @@ pub async fn wait_for_spendable_balance(
     })
     .await
     .map_err(|_| {
-        // Report both confirmed and total for diagnostics
-        let (confirmed, total) = {
-            let wallets = app_context.wallets().read().expect("wallets lock");
-            wallets
-                .get(&wallet_hash)
-                .map(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    (
-                        wallet.spv_confirmed_balance().unwrap_or(0),
-                        wallet.total_balance_duffs(),
-                    )
-                })
-                .unwrap_or((0, 0))
-        };
+        // Report spendable and total for diagnostics
+        let snap = app_context.snapshot_balance(&wallet_hash);
+        let (spendable, total) = (snap.spendable(), snap.total);
         format!(
             "Timed out waiting for spendable balance >= {} duffs \
-             (confirmed: {}, total: {})",
-            min_balance, confirmed, total
+             (spendable: {}, total: {})",
+            min_balance, spendable, total
         )
     })
 }
 
-/// Wait until a wallet appears in the SPV subsystem.
+/// Ensure a DET-registered wallet is registered with the upstream wallet
+/// backend so its addresses are monitored by the `SpvRuntime`.
+///
+/// Chain sync is owned by upstream `platform-wallet`. A wallet becomes
+/// "tracked" once `WalletBackend::ensure_wallets_registered` has run
+/// `create_wallet_from_seed_bytes` for it (idempotent), at which point its
+/// derived addresses are watched and balance events flow back through the
+/// `EventBridge`. This drives that registration and confirms the upstream
+/// backend has a snapshot slot for the wallet.
 pub async fn wait_for_wallet_in_spv(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
     wait_timeout: Duration,
 ) -> Result<(), String> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not wired: {e}"))?;
+
     timeout(wait_timeout, async {
         loop {
-            let snapshot = app_context.spv_manager().det_wallets_snapshot();
-            if snapshot.contains_key(&wallet_hash) {
-                return;
+            match backend.ensure_wallets_registered(app_context).await {
+                Ok(()) => {
+                    if backend.is_wallet_registered(&wallet_hash) {
+                        return Ok(());
+                    }
+                }
+                // `TaskError::WalletBackend` is the upstream wallet runtime's
+                // documented "retry in a moment" signal — transient under the
+                // serial suite's burst of registrations. Retry within the
+                // existing timeout budget. Any other typed error is terminal.
+                Err(TaskError::WalletBackend { .. }) => {}
+                Err(e) => return Err(format!("ensure_wallets_registered failed: {e}")),
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await
-    .map_err(|_| "Timed out waiting for wallet in SPV".to_string())
+    .map_err(|_| {
+        format!(
+            "Timed out after {:?} waiting for wallet to register with the upstream backend",
+            wait_timeout
+        )
+    })?
 }
 
 /// Wait for SPV to complete initial sync (all managers including masternodes).
@@ -165,7 +163,7 @@ pub async fn wait_for_spv_running(
     app_context: &Arc<AppContext>,
     wait_timeout: Duration,
 ) -> Result<(), String> {
-    use dash_evo_tool::spv::SpvStatus;
+    use dash_evo_tool::model::spv_status::SpvStatus;
     timeout(wait_timeout, async {
         loop {
             if app_context.connection_status().spv_status() == SpvStatus::Running {
@@ -183,21 +181,47 @@ pub async fn wait_for_spv_running(
     })
 }
 
-/// Wait for SPV to connect to at least one peer.
+/// Wait until the upstream `SpvRuntime` has connected to peers and begun
+/// syncing.
+///
+/// Chain sync is upstream-owned; the only signal DET observes is the
+/// push-based `ConnectionStatus` fed by the wallet-backend `EventBridge`.
+/// `on_progress` / `on_sync_event` move the status to `Syncing` (or
+/// `Running`) only once a peer is connected and header sync has started —
+/// upstream cannot make sync progress without a peer. The dedicated
+/// `PeersUpdated` peer-count atomic is not reliably populated by this
+/// upstream revision, so an active sync status (not the raw count) is the
+/// authoritative "we have peers" signal.
 pub async fn wait_for_spv_peers(
     app_context: &Arc<AppContext>,
     wait_timeout: Duration,
 ) -> Result<(), String> {
-    let spv = app_context.spv_manager().clone();
-    timeout(wait_timeout, async move {
+    use dash_evo_tool::model::spv_status::SpvStatus;
+    let cs = app_context.connection_status();
+    timeout(wait_timeout, async {
         loop {
-            let snapshot = spv.status_async().await;
-            if snapshot.connected_peers > 0 {
-                return;
+            // A non-zero peer count is the strongest signal when present,
+            // but `Syncing`/`Running` already implies a connected peer.
+            if cs.spv_connected_peers() > 0
+                || matches!(cs.spv_status(), SpvStatus::Syncing | SpvStatus::Running)
+            {
+                return Ok(());
+            }
+            if cs.spv_status() == SpvStatus::Error {
+                return Err(format!(
+                    "SPV entered Error state while waiting for peers: {}",
+                    cs.spv_last_error().unwrap_or_default()
+                ));
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await
-    .map_err(|_| format!("Timed out after {:?} waiting for SPV peers", wait_timeout))
+    .map_err(|_| {
+        format!(
+            "Timed out after {:?} waiting for SPV to connect to a peer (status: {})",
+            wait_timeout,
+            cs.spv_status()
+        )
+    })?
 }

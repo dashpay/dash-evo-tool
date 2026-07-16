@@ -1,6 +1,7 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::document::DocumentTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
@@ -12,9 +13,8 @@ use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery};
-use egui::Context;
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBasicInfo;
@@ -25,12 +25,28 @@ pub enum FetchStatus {
     Fetching(DateTime<Utc>),
 }
 
+impl FetchStatus {
+    fn stop_if_fetch_in_flight(
+        &mut self,
+        expected: Option<&BackendTaskContext>,
+        completed: &BackendTaskContext,
+    ) -> bool {
+        if matches!(self, Self::Fetching(_)) && expected == Some(completed) {
+            *self = Self::NotFetching;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct ViewTokenClaimsScreen {
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     pub new_claims_query: DocumentQuery,
     fetch_status: FetchStatus,
     pub app_context: Arc<AppContext>,
     claims: Vec<Document>,
+    pending_fetch_context: Option<BackendTaskContext>,
 }
 
 impl ViewTokenClaimsScreen {
@@ -41,6 +57,7 @@ impl ViewTokenClaimsScreen {
         Self {
             identity_token_basic_info: identity_token_basic_info.clone(),
             new_claims_query: DocumentQuery {
+                select: SelectProjection::documents(),
                 data_contract: app_context.token_history_contract.clone(),
                 document_type_name: "claim".to_string(),
                 where_clauses: vec![
@@ -55,6 +72,8 @@ impl ViewTokenClaimsScreen {
                         value: Value::Identifier(identity_token_basic_info.identity_id.into()),
                     },
                 ],
+                group_by: Vec::new(),
+                having: Vec::new(),
                 order_by_clauses: vec![],
                 limit: 0,
                 start: None,
@@ -62,42 +81,78 @@ impl ViewTokenClaimsScreen {
             fetch_status: FetchStatus::NotFetching,
             app_context: app_context.clone(),
             claims: vec![],
+            pending_fetch_context: None,
         }
+    }
+
+    fn correlate_fetch_action(&mut self, action: AppAction) -> AppAction {
+        let AppAction::BackendTask(task) = action else {
+            return action;
+        };
+        if !matches!(
+            BackendTaskContext::from(&task),
+            BackendTaskContext::FetchDocuments(_)
+        ) {
+            return AppAction::BackendTask(task);
+        }
+
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.pending_fetch_context = Some(context.clone());
+        self.fetch_status = FetchStatus::Fetching(Utc::now());
+        AppAction::BackendTaskWithContext { task, context }
     }
 }
 
 impl ScreenLike for ViewTokenClaimsScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        match message_type {
-            MessageType::Error | MessageType::Warning => {
-                if message.contains("Error fetching documents") {
-                    self.fetch_status = FetchStatus::NotFetching;
-                }
-            }
-            _ => {}
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self
+            .fetch_status
+            .stop_if_fetch_in_flight(self.pending_fetch_context.as_ref(), context)
+        {
+            self.pending_fetch_context = None;
         }
     }
 
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::Documents(documents) = backend_task_success_result {
-            self.fetch_status = FetchStatus::NotFetching;
-            self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.dispatched_document_fetch() && self.pending_fetch_context.as_ref() != Some(context)
+    }
 
-            if self.claims.is_empty() {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "No claims found",
-                    MessageType::Info,
-                );
-            }
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: BackendTaskSuccessResult,
+    ) {
+        let BackendTaskSuccessResult::Documents(documents) = backend_task_success_result else {
+            return;
+        };
+        if !context.is_fetch_documents()
+            || !self
+                .fetch_status
+                .stop_if_fetch_in_flight(self.pending_fetch_context.as_ref(), context)
+        {
+            return;
+        }
+
+        self.pending_fetch_context = None;
+        self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
+
+        if self.claims.is_empty() {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No claims found",
+                MessageType::Info,
+            );
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         // Top panel
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -117,16 +172,16 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
         // Central panel
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 
@@ -134,7 +189,6 @@ impl ScreenLike for ViewTokenClaimsScreen {
                 action |= AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
                 )));
-                self.fetch_status = FetchStatus::Fetching(Utc::now())
             }
 
             // Message display is handled by the global MessageBanner
@@ -220,6 +274,146 @@ impl ScreenLike for ViewTokenClaimsScreen {
             }
         });
 
-        action
+        self.correlate_fetch_action(action)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_task::BackendTaskContext;
+    use dash_sdk::dpp::data_contracts::SystemDataContract;
+    use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    fn query(limit: u32) -> DocumentQuery {
+        let contract =
+            load_system_data_contract(SystemDataContract::TokenHistory, PlatformVersion::latest())
+                .expect("token history contract");
+        let mut query = DocumentQuery::new(Arc::new(contract), "claim").expect("claim query");
+        query.limit = limit;
+        query
+    }
+
+    #[test]
+    fn in_flight_claim_fetch_failure_requires_the_matching_backend_task() {
+        let expected = BackendTaskContext::FetchDocuments(Box::new(query(10)));
+        let different_query = BackendTaskContext::FetchDocuments(Box::new(query(20)));
+        let mut status = FetchStatus::Fetching(Utc::now());
+        assert!(!status.stop_if_fetch_in_flight(Some(&expected), &BackendTaskContext::Other));
+        assert!(!status.stop_if_fetch_in_flight(Some(&expected), &BackendTaskContext::Unknown));
+        assert!(!status.stop_if_fetch_in_flight(Some(&expected), &different_query));
+        assert!(!status.stop_if_fetch_in_flight(
+            Some(&expected),
+            &BackendTaskContext::FetchDocumentsPage(Box::new(query(10))),
+        ));
+        assert!(matches!(status, FetchStatus::Fetching(_)));
+
+        assert!(status.stop_if_fetch_in_flight(Some(&expected), &expected));
+        assert_eq!(status, FetchStatus::NotFetching);
+
+        assert!(!status.stop_if_fetch_in_flight(Some(&expected), &expected));
+        assert_eq!(status, FetchStatus::NotFetching);
+    }
+
+    #[test]
+    fn claim_success_requires_the_matching_in_flight_context() {
+        let tmp = tempfile::tempdir().expect("temp data dir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = ViewTokenClaimsScreen::new(
+            IdentityTokenBasicInfo {
+                token_id: Identifier::from([1; 32]),
+                token_alias: "Test token".to_string(),
+                identity_id: Identifier::from([2; 32]),
+                contract_id: Identifier::from([3; 32]),
+                token_position: 0,
+            },
+            &app_context,
+        );
+        let expected =
+            BackendTaskContext::FetchDocuments(Box::new(screen.new_claims_query.clone()));
+        let mut different_query = screen.new_claims_query.clone();
+        different_query.limit = 20;
+        let different_context = BackendTaskContext::FetchDocuments(Box::new(different_query));
+
+        screen.fetch_status = FetchStatus::Fetching(Utc::now());
+        screen.pending_fetch_context = Some(expected.clone());
+        screen.display_backend_task_result(
+            &different_context,
+            BackendTaskSuccessResult::Documents(Default::default()),
+        );
+
+        assert!(matches!(screen.fetch_status, FetchStatus::Fetching(_)));
+        assert_eq!(screen.pending_fetch_context.as_ref(), Some(&expected));
+
+        screen.display_backend_task_result(
+            &expected,
+            BackendTaskSuccessResult::Documents(Default::default()),
+        );
+
+        assert_eq!(screen.fetch_status, FetchStatus::NotFetching);
+        assert_eq!(screen.pending_fetch_context, None);
+
+        screen.display_backend_task_result(
+            &expected,
+            BackendTaskSuccessResult::Documents(Default::default()),
+        );
+
+        assert_eq!(screen.fetch_status, FetchStatus::NotFetching);
+        assert_eq!(screen.pending_fetch_context, None);
+    }
+
+    #[test]
+    fn identical_claim_redispatch_ignores_the_first_error_and_accepts_the_second_success() {
+        let tmp = tempfile::tempdir().expect("temp data dir");
+        let app_context = crate::context::test_support::test_app_context(tmp.path());
+        let mut screen = ViewTokenClaimsScreen::new(
+            IdentityTokenBasicInfo {
+                token_id: Identifier::from([1; 32]),
+                token_alias: "Test token".to_string(),
+                identity_id: Identifier::from([2; 32]),
+                contract_id: Identifier::from([3; 32]),
+                token_position: 0,
+            },
+            &app_context,
+        );
+        let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocuments(
+            screen.new_claims_query.clone(),
+        )));
+
+        let first_action = screen.correlate_fetch_action(AppAction::BackendTask(task.clone()));
+        let AppAction::BackendTaskWithContext {
+            context: first_context,
+            ..
+        } = first_action
+        else {
+            panic!("claim fetch must carry its dispatch context");
+        };
+        let second_action = screen.correlate_fetch_action(AppAction::BackendTask(task));
+        let AppAction::BackendTaskWithContext {
+            context: second_context,
+            ..
+        } = second_action
+        else {
+            panic!("claim fetch must carry its dispatch context");
+        };
+
+        assert_ne!(first_context, second_context);
+        assert!(
+            screen
+                .should_suppress_backend_task_error(&first_context, &TaskError::NoIdentitiesFound)
+        );
+        screen.display_backend_task_error(&first_context, &TaskError::NoIdentitiesFound);
+        assert!(matches!(screen.fetch_status, FetchStatus::Fetching(_)));
+        assert_eq!(screen.pending_fetch_context.as_ref(), Some(&second_context));
+
+        screen.display_backend_task_result(
+            &second_context,
+            BackendTaskSuccessResult::Documents(Default::default()),
+        );
+
+        assert_eq!(screen.fetch_status, FetchStatus::NotFetching);
+        assert_eq!(screen.pending_fetch_context, None);
     }
 }

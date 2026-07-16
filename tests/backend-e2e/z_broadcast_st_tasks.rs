@@ -6,7 +6,7 @@
 
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
-use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
+use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
@@ -37,7 +37,13 @@ async fn step_broadcast_valid(
     // Fetch the current identity from Platform so we have the latest public
     // keys and revision (other tests may have added keys since registration).
     let sdk = ctx.app_context.sdk();
-    let mut identity = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+    let mut identity =
+        run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id).await
+            }
+        })
         .await
         .expect("failed to fetch identity from Platform")
         .expect("identity not found on Platform");
@@ -111,6 +117,7 @@ async fn step_broadcast_valid(
         platform_version,
         None,
     )
+    .await
     .expect("failed to build IdentityUpdateTransition");
 
     tracing::info!("state transition built and signed, broadcasting...");
@@ -129,23 +136,35 @@ async fn step_broadcast_valid(
     );
     tracing::info!("broadcast succeeded");
 
-    // Brief delay for DAPI propagation — broadcast confirms on one node but
-    // a different node may serve the re-fetch before processing the same block.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+    // Poll for the new key to become visible rather than relying on a single
+    // fixed delay. The broadcast confirms on one node, but a different node may
+    // serve the re-fetch before processing the same block — a fixed 1s sleep
+    // races that propagation and fails spuriously. Re-fetch until the key
+    // appears or the ~10s deadline passes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (fetched, has_new_key) = loop {
+        let fetched = run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id).await
+            }
+        })
         .await
         .expect("failed to re-fetch identity")
         .expect("identity not found on Platform after broadcast");
-
-    let has_new_key = fetched
-        .public_keys()
-        .values()
-        .any(|k| k.data() == new_ipk.data());
+        let has_new_key = fetched
+            .public_keys()
+            .values()
+            .any(|k| k.data() == new_ipk.data());
+        if has_new_key || std::time::Instant::now() >= deadline {
+            break (fetched, has_new_key);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
 
     assert!(
         has_new_key,
-        "New key NOT found on Platform after broadcast. \
+        "New key NOT found on Platform within 10s of broadcast. \
          Fetched {} keys, expected new key with id {}. \
          The broadcast succeeded, so the key should be visible.",
         fetched.public_keys().len(),
@@ -246,6 +265,7 @@ async fn step_broadcast_invalid(
         platform_version,
         None,
     )
+    .await
     .expect("failed to build (invalid-nonce) IdentityUpdateTransition");
 
     tracing::info!("broadcasting invalid state transition (nonce=u64::MAX)...");

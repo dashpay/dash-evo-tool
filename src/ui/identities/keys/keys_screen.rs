@@ -4,7 +4,7 @@ use crate::ui::ScreenLike;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use std::sync::Arc;
 
 pub struct KeysScreen {
@@ -15,9 +15,16 @@ pub struct KeysScreen {
 impl ScreenLike for KeysScreen {
     fn refresh(&mut self) {}
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Identity Keys");
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Back").clicked() {
+                    action = AppAction::PopScreen;
+                }
+                ui.heading("Identity Keys");
+            });
+            ui.separator();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -38,7 +45,7 @@ impl ScreenLike for KeysScreen {
                 }
             });
         });
-        AppAction::None
+        action
     }
 }
 

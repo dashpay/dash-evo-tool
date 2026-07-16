@@ -1,9 +1,15 @@
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window_after_open;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use egui::Ui;
 
 impl TokensScreen {
+    pub(super) fn open_data_contract_json_popup(&mut self, text: String) {
+        self.json_popup_text = text;
+        self.json_popup_opening_guard.arm();
+        self.show_json_popup = true;
+    }
+
     /// Renders a popup window displaying the data contract JSON.
     pub(super) fn render_data_contract_json_popup(&mut self, ui: &mut Ui) {
         if self.show_json_popup {
@@ -40,7 +46,7 @@ impl TokensScreen {
                 })
                 .show(ui.ctx(), |ui| {
                     // Display the JSON in a multiline text box
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.add_space(10.0);
                     ui.label(
                         egui::RichText::new("Below is the data contract JSON:")
@@ -66,7 +72,7 @@ impl TokensScreen {
 
                     // Close button — right-aligned to match ConfirmationDialog pattern
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                             self.show_json_popup = false;
                         }
@@ -81,7 +87,11 @@ impl TokensScreen {
             // Handle click outside window
             if let Some(ref wr) = window_response
                 && self.show_json_popup
-                && clicked_outside_window(ui.ctx(), wr.response.rect)
+                && clicked_outside_window_after_open(
+                    ui.ctx(),
+                    wr.response.rect,
+                    &mut self.json_popup_opening_guard,
+                )
             {
                 self.show_json_popup = false;
             }
@@ -91,5 +101,39 @@ impl TokensScreen {
                 self.show_json_popup = false;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::helpers::ModalOpeningGuard;
+
+    #[test]
+    fn opening_click_does_not_immediately_close_json_popup() {
+        let ctx = egui::Context::default();
+        let window_rect =
+            egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
+        let outside_pos = egui::pos2(0.0, 0.0);
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(outside_pos),
+                egui::Event::PointerButton {
+                    pos: outside_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut guard = ModalOpeningGuard::armed();
+        let mut closed = true;
+
+        let _ = ctx.run_ui(raw, |ui| {
+            closed = clicked_outside_window_after_open(ui.ctx(), window_rect, &mut guard);
+        });
+
+        assert!(!closed, "the JSON popup must survive its opening click");
     }
 }

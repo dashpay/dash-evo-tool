@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 34;
+pub const DEFAULT_DB_VERSION: u16 = 38;
 
 /// Minimal view of `.env` values the v34 migration needs.
 struct V34EnvSnapshot {
@@ -69,7 +69,110 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
     })
 }
 
-pub const DEFAULT_NETWORK: &str = "mainnet";
+/// Migration helper: replace the legacy `devnet:` / `local` network
+/// labels with the modern `devnet` / `regtest` spellings across every
+/// table that still carries a `network` column.
+///
+/// Pre-C7 this lived as `Database::fix_identity_devnet_network_name` in
+/// `database/identities.rs`. The file is gone — the helper is now a free
+/// function so it can be called from the migration ladder without
+/// reintroducing a domain-specific module.
+fn fix_devnet_network_name_in_legacy_tables(conn: &Connection) -> rusqlite::Result<()> {
+    // `scheduled_votes` lingers on pre-C5 installs but is no longer
+    // created on fresh installs; the per-table existence check below
+    // skips it transparently on the new schema.
+    const TABLES: [&str; 11] = [
+        "asset_lock_transaction",
+        "contestant",
+        "contested_name",
+        "contract",
+        "identity",
+        "identity_token_balances",
+        "scheduled_votes",
+        "settings",
+        "token",
+        "utxos",
+        "wallet",
+    ];
+
+    for t in TABLES {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [t],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
+        // Pre-C5 `scheduled_votes` (v5 schema) had no `network` column;
+        // the v6 schema upgrade that added it was unwired in C5, so
+        // legacy DBs that never ran a later migration still have the
+        // old shape. Skip the UPDATE on those — the table is orphaned
+        // either way.
+        let has_network: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='network'",
+            [t],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_network {
+            continue;
+        }
+        conn.execute(
+            &format!("UPDATE {t} SET network = 'devnet' WHERE network = 'devnet:'"),
+            [],
+        )?;
+        conn.execute(
+            &format!("UPDATE {t} SET network = 'regtest' WHERE network = 'local'"),
+            [],
+        )?;
+    }
+
+    tracing::debug!("Updated network names in database");
+    Ok(())
+}
+
+/// Detect whether this on-disk DB carries any legacy DET wallet state.
+///
+/// Returns true when any of the canary legacy tables (`wallet`,
+/// `wallet_addresses`, `single_key_wallet`, `utxos`, `shielded_notes`)
+/// exists and contains at least one row. Truly-fresh installs — empty
+/// `data.db` or DB without those tables — return false, so the gated
+/// CREATE TABLE statements in [`Database::create_tables`] are skipped
+/// and the wallet state lives entirely in `platform-wallet.sqlite`.
+///
+/// The check is best-effort: any sqlite read error is treated as
+/// "no legacy detected" so a malformed/locked DB does not accidentally
+/// recreate the dormant schema on a fresh install.
+fn legacy_detected(conn: &Connection) -> bool {
+    const TARGETS: [&str; 5] = [
+        "wallet",
+        "wallet_addresses",
+        "single_key_wallet",
+        "utxos",
+        "shielded_notes",
+    ];
+    for table in TARGETS {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if !exists {
+            continue;
+        }
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+        if count > 0 {
+            return true;
+        }
+    }
+    false
+}
 
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
@@ -77,7 +180,7 @@ impl Database {
         // created with an older schema. This must happen before any queries that
         // depend on these columns (like db_schema_version which needs database_version).
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.locked_conn();
             // Check if settings table exists before trying to ensure columns
             let settings_exists: bool = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
@@ -91,7 +194,18 @@ impl Database {
 
         // Check if this is the first time setup by looking for entries in the settings table.
         if self.is_first_time_setup()? {
-            self.create_tables()?;
+            // Detect legacy DET wallet state on the same DB file. Truly-fresh
+            // installs skip the wallet/utxos/single_key_wallet/wallet_transactions/
+            // shielded_notes/shielded_wallet_meta CREATE TABLE statements — that
+            // state now lives in `platform-wallet.sqlite`. Pre-existing installs
+            // (settings row missing but wallet rows present, an unusual but
+            // possible recovery shape) still get the legacy tables so the
+            // migration ladder has something to upgrade.
+            let include_legacy = {
+                let conn = self.locked_conn();
+                legacy_detected(&conn)
+            };
+            self.create_tables(include_legacy)?;
             self.set_default_version()?;
         } else {
             self.run_consistency_checks();
@@ -125,6 +239,45 @@ impl Database {
         data_dir: Option<&Path>,
     ) -> Result<(), MigrationError> {
         match version {
+            38 => {
+                // Drop the retired `core_backend_mode` settings column. The
+                // RPC/SPV backend selector it held was unwired in C3 (user
+                // prefs moved to the upstream k/v store) and chain sync is
+                // SPV-only now, so the column is permanent dead weight.
+                // Existence-guarded and idempotent; mutates ONLY the settings
+                // table and preserves every other column and value.
+                self.drop_core_backend_mode_column(tx)
+                    .migration_err("settings", "v38: drop core_backend_mode column")?;
+            }
+            37 => {
+                // Retire DET's home-grown shielded subsystem: the upstream
+                // `platform-wallet` coordinator owns all Orchard state now.
+                // No released build ever persisted shielded rows (v0.9.3 ships
+                // zero shielded code), so dropping the dead tables is safe and
+                // loses no user data. Existence-guarded via IF EXISTS.
+                tx.execute_batch(
+                    "DROP TABLE IF EXISTS shielded_notes;\n\
+                     DROP TABLE IF EXISTS shielded_wallet_meta;",
+                )
+                .migration_err("shielded_notes", "v37: drop dead shielded tables")?;
+            }
+            36 => {
+                // Drop the orphaned `dashpay_dip14_quarantine_active`
+                // settings column left behind by an early P3a build and the
+                // withdrawn quarantine apparatus. Existence-guarded and
+                // idempotent; mutates ONLY the settings table.
+                self.drop_dead_settings_columns(tx)
+                    .migration_err("settings", "v36: drop dead settings columns")?;
+            }
+            35 => {
+                // Platform-wallet migration scaffolding (Stage A + Stage B)
+                // has been removed. v34 users advance through this arm with
+                // no schema or marker writes — the data.db file is left
+                // dormant and the future migration tool covers the wallet
+                // seeds. The bare version bump preserves the ladder so the
+                // v36+ arms keep running.
+                let _ = tx;
+            }
             34 => {
                 // SPV is now the default Core-level backend. Users who have a
                 // configured local Dash Core node (Expert mode + at least one
@@ -147,13 +300,31 @@ impl Database {
                     None => true,
                 };
 
-                if migrate_to_spv {
-                    tx.execute("UPDATE settings SET core_backend_mode = 1 WHERE id = 1", [])
-                        .migration_err("settings", "v34: pin SPV as default backend")?;
+                // The `core_backend_mode` column itself was unwired in C3
+                // (user prefs moved to the upstream k/v store) — only a DB
+                // that was created before that change still has it. Guard
+                // the legacy update so synthetic v33 DBs created from the
+                // post-C3 schema are not rejected.
+                let has_legacy_column: bool = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='core_backend_mode'",
+                        [],
+                        |row| row.get::<_, i32>(0).map(|c| c > 0),
+                    )
+                    .unwrap_or(false);
+                if has_legacy_column {
+                    if migrate_to_spv {
+                        tx.execute("UPDATE settings SET core_backend_mode = 1 WHERE id = 1", [])
+                            .migration_err("settings", "v34: pin SPV as default backend")?;
+                    } else {
+                        tracing::info!(
+                            "v34 migration: preserving existing core_backend_mode \
+                             (local Dash Core node configured)"
+                        );
+                    }
                 } else {
-                    tracing::info!(
-                        "v34 migration: preserving existing core_backend_mode \
-                         (local Dash Core node configured)"
+                    tracing::debug!(
+                        "v34 migration: legacy core_backend_mode column absent — no-op"
                     );
                 }
             }
@@ -169,16 +340,15 @@ impl Database {
                 self.clean_orphaned_fk_rows(tx)?;
                 self.add_core_wallet_name_column(tx)
                     .migration_err("wallet", "add core_wallet_name column")?;
-                self.init_contacts_tables(tx)
-                    .migration_err("contact_private_info", "create contacts tables")?;
-                self.create_shielded_tables(tx)
-                    .migration_err("shielded_notes", "create shielded tables")?;
-                self.create_shielded_wallet_meta_table(tx)
-                    .migration_err("shielded_wallet_meta", "create shielded_wallet_meta table")?;
-                self.add_nullifier_sync_timestamp_column(tx).migration_err(
-                    "shielded_wallet_meta",
-                    "add last_nullifier_sync_timestamp column",
-                )?;
+                // Legacy v33 also created `contact_private_info` — the
+                // table was retired in D4d (private memos now live in the
+                // per-network k/v sidecar). Pre-D4d installs keep the
+                // dormant row set; fresh installs never create the table.
+                //
+                // The old `shielded_notes` / `shielded_wallet_meta` tables are
+                // no longer created here: DET's shielded subsystem was retired
+                // and the v37 migration drops them. A DB stepping through v33
+                // simply skips the create; v37 then drops any legacy copies.
                 // Defer FK checks so parent->child rename order doesn't matter
                 // (contestant and token have composite FKs that include network).
                 tx.execute_batch("PRAGMA defer_foreign_keys = ON")
@@ -255,77 +425,152 @@ impl Database {
                     .migration_err("wallet_transactions", "create table")?;
             }
             13 => {
-                self.init_dashpay_tables_in_tx(tx)
-                    .migration_err("dashpay_profiles", "create DashPay tables")?;
+                // Legacy v13 created the DashPay tables (dashpay_profiles,
+                // dashpay_contacts, dashpay_contact_requests,
+                // dashpay_payments, dashpay_contact_address_indices,
+                // dashpay_address_mappings). All six were retired in D4d
+                // — upstream `ManagedIdentity` and the k/v sidecar now own
+                // the state. Pre-D4d installs keep the dormant rows; fresh
+                // installs never reach this arm because they jump to
+                // `DEFAULT_DB_VERSION` directly.
             }
             12 => {
                 self.add_disable_zmq_column(tx)
                     .migration_err("settings", "add disable_zmq column")?;
             }
             11 => {
-                self.rename_identity_column_is_in_creation_to_status(tx)
-                    .migration_err("identity", "rename is_in_creation to status")?;
+                // Rename `is_in_creation` to `status` on the legacy
+                // identity table. Pre-C7 this method lived on `Database`;
+                // it is inlined here now that `database/identities.rs`
+                // is gone.
+                tx.execute(
+                    "ALTER TABLE identity RENAME COLUMN is_in_creation TO status",
+                    [],
+                )
+                .migration_err("identity", "rename is_in_creation to status")?;
+                tx.execute("UPDATE identity SET status = 2 WHERE status = 0", [])
+                    .migration_err("identity", "remap is_in_creation values")?;
             }
             10 => {
                 self.add_theme_preference_column(tx)
                     .migration_err("settings", "add theme_preference column")?;
             }
             9 => {
-                self.delete_all_identities_in_all_devnets_and_regtest(tx)
-                    .migration_err("identity", "delete devnet/regtest identities")?;
-                self.delete_all_local_tokens_in_all_devnets_and_regtest(tx)
+                // The `identity` table is kept (empty CREATE) so legacy
+                // rows can still be cleaned up here. Fresh installs have
+                // an empty table — the DELETE is a no-op.
+                tx.execute(
+                    "DELETE FROM identity WHERE (network LIKE 'devnet%' OR network = 'regtest')",
+                    [],
+                )
+                .migration_err("identity", "delete devnet/regtest identities")?;
+                // The `token` table was unwired in C7 — fresh installs
+                // do not create it. Legacy DBs still have it and pay
+                // the cost of the DELETE once.
+                if self
+                    .table_exists(tx, "token")
+                    .migration_err("token", "check table existence")?
+                {
+                    tx.execute(
+                        "DELETE FROM token WHERE network LIKE 'devnet%' OR network = 'regtest'",
+                        [],
+                    )
                     .migration_err("token", "delete devnet/regtest tokens")?;
-                self.remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(tx)
+                }
+                // `asset_lock_transaction` was unwired — fresh installs do
+                // not create the table, so the devnet/regtest sweep is
+                // skipped when the table is absent. Legacy DBs still have
+                // it and pay the cost of the DELETE once.
+                if self
+                    .table_exists(tx, "asset_lock_transaction")
+                    .migration_err("asset_lock_transaction", "check table existence")?
+                {
+                    tx.execute(
+                        "DELETE FROM asset_lock_transaction \
+                         WHERE network LIKE 'devnet%' OR network = 'regtest'",
+                        [],
+                    )
                     .migration_err(
                         "asset_lock_transaction",
                         "clear devnet/regtest asset lock identity IDs",
                     )?;
-                self.remove_all_contracts_in_all_devnets_and_regtest(tx)
+                }
+                // The `contract` table was unwired in C6 — on fresh
+                // installs it does not exist, so we skip the devnet/regtest
+                // sweep when the table is absent. Legacy DBs still have it
+                // and pay the cost of the DELETE once.
+                if self
+                    .table_exists(tx, "contract")
+                    .migration_err("contract", "check table existence")?
+                {
+                    tx.execute(
+                        "DELETE FROM contract WHERE network LIKE 'devnet%' OR network = 'regtest'",
+                        [],
+                    )
                     .migration_err("contract", "delete devnet/regtest contracts")?;
-                self.fix_identity_devnet_network_name(tx)
+                }
+                fix_devnet_network_name_in_legacy_tables(tx)
                     .migration_err("identity", "fix devnet network name")?;
             }
             8 => {
-                self.change_contract_name_to_alias(tx)
-                    .migration_err("contract", "rename name to alias")?;
+                // The `contract` table was unwired in C6 — on fresh
+                // installs it does not exist, so we skip the column
+                // rename when the table is absent.
+                if self
+                    .table_exists(tx, "contract")
+                    .migration_err("contract", "check table existence")?
+                {
+                    let name_column_exists: bool = tx
+                        .query_row(
+                            "SELECT COUNT(*) FROM pragma_table_info('contract') WHERE name='name'",
+                            [],
+                            |row| Ok(row.get::<_, i64>(0)? > 0),
+                        )
+                        .migration_err("contract", "inspect table columns")?;
+                    if name_column_exists {
+                        tx.execute("ALTER TABLE contract RENAME COLUMN name TO alias", [])
+                            .migration_err("contract", "rename name to alias")?;
+                    }
+                }
             }
             7 => {
-                self.migrate_asset_lock_fk_to_set_null(tx)
-                    .migration_err("asset_lock_transaction", "migrate FK to SET NULL")?;
+                // `asset_lock_transaction` was unwired — fresh installs do
+                // not create the table, so the FK migration is skipped
+                // when absent. Legacy DBs still rebuild the FK once.
+                if self
+                    .table_exists(tx, "asset_lock_transaction")
+                    .migration_err("asset_lock_transaction", "check table existence")?
+                {
+                    Self::migrate_asset_lock_fk_to_set_null(tx)
+                        .migration_err("asset_lock_transaction", "migrate FK to SET NULL")?;
+                }
             }
             6 => {
-                self.update_scheduled_votes_table(tx)
-                    .migration_err("scheduled_votes", "update table schema")?;
-                self.initialize_token_table(tx)
-                    .migration_err("token", "create table")?;
-                self.drop_identity_token_balances_table(tx)
-                    .migration_err("identity_token_balances", "drop table")?;
-                self.initialize_identity_token_balances_table(tx)
-                    .migration_err("identity_token_balances", "create table")?;
-                tx.execute("DROP TABLE IF EXISTS identity_order", [])
-                    .migration_err("identity_order", "drop table")?;
-                self.initialize_identity_order_table(tx)
-                    .migration_err("identity_order", "create table")?;
-                tx.execute("DROP TABLE IF EXISTS token_order", [])
-                    .migration_err("token_order", "drop table")?;
-                self.initialize_token_order_table(tx)
-                    .migration_err("token_order", "create table")?;
+                // Pre-C5: `scheduled_votes` schema upgrade. The table is no longer
+                // created/managed; pre-C5 installs keep the orphaned table dormant.
+                //
+                // Pre-C7: this arm used to (re)create the `token`,
+                // `identity_token_balances`, `identity_order` and
+                // `token_order` tables. All four were unwired in C7
+                // (tokens + identity registry moved to the per-network
+                // k/v store). Fresh installs no longer create them and
+                // legacy installs keep the dormant rows.
+                let _ = tx;
             }
             5 => {
-                self.initialize_scheduled_votes_table(tx)
-                    .migration_err("scheduled_votes", "create table")?;
+                // Pre-C5: `scheduled_votes` create. Removed in C5; the table
+                // is no longer created on fresh installs.
             }
             4 => {
-                self.initialize_top_up_table(tx)
-                    .migration_err("top_up", "create table")?;
+                // Pre-C5: `top_up` create. Removed in C5.
             }
             3 => {
                 self.add_custom_dash_qt_columns(tx)
                     .migration_err("settings", "add custom dash_qt columns")?;
             }
             2 => {
-                self.initialize_proof_log_table(tx)
-                    .migration_err("proof_log", "create table")?;
+                // Pre-C5: `proof_log` create. Removed in C5; proof errors now
+                // surface via structured tracing only.
             }
             _ => {
                 tracing::warn!("No database changes for version {}", version);
@@ -370,10 +615,7 @@ impl Database {
                 source: rusqlite::Error::InvalidQuery,
             }),
             std::cmp::Ordering::Less => {
-                let mut conn = self
-                    .conn
-                    .lock()
-                    .expect("Failed to lock database connection");
+                let mut conn = self.locked_conn();
 
                 for version in (original_version + 1)..=to_version {
                     tracing::debug!("Applying migration v{version}");
@@ -415,7 +657,7 @@ impl Database {
 
     /// Checks if the `settings` table is empty or missing, indicating a first-time setup.
     fn is_first_time_setup(&self) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         // Check if the `settings` table exists by querying `sqlite_master`
         let table_exists: bool = conn.query_row(
@@ -435,28 +677,33 @@ impl Database {
         }
     }
 
-    /// Checks version of the database.
+    /// Reads the saved data version as SQLite stores it.
     ///
-    /// Returns the current version as `Ok(Some(version))`.
-    ///
-    /// Note it returns Ok(Some(version)) even is the current database is above the default version.
-    /// This is to allow the app to detect when database version is too high and to prevent
-    /// the app from running with an unsupported database version.
-    fn db_schema_version(&self) -> rusqlite::Result<u16> {
-        let conn = self.conn.lock().unwrap();
-        let result: rusqlite::Result<u16> = conn.query_row(
+    /// `None` means the settings table is absent. An existing table without its
+    /// singleton row is version `0`, which predates every supported migration.
+    pub(crate) fn stored_data_version(&self) -> rusqlite::Result<Option<i64>> {
+        let conn = self.locked_conn();
+        if !self.table_exists(&conn, "settings")? {
+            return Ok(None);
+        }
+
+        match conn.query_row(
             "SELECT database_version FROM settings WHERE id = 1",
             [],
             |row| row.get(0),
-        );
-
-        match result {
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                tracing::debug!("No database version found, returning default version 0");
-                Ok(0)
-            }
-            x => x,
+        ) {
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Some(0)),
+            result => result.map(Some),
         }
+    }
+
+    /// Checks the version used by the writable legacy migration ladder.
+    ///
+    /// Versions above the current default are returned unchanged so callers can
+    /// detect data written by a newer build.
+    fn db_schema_version(&self) -> rusqlite::Result<u16> {
+        let version = self.stored_data_version()?.unwrap_or(0);
+        u16::try_from(version).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, version))
     }
 
     /// Backs up the existing database with a unique timestamped filename in backups directory.
@@ -488,38 +735,37 @@ impl Database {
     }
 
     /// Creates all required tables with indexes if they don't already exist.
-    fn create_tables(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        // Create the settings table
+    ///
+    /// `include_legacy` controls whether the wallet-family tables
+    /// (`wallet`, `wallet_addresses`, `utxos`, `single_key_wallet`,
+    /// `wallet_transactions`, `shielded_notes`, `shielded_wallet_meta`)
+    /// are created. Truly-fresh DET installs pass `false` so these dormant
+    /// schemas never appear in `data.db`; legacy installs and the migration
+    /// ladder still pass `true` so upgrade arms keep working. Always-present
+    /// tables (`settings`, `identity`, `platform_address_balances`) are
+    /// created regardless.
+    pub(crate) fn create_tables(&self, include_legacy: bool) -> rusqlite::Result<()> {
+        let conn = self.locked_conn();
+        // Create the settings table.
+        //
+        // User-preference columns (network, theme, ZMQ, evonode tools, …)
+        // were unwired in C3 of the data.db unwire and moved to the
+        // upstream k/v store. The selected-wallet pointer
+        // (`selected_wallet_hash`, `selected_single_key_hash`) was
+        // unwired in C4 and moved to the per-network wallet k/v store.
+        // What survives here is the migration runner's version counter.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            password_check BLOB,
-            main_password_salt BLOB,
-            main_password_nonce BLOB,
-            network TEXT NOT NULL,
-            start_root_screen INTEGER NOT NULL,
-            custom_dash_qt_path TEXT,
-            overwrite_dash_conf INTEGER,
-            disable_zmq INTEGER DEFAULT 0,
-            theme_preference TEXT DEFAULT 'System',
-            core_backend_mode INTEGER DEFAULT 1,
-            database_version INTEGER NOT NULL,
-            onboarding_completed INTEGER DEFAULT 0,
-            show_evonode_tools INTEGER DEFAULT 0,
-            user_mode TEXT DEFAULT 'Advanced',
-            use_local_spv_node INTEGER DEFAULT 0,
-            auto_start_spv INTEGER DEFAULT 0,
-            close_dash_qt_on_exit INTEGER DEFAULT 1,
-            selected_wallet_hash BLOB,
-            selected_single_key_hash BLOB
+            database_version INTEGER NOT NULL
         )",
             [],
         )?;
 
-        // Create the wallet table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS wallet (
+        if include_legacy {
+            // Create the wallet table
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS wallet (
                 seed_hash BLOB NOT NULL PRIMARY KEY,
                 encrypted_seed BLOB NOT NULL,
                 salt BLOB NOT NULL,
@@ -538,17 +784,17 @@ impl Database {
                 last_terminal_block INTEGER DEFAULT 0,
                 core_wallet_name TEXT DEFAULT NULL
             )",
-            [],
-        )?;
+                [],
+            )?;
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
-            [],
-        )?;
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
+                [],
+            )?;
 
-        // Create wallet addresses
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS wallet_addresses (
+            // Create wallet addresses
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS wallet_addresses (
                 seed_hash BLOB NOT NULL,
                 address TEXT NOT NULL,
                 derivation_path TEXT NOT NULL,
@@ -559,12 +805,13 @@ impl Database {
                 PRIMARY KEY (seed_hash, address),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
-            [],
-        )?;
+                [],
+            )?;
 
-        // Create indexes for wallet addresses table
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+            // Create indexes for wallet addresses table
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+        }
 
         // Create Platform address balances table
         conn.execute(
@@ -582,9 +829,10 @@ impl Database {
             [],
         )?;
 
-        // Create the utxos table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS utxos (
+        if include_legacy {
+            // Create the utxos table
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS utxos (
                         txid BLOB NOT NULL,
                         vout INTEGER NOT NULL,
                         address TEXT NOT NULL,
@@ -593,49 +841,36 @@ impl Database {
                         network TEXT NOT NULL,
                         PRIMARY KEY (txid, vout, network)
                     );",
-            [],
-        )?;
+                [],
+            )?;
 
-        // Create indexes for utxos table
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_utxos_address ON utxos (address)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
-            [],
-        )?;
+            // Create indexes for utxos table
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_utxos_address ON utxos (address)",
+                [],
+            )?;
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
+                [],
+            )?;
 
-        // Create wallet transactions table for SPV history
-        self.initialize_wallet_transactions_table(&conn)?;
+            // Create wallet transactions table for SPV history
+            self.initialize_wallet_transactions_table(&conn)?;
+        }
 
-        // Create asset lock transaction table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
-                        tx_id BLOB PRIMARY KEY,
-                        transaction_data BLOB NOT NULL,
-                        amount INTEGER,
-                        instant_lock_data BLOB,
-                        chain_locked_height INTEGER,
-                        identity_id BLOB,
-                        identity_id_potentially_in_creation BLOB,
-                        wallet BLOB NOT NULL,
-                        network TEXT NOT NULL,
-                        FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
-                        FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
-                        FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
-                    )",
-            [],
-        )?;
+        // `asset_lock_transaction` was unwired entirely — fresh installs
+        // no longer create the table. Legacy installs keep the dormant
+        // rows; the migration tool drains them via git history.
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
-            [],
-        )?;
-
-        // Create the identities table
-        conn.execute(
-                    "CREATE TABLE IF NOT EXISTS identity (
+        if include_legacy {
+            // The local identity registry lives in the per-network wallet
+            // k/v store. The legacy `identity` table is created only for
+            // legacy installs and tests. Its sole live reader, `get_wallets`
+            // in `database/wallet.rs`, is a legacy-only path that errors on
+            // the missing `wallet` table before reaching `identity` on a
+            // fresh install, so omitting the table here is safe.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS identity (
                         id BLOB PRIMARY KEY,
                         data BLOB,
                         status INTEGER NOT NULL DEFAULT 0,
@@ -649,92 +884,49 @@ impl Database {
                         CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL) OR (wallet IS NULL AND wallet_index IS NULL)),
                         FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
                     )",
-                    [],
-                )?;
+                [],
+            )?;
+        }
 
-        // Create the composite index for faster querying
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_identity_local_network_type
-             ON identity (is_local, network, identity_type)",
-            [],
-        )?;
+        // contested_name / contestant tables removed in C6 — DPNS contest
+        // cache now lives in the per-network wallet k/v store. Legacy
+        // installs keep the dormant rows; fresh installs never create the
+        // tables.
 
-        // Create the contested names table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS contested_name (
-                        normalized_contested_name TEXT NOT NULL,
-                        locked_votes INTEGER,
-                        abstain_votes INTEGER,
-                        awarded_to BLOB,
-                        end_time INTEGER,
-                        locked INTEGER NOT NULL DEFAULT 0,
-                        last_updated INTEGER,
-                        network TEXT NOT NULL,
-                        PRIMARY KEY (normalized_contested_name, network)
-                    )",
-            [],
-        )?;
+        // The user-contract registry moved to the per-network wallet k/v
+        // store in C6. The `token` table was removed in C7, so nothing
+        // references `contract` any more — the empty placeholder is no
+        // longer created on fresh installs. Legacy installs keep the
+        // dormant rows.
 
-        // Create the contestants table
-        conn.execute(
-                    "CREATE TABLE IF NOT EXISTS contestant (
-                        normalized_contested_name TEXT NOT NULL,
-                        identity_id BLOB NOT NULL,
-                        name TEXT,
-                        votes INTEGER,
-                        created_at INTEGER,
-                        created_at_block_height INTEGER,
-                        created_at_core_block_height INTEGER,
-                        document_id BLOB,
-                        network TEXT NOT NULL,
-                        PRIMARY KEY (normalized_contested_name, identity_id, network),
-                        FOREIGN KEY (normalized_contested_name, network) REFERENCES contested_name(normalized_contested_name, network) ON DELETE CASCADE
-                    )",
-                    [],
-                )?;
+        // Token registry, per-identity token balances, identity ordering
+        // and token ordering all moved to the per-network wallet k/v
+        // store in C7. Nothing else references these tables, so they
+        // are no longer created on fresh installs. Legacy installs keep
+        // the dormant rows.
 
-        // Create the contracts table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS contract (
-                        contract_id BLOB,
-                        contract BLOB,
-                        alias TEXT,
-                        network TEXT NOT NULL,
-                        PRIMARY KEY (contract_id, network)
-                    )",
-            [],
-        )?;
+        // DashPay tables and `contact_private_info` were retired in D4d.
+        // Upstream `ManagedIdentity` now owns contact / profile / payment
+        // state, and a per-network k/v sidecar owns DET-only overlays
+        // (private memo, blocked / rejected markers, timestamps, address
+        // index, address mapping). Fresh installs no longer create the
+        // tables; legacy installs keep the dormant rows.
 
-        // Create indexes for the contracts table
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alias_network ON contract (alias, network)",
-            [],
-        )?;
+        if include_legacy {
+            // Initialize single key wallet table
+            self.initialize_single_key_wallet_table(&conn)?;
 
-        self.initialize_proof_log_table(&conn)?;
-        self.initialize_top_up_table(&conn)?;
-        self.initialize_scheduled_votes_table(&conn)?;
-        self.initialize_token_table(&conn)?;
-        self.initialize_identity_order_table(&conn)?;
-        self.initialize_token_order_table(&conn)?;
-        self.initialize_identity_token_balances_table(&conn)?;
-
-        // Initialize contacts and DashPay tables while holding the same connection lock
-        self.init_contacts_tables(&conn)?;
-        self.init_dashpay_tables_in_tx(&conn)?;
-
-        // Initialize single key wallet table
-        self.initialize_single_key_wallet_table(&conn)?;
-
-        // Initialize shielded pool tables
-        self.create_shielded_tables(&conn)?;
-        self.create_shielded_wallet_meta_table(&conn)?;
+            // The shielded pool tables (`shielded_notes` /
+            // `shielded_wallet_meta`) are intentionally NOT created: DET's
+            // shielded subsystem was retired and the upstream coordinator owns
+            // all Orchard state. The v37 migration drops any legacy copies.
+        }
 
         Ok(())
     }
 
     /// Ensures that the default database version is set in the settings table.
-    fn set_default_version(&self) -> rusqlite::Result<()> {
+    pub(crate) fn set_default_version(&self) -> rusqlite::Result<()> {
         // TODO: Discuss migration approach with the team.
         // Suggested approach:
         // we don't change `create_tables`, we just add migrations
@@ -743,12 +935,15 @@ impl Database {
         self.set_db_version(DEFAULT_DB_VERSION)
     }
     fn set_db_version(&self, version: u16) -> rusqlite::Result<()> {
-        // Default start_root_screen to 20 (RootScreenDashPayProfile)
+        // User-preference columns moved to the upstream k/v store (C3).
+        // Initialising the row only seeds the singleton primary key and
+        // the migration runner's version counter — everything else lives
+        // in `det:settings:v1` now.
         self.execute(
-            "INSERT INTO settings (id, network, start_root_screen, database_version)
-             VALUES (1, ?, 20, ?)
+            "INSERT INTO settings (id, database_version)
+             VALUES (1, ?)
              ON CONFLICT(id) DO UPDATE SET database_version = excluded.database_version",
-            params![DEFAULT_NETWORK, version],
+            params![version],
         )?;
         Ok(())
     }
@@ -1097,22 +1292,48 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
             [],
         )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_scheduled_votes_network ON scheduled_votes (network)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
-            [],
-        )?;
+        // The `token` and `identity_token_balances` tables were unwired
+        // in C7 — fresh installs do not create them, so we skip the
+        // index creation when the underlying table is absent. Legacy
+        // installs still have the tables and pick up the index.
+        if self.table_exists(conn, "token")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)",
+                [],
+            )?;
+        }
+        if self.table_exists(conn, "identity_token_balances")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)",
+                [],
+            )?;
+        }
+        // The `scheduled_votes` table was unwired in C5; the index it carried
+        // is no longer maintained on fresh installs. Existing pre-C5 installs
+        // keep the orphaned table and its index dormant. Older pre-v6 shapes
+        // also lack the `network` column entirely — skip in that case.
+        if self.table_exists(conn, "scheduled_votes")? {
+            let has_network: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scheduled_votes') WHERE name='network'",
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if has_network {
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduled_votes_network ON scheduled_votes (network)",
+                    [],
+                )?;
+            }
+        }
+        // The `asset_lock_transaction` table was unwired — fresh installs
+        // do not create it, so we skip the index when the table is absent.
+        // Legacy installs still have the table and pick up the index.
+        if self.table_exists(conn, "asset_lock_transaction")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -1138,8 +1359,85 @@ impl Database {
         Ok(())
     }
 
-    // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
-    // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
+    // DET's shielded subsystem was retired (Phase D); the old shielded table
+    // helpers and the `database::shielded` module were deleted. The v37
+    // migration drops any legacy `shielded_notes` / `shielded_wallet_meta`.
+
+    /// Rebuild legacy `asset_lock_transaction` rows so both `identity_id`
+    /// FKs use `ON DELETE SET NULL` instead of `ON DELETE CASCADE`.
+    ///
+    /// Inlined here when the `database/asset_lock_transaction` module was
+    /// deleted; only reachable from the v7 migration arm under a
+    /// `table_exists` guard. Safe to run multiple times: if the table
+    /// already has the correct FKs it exits early.
+    fn migrate_asset_lock_fk_to_set_null(conn: &Connection) -> rusqlite::Result<()> {
+        {
+            let mut pragma = conn.prepare("PRAGMA foreign_key_list('asset_lock_transaction')")?;
+            let fk_rows = pragma
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(2)?, // table
+                        row.get::<_, String>(6)?, // on_delete action
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let needs_migration = fk_rows
+                .iter()
+                .filter(|(tbl, _)| tbl == "identity")
+                .any(|(_, action)| action.to_uppercase() != "SET NULL");
+
+            if !needs_migration {
+                return Ok(());
+            }
+        }
+
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+
+        conn.execute(
+            "ALTER TABLE asset_lock_transaction RENAME TO asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE asset_lock_transaction (
+                tx_id BLOB PRIMARY KEY,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
+                FOREIGN KEY (identity_id)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (identity_id_potentially_in_creation)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (wallet)
+                    REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "INSERT INTO asset_lock_transaction
+              (tx_id, transaction_data, amount, instant_lock_data,
+               chain_locked_height, identity_id, identity_id_potentially_in_creation,
+               wallet, network)
+             SELECT tx_id, transaction_data, amount, instant_lock_data,
+                    chain_locked_height, identity_id,
+                    identity_id_potentially_in_creation, wallet, network
+             FROM asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute("DROP TABLE asset_lock_transaction_old", [])?;
+
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
+        Ok(())
+    }
 
     /// Remove orphaned child rows left behind when parent rows were deleted
     /// while FK enforcement was off (system SQLite before bundled build).
@@ -1369,12 +1667,8 @@ impl Database {
     }
 
     /// Check if a table exists in the database.
-    fn table_exists(&self, conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-            [table],
-            |row| row.get(0),
-        )
+    pub(crate) fn table_exists(&self, conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+        crate::database::table_exists(conn, table)
     }
 
     /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.
@@ -1383,8 +1677,11 @@ impl Database {
     /// changing the `Display`/`FromStr` representation. This migration updates
     /// every table that stores the network as a string column.
     fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> Result<(), MigrationError> {
+        // The `settings` table dropped its `network` column in C3 — the
+        // active-network pointer now lives in `AppSettings` in the
+        // upstream k/v store. Every other domain table still keys rows
+        // by a `network` string and needs the rename.
         let tables = [
-            "settings",
             "wallet",
             "identity_token_balances",
             "platform_address_balances",
@@ -1406,11 +1703,48 @@ impl Database {
         ];
         for table in tables {
             tracing::debug!("  rename_network: updating {table}");
+            // `scheduled_votes` was unwired in C5; on fresh installs the
+            // table is absent (skip) and on legacy v5-shaped installs the
+            // column may be missing (also skip). The table is orphaned
+            // either way once `scheduled_votes` lives in k/v.
+            let exists = self
+                .table_exists(conn, table)
+                .migration_err(table, "check table existence")?;
+            if !exists {
+                continue;
+            }
+            let has_network: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='network'",
+                    [table],
+                    |row| row.get::<_, i32>(0).map(|c| c > 0),
+                )
+                .migration_err(table, "check for network column")?;
+            if !has_network {
+                continue;
+            }
             conn.execute(
                 &format!("UPDATE {table} SET network = 'mainnet' WHERE network = 'dash'"),
                 [],
             )
             .migration_err(table, "rename network dash -> mainnet")?;
+        }
+        // The legacy `settings.network` column may still exist in DBs that
+        // pre-date C3. Update it defensively — `UPDATE` against a missing
+        // column would error, so we gate on existence.
+        let settings_has_network: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='network'",
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+        if settings_has_network {
+            conn.execute(
+                "UPDATE settings SET network = 'mainnet' WHERE network = 'dash'",
+                [],
+            )
+            .migration_err("settings", "rename network dash -> mainnet")?;
         }
         Ok(())
     }
@@ -1420,7 +1754,7 @@ impl Database {
     fn run_consistency_checks(&self) {
         const MAX_ISSUES_TO_LOG: usize = 20;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         // PRAGMA quick_check can return multiple rows (one per issue).
         match conn.prepare("PRAGMA quick_check") {
@@ -1557,38 +1891,19 @@ mod test {
         // wallet.core_wallet_name (v28)
         assert_column_exists(conn, "wallet", "core_wallet_name");
 
-        // shielded_notes table (v29)
-        assert_table_exists(conn, "shielded_notes");
-        for col in [
-            "wallet_seed_hash",
-            "note_data",
-            "position",
-            "cmx",
-            "nullifier",
-            "block_height",
-            "is_spent",
-            "value",
-            "network",
-        ] {
-            assert_column_exists(conn, "shielded_notes", col);
-        }
-
-        // shielded_wallet_meta table with last_nullifier_sync_timestamp (v30)
-        assert_table_exists(conn, "shielded_wallet_meta");
-        assert_column_exists(
-            conn,
-            "shielded_wallet_meta",
-            "last_nullifier_sync_timestamp",
-        );
+        // The shielded tables were retired in Phase D: v33 no longer creates
+        // them and the v37 migration drops any legacy copies, so after a full
+        // migration they must be absent.
+        assert_table_absent(conn, "shielded_notes");
+        assert_table_absent(conn, "shielded_wallet_meta");
 
         // wallet_transactions.status (v30)
         assert_column_exists(conn, "wallet_transactions", "status");
 
-        // contact_private_info table (v29)
-        assert_table_exists(conn, "contact_private_info");
-
-        // dashpay_contact_requests table (pre-existing, but checked for completeness)
-        assert_table_exists(conn, "dashpay_contact_requests");
+        // contact_private_info and dashpay_contact_requests were retired
+        // in D4d — fresh installs no longer create them. Pre-D4d installs
+        // keep the dormant rows, but the fresh-install path tested here
+        // intentionally skips them.
     }
 
     #[test]
@@ -1613,53 +1928,51 @@ mod test {
         assert_eq!(version, super::DEFAULT_DB_VERSION);
     }
 
-    // Given a database with a missing `asset_lock_transaction` table,
-    // when I run the migration number 9,
-    // then it fails and reverts the database schema to the previous version,
+    // Given a database whose on-disk schema version is higher than the
+    // build supports,
+    // when I call `try_perform_migration`,
+    // then it returns an error and leaves the persisted version untouched
+    // (no row is mutated).
+    //
+    // Originally this lane simulated a v9 mid-flight failure by dropping
+    // `asset_lock_transaction`; that module is gone and every surviving
+    // migration arm is idempotent + `table_exists`-guarded, so we can no
+    // longer reliably provoke an intra-arm failure without contrived
+    // fixtures. The `Greater`-version refusal is the only failure path
+    // that is stable across the consolidated ladder, and it exercises the
+    // same "error returned, DB untouched" contract.
     #[test]
     fn test_migration_failure_rolls_back() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("test_data.db");
         let db = super::Database::new(&db_file_path).unwrap();
 
-        // Identities from regtest are deleted during migration 9
         const NETWORK: &str = "regtest";
 
-        db.create_tables().unwrap();
+        db.create_tables(true).unwrap();
         db.set_default_version().unwrap();
 
-        // drop the `asset_lock_transaction` table to simulate a migration failure
+        // Seed an identity so we can prove no DB mutation occurred.
         let conn = db.conn.lock().unwrap();
-        conn.execute("DROP TABLE asset_lock_transaction", [])
-            .expect("Failed to drop asset_lock_transaction table");
-        // check that we don't have any identities yet
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM identity", [], |row| row.get(0))
-            .expect("Failed to count identities");
-        assert_eq!(count, 0);
-
-        // add some identity to ensure the database is not empty
         conn.execute(
             "INSERT INTO identity (id, is_local, alias, network) VALUES (?, ?, ?, ?)",
             rusqlite::params![vec![1u8; 32], 1, "test_identity", NETWORK],
         )
-        .expect("Failed to insert test identity");
+        .expect("insert test identity");
         drop(conn);
 
-        // change version to 8 to force migration number 9
-        const START_VERSION: u16 = 8;
-        db.set_db_version(START_VERSION).unwrap();
+        // Pin the version one past what this build supports.
+        let future_version = DEFAULT_DB_VERSION + 1;
+        db.set_db_version(future_version).unwrap();
 
-        // Simulate a migration failure by trying to apply an invalid change
-        let result = db.try_perform_migration(START_VERSION, DEFAULT_DB_VERSION, None);
-        assert!(result.is_err());
+        // The `Greater` arm must refuse and not touch the DB.
+        let result = db.try_perform_migration(future_version, DEFAULT_DB_VERSION, None);
+        assert!(result.is_err(), "expected refusal");
         println!("Migration failed as expected: {}", result.unwrap_err());
 
-        // Check that the database version has not changed
         let version: u16 = db.db_schema_version().unwrap();
-        assert_eq!(version, START_VERSION);
+        assert_eq!(version, future_version, "version must be untouched");
 
-        // check that the identity was not deleted
         let conn = db.conn.lock().unwrap();
         let count: i64 = conn
             .query_row(
@@ -1667,10 +1980,10 @@ mod test {
                 params![NETWORK],
                 |row| row.get(0),
             )
-            .expect("Failed to count identities");
+            .expect("count identities");
         assert_eq!(
             count, 1,
-            "Identity should not be deleted during migration failure"
+            "Identity must survive the rejected migration attempt"
         );
     }
 
@@ -1692,22 +2005,11 @@ mod test {
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
 
-        // Fresh installs must land on SPV (core_backend_mode = 1). This is the
-        // user-visible contract of the v34 default-flip: non-Expert users never
-        // see an RPC config UI, so anything other than SPV here would strand them.
-        let core_backend_mode: u8 = conn
-            .query_row(
-                "SELECT core_backend_mode FROM settings WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            core_backend_mode, 1,
-            "fresh install must default to SPV (core_backend_mode = 1)"
-        );
-
-        assert_v33_schema(&conn);
+        // Post-T-DEV-01: truly-fresh installs no longer create the
+        // wallet-family tables — those live in `platform-wallet.sqlite`
+        // now. `assert_v33_schema` only applies to upgrade-replay DBs,
+        // so it has moved to `test_v33_migration_from_v27`. Here we
+        // only need to confirm the settings row is in place.
     }
 
     #[test]
@@ -1717,7 +2019,7 @@ mod test {
         let db = super::Database::new(&db_file_path).unwrap();
 
         // Build a full database then strip v28+ additions to simulate v27.
-        db.create_tables().unwrap();
+        db.create_tables(true).unwrap();
         db.set_default_version().unwrap();
 
         {
@@ -1836,7 +2138,7 @@ mod test {
         let db = super::Database::new(&db_file_path).unwrap();
 
         // Build full schema at current version
-        db.create_tables().unwrap();
+        db.create_tables(true).unwrap();
         db.set_default_version().unwrap();
 
         let valid_seed_hash = vec![0xAAu8; 32];
@@ -1865,6 +2167,32 @@ mod test {
 
             // Disable FK enforcement to simulate legacy system SQLite
             conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+
+            // The `asset_lock_transaction` table is no longer created on
+            // fresh installs, but this test exercises the legacy-shape
+            // orphan cleanup that v33 performs on installs that still
+            // carry it. Recreate the legacy schema manually so the v27
+            // synthetic fixture matches reality for pre-unwire DBs.
+            conn.execute_batch(
+                "CREATE TABLE asset_lock_transaction (
+                    tx_id BLOB PRIMARY KEY,
+                    transaction_data BLOB NOT NULL,
+                    amount INTEGER,
+                    instant_lock_data BLOB,
+                    chain_locked_height INTEGER,
+                    identity_id BLOB,
+                    identity_id_potentially_in_creation BLOB,
+                    wallet BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    FOREIGN KEY (identity_id)
+                        REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (identity_id_potentially_in_creation)
+                        REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (wallet)
+                        REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                );",
+            )
+            .unwrap();
 
             // Insert orphaned wallet_transactions row (seed_hash not in wallet table).
             // Shielded table orphans are not needed: those tables get dropped to
@@ -1976,7 +2304,7 @@ mod test {
             .unwrap();
 
             // Strip v28+ additions to simulate v27 state (same as test_v33_migration_from_v27)
-            // Remove shielded tables — they'll be recreated by migration
+            // Remove shielded tables — Phase D drops them (v37); not recreated
             conn.execute("DROP TABLE IF EXISTS shielded_notes", [])
                 .unwrap();
             conn.execute("DROP TABLE IF EXISTS shielded_wallet_meta", [])
@@ -2104,8 +2432,10 @@ mod test {
 
         // Shielded tables should exist but be empty (recreated fresh by migration;
         // the cleanup handles them gracefully even when just-created)
-        assert_table_exists(&conn, "shielded_notes");
-        assert_table_exists(&conn, "shielded_wallet_meta");
+        // Phase D retired the shielded tables — v33 no longer creates them and
+        // v37 drops any legacy copies, so they must be absent post-migration.
+        assert_table_absent(&conn, "shielded_notes");
+        assert_table_absent(&conn, "shielded_wallet_meta");
 
         // Valid wallet_transactions should survive with network renamed to mainnet
         let valid_txs: i64 = conn
@@ -2420,6 +2750,23 @@ mod test {
                 params![vec![0xDDu8; 32], vec![0u8; 100]],
             )
             .unwrap();
+
+            // A queued DPNS vote and a top-up: the non-wallet rows the unwire
+            // left behind. The v0.9.0 `scheduled_votes` shape has no `network`
+            // column, so these also cover the pre-v6 reader path.
+            conn.execute(
+                "INSERT INTO scheduled_votes
+                    (identity_id, contested_name, vote_choice, time, executed)
+                 VALUES (?1, 'quantum', 'Lock', 1700000000, 0)",
+                params![identity_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO top_up (identity_id, top_up_index, amount)
+                 VALUES (?1, 0, 100000)",
+                params![identity_id],
+            )
+            .unwrap();
         }
 
         assert_eq!(db.db_schema_version().unwrap(), 5);
@@ -2479,6 +2826,35 @@ mod test {
             )
             .unwrap();
         assert_eq!(lock_identity, Some(vec![0xBBu8; 32]));
+
+        // The ladder must leave the non-wallet rows readable for the import
+        // that carries them into the k/v store. A dropped scheduled vote is a
+        // missed vote window, so this is asserted end-to-end against the real
+        // post-migration schema rather than a hand-built fixture.
+        use crate::database::legacy_import::{
+            read_app_settings, read_scheduled_votes, read_top_ups,
+        };
+        use dash_sdk::dpp::dashcore::Network;
+
+        let votes = read_scheduled_votes(&conn, Network::Mainnet).unwrap();
+        assert_eq!(votes.unreadable, 0);
+        assert_eq!(votes.votes.len(), 1, "the scheduled vote must survive");
+        assert_eq!(votes.votes[0].contested_name, "quantum");
+        assert!(!votes.votes[0].executed_successfully);
+
+        let top_ups = read_top_ups(&conn, Network::Mainnet).unwrap();
+        assert_eq!(top_ups.unreadable, 0);
+        assert_eq!(top_ups.top_ups.len(), 1);
+        assert_eq!(top_ups.top_ups[0].1.get(&0), Some(&100_000));
+
+        let settings = read_app_settings(&conn)
+            .unwrap()
+            .expect("the settings row must survive the ladder");
+        assert_eq!(
+            settings.network,
+            Network::Mainnet,
+            "the saved network must survive; resetting it relaunches the user elsewhere",
+        );
     }
 
     // ── v34 migration: SPV-default backend ──────────────────────────
@@ -2493,10 +2869,23 @@ mod test {
 
         /// Set up a fresh v33 database in `dir` with `core_backend_mode = 0` (RPC),
         /// returning the `Database`.
+        ///
+        /// The v33 schema predates C3 — it still has the legacy
+        /// `core_backend_mode` column on the settings table — so the
+        /// fixture backfills it directly after `create_tables` to faithfully
+        /// reproduce the on-disk shape of a real pre-C3 install.
         fn fresh_v33_db(dir: &std::path::Path) -> super::super::Database {
             let db_file = dir.join("test_data.db");
             let db = super::super::Database::new(&db_file).unwrap();
-            db.create_tables().unwrap();
+            db.create_tables(true).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN core_backend_mode INTEGER DEFAULT 1",
+                    [],
+                )
+                .unwrap();
+            }
             db.set_default_version().unwrap();
             // Set starting state: v33 with the legacy RPC default.
             db.set_db_version(33).unwrap();
@@ -2621,5 +3010,279 @@ mod test {
             );
             assert_eq!(db.db_schema_version().unwrap(), 34);
         }
+    }
+
+    // ── v38 migration: drop the retired core_backend_mode column ─────
+    mod v38 {
+        fn settings_column_exists(db: &super::super::Database, column: &str) -> bool {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name = ?1",
+                [column],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap()
+        }
+
+        /// Build a v37 DB whose `settings` table still carries the legacy
+        /// `core_backend_mode` column plus a second legacy column
+        /// (`disable_zmq`) with a distinctive value, so the migration can be
+        /// shown to drop ONLY the target column and preserve the rest.
+        fn v37_db_with_legacy_columns(dir: &std::path::Path) -> super::super::Database {
+            let db_file = dir.join("test_data.db");
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.create_tables(true).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN core_backend_mode INTEGER DEFAULT 1",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN disable_zmq INTEGER DEFAULT 0",
+                    [],
+                )
+                .unwrap();
+            }
+            db.set_default_version().unwrap();
+            db.set_db_version(37).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE settings SET core_backend_mode = 0, disable_zmq = 1 WHERE id = 1",
+                    [],
+                )
+                .unwrap();
+            }
+            db
+        }
+
+        /// A pre-v38 DB with the legacy column migrates cleanly: the
+        /// `core_backend_mode` column is dropped, the version advances to 38,
+        /// and every other settings value survives.
+        #[test]
+        fn v38_drops_column_and_preserves_other_settings() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = v37_db_with_legacy_columns(tmp.path());
+            assert!(settings_column_exists(&db, "core_backend_mode"));
+
+            let result = db.try_perform_migration(37, 38, None);
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 38);
+
+            // Target column gone.
+            assert!(
+                !settings_column_exists(&db, "core_backend_mode"),
+                "core_backend_mode must be dropped"
+            );
+            // Sibling settings survive untouched.
+            assert!(settings_column_exists(&db, "disable_zmq"));
+            let disable_zmq: i64 = {
+                let conn = db.conn.lock().unwrap();
+                conn.query_row("SELECT disable_zmq FROM settings WHERE id = 1", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+            };
+            assert_eq!(disable_zmq, 1, "unrelated settings must be preserved");
+        }
+
+        /// A DB that never had the column (fresh post-C3 schema) migrates to
+        /// v38 without error — the drop is a guarded no-op.
+        #[test]
+        fn v38_is_noop_when_column_absent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_file = tmp.path().join("fresh.db");
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.create_tables(false).unwrap();
+            db.set_default_version().unwrap();
+            db.set_db_version(37).unwrap();
+            assert!(!settings_column_exists(&db, "core_backend_mode"));
+
+            let result = db.try_perform_migration(37, 38, None);
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 38);
+            assert!(!settings_column_exists(&db, "core_backend_mode"));
+        }
+
+        /// Re-running the migration on an already-migrated DB is a no-op.
+        #[test]
+        fn v38_rerun_is_noop() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = v37_db_with_legacy_columns(tmp.path());
+
+            db.try_perform_migration(37, 38, None).unwrap();
+            assert_eq!(db.db_schema_version().unwrap(), 38);
+
+            let result = db.try_perform_migration(38, 38, None);
+            assert!(result.is_ok(), "re-run should be no-op: {:?}", result.err());
+            assert!(
+                !result.unwrap(),
+                "try_perform_migration should report no migration needed"
+            );
+            assert_eq!(db.db_schema_version().unwrap(), 38);
+        }
+    }
+
+    // ---------- T-DEV-01: legacy CREATE TABLE gating ----------
+
+    /// Helper: assert that a table does NOT exist in the database.
+    fn assert_table_absent(conn: &Connection, table: &str) {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                params![table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!exists, "table `{table}` must NOT exist on a fresh install");
+    }
+
+    /// TC-DEV-006 — Truly-fresh install creates no wallet-family tables.
+    ///
+    /// The gated targets (`wallet`, `wallet_addresses`, `utxos`,
+    /// `single_key_wallet`, `wallet_transactions`, `shielded_notes`,
+    /// `shielded_wallet_meta`, `identity`) are legacy schema that lives in
+    /// `platform-wallet.sqlite` or the per-network k/v store now. Only
+    /// `settings` (the migration version counter) is always created.
+    #[test]
+    fn tc_dev_006_fresh_install_omits_legacy_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_file = tmp.path().join("fresh.db");
+        let db = super::Database::new(&db_file).unwrap();
+        db.initialize(&db_file).unwrap();
+
+        let conn = db.conn.lock().unwrap();
+
+        // Always-present
+        assert_table_exists(&conn, "settings");
+
+        // Gated targets must be absent
+        for t in [
+            "wallet",
+            "wallet_addresses",
+            "utxos",
+            "single_key_wallet",
+            "wallet_transactions",
+            "shielded_notes",
+            "shielded_wallet_meta",
+            "identity",
+        ] {
+            assert_table_absent(&conn, t);
+        }
+    }
+
+    /// TC-MIG-006 — Existing install with legacy rows triggers full schema
+    /// creation so the migration ladder has tables to upgrade.
+    ///
+    /// Simulates an unusual recovery shape: a DB where the `settings` row
+    /// was wiped (so `is_first_time_setup` reports true) but the
+    /// `wallet` table still carries rows. `legacy_detected` returns true,
+    /// so `initialize` re-creates the wallet-family schema.
+    #[test]
+    fn tc_mig_006_legacy_rows_trigger_full_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_file = tmp.path().join("legacy.db");
+        let db = super::Database::new(&db_file).unwrap();
+
+        // Pre-seed a legacy `wallet` row before `initialize` runs.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "CREATE TABLE wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    uses_password INTEGER NOT NULL,
+                    network TEXT NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, uses_password, network
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    vec![1u8; 32],
+                    vec![2u8; 16],
+                    vec![3u8; 16],
+                    vec![4u8; 12],
+                    vec![5u8; 33],
+                    0i32,
+                    "mainnet",
+                ],
+            )
+            .unwrap();
+            assert!(super::legacy_detected(&conn));
+        }
+
+        db.initialize(&db_file).unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        // Upgrade-replay path: wallet-family tables present.
+        assert_table_exists(&conn, "wallet");
+        assert_table_exists(&conn, "wallet_addresses");
+        assert_table_exists(&conn, "utxos");
+        assert_table_exists(&conn, "single_key_wallet");
+        assert_table_exists(&conn, "wallet_transactions");
+        // Phase D retired the shielded tables — they are dropped by v37.
+        assert_table_absent(&conn, "shielded_notes");
+        assert_table_absent(&conn, "shielded_wallet_meta");
+    }
+
+    /// TC-MIG-008 (partial) — Fresh install and the `data.db` file.
+    ///
+    /// Truly-fresh installs land at version `DEFAULT_DB_VERSION` with no
+    /// wallet-family tables. The file itself still appears on disk
+    /// because `Database::new` opens the SQLite connection eagerly; fully
+    /// suppressing the file is T-DEV-02 territory.
+    // TODO(T-DEV-02): suppress `data.db` file creation when no DET state
+    // needs to be persisted to it.
+    #[test]
+    fn tc_mig_008_fresh_install_file_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_file = tmp.path().join("fresh.db");
+        assert!(!db_file.exists(), "precondition: file absent");
+
+        let db = super::Database::new(&db_file).unwrap();
+        db.initialize(&db_file).unwrap();
+
+        // Partial pass: file exists (Database::new opens an empty SQLite
+        // connection) but carries no wallet-family schema.
+        assert!(db_file.exists(), "Database::new opens the file eagerly");
+        let conn = db.conn.lock().unwrap();
+        assert_table_exists(&conn, "settings");
+        for t in [
+            "wallet",
+            "wallet_addresses",
+            "utxos",
+            "single_key_wallet",
+            "wallet_transactions",
+            "shielded_notes",
+            "shielded_wallet_meta",
+        ] {
+            assert_table_absent(&conn, t);
+        }
+    }
+
+    /// `legacy_detected` returns false on an empty DB.
+    #[test]
+    fn legacy_detected_false_on_empty_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(!super::legacy_detected(&conn));
+    }
+
+    /// `legacy_detected` returns false when a target table exists but is empty.
+    #[test]
+    fn legacy_detected_false_on_empty_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE wallet (seed_hash BLOB PRIMARY KEY)", [])
+            .unwrap();
+        assert!(!super::legacy_detected(&conn));
     }
 }

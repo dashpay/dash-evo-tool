@@ -1,25 +1,25 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::error::TaskError;
+use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::Component;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::identities::funding_common::{self, WalletFundedScreenStep, generate_qr_code_image};
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, try_open_wallet_no_password};
+use crate::ui::identities::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
-use eframe::egui::{self, Context, Ui};
+use crate::wallet_backend::poison::RwLockRecover;
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use eframe::egui::{self, Ui};
 use egui::{Button, RichText, Vec2};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -36,14 +36,18 @@ pub struct CreateAssetLockScreen {
     pub wallet: Arc<RwLock<Wallet>>,
     pub(crate) selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub app_context: Arc<AppContext>,
-    password_input: PasswordInput,
+    wallet_unlock_popup: WalletUnlockPopup,
     // Asset lock creation fields
     step: Arc<RwLock<WalletFundedScreenStep>>,
     amount_input: Option<AmountInput>,
     identity_index: u32,
     funding_address: Option<Address>,
-    funding_utxo: Option<(OutPoint, TxOut, Address)>,
-    core_has_funding_address: Option<bool>,
+    /// A queued "derive the deposit address" request the `ui()` loop drains into
+    /// a `WalletTask::GenerateReceiveAddress` backend task. The address comes
+    /// from the upstream SPV-watched pool so the deposit becomes a spendable,
+    /// visible UTXO. Carries the wallet's seed hash; the address returns via
+    /// `GeneratedReceiveAddress`.
+    pending_funding_address_request: Option<WalletSeedHash>,
     is_creating: bool,
     asset_lock_tx_id: Option<String>,
 
@@ -61,7 +65,7 @@ impl CreateAssetLockScreen {
 
         // Calculate next unused identity index
         let identity_index = {
-            let wallet_guard = wallet.read().unwrap();
+            let wallet_guard = wallet.read_recover();
             wallet_guard
                 .identities
                 .keys()
@@ -75,7 +79,7 @@ impl CreateAssetLockScreen {
             wallet,
             selected_wallet,
             app_context: app_context.clone(),
-            password_input: PasswordInput::new().with_hint_text("Enter password"),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             step: Arc::new(RwLock::new(WalletFundedScreenStep::WaitingOnFunds)),
             amount_input: Some(
                 AmountInput::new(Amount::new_dash(0.5))
@@ -84,8 +88,7 @@ impl CreateAssetLockScreen {
             ),
             identity_index,
             funding_address: None,
-            funding_utxo: None,
-            core_has_funding_address: None,
+            pending_funding_address_request: None,
             is_creating: false,
             asset_lock_tx_id: None,
             asset_lock_purpose: None,
@@ -96,45 +99,30 @@ impl CreateAssetLockScreen {
         }
     }
 
-    fn generate_funding_address(&mut self) -> Result<(), TaskError> {
-        let mut wallet = self.wallet.write().unwrap();
-
-        // Generate a new asset lock funding address
-        let receive_address = wallet
-            .receive_address(self.app_context.network, true, Some(&self.app_context))
-            .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
-        let core_wallet_name = wallet.core_wallet_name.clone();
-        drop(wallet);
-
-        // Import address to core if needed
-        if let Some(has_address) = self.core_has_funding_address {
-            if !has_address {
-                self.app_context.ensure_address_imported(
-                    &receive_address,
-                    core_wallet_name.as_deref(),
-                    Some("Managed by Dash Evo Tool - Asset Lock"),
-                )?;
-            }
-            self.funding_address = Some(receive_address);
-        } else {
-            self.app_context.ensure_address_imported(
-                &receive_address,
-                core_wallet_name.as_deref(),
-                Some("Managed by Dash Evo Tool - Asset Lock"),
-            )?;
-            self.funding_address = Some(receive_address);
-            self.core_has_funding_address = Some(true);
+    /// Queue a request to derive the deposit address from the SPV-watched pool.
+    ///
+    /// The derivation runs in the backend via `WalletTask::GenerateReceiveAddress`
+    /// (→ upstream `next_unused`), so the deposit address is always watched and
+    /// the incoming UTXO becomes visible and spendable by the asset-lock build.
+    /// Idempotent: a request already in flight, or an address already derived,
+    /// is not re-queued.
+    fn queue_funding_address_request(&mut self) {
+        if self.funding_address.is_some() || self.pending_funding_address_request.is_some() {
+            return;
         }
-
-        Ok(())
+        let Ok(seed_hash) = self.wallet.read().map(|w| w.seed_hash()) else {
+            return;
+        };
+        self.pending_funding_address_request = Some(seed_hash);
     }
 
-    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), TaskError> {
-        if self.funding_address.is_none() {
-            self.generate_funding_address()?
-        }
+    fn render_qr_code(&mut self, ui: &mut egui::Ui) {
+        let Some(address) = self.funding_address.as_ref() else {
+            self.queue_funding_address_request();
+            ui.label("Generating a deposit address…");
+            return;
+        };
 
-        let address = self.funding_address.as_ref().unwrap();
         let amount = self
             .amount_input
             .as_ref()
@@ -165,8 +153,6 @@ impl CreateAssetLockScreen {
                 MessageType::Success,
             );
         }
-
-        Ok(())
     }
 
     fn show_success(&mut self, ui: &mut Ui) -> AppAction {
@@ -201,7 +187,7 @@ impl CreateAssetLockScreen {
                 self.selected_identity_string.clear();
                 // Recalculate next unused identity index
                 self.identity_index = {
-                    let wallet_guard = self.wallet.read().unwrap();
+                    let wallet_guard = self.wallet.read_recover();
                     wallet_guard
                         .identities
                         .keys()
@@ -218,11 +204,10 @@ impl CreateAssetLockScreen {
                         .with_min_amount(Some(1000)),
                 );
                 self.funding_address = None;
-                self.funding_utxo = None;
-                self.core_has_funding_address = None;
+                self.pending_funding_address_request = None;
                 self.asset_lock_tx_id = None;
                 self.show_advanced_options = false;
-                *self.step.write().unwrap() = WalletFundedScreenStep::WaitingOnFunds;
+                *self.step.write_recover() = WalletFundedScreenStep::WaitingOnFunds;
             }
 
             ui.add_space(100.0);
@@ -232,22 +217,10 @@ impl CreateAssetLockScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for CreateAssetLockScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn password_input(&mut self) -> &mut PasswordInput {
-        &mut self.password_input
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}
-
 impl ScreenLike for CreateAssetLockScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let wallet_name = self
             .wallet
             .read()
@@ -256,7 +229,7 @@ impl ScreenLike for CreateAssetLockScreen {
             .unwrap_or_else(|| "Unknown Wallet".to_string());
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 (
@@ -271,14 +244,14 @@ impl ScreenLike for CreateAssetLockScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Header with Back button and Advanced Options checkbox (outside ScrollArea)
             ui.horizontal(|ui| {
@@ -309,7 +282,7 @@ impl ScreenLike for CreateAssetLockScreen {
                 .show(ui, |ui| {
 
                     // Show success screen
-                    if *self.step.read().unwrap() == WalletFundedScreenStep::Success {
+                    if *self.step.read_recover() == WalletFundedScreenStep::Success {
                         inner_action |= self.show_success(ui);
                         return;
                     }
@@ -318,10 +291,37 @@ impl ScreenLike for CreateAssetLockScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    // Wallet unlock section
-                    let (needs_unlock, unlocked) = self.render_wallet_unlock_if_needed(ui);
+                    // Determine if the selected wallet is ready for operations.
+                    let wallet_is_open = self
+                        .selected_wallet
+                        .as_ref()
+                        .map(|w| {
+                            let g = w.read_recover();
+                            !g.requires_password_unlock()
+                        })
+                        .unwrap_or(false);
 
-                    if !needs_unlock || unlocked {
+                    if !wallet_is_open {
+                        // Auto-open no-password wallets; open the popup for password wallets.
+                        if let Some(wallet) = self.selected_wallet.clone() {
+                            if !wallet.read_recover().uses_password {
+                                if let Err(e) =
+                                    try_open_wallet_no_password(&self.app_context, &wallet)
+                                {
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        &e,
+                                        MessageType::Error,
+                                    )
+                                    .disable_auto_dismiss();
+                                }
+                            } else if !self.wallet_unlock_popup.is_open() {
+                                self.wallet_unlock_popup.open();
+                            }
+                        }
+                    }
+
+                    if wallet_is_open {
                         // First, select the purpose of the asset lock
                         if self.asset_lock_purpose.is_none() {
                             ui.heading(RichText::new("Select Asset Lock Purpose").color(DashColors::text_primary(dark_mode)));
@@ -397,12 +397,15 @@ impl ScreenLike for CreateAssetLockScreen {
                                 return;
                             }
 
+                            // READ-only (R1): seed from app-scoped selection iff the global id
+                            // is in this wallet's identity list; no syncing_global (K1 guard).
                             let identity_selector_response = ui.add(IdentitySelector::new(
                                 "top_up_identity_selector",
                                 &mut self.selected_identity_string,
                                 &identities
                             )
                             .selected_identity(&mut self.selected_identity).unwrap()
+                            .with_app_default(&self.app_context)
                             .label("Identity to top up:")
                             .width(300.0));
 
@@ -473,7 +476,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 ui.add_space(10.0);
 
                                 // Get used indices from wallet
-                                let wallet_guard = self.wallet.read().unwrap();
+                                let wallet_guard = self.wallet.read_recover();
                                 let used_indices: HashSet<u32> = wallet_guard.identities.keys().cloned().collect();
                                 drop(wallet_guard);
 
@@ -515,16 +518,7 @@ impl ScreenLike for CreateAssetLockScreen {
                         ui.separator();
                         ui.add_space(10.0);
 
-                        // Check if funds have arrived at the funding address
-                        if let Some(utxo) = funding_common::capture_qr_funding_utxo_if_available(
-                            &self.step,
-                            self.selected_wallet.as_ref(),
-                            self.funding_address.as_ref(),
-                        ) {
-                            self.funding_utxo = Some(utxo);
-                        }
-
-                        let step = *self.step.read().unwrap();
+                        let step = *self.step.read_recover();
 
                         // Request periodic repaints while waiting for funds
                         if step == WalletFundedScreenStep::WaitingOnFunds {
@@ -555,14 +549,7 @@ impl ScreenLike for CreateAssetLockScreen {
                             let layout_action = ui.with_layout(
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
                                 |ui| {
-                                    if let Err(e) = self.render_qr_code(ui) {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                            "Failed to render QR code",
-                                            MessageType::Error,
-                                        )
-                                        .with_details(e);
-                                    }
+                                    self.render_qr_code(ui);
 
                                     ui.add_space(20.0);
 
@@ -582,7 +569,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                             if let Some(credits) = credits {
                                                 // Transition to WaitingForAssetLock BEFORE dispatching to prevent duplicate dispatches
                                                 {
-                                                    let mut step = self.step.write().unwrap();
+                                                    let mut step = self.step.write_recover();
                                                     *step = WalletFundedScreenStep::WaitingForAssetLock;
                                                 }
 
@@ -632,15 +619,31 @@ impl ScreenLike for CreateAssetLockScreen {
 
                             inner_action |= layout_action.inner;
                         }
-                    } else {
-                        // Wallet needs to be unlocked
                     }
+                    // (implicit else: popup is open; modal overlay handles the interaction)
                 });
 
             // Message display is handled by the global MessageBanner
 
             inner_action
         });
+
+        // Show the wallet unlock popup modal when needed.
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = self.selected_wallet.clone()
+        {
+            self.wallet_unlock_popup
+                .show(ctx, &wallet, &self.app_context);
+        }
+
+        // Drain a queued "derive the deposit address" request into a backend
+        // task that derives it from the SPV-watched upstream pool. The address
+        // returns via `GeneratedReceiveAddress`.
+        if let Some(seed_hash) = self.pending_funding_address_request.take() {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress { seed_hash },
+            ));
+        }
 
         action
     }
@@ -656,7 +659,21 @@ impl ScreenLike for CreateAssetLockScreen {
     fn refresh(&mut self) {}
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        let current_step = *self.step.read().unwrap();
+        // The backend derived the deposit address from the SPV-watched pool;
+        // store it so the QR renders. Only adopt it for this wallet.
+        if let BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } = &result {
+            let is_ours = self
+                .wallet
+                .read()
+                .map(|w| w.seed_hash() == *seed_hash)
+                .unwrap_or(false);
+            if is_ours && let Ok(addr) = address.parse::<Address<_>>() {
+                self.funding_address = Some(addr.assume_checked());
+            }
+            return;
+        }
+
+        let current_step = *self.step.read_recover();
 
         match current_step {
             WalletFundedScreenStep::WaitingOnFunds => {
@@ -664,15 +681,11 @@ impl ScreenLike for CreateAssetLockScreen {
                     CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
                 ) = result
                 {
-                    for utxo in outpoints_with_addresses {
-                        let (_, _, address) = &utxo;
+                    for (_, _, address) in outpoints_with_addresses {
                         if let Some(funding_address) = &self.funding_address
-                            && funding_address == address
+                            && *funding_address == address
                         {
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::FundsReceived;
-                            self.funding_utxo = Some(utxo);
-                            drop(step); // Release the lock before creating new action
+                            *self.step.write_recover() = WalletFundedScreenStep::FundsReceived;
 
                             // Refresh wallet to create the asset lock
                             self.is_creating = true;
@@ -684,31 +697,25 @@ impl ScreenLike for CreateAssetLockScreen {
             WalletFundedScreenStep::FundsReceived => {
                 // Asset lock creation was triggered
                 match &result {
-                    BackendTaskSuccessResult::Message(msg) => {
-                        if msg.contains("Asset lock transaction broadcast successfully") {
-                            // Extract TX ID from message
-                            if let Some(tx_id_start) = msg.find("TX ID: ") {
-                                let tx_id = msg[tx_id_start + 7..].trim().to_string();
-                                self.asset_lock_tx_id = Some(tx_id);
-                            }
+                    BackendTaskSuccessResult::AssetLockBroadcast { txid } => {
+                        self.asset_lock_tx_id = Some(txid.clone());
 
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::Success;
-                            drop(step);
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "Asset lock created successfully!",
-                                MessageType::Success,
-                            );
-                        }
+                        let mut step = self.step.write_recover();
+                        *step = WalletFundedScreenStep::Success;
+                        drop(step);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Asset lock created successfully!",
+                            MessageType::Success,
+                        );
                     }
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
                     ) => {
-                        // This is the asset lock transaction from ZMQ
+                        // The asset-lock transaction surfaced as a received UTXO.
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());
-                            let mut step = self.step.write().unwrap();
+                            let mut step = self.step.write_recover();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
                             MessageBanner::set_global(
@@ -723,31 +730,25 @@ impl ScreenLike for CreateAssetLockScreen {
             }
             WalletFundedScreenStep::WaitingForAssetLock => {
                 match &result {
-                    BackendTaskSuccessResult::Message(msg) => {
-                        if msg.contains("Asset lock transaction broadcast successfully") {
-                            // Extract TX ID from message
-                            if let Some(tx_id_start) = msg.find("TX ID: ") {
-                                let tx_id = msg[tx_id_start + 7..].trim().to_string();
-                                self.asset_lock_tx_id = Some(tx_id);
-                            }
+                    BackendTaskSuccessResult::AssetLockBroadcast { txid } => {
+                        self.asset_lock_tx_id = Some(txid.clone());
 
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::Success;
-                            drop(step);
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "Asset lock created successfully!",
-                                MessageType::Success,
-                            );
-                        }
+                        let mut step = self.step.write_recover();
+                        *step = WalletFundedScreenStep::Success;
+                        drop(step);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Asset lock created successfully!",
+                            MessageType::Success,
+                        );
                     }
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
                     ) => {
-                        // This is the asset lock transaction from ZMQ
+                        // The asset-lock transaction surfaced as a received UTXO.
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());
-                            let mut step = self.step.write().unwrap();
+                            let mut step = self.step.write_recover();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
                             MessageBanner::set_global(
@@ -939,27 +940,6 @@ mod tests {
         // Test copy semantics
         let registration_copy = registration;
         assert_eq!(registration, registration_copy);
-    }
-
-    /// Test TX ID extraction from success message
-    #[test]
-    fn test_tx_id_extraction() {
-        let msg = "Asset lock transaction broadcast successfully. TX ID: abc123def456";
-
-        // Extract TX ID from message
-        let tx_id = msg
-            .find("TX ID: ")
-            .map(|tx_id_start| msg[tx_id_start + 7..].trim().to_string());
-
-        assert_eq!(tx_id, Some("abc123def456".to_string()));
-
-        // Test message without TX ID
-        let msg_without_id = "Some other message";
-        let no_tx_id = msg_without_id
-            .find("TX ID: ")
-            .map(|tx_id_start| msg_without_id[tx_id_start + 7..].trim().to_string());
-
-        assert_eq!(no_tx_id, None);
     }
 
     /// Test MAX_IDENTITY_INDEX constant

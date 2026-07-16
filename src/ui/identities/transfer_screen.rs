@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -25,7 +26,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Context, Frame, Margin, Ui};
+use eframe::egui::{self, Frame, Margin, Ui};
 use egui::{Color32, RichText};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -44,6 +45,10 @@ pub enum TransferDestinationType {
     #[default]
     Identity,
     PlatformAddress,
+}
+
+fn key_info_when_available<T>(has_keys: bool, key: Option<T>) -> Option<T> {
+    has_keys.then_some(key).flatten()
 }
 
 #[derive(PartialEq)]
@@ -95,7 +100,8 @@ impl TransferScreen {
         );
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error)
+                    .disable_auto_dismiss();
                 None
             });
         Self {
@@ -181,7 +187,7 @@ impl TransferScreen {
     }
 
     fn render_destination_type_selector(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Colors for selected/unselected states
         let selected_fill = DashColors::DASH_BLUE;
@@ -275,7 +281,7 @@ impl TransferScreen {
 
         // Try to parse as Bech32m Platform address first (dash1.../tdash1... per DIP-18)
         if crate::ui::helpers::is_platform_address_string(input) {
-            let (addr, _network) = PlatformAddress::from_bech32m_string(input)
+            let addr = PlatformAddress::from_bech32m_string(input)
                 .map_err(|e| format!("Invalid Bech32m address: {}", e))?;
             return Ok(addr);
         }
@@ -563,7 +569,8 @@ impl ScreenLike for TransferScreen {
                     self.app_context.egui_ctx(),
                     format!("Failed to load local identities: {e}"),
                     MessageType::Error,
-                );
+                )
+                .disable_auto_dismiss();
                 vec![]
             });
         if let Some(refreshed) = identities
@@ -577,9 +584,11 @@ impl ScreenLike for TransferScreen {
     }
 
     /// Renders the UI components for the withdrawal screen
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -589,12 +598,12 @@ impl ScreenLike for TransferScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show the success screen if the transfer was successful
@@ -603,11 +612,21 @@ impl ScreenLike for TransferScreen {
                 return inner_action;
             }
 
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 !self.identity.available_transfer_keys().is_empty()
             };
+
+            let key_for_info = key_info_when_available(
+                has_keys,
+                self.identity.identity.get_first_public_key_matching(
+                    Purpose::TRANSFER,
+                    SecurityLevel::full_range().into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                ),
+            );
 
             if !has_keys {
                 ui.colored_label(
@@ -619,15 +638,15 @@ impl ScreenLike for TransferScreen {
                 );
                 ui.add_space(10.0);
 
-                let key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::TRANSFER,
-                    SecurityLevel::full_range().into(),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
-
-                if let Some(key) = key {
-                    if ui.button("Check Transfer Key").clicked() {
+                if ui.button("Add key").clicked() {
+                    inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                        self.identity.clone(),
+                        &self.app_context,
+                    )));
+                }
+            } else {
+                if let Some(key) = key_for_info {
+                    if ui.button("Manage Transfer Key").clicked() {
                         inner_action |=
                             AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                 self.identity.clone(),
@@ -639,19 +658,13 @@ impl ScreenLike for TransferScreen {
                     ui.add_space(5.0);
                 }
 
-                if ui.button("Add key").clicked() {
-                    inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
-                        &self.app_context,
-                    )));
-                }
-            } else {
                 if self.selected_wallet.is_some()
                     && let Some(wallet) = &self.selected_wallet
                 {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -745,7 +758,7 @@ impl ScreenLike for TransferScreen {
                 };
 
                 // Display estimated fee
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::group(ui.style())
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))
@@ -839,5 +852,17 @@ impl ScreenLike for TransferScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::key_info_when_available;
+
+    #[test]
+    fn key_info_is_offered_only_when_a_key_exists() {
+        assert_eq!(key_info_when_available(true, Some("key")), Some("key"));
+        assert_eq!(key_info_when_available(false, Some("key")), None);
+        assert_eq!(key_info_when_available::<&str>(true, None), None);
     }
 }

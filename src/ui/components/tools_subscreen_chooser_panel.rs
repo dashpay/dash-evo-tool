@@ -1,214 +1,80 @@
+use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::spv::CoreBackendMode;
 use crate::ui::RootScreenType;
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
-use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, RichText, ScrollArea, SidePanel};
+use crate::ui::components::subscreen_chooser_panel::{
+    SubscreenNavItem, add_subscreen_chooser_panel,
+};
+use crate::ui::tools::ToolsSubscreen;
+use egui::Ui;
 
-#[derive(PartialEq)]
-pub enum ToolsSubscreen {
-    PlatformInfo,
-    AddressBalance,
-    ProofLog,
-    TransactionViewer,
-    DocumentViewer,
-    ProofViewer,
-    ContractViewer,
-    GroveSTARK,
-    MasternodeListDiff,
-    DPNS,
-}
-
-impl ToolsSubscreen {
-    /// Returns `true` when the tool only works with an RPC connection to a
-    /// local Dash Core node and must be disabled while the app is running on
-    /// its built-in SPV backend.
-    fn requires_core_rpc(&self) -> bool {
-        matches!(self, Self::MasternodeListDiff)
-    }
-}
-
-impl ToolsSubscreen {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::PlatformInfo => "Platform info",
-            Self::AddressBalance => "Address balance",
-            Self::ProofLog => "Proof logs",
-            Self::TransactionViewer => "Transaction deserializer",
-            Self::ProofViewer => "Proof deserializer",
-            Self::DocumentViewer => "Document deserializer",
-            Self::ContractViewer => "Contract deserializer",
-            Self::GroveSTARK => "ZK Proofs",
-            Self::MasternodeListDiff => "Masternode list diff inspector",
-            Self::DPNS => "DPNS",
+pub fn add_tools_subscreen_chooser_panel(ui: &mut Ui, app_context: &AppContext) -> AppAction {
+    let active = match app_context.get_app_settings().root_screen_type {
+        RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
+        RootScreenType::RootScreenToolsAddressBalanceScreen => ToolsSubscreen::AddressBalance,
+        RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
+            ToolsSubscreen::TransactionViewer
         }
-    }
-}
-
-pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
-    let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
-    let is_rpc_mode = app_context.core_backend_mode() == CoreBackendMode::Rpc;
-
-    let subscreens = vec![
-        ToolsSubscreen::PlatformInfo,
-        ToolsSubscreen::AddressBalance,
-        ToolsSubscreen::ProofLog,
-        ToolsSubscreen::ProofViewer,
-        ToolsSubscreen::TransactionViewer,
-        ToolsSubscreen::DocumentViewer,
-        ToolsSubscreen::ContractViewer,
-        ToolsSubscreen::GroveSTARK,
-        ToolsSubscreen::MasternodeListDiff,
-        ToolsSubscreen::DPNS,
-    ];
-
-    let active_screen = match app_context.get_settings() {
-        Ok(Some(settings)) => match settings.root_screen_type {
-            ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
-            ui::RootScreenType::RootScreenToolsAddressBalanceScreen => {
-                ToolsSubscreen::AddressBalance
-            }
-            ui::RootScreenType::RootScreenToolsProofLogScreen => ToolsSubscreen::ProofLog,
-            ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
-                ToolsSubscreen::TransactionViewer
-            }
-            ui::RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
-            ui::RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
-                ToolsSubscreen::DocumentViewer
-            }
-            ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
-                ToolsSubscreen::ContractViewer
-            }
-            ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
-                ToolsSubscreen::MasternodeListDiff
-            }
-            ui::RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
-            ui::RootScreenType::RootScreenDPNSActiveContests
-            | ui::RootScreenType::RootScreenDPNSPastContests
-            | ui::RootScreenType::RootScreenDPNSOwnedNames
-            | ui::RootScreenType::RootScreenDPNSScheduledVotes => ToolsSubscreen::DPNS,
-            _ => ToolsSubscreen::PlatformInfo,
-        },
-        _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
+        RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
+        RootScreenType::RootScreenToolsDocumentVisualizerScreen => ToolsSubscreen::DocumentViewer,
+        RootScreenType::RootScreenToolsContractVisualizerScreen => ToolsSubscreen::ContractViewer,
+        RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
+        RootScreenType::RootScreenDPNSActiveContests
+        | RootScreenType::RootScreenDPNSPastContests
+        | RootScreenType::RootScreenDPNSOwnedNames
+        | RootScreenType::RootScreenDPNSScheduledVotes => ToolsSubscreen::DPNS,
+        _ => ToolsSubscreen::PlatformInfo,
     };
 
-    SidePanel::left("tools_subscreen_chooser_panel")
-        .resizable(false)
-        .default_width(270.0)
-        .frame(
-            Frame::new()
-                .fill(DashColors::background(dark_mode))
-                .inner_margin(Margin::symmetric(10, 10)),
-        )
-        .show(ctx, |ui| {
-            let available_height = ui.available_height();
-            Frame::new()
-                .fill(DashColors::surface(dark_mode))
-                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                .inner_margin(Margin::same(Spacing::XL as i8))
-                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                .shadow(Shadow::elevated())
-                .show(ui, |ui| {
-                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
-                    ScrollArea::vertical().show(ui, |ui| {
-                        ui.add_space(Spacing::SM);
+    let items = visible_tools_nav_items()
+        .into_iter()
+        .map(|(subscreen, target)| {
+            SubscreenNavItem::new(
+                subscreen.display_name(),
+                subscreen == active,
+                AppAction::SetMainScreen(target),
+            )
+        })
+        .collect();
 
-                        for subscreen in subscreens {
-                            let is_active = active_screen == subscreen;
-                            let requires_core_rpc = subscreen.requires_core_rpc();
-                            let is_enabled = is_rpc_mode || !requires_core_rpc;
+    add_subscreen_chooser_panel(ui, "tools_subscreen_chooser_panel", false, true, items)
+}
 
-                            let button = if is_active {
-                                egui::Button::new(
-                                    RichText::new(subscreen.display_name())
-                                        .color(DashColors::WHITE)
-                                        .size(Typography::SCALE_SM),
-                                )
-                                .fill(DashColors::DASH_BLUE)
-                                .stroke(egui::Stroke::NONE)
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(150.0, 28.0))
-                            } else {
-                                egui::Button::new(
-                                    RichText::new(subscreen.display_name())
-                                        .color(DashColors::text_primary(dark_mode))
-                                        .size(Typography::SCALE_SM),
-                                )
-                                .fill(DashColors::glass_white(dark_mode))
-                                .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(150.0, 28.0))
-                            };
-
-                            // Show the subscreen name as a clickable option. Disable
-                            // tools that require a Core RPC connection while running
-                            // on the built-in SPV backend.
-                            let mut response = ui.add_enabled(is_enabled, button);
-                            if !is_enabled {
-                                response = response.on_disabled_hover_text(
-                                    "This tool requires a local Dash Core node. Open Settings, switch to Expert mode, and select Local Dash Core node to enable it.",
-                                );
-                            }
-                            if response.clicked() {
-                                // Handle navigation based on which subscreen is selected
-                                match subscreen {
-                                    ToolsSubscreen::PlatformInfo => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsPlatformInfoScreen,
-                                        )
-                                    }
-                                    ToolsSubscreen::AddressBalance => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsAddressBalanceScreen,
-                                        )
-                                    }
-                                    ToolsSubscreen::ProofLog => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsProofLogScreen,
-                                        )
-                                    }
-                                    ToolsSubscreen::TransactionViewer => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsTransitionVisualizerScreen,
-                                        )
-                                    }
-                                    ToolsSubscreen::ProofViewer => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsProofVisualizerScreen,
-                                        )
-                                    }
-                                    ToolsSubscreen::DocumentViewer => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsDocumentVisualizerScreen,
-                                        )
-                                    }
-                                    ToolsSubscreen::ContractViewer => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsContractVisualizerScreen,
-                                        )
-                                    }
-                                    ToolsSubscreen::MasternodeListDiff => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsMasternodeListDiffScreen)
-                                    }
-                                    ToolsSubscreen::GroveSTARK => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsGroveSTARKScreen)
-                                    }
-                                    ToolsSubscreen::DPNS => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenDPNSActiveContests)
-                                    }
-                                }
-                            }
-                            ui.add_space(Spacing::SM);
-                        }
-                    });
-                });
-        });
-
-    action
+/// The Tools tabs shown in the left-hand chooser panel, in display order.
+///
+/// GroveSTARK ("ZK Proofs") is intentionally omitted here so it does not appear
+/// in the menu, but its screen and `RootScreenToolsGroveSTARKScreen` route stay
+/// live — it remains reachable through other entry points and keeps working.
+fn visible_tools_nav_items() -> Vec<(ToolsSubscreen, RootScreenType)> {
+    vec![
+        (
+            ToolsSubscreen::PlatformInfo,
+            RootScreenType::RootScreenToolsPlatformInfoScreen,
+        ),
+        (
+            ToolsSubscreen::AddressBalance,
+            RootScreenType::RootScreenToolsAddressBalanceScreen,
+        ),
+        (
+            ToolsSubscreen::ProofViewer,
+            RootScreenType::RootScreenToolsProofVisualizerScreen,
+        ),
+        (
+            ToolsSubscreen::TransactionViewer,
+            RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+        ),
+        (
+            ToolsSubscreen::DocumentViewer,
+            RootScreenType::RootScreenToolsDocumentVisualizerScreen,
+        ),
+        (
+            ToolsSubscreen::ContractViewer,
+            RootScreenType::RootScreenToolsContractVisualizerScreen,
+        ),
+        (
+            ToolsSubscreen::DPNS,
+            RootScreenType::RootScreenDPNSActiveContests,
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -216,27 +82,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn masternode_list_diff_requires_core_rpc() {
-        assert!(ToolsSubscreen::MasternodeListDiff.requires_core_rpc());
+    fn zk_proofs_hidden_from_tools_menu() {
+        let names: Vec<&str> = visible_tools_nav_items()
+            .iter()
+            .map(|(subscreen, _)| subscreen.display_name())
+            .collect();
+
+        assert!(
+            !names.contains(&ToolsSubscreen::GroveSTARK.display_name()),
+            "ZK Proofs must not appear in the Tools menu"
+        );
     }
 
     #[test]
-    fn spv_safe_tools_do_not_require_core_rpc() {
-        for tool in [
+    fn other_tools_still_listed() {
+        let names: Vec<&str> = visible_tools_nav_items()
+            .iter()
+            .map(|(subscreen, _)| subscreen.display_name())
+            .collect();
+
+        for expected in [
             ToolsSubscreen::PlatformInfo,
             ToolsSubscreen::AddressBalance,
-            ToolsSubscreen::ProofLog,
+            ToolsSubscreen::ProofViewer,
             ToolsSubscreen::TransactionViewer,
             ToolsSubscreen::DocumentViewer,
-            ToolsSubscreen::ProofViewer,
             ToolsSubscreen::ContractViewer,
-            ToolsSubscreen::GroveSTARK,
             ToolsSubscreen::DPNS,
         ] {
             assert!(
-                !tool.requires_core_rpc(),
-                "Tool {} should be available in SPV mode",
-                tool.display_name()
+                names.contains(&expected.display_name()),
+                "Tools menu should still list {}",
+                expected.display_name()
             );
         }
     }

@@ -57,7 +57,7 @@ impl AsyncTool<DashMcpService> for DescribeTool {
         service: &DashMcpService,
         param: ToolNameParams,
     ) -> Result<DescribeToolOutput, McpToolError> {
-        // INTENTIONAL(PROJ-003): tool_describe uses meta naming rather than domain_object_action
+        // Deliberately: tool_describe uses meta naming rather than domain_object_action
         // convention — it's a meta-tool that describes other tools, not a domain operation.
         let tool_def =
             service

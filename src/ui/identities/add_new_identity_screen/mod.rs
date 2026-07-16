@@ -1,19 +1,22 @@
 mod by_platform_address;
+mod by_receive_deposit;
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
-mod by_wallet_qr_code;
 mod success_screen;
 
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::core::CoreItem;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{
-    IdentityKeys, IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
-    default_identity_key_specs,
+    IdentityKeyEntry, IdentityKeySpecs, IdentityRegistrationInfo, IdentityTask,
+    RegisterIdentityFundingMethod, default_identity_key_specs,
 };
+use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::secret::Secret;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -22,70 +25,100 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::identities::funding_common::{
+    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
+    deposit_matches, funding_method_after_switch, max_amount_after_fee_reserve,
+    spendable_covers_minimum, wallet_selection_combo,
+};
+use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
-use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::Identifier;
-use eframe::egui::Context;
-use egui::ahash::HashSet;
 use egui::{Align, Button, Color32, ComboBox, ScrollArea, Ui};
 use egui_extras::{Column, TableBuilder};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::model::amount::Amount;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use std::cmp::PartialEq;
-use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 pub const MAX_IDENTITY_INDEX: u32 = 30;
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum FundingMethod {
-    NoSelection,
-    UseUnusedAssetLock,
-    UseWalletBalance,
-    AddressWithQRCode,
-    /// Use Platform Address credits
-    UsePlatformAddress,
-}
-
-impl fmt::Display for FundingMethod {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let output = match self {
-            FundingMethod::NoSelection => "Select funding method",
-            FundingMethod::AddressWithQRCode => "Address with QR Code",
-            FundingMethod::UseWalletBalance => "Wallet Balance",
-            FundingMethod::UseUnusedAssetLock => "Unused Asset Lock (recommended)",
-            FundingMethod::UsePlatformAddress => "Platform Address",
-        };
-        write!(f, "{}", output)
-    }
+/// Compose a wallet-picker entry as `alias — spendable-balance in DASH`.
+///
+/// The balance shown is always the wallet's **spendable** amount (never the
+/// total): only spendable funds can pay for identity creation, so surfacing
+/// the total here would invite the very insufficient-funds surprise this
+/// label exists to prevent. A pure function so the wording is testable
+/// without constructing a real wallet/balance snapshot.
+fn format_wallet_picker_label(alias: &str, spendable_duffs: u64) -> String {
+    format!("{alias} — {}", Amount::dash_from_duffs(spendable_duffs))
 }
 
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<WalletFundedScreenStep>>,
-    funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
+    /// Outpoint of an asset lock tracked by the upstream `AssetLockManager`,
+    /// chosen by the user from the picker. Routed to the backend as
+    /// `RegisterIdentityFundingMethod::UseAssetLock`; the upstream signer
+    /// re-derives the credit-output key from the seed.
+    funding_asset_lock: Option<OutPoint>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
+    /// A queued deposit-address derivation for the "Receive a new deposit"
+    /// method. Set when the QR view needs an address; drained at the end of
+    /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
+    pending_funding_address_request: Option<WalletSeedHash>,
+    /// Set when a derived deposit address could not be parsed, so the QR view
+    /// stops auto-retrying and offers a manual retry instead of spinning forever.
+    funding_address_request_failed: bool,
+    /// Duffs received so far at `funding_address` (accumulated per deposit
+    /// event), for the "received so far" line — a per-address running total, not
+    /// whole-wallet balance.
+    received_at_funding_address_duffs: u64,
+    /// Set on the transition to `FundsReceived` so the amount field pre-fills
+    /// the fee-reserve-capped received balance on the next render.
+    prefill_funding_amount: bool,
     funding_method: Arc<RwLock<FundingMethod>>,
+    /// Whether the user has explicitly picked a funding method (as opposed to
+    /// the screen's own default pre-selection). Once true, a wallet switch
+    /// preserves the chosen method instead of recomputing the default.
+    user_chose_funding_method: bool,
     funding_amount: Option<Amount>,
     funding_amount_input: Option<AmountInput>,
-    funding_utxo: Option<(OutPoint, TxOut, Address)>,
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
-    identity_keys: IdentityKeys,
+    /// The chosen key set, public-only. Populated from the identity-auth
+    /// public-key cache (D4b); `master` is `None` until the cache is warm,
+    /// which gates registration (fail-closed, RK-2).
+    identity_keys: IdentityKeySpecs,
+    /// `true` while a [`WalletTask::WarmIdentityAuthPubkeys`] task is in flight
+    /// for the current identity index, so the warm is not re-dispatched every
+    /// frame and the UI can show a "preparing keys" hint.
+    warming_identity_keys: bool,
+    /// A queued cache-warm request: (seed hash, identity index). Set when the
+    /// chooser reads a cold cache; drained at the end of `ui()` into a
+    /// [`WalletTask::WarmIdentityAuthPubkeys`] task.
+    pending_warm_request: Option<([u8; 32], u32)>,
+    /// Per-key-id revealed WIFs (advanced mode "Show WIF"), derived on demand
+    /// via [`WalletTask::DeriveKeyForDisplay`]. Id 0 is the master key. Each is
+    /// zeroize-on-drop and cleared when the key set is rebuilt.
+    revealed_wifs: HashMap<u32, Secret>,
+    /// A queued "derive WIF for display" request: (key id, derivation path).
+    /// Drained at the end of `ui()` into a `DeriveKeyForDisplay` task so the
+    /// seed is fetched just-in-time and only the WIF returns.
+    pending_wif_request: Option<(u32, DerivationPath)>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
     show_pop_up_info: Option<String>,
@@ -104,6 +137,10 @@ pub struct AddNewIdentityScreen {
     show_advanced_options: bool,
     /// Fee result from completed identity registration
     completed_fee_result: Option<FeeResult>,
+    /// Tracked asset locks for the selected wallet, fetched off the UI thread
+    /// via the App Task System. Backs both the funding-method gate and the
+    /// asset-lock picker.
+    asset_lock_cache: TrackedAssetLockCache,
 }
 
 impl AddNewIdentityScreen {
@@ -118,7 +155,7 @@ impl AddNewIdentityScreen {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &app_context.wallets.read().unwrap();
+            let wallets = &app_context.wallets.read_recover();
             // If a specific wallet seed hash is provided, use that wallet
             if let Some(seed_hash) = wallet_seed_hash
                 && let Some(wallet) = wallets.get(&seed_hash)
@@ -133,25 +170,32 @@ impl AddNewIdentityScreen {
             }
         }
 
+        // The funding-method pre-selection is applied by `update_wallet` below
+        // (and re-applied on every later wallet switch while the user has not
+        // made an explicit choice), so the chooser always tracks a wallet the
+        // pre-selection can actually be funded from.
         let mut created = Self {
             identity_id_number: 0, // updated later
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
-            core_has_funding_address: None,
             funding_address: None,
+            pending_funding_address_request: None,
+            funding_address_request_failed: false,
+            received_at_funding_address_duffs: 0,
+            prefill_funding_amount: false,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
+            user_chose_funding_method: false,
             funding_amount: None,
             funding_amount_input: None,
-            funding_utxo: None,
             alias_input: String::new(),
             copied_to_clipboard: None,
             // updated later
-            identity_keys: IdentityKeys {
-                master_private_key: None,
-                master_private_key_type: KeyType::ECDSA_HASH160,
-                keys_input: vec![],
-            },
+            identity_keys: IdentityKeySpecs::empty(),
+            warming_identity_keys: false,
+            pending_warm_request: None,
+            revealed_wifs: HashMap::new(),
+            pending_wif_request: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
             show_pop_up_info: None,
@@ -163,6 +207,7 @@ impl AddNewIdentityScreen {
             platform_funding_amount_input: None,
             show_advanced_options: false,
             completed_fee_result: None,
+            asset_lock_cache: TrackedAssetLockCache::default(),
         };
 
         if let Some(wallet) = selected_wallet {
@@ -172,85 +217,104 @@ impl AddNewIdentityScreen {
         created
     }
 
-    /// Ensure that identity keys are correctly set up and generated.
+    /// Default number of keys (master + additional) the chooser warms and reads
+    /// from the auth-pubkey cache.
+    fn default_key_count(&self) -> u32 {
+        let dashpay_contract_id = self.app_context.dashpay_contract.id();
+        // master (index 0) + the default additional keys.
+        default_identity_key_specs(dashpay_contract_id).len() as u32 + 1
+    }
+
+    /// Read the chosen identity keys from the auth-pubkey cache (D4b),
+    /// seed-free, for the current wallet + identity index.
     ///
-    /// If the master key is not set, it generates a new master key and derives other keys from it.
-    /// Otherwise, it updates the existing keys based on the current wallet and identity index.
-    ///
-    /// ## Return value
-    ///
-    /// * Ok(()) when the keys are correctly set up.
-    /// * Err(String) if there was an error during the process, e.g. wallet not open
-    pub fn ensure_correct_identity_keys(&mut self) -> Result<(), String> {
-        if self.identity_keys.master_private_key.is_some() {
-            return match self.update_identity_key() {
-                Ok(true) => Ok(()),
-                Ok(false) => Err("failed to update identity keys".to_string()),
-                Err(e) => Err(format!("failed to update identity keys: {}", e)),
-            };
+    /// The chooser shows and submits **public** keys; the private keys are
+    /// derived just-in-time at registration through the JIT chokepoint. On a
+    /// cache hit this builds the [`IdentityKeySpecs`] entirely without the seed.
+    /// On a miss it leaves the key set empty (registration stays disabled,
+    /// fail-closed RK-2) and queues a cache warm (drained at the end of `ui()`
+    /// into a [`WalletTask::WarmIdentityAuthPubkeys`] task); the next frame
+    /// reads the now-warm cache.
+    pub fn ensure_correct_identity_keys(&mut self) {
+        self.revealed_wifs.clear();
+
+        let Some(wallet_lock) = self.selected_wallet.clone() else {
+            self.identity_keys = IdentityKeySpecs::empty();
+            return;
+        };
+
+        let (seed_hash, is_open) = {
+            let wallet = wallet_lock.read_recover();
+            (wallet.seed_hash(), wallet.is_open())
+        };
+        if !is_open {
+            self.identity_keys = IdentityKeySpecs::empty();
+            return;
         }
 
-        if let Some(wallet_lock) = &self.selected_wallet {
-            // sanity checks
-            {
-                let wallet = wallet_lock.read().unwrap();
-                if !wallet.is_open() {
-                    return Err(format!(
-                        "wallet {} is not open",
-                        wallet
-                            .alias
-                            .as_ref()
-                            .unwrap_or(&wallet.seed_hash().to_lower_hex_string())
-                    ));
-                }
-            }
+        let network = self.app_context.network;
+        let identity_index = self.identity_id_number;
+        let dashpay_contract_id = self.app_context.dashpay_contract.id();
+        let default_keys = default_identity_key_specs(dashpay_contract_id);
 
-            let app_context = &self.app_context;
-            let identity_id_number = self.identity_id_number;
+        let Ok(backend) = self.app_context.wallet_backend() else {
+            self.identity_keys = IdentityKeySpecs::empty();
+            return;
+        };
+        let cache = backend.auth_pubkey_cache().get(network, &seed_hash);
 
-            // Get default key configuration
-            let dashpay_contract_id = app_context.dashpay_contract.id();
-            let default_keys = default_identity_key_specs(dashpay_contract_id);
+        // Master key at index 0.
+        let Some(master_pk) = cache.get(network, identity_index, 0) else {
+            self.queue_warm_identity_keys(seed_hash, identity_index);
+            return;
+        };
+        let master = IdentityKeyEntry::from_cached_public_key(
+            master_pk,
+            network,
+            identity_index,
+            0,
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            None,
+        );
 
-            let mut wallet = wallet_lock.write().expect("wallet lock failed");
-            let master_key = wallet.identity_authentication_ecdsa_private_key(
-                app_context,
-                app_context.network,
-                identity_id_number,
-                0,
-            )?;
-
-            let other_keys = default_keys
-                .into_iter()
-                .enumerate()
-                .map(
-                    |(i, (key_type, purpose, security_level, contract_bounds))| {
-                        Ok((
-                            wallet.identity_authentication_ecdsa_private_key(
-                                app_context,
-                                app_context.network,
-                                identity_id_number,
-                                (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
-                            )?,
-                            key_type,
-                            purpose,
-                            security_level,
-                            contract_bounds,
-                        ))
-                    },
-                )
-                .collect::<Result<Vec<_>, String>>()?;
-
-            self.identity_keys = IdentityKeys {
-                master_private_key: Some(master_key),
-                master_private_key_type: KeyType::ECDSA_HASH160,
-                keys_input: other_keys,
+        let mut others = Vec::with_capacity(default_keys.len());
+        for (i, (key_type, purpose, security_level, contract_bounds)) in
+            default_keys.into_iter().enumerate()
+        {
+            let key_index = (i + 1) as u32;
+            let Some(pk) = cache.get(network, identity_index, key_index) else {
+                self.queue_warm_identity_keys(seed_hash, identity_index);
+                return;
             };
-
-            Ok(())
-        } else {
-            Err("no wallet selected".to_string())
+            others.push(IdentityKeyEntry::from_cached_public_key(
+                pk,
+                network,
+                identity_index,
+                key_index,
+                key_type,
+                purpose,
+                security_level,
+                contract_bounds,
+            ));
         }
+
+        self.identity_keys = IdentityKeySpecs::new(Some(master), others);
+        self.warming_identity_keys = false;
+    }
+
+    /// Queue a cache warm for the current identity index and mark the key set
+    /// not-ready so registration stays disabled (fail-closed). The request is
+    /// dispatched once at the end of `ui()`; `warming_identity_keys` prevents
+    /// re-dispatch on subsequent frames while it is in flight.
+    fn queue_warm_identity_keys(&mut self, seed_hash: [u8; 32], identity_index: u32) {
+        self.identity_keys = IdentityKeySpecs::empty();
+        if self.warming_identity_keys {
+            return;
+        }
+        self.warming_identity_keys = true;
+        self.pending_warm_request = Some((seed_hash, identity_index));
     }
 
     fn render_identity_index_input(&mut self, ui: &mut egui::Ui) {
@@ -264,7 +328,7 @@ impl AddNewIdentityScreen {
 
             // Check if we have access to the selected wallet
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-                let wallet = wallet_guard.read().unwrap();
+                let wallet = wallet_guard.read_recover();
                 let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
 
                 // Modify the selected text to include "(used)" if the current index is used
@@ -311,67 +375,62 @@ impl AddNewIdentityScreen {
             }
         });
 
-        // If the index has changed, update the identity key
+        // If the index has changed, refresh the identity keys from the cache.
         if index_changed {
-            self.ensure_correct_identity_keys()
-                .expect("failed to update identity key");
+            self.ensure_correct_identity_keys();
         }
     }
 
+    /// Build the wallet-picker label (`alias — spendable balance`) for one
+    /// wallet, reading its spendable balance from the display snapshot.
+    ///
+    /// Poison-tolerant: if the wallet lock is poisoned, falls back to a plain
+    /// "Unnamed Wallet" label rather than panicking. Takes `&AppContext`
+    /// (not `&self`) so the ComboBox closure can call it via a field-level
+    /// borrow, leaving the closure's other `self` field writes undisturbed.
+    fn wallet_picker_label(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> String {
+        let Some((seed_hash, alias)) = wallet.read().ok().map(|w| {
+            let alias = w
+                .alias
+                .clone()
+                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+            (w.seed_hash(), alias)
+        }) else {
+            return "Unnamed Wallet".to_string();
+        };
+        let spendable_duffs = app_context.snapshot_balance(&seed_hash).spendable();
+        format_wallet_picker_label(&alias, spendable_duffs)
+    }
+
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
-        let mut selected_wallet = None;
+        let mut clicked_wallet = None;
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &self.app_context.wallets.read().unwrap();
+            let wallets: Vec<_> = self
+                .app_context
+                .wallets
+                .read()
+                .map(|guard| guard.values().cloned().collect())
+                .unwrap_or_default();
+
             if wallets.len() > 1 {
-                // Retrieve the alias of the currently selected wallet, if any
-                let selected_wallet_alias = self
-                    .selected_wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                    .unwrap_or_else(|| "Select".to_string());
+                ui.heading("1. Choose which wallet this identity's keys will come from.");
 
-                ui.heading(
-                    "1. Choose the wallet to use in which this identities keys will come from.",
+                // Show each wallet's spendable balance next to its alias so
+                // funding sufficiency is visible before choosing.
+                let app_context = self.app_context.clone();
+                clicked_wallet = wallet_selection_combo(
+                    ui,
+                    "select_wallet",
+                    &wallets,
+                    self.selected_wallet.as_ref(),
+                    |wallet| Self::wallet_picker_label(&app_context, wallet),
+                    |_| true,
                 );
-
-                // Display the ComboBox for wallet selection
-                ComboBox::from_id_salt("select_wallet")
-                    .selected_text(selected_wallet_alias)
-                    .show_ui(ui, |ui| {
-                        for wallet in wallets.values() {
-                            let wallet_alias = wallet
-                                .read()
-                                .ok()
-                                .and_then(|w| w.alias.clone())
-                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
-
-                            let is_selected = self
-                                .selected_wallet
-                                .as_ref()
-                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                // Update the selected wallet
-                                selected_wallet = Some(wallet.clone());
-                                // Reset the funding address
-                                self.funding_address = None;
-                                // Reset the funding asset lock
-                                self.funding_asset_lock = None;
-                                // Reset the funding UTXO
-                                self.funding_utxo = None;
-                                // Reset the copied to clipboard state
-                                self.copied_to_clipboard = None;
-                                // Reset the step to choose funding method
-                                let mut step = self.step.write().unwrap();
-                                *step = WalletFundedScreenStep::ChooseFundingMethod;
-                            }
-                        }
-                    });
                 true
-            } else if let Some(wallet) = wallets.values().next() {
+            } else if let Some(wallet) = wallets.first() {
                 if self.selected_wallet.is_none() {
-                    // Automatically select the only available wallet
-                    selected_wallet = Some(wallet.clone());
+                    // Automatically select the only available wallet.
+                    clicked_wallet = Some(wallet.clone());
                 }
                 false
             } else {
@@ -381,27 +440,81 @@ impl AddNewIdentityScreen {
             false
         };
 
-        if let Some(wallet) = selected_wallet {
+        if let Some(wallet) = clicked_wallet {
+            // A wallet switch invalidates funding chosen for the previous
+            // wallet; `update_wallet` re-derives the funding method/step.
+            self.funding_address = None;
+            self.pending_funding_address_request = None;
+            self.funding_address_request_failed = false;
+            self.received_at_funding_address_duffs = 0;
+            self.prefill_funding_amount = false;
+            self.funding_asset_lock = None;
+            self.copied_to_clipboard = None;
             self.update_wallet(wallet);
         }
 
         rendered
     }
 
-    /// Update selected wallet and trigger all dependent actions, like updating identity keys
-    /// and identity index.
+    /// Whether `wallet` can cover the estimated identity-creation fee out of its
+    /// spendable balance — the same sufficiency check as the "not enough Dash"
+    /// banner in `by_using_unused_balance.rs`, so a dust balance (positive but
+    /// below the fee) is never treated as fundable. Poison-tolerant: a busy
+    /// wallet lock reads as "cannot afford" rather than panicking.
+    fn wallet_can_afford_creation(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> bool {
+        let Ok(w) = wallet.read() else {
+            return false;
+        };
+        let spendable_duffs = app_context.snapshot_balance(&w.seed_hash()).spendable();
+        let key_count = default_identity_key_specs(app_context.dashpay_contract.id()).len() + 1;
+        let minimum_credits = app_context
+            .fee_estimator()
+            .estimate_identity_create(key_count);
+        spendable_covers_minimum(spendable_duffs, minimum_credits)
+    }
+
+    /// Update selected wallet and trigger all dependent actions, like updating
+    /// identity keys and identity index.
     ///
-    /// This function is called whenever a wallet was changed in the UI or unlocked
+    /// Called whenever the wallet changes in the UI or is unlocked. While the
+    /// user has not explicitly chosen a funding method, the default
+    /// pre-selection is recomputed for the new wallet; an explicit choice is
+    /// preserved across the switch.
     fn update_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
-        let is_open = wallet.read().expect("wallet lock poisoned").is_open();
+        let is_open = wallet.read().is_ok_and(|w| w.is_open());
 
         self.selected_wallet = Some(wallet);
         self.wallet_open_attempted = false;
         self.identity_id_number = self.next_identity_id();
 
+        let can_afford = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|wallet| Self::wallet_can_afford_creation(&self.app_context, wallet));
+        let current = (
+            self.funding_method
+                .read()
+                .map(|m| *m)
+                .unwrap_or(FundingMethod::NoSelection),
+            self.step
+                .read()
+                .map(|s| *s)
+                .unwrap_or(WalletFundedScreenStep::ChooseFundingMethod),
+        );
+        let (method, step) =
+            funding_method_after_switch(self.user_chose_funding_method, current, can_afford);
+        if let Ok(mut m) = self.funding_method.write() {
+            *m = method;
+        }
+        if let Ok(mut s) = self.step.write() {
+            *s = step;
+        }
+
         if is_open {
-            self.ensure_correct_identity_keys()
-                .expect("failed to initialize keys")
+            // A new wallet/index resets any in-flight warm so the cold cache
+            // for the new selection is read fresh.
+            self.warming_identity_keys = false;
+            self.ensure_correct_identity_keys();
         }
     }
 
@@ -414,8 +527,7 @@ impl AddNewIdentityScreen {
         self.selected_wallet
             .as_ref()
             .unwrap()
-            .read()
-            .unwrap()
+            .read_recover()
             .identities
             .keys()
             .copied()
@@ -429,7 +541,9 @@ impl AddNewIdentityScreen {
             return;
         };
         let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
+        let Ok(mut funding_method) = funding_method_arc.write() else {
+            return;
+        };
 
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
@@ -439,19 +553,30 @@ impl AddNewIdentityScreen {
                     .selectable_value(
                         &mut *funding_method,
                         FundingMethod::NoSelection,
-                        "Please select funding method",
+                        format!("{}", FundingMethod::NoSelection),
                     )
                     .changed()
                 {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ChooseFundingMethod;
+                    // Deselecting returns to auto-default behavior so a later
+                    // wallet switch may re-recommend a method.
+                    self.user_chose_funding_method = false;
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ChooseFundingMethod;
+                    }
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
 
                 let (has_unused_asset_lock, has_balance) = {
-                    let wallet = selected_wallet.read().unwrap();
-                    (wallet.has_unused_asset_lock(), wallet.has_balance())
+                    let wallet = selected_wallet.read_recover();
+                    let seed_hash = wallet.seed_hash();
+                    // Offer the option on a failed fetch too, so the user can
+                    // reach the picker's Retry rather than the option vanishing.
+                    (
+                        self.asset_lock_cache.has_unused(&seed_hash)
+                            || self.asset_lock_cache.is_failed(&seed_hash),
+                        self.app_context.snapshot_has_balance(&seed_hash),
+                    )
                 };
 
                 if has_unused_asset_lock
@@ -459,14 +584,15 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Unused Evo Funding Locks (recommended)",
+                            format!("{}", FundingMethod::UseUnusedAssetLock),
                         )
                         .changed()
                 {
-                    self.ensure_correct_identity_keys()
-                        .expect("failed to initialize keys");
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    self.user_chose_funding_method = true;
+                    self.ensure_correct_identity_keys();
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
@@ -475,32 +601,20 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Wallet Balance",
+                            format!("{}", FundingMethod::UseWalletBalance),
                         )
                         .changed()
                 {
+                    self.user_chose_funding_method = true;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
-                    let mut step = self.step.write().unwrap(); // Write lock on step
-                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
                 }
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::AddressWithQRCode,
-                        "Address with QR Code",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::WaitingOnFunds;
-                    self.funding_amount = None;
-                    self.funding_amount_input = None;
-                }
-
                 // Check if wallet has Platform address balance
                 let has_platform_balance = {
-                    let wallet = selected_wallet.read().unwrap();
+                    let wallet = selected_wallet.read_recover();
                     wallet
                         .platform_address_info
                         .values()
@@ -511,19 +625,65 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Platform Address",
+                            format!("{}", FundingMethod::UsePlatformAddress),
                         )
                         .changed()
                 {
-                    self.ensure_correct_identity_keys()
-                        .expect("failed to initialize keys");
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    self.user_chose_funding_method = true;
+                    self.ensure_correct_identity_keys();
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
                     self.platform_funding_amount = None;
                     self.platform_funding_amount_input = None;
                     self.selected_platform_address_for_funding = None;
                 }
+                // "Receive a new deposit" is always offered: it needs no existing
+                // balance or asset lock, it creates the funds the wizard will use.
+                if ui
+                    .selectable_value(
+                        &mut *funding_method,
+                        FundingMethod::ReceiveDeposit,
+                        format!("{}", FundingMethod::ReceiveDeposit),
+                    )
+                    .changed()
+                {
+                    self.user_chose_funding_method = true;
+                    self.ensure_correct_identity_keys();
+                    // Await the deposit; the QR view derives the address lazily.
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::WaitingOnFunds;
+                    }
+                    self.funding_address = None;
+                    self.pending_funding_address_request = None;
+                    self.funding_address_request_failed = false;
+                    self.received_at_funding_address_duffs = 0;
+                    self.prefill_funding_amount = false;
+                    self.funding_amount = None;
+                    self.funding_amount_input = None;
+                }
             });
+    }
+
+    /// Return the deposit chooser to its initial state so the user is never
+    /// trapped in the waiting/received sub-steps. Clears the shown address and
+    /// any pending derivation; the wallet keeps any deposit already received.
+    fn reset_to_choose_funding(&mut self) {
+        let (method, step) = default_funding_state(false);
+        if let Ok(mut m) = self.funding_method.write() {
+            *m = method;
+        }
+        if let Ok(mut s) = self.step.write() {
+            *s = step;
+        }
+        self.user_chose_funding_method = false;
+        self.funding_address = None;
+        self.pending_funding_address_request = None;
+        self.funding_address_request_failed = false;
+        self.received_at_funding_address_duffs = 0;
+        self.prefill_funding_amount = false;
+        self.funding_amount = None;
+        self.funding_amount_input = None;
     }
 
     // Function to render the key selection mode (Default or Advanced)
@@ -564,6 +724,9 @@ impl AddNewIdentityScreen {
 
         // Render additional key options only if "Advanced" mode is selected
         if self.in_key_selection_advanced_mode {
+            if self.warming_identity_keys && !self.identity_keys.has_master() {
+                ui.label("Preparing identity keys…");
+            }
             // Render all keys in one grid
             self.render_keys_input(ui);
         } else {
@@ -573,16 +736,22 @@ impl AddNewIdentityScreen {
 
     fn render_keys_input(&mut self, ui: &mut egui::Ui) {
         let mut keys_to_remove = vec![];
-        let has_master_key = self.identity_keys.master_private_key.is_some();
-        let has_other_keys = !self.identity_keys.keys_input.is_empty();
+        // Per-row "Show WIF" requests collected inside the table closure and
+        // applied after, to avoid borrowing `self` while the table borrows
+        // `self.identity_keys`. Each is (key id, derivation path).
+        let mut wif_requests: Vec<(u32, DerivationPath)> = vec![];
+        let has_master_key = self.identity_keys.master.is_some();
+        let has_other_keys = !self.identity_keys.others.is_empty();
 
         if has_master_key || has_other_keys {
             let row_height = 30.0;
 
             // Use a lighter stripe color that doesn't clash with comboboxes
             let original_stripe_color = ui.visuals().faint_bg_color;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.visuals_mut().faint_bg_color = DashColors::stripe(dark_mode);
+
+            let revealed_wifs = &self.revealed_wifs;
 
             TableBuilder::new(ui)
                 .striped(true)
@@ -615,16 +784,19 @@ impl AddNewIdentityScreen {
                 })
                 .body(|mut body| {
                     // Render master key first
-                    if let Some((master_key, _)) = self.identity_keys.master_private_key {
+                    if let Some(master) = self.identity_keys.master.as_mut() {
                         body.row(row_height, |mut row| {
                             row.col(|ui| {
                                 ui.label("Master Key");
                             });
                             row.col(|ui| {
-                                let wif = Secret::new(master_key.to_wif());
-                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
-                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
-                                ui.label(wif.expose_secret());
+                                Self::render_wif_cell(
+                                    ui,
+                                    0,
+                                    &master.derivation_path,
+                                    revealed_wifs,
+                                    &mut wif_requests,
+                                );
                             });
                             row.col(|_ui| {
                                 // No purpose for master key
@@ -632,18 +804,15 @@ impl AddNewIdentityScreen {
                             row.col(|ui| {
                                 ui.vertical(|ui| {
                                     ComboBox::from_id_salt("master_key_type")
-                                        .selected_text(format!(
-                                            "{:?}",
-                                            self.identity_keys.master_private_key_type
-                                        ))
+                                        .selected_text(format!("{:?}", master.key_type))
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(
-                                                &mut self.identity_keys.master_private_key_type,
+                                                &mut master.key_type,
                                                 KeyType::ECDSA_SECP256K1,
                                                 "ECDSA_SECP256K1",
                                             );
                                             ui.selectable_value(
-                                                &mut self.identity_keys.master_private_key_type,
+                                                &mut master.key_type,
                                                 KeyType::ECDSA_HASH160,
                                                 "ECDSA_HASH160",
                                             );
@@ -660,61 +829,63 @@ impl AddNewIdentityScreen {
                     }
 
                     // Render other keys
-                    for (i, ((key, _), key_type, purpose, security_level, _contract_bounds)) in
-                        self.identity_keys.keys_input.iter_mut().enumerate()
-                    {
+                    for (i, entry) in self.identity_keys.others.iter_mut().enumerate() {
+                        let key_id = (i + 1) as u32;
                         body.row(row_height, |mut row| {
                             row.col(|ui| {
                                 ui.label(format!("Key {}", i + 1));
                             });
                             row.col(|ui| {
-                                let wif = Secret::new(key.to_wif());
-                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
-                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
-                                ui.label(wif.expose_secret());
+                                Self::render_wif_cell(
+                                    ui,
+                                    key_id,
+                                    &entry.derivation_path,
+                                    revealed_wifs,
+                                    &mut wif_requests,
+                                );
                             });
                             row.col(|ui| {
                                 ui.vertical(|ui| {
-                                    let prev_purpose = *purpose;
+                                    let prev_purpose = entry.purpose;
                                     ComboBox::from_id_salt(format!("purpose_combo_{}", i))
-                                        .selected_text(format!("{:?}", purpose))
+                                        .selected_text(format!("{:?}", entry.purpose))
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(
-                                                purpose,
+                                                &mut entry.purpose,
                                                 Purpose::AUTHENTICATION,
                                                 "AUTHENTICATION",
                                             );
                                             ui.selectable_value(
-                                                purpose,
+                                                &mut entry.purpose,
                                                 Purpose::TRANSFER,
                                                 "TRANSFER",
                                             );
                                             ui.selectable_value(
-                                                purpose,
+                                                &mut entry.purpose,
                                                 Purpose::ENCRYPTION,
                                                 "ENCRYPTION",
                                             );
                                             ui.selectable_value(
-                                                purpose,
+                                                &mut entry.purpose,
                                                 Purpose::DECRYPTION,
                                                 "DECRYPTION",
                                             );
                                         });
                                     // Auto-set security level when purpose changes
-                                    if *purpose != prev_purpose {
-                                        match *purpose {
+                                    if entry.purpose != prev_purpose {
+                                        match entry.purpose {
                                             Purpose::TRANSFER => {
-                                                *security_level = SecurityLevel::CRITICAL;
+                                                entry.security_level = SecurityLevel::CRITICAL;
                                             }
                                             Purpose::ENCRYPTION | Purpose::DECRYPTION => {
-                                                *security_level = SecurityLevel::MEDIUM;
+                                                entry.security_level = SecurityLevel::MEDIUM;
                                             }
                                             Purpose::AUTHENTICATION => {
-                                                if *security_level != SecurityLevel::CRITICAL
-                                                    && *security_level != SecurityLevel::HIGH
-                                                    && *security_level != SecurityLevel::MEDIUM
+                                                if entry.security_level != SecurityLevel::CRITICAL
+                                                    && entry.security_level != SecurityLevel::HIGH
+                                                    && entry.security_level != SecurityLevel::MEDIUM
                                                 {
-                                                    *security_level = SecurityLevel::CRITICAL;
+                                                    entry.security_level = SecurityLevel::CRITICAL;
                                                 }
                                             }
                                             _ => {}
@@ -725,15 +896,15 @@ impl AddNewIdentityScreen {
                             row.col(|ui| {
                                 ui.vertical(|ui| {
                                     ComboBox::from_id_salt(format!("key_type_combo_{}", i))
-                                        .selected_text(format!("{:?}", key_type))
+                                        .selected_text(format!("{:?}", entry.key_type))
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(
-                                                key_type,
+                                                &mut entry.key_type,
                                                 KeyType::ECDSA_HASH160,
                                                 "ECDSA_HASH160",
                                             );
                                             ui.selectable_value(
-                                                key_type,
+                                                &mut entry.key_type,
                                                 KeyType::ECDSA_SECP256K1,
                                                 "ECDSA_SECP256K1",
                                             );
@@ -743,29 +914,29 @@ impl AddNewIdentityScreen {
                             row.col(|ui| {
                                 ui.vertical(|ui| {
                                     ComboBox::from_id_salt(format!("security_level_combo_{}", i))
-                                        .selected_text(format!("{:?}", security_level))
+                                        .selected_text(format!("{:?}", entry.security_level))
                                         .show_ui(ui, |ui| {
-                                            if *purpose == Purpose::TRANSFER {
-                                                *security_level = SecurityLevel::CRITICAL;
+                                            if entry.purpose == Purpose::TRANSFER {
+                                                entry.security_level = SecurityLevel::CRITICAL;
                                                 ui.label("Locked to CRITICAL");
-                                            } else if *purpose == Purpose::ENCRYPTION
-                                                || *purpose == Purpose::DECRYPTION
+                                            } else if entry.purpose == Purpose::ENCRYPTION
+                                                || entry.purpose == Purpose::DECRYPTION
                                             {
-                                                *security_level = SecurityLevel::MEDIUM;
+                                                entry.security_level = SecurityLevel::MEDIUM;
                                                 ui.label("Locked to MEDIUM");
                                             } else {
                                                 ui.selectable_value(
-                                                    security_level,
+                                                    &mut entry.security_level,
                                                     SecurityLevel::CRITICAL,
                                                     "CRITICAL",
                                                 );
                                                 ui.selectable_value(
-                                                    security_level,
+                                                    &mut entry.security_level,
                                                     SecurityLevel::HIGH,
                                                     "HIGH",
                                                 );
                                                 ui.selectable_value(
-                                                    security_level,
+                                                    &mut entry.security_level,
                                                     SecurityLevel::MEDIUM,
                                                     "MEDIUM",
                                                 );
@@ -786,9 +957,17 @@ impl AddNewIdentityScreen {
             ui.visuals_mut().faint_bg_color = original_stripe_color;
         }
 
-        // Remove keys marked for deletion
+        // Apply any "Show WIF" request — only the most recent click matters.
+        if let Some(request) = wif_requests.pop() {
+            self.pending_wif_request = Some(request);
+        }
+
+        // Remove keys marked for deletion (revealed WIFs become stale).
+        if !keys_to_remove.is_empty() {
+            self.revealed_wifs.clear();
+        }
         for i in keys_to_remove.iter().rev() {
-            self.identity_keys.keys_input.remove(*i);
+            self.identity_keys.others.remove(*i);
         }
 
         // Add new key input entry
@@ -802,29 +981,51 @@ impl AddNewIdentityScreen {
         }
     }
 
+    /// Render the advanced-mode WIF cell for one key: the revealed WIF if
+    /// already derived, otherwise a "Show WIF" button that queues a
+    /// just-in-time backend derivation. The seed never reaches `ui()` — only
+    /// the derived WIF (wrapped in [`Secret`]) comes back via a backend task.
+    fn render_wif_cell(
+        ui: &mut egui::Ui,
+        key_id: u32,
+        derivation_path: &DerivationPath,
+        revealed_wifs: &HashMap<u32, Secret>,
+        wif_requests: &mut Vec<(u32, DerivationPath)>,
+    ) {
+        if let Some(wif) = revealed_wifs.get(&key_id) {
+            // WIF displayed as plaintext label — user-initiated key view.
+            // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
+            ui.label(wif.expose_secret());
+        } else if ui.button("Show WIF").clicked() {
+            wif_requests.push((key_id, derivation_path.clone()));
+        }
+    }
+
     fn register_identity_clicked(&mut self, funding_method: FundingMethod) -> AppAction {
         let Some(selected_wallet) = &self.selected_wallet else {
             return AppAction::None;
         };
-        if self.identity_keys.master_private_key.is_none() {
+        // Fail-closed: the key set is only populated once the auth-pubkey cache
+        // is warm. A cold cache leaves `master` empty, so registration is
+        // blocked until the keys are ready (RK-2).
+        if !self.identity_keys.has_master() {
             return AppAction::None;
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
-                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                if let Some(out_point) = self.funding_asset_lock {
                     let identity_input = IdentityRegistrationInfo {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         wallet_identity_index: self.identity_id_number,
-                        identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock(
-                            address,
-                            Box::new(funding_asset_lock),
-                            Box::new(tx),
-                        ),
+                        identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock {
+                            out_point,
+                            identity_index: self.identity_id_number,
+                        },
                     };
 
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_recover();
                     *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                     AppAction::BackendTask(BackendTask::IdentityTask(
@@ -834,7 +1035,9 @@ impl AddNewIdentityScreen {
                     AppAction::None
                 }
             }
-            FundingMethod::UseWalletBalance => {
+            // A received deposit lands in the wallet balance, so it funds
+            // through the same wallet-balance path once it arrives.
+            FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit => {
                 // Get the funding amount in duffs from the Amount
                 let amount = self
                     .funding_amount
@@ -846,8 +1049,8 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let seed = selected_wallet.read().unwrap().wallet_seed.clone();
-                tracing::debug!(selected_wallet = ?selected_wallet,?seed, "funding with wallet balance");
+                let wallet_seed_hash = hex::encode(selected_wallet.read_recover().seed_hash());
+                tracing::debug!(wallet_seed_hash, "funding with wallet balance");
                 let identity_input = IdentityRegistrationInfo {
                     alias_input: self.alias_input.clone(),
                     keys: self.identity_keys.clone(),
@@ -859,7 +1062,7 @@ impl AddNewIdentityScreen {
                     ),
                 };
 
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_recover();
                 *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to register the identity
@@ -888,7 +1091,7 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let wallet_seed_hash = selected_wallet.read().unwrap().seed_hash();
+                let wallet_seed_hash = selected_wallet.read_recover().seed_hash();
 
                 let mut inputs = std::collections::BTreeMap::new();
                 inputs.insert(platform_addr, amount);
@@ -905,7 +1108,7 @@ impl AddNewIdentityScreen {
                         },
                 };
 
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_recover();
                 *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
@@ -917,21 +1120,46 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = *self.funding_method.read().unwrap();
+        let funding_method = *self.funding_method.read_recover();
 
-        // Calculate max amount if using wallet balance
-        let max_amount_credits = if funding_method == FundingMethod::UseWalletBalance {
-            self.selected_wallet.as_ref().map(|wallet| {
-                let wallet = wallet.read().unwrap();
-                // Convert duffs to credits (1 duff = 1000 credits)
-                wallet.total_balance_duffs() * 1000
-            })
+        // Apply the max-amount restriction for both wallet-balance funding and a
+        // received deposit (which also spends from the wallet balance); reserve
+        // the estimated identity-creation fee out of the spendable balance so
+        // "Max" never offers more than the coin selector can actually use.
+        let (max_amount_credits, show_max_button, fee_hint) = if matches!(
+            funding_method,
+            FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
+        ) {
+            let spendable_duffs = self
+                .selected_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.read().ok())
+                .map(|wallet| {
+                    self.app_context
+                        .snapshot_balance(&wallet.seed_hash())
+                        .spendable()
+                })
+                .unwrap_or(0);
+            let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+            let estimated_fee = self
+                .app_context
+                .fee_estimator()
+                .estimate_identity_create(key_count);
+            let max_with_fee_reserved =
+                max_amount_after_fee_reserve(spendable_duffs, estimated_fee);
+            (
+                Some(max_with_fee_reserved),
+                true,
+                Some(format!(
+                    "~{} reserved for fees",
+                    format_credits_as_dash(estimated_fee)
+                )),
+            )
         } else {
-            None
+            (None, false, None)
         };
 
-        let show_max_button = funding_method == FundingMethod::UseWalletBalance;
-
+        let should_prefill = self.prefill_funding_amount;
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
                 .with_label("Amount (DASH):")
@@ -943,89 +1171,128 @@ impl AddNewIdentityScreen {
         // Update max amount and max button visibility dynamically
         amount_input
             .set_max_amount(max_amount_credits)
-            .set_show_max_button(show_max_button);
+            .set_show_max_button(show_max_button)
+            .set_max_exceeded_hint(fee_hint);
+
+        // Pre-fill (once) with the fee-reserve-capped maximum when a deposit just
+        // arrived, so the amount and Create button are populated but still editable.
+        if should_prefill && let Some(max) = max_amount_credits {
+            amount_input.set_value(Amount::dash_from_credits(max));
+        }
 
         let response = amount_input.show(ui);
         response.inner.update(&mut self.funding_amount);
 
+        if should_prefill {
+            self.prefill_funding_amount = false;
+        }
+
         ui.add_space(10.0);
     }
 
-    /// Update existing identity keys based on the current wallet and identity index.
+    /// The optional local-alias step (design-spec §B.10: fund-first).
     ///
-    /// When the wallet is updated, we need to ensure that all the private keys are
-    /// generated with the correct parameters (seed, derivation path, etc.).
-    ///
-    /// If the master key is not set, this function is a no-op and returns Ok(false).
-    fn update_identity_key(&mut self) -> Result<bool, String> {
-        if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let mut wallet = wallet_guard.write().unwrap();
-            let identity_index = self.identity_id_number;
+    /// Rendered by each funding-method branch just before its Create/Register
+    /// button, once the amount or lock for that method is chosen. This is a
+    /// Dash Evo Tool alias stored locally, not a DPNS username.
+    fn render_alias_input(&mut self, ui: &mut egui::Ui, step_number: u32) {
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
 
-            // Update the master private key and keys input from the wallet
-            self.identity_keys.master_private_key =
-                Some(wallet.identity_authentication_ecdsa_private_key(
-                    &self.app_context,
-                    self.app_context.network,
-                    identity_index,
-                    0,
-                )?);
+        ui.horizontal(|ui| {
+            ui.heading(format!("{step_number}. Set a local alias (optional)."));
+            crate::ui::helpers::info_icon_button(
+                ui,
+                "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
+                This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
+                You can change this alias anytime from the identity details screen.",
+            );
+        });
 
-            // Update the additional keys input (preserving contract bounds)
-            self.identity_keys.keys_input = self
-                .identity_keys
-                .keys_input
-                .iter()
-                .enumerate()
-                .map(
-                    |(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
-                        Ok((
-                            wallet.identity_authentication_ecdsa_private_key(
-                                &self.app_context,
-                                self.app_context.network,
-                                identity_index,
-                                key_index as u32 + 1,
-                            )?,
-                            *key_type,
-                            *purpose,
-                            *security_level,
-                            contract_bounds.clone(),
-                        ))
-                    },
-                )
-                .collect::<Result<_, String>>()?;
+        ui.add_space(8.0);
 
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        ui.horizontal(|ui| {
+            ui.label("Alias:");
+            let dark_mode = ui.style().visuals.dark_mode;
+            ui.add(
+                egui::TextEdit::singleline(&mut self.alias_input)
+                    .hint_text(
+                        egui::RichText::new("e.g., My Main Identity")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    )
+                    .desired_width(250.0),
+            );
+        });
+
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            egui::RichText::new("Note: This is a Dash Evo Tool alias, not a DPNS username.")
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+
+        ui.add_space(10.0);
     }
 
+    /// The key id (0 = master, others id = index + 1) whose derivation path
+    /// matches `path`, used to file a returned WIF into the right row.
+    fn key_id_for_path(&self, path: &DerivationPath) -> Option<u32> {
+        if let Some(master) = &self.identity_keys.master
+            && &master.derivation_path == path
+        {
+            return Some(0);
+        }
+        self.identity_keys
+            .others
+            .iter()
+            .position(|entry| &entry.derivation_path == path)
+            .map(|i| (i + 1) as u32)
+    }
+
+    /// Add one advanced-mode key at the next index, reading its **public** key
+    /// from the auth-pubkey cache. On a cache miss the next index is warmed
+    /// (the key appears once the cache fills); manually added keys carry no
+    /// contract bounds.
     fn add_identity_key(
         &mut self,
         key_type: KeyType,
         purpose: Purpose,
         security_level: SecurityLevel,
     ) {
-        if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-            let mut wallet = wallet_guard.write().unwrap();
-            let new_key_index = self.identity_keys.keys_input.len() as u32 + 1;
+        let Some(wallet_lock) = self.selected_wallet.clone() else {
+            return;
+        };
+        let seed_hash = wallet_lock.read_recover().seed_hash();
+        let network = self.app_context.network;
+        let identity_index = self.identity_id_number;
+        let new_key_index = self.identity_keys.others.len() as u32 + 1;
 
-            // Add a new key with default parameters (no contract bounds for manually added keys)
-            self.identity_keys.keys_input.push((
-                wallet
-                    .identity_authentication_ecdsa_private_key(
-                        &self.app_context,
-                        self.app_context.network,
-                        self.identity_id_number,
+        let Ok(backend) = self.app_context.wallet_backend() else {
+            return;
+        };
+        let cache = backend.auth_pubkey_cache().get(network, &seed_hash);
+        match cache.get(network, identity_index, new_key_index) {
+            Some(public_key) => {
+                self.identity_keys
+                    .others
+                    .push(IdentityKeyEntry::from_cached_public_key(
+                        public_key,
+                        network,
+                        identity_index,
                         new_key_index,
-                    )
-                    .expect("expected to have decrypted wallet"),
-                key_type,
-                purpose,
-                security_level,
-                None, // No contract bounds for manually added keys
-            ));
+                        key_type,
+                        purpose,
+                        security_level,
+                        None,
+                    ));
+            }
+            None => {
+                // Warm enough keys to cover the new index; the chooser rebuilds
+                // (and the key appears) once the cache is filled.
+                self.warming_identity_keys = false;
+                self.pending_warm_request = Some((seed_hash, identity_index));
+            }
         }
     }
 }
@@ -1035,37 +1302,119 @@ impl ScreenLike for AddNewIdentityScreen {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             // Reset step so we stop showing "Waiting for Platform acknowledgement".
             // The error itself is displayed by the global MessageBanner.
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_recover();
             *step = WalletFundedScreenStep::ReadyToCreate;
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match &backend_task_success_result {
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { .. } => {
+                // Cache is now warm; re-read the public keys for the current
+                // selection (cache hit, no seed access).
+                self.warming_identity_keys = false;
+                self.ensure_correct_identity_keys();
+                return;
+            }
+            BackendTaskSuccessResult::WalletKeyForDisplay {
+                derivation_path,
+                wif,
+                ..
+            } => {
+                if let Some(key_id) = self.key_id_for_path(derivation_path) {
+                    self.revealed_wifs.insert(key_id, wif.clone());
+                }
+                return;
+            }
+            BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } => {
+                self.asset_lock_cache.store(*seed_hash, locks.clone());
+                return;
+            }
+            BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
+                // Adopt the SPV-watched deposit address only for the selected
+                // wallet, so a stale result for another wallet is ignored.
+                let is_ours = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok())
+                    .map(|w| w.seed_hash() == *seed_hash)
+                    .unwrap_or(false);
+                if is_ours {
+                    match address.parse::<Address<_>>() {
+                        Ok(addr) => {
+                            self.funding_address = Some(addr.assume_checked());
+                            self.funding_address_request_failed = false;
+                        }
+                        Err(e) => {
+                            self.funding_address_request_failed = true;
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "Could not prepare a deposit address. Choose a different \
+                                 funding method, or try again.",
+                                MessageType::Error,
+                            )
+                            .with_details(e);
+                        }
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+
         if let BackendTaskSuccessResult::RegisteredIdentity(qualified_identity, fee_result) =
             backend_task_success_result
         {
             self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
             self.completed_fee_result = Some(fee_result);
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_recover();
             *step = WalletFundedScreenStep::Success;
             return;
         }
 
-        let mut step = self.step.write().unwrap();
+        let mut step = self.step.write_recover();
         let current_step = *step;
         match current_step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
             WalletFundedScreenStep::WaitingOnFunds => {
-                if let Some(funding_address) = self.funding_address.as_ref()
-                    && let BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                    ) = &backend_task_success_result
+                if let BackendTaskSuccessResult::CoreItem(
+                    CoreItem::ReceivedAvailableUTXOTransaction(_, outputs),
+                ) = &backend_task_success_result
                 {
-                    for (outpoint, tx_out, address) in outpoints_with_addresses {
-                        if funding_address == address {
-                            *step = WalletFundedScreenStep::FundsReceived;
-                            self.funding_utxo = Some((*outpoint, tx_out.clone(), address.clone()))
-                        }
+                    // Accumulate what this deposit added at the shown address, so
+                    // the "received so far" line tracks the deposit itself, not
+                    // whole-wallet balance.
+                    self.received_at_funding_address_duffs = self
+                        .received_at_funding_address_duffs
+                        .saturating_add(deposit_matches(self.funding_address.as_ref(), outputs));
+
+                    let spendable_duffs = self
+                        .selected_wallet
+                        .as_ref()
+                        .and_then(|w| w.read().ok())
+                        .map(|w| {
+                            self.app_context
+                                .snapshot_balance(&w.seed_hash())
+                                .spendable()
+                        })
+                        .unwrap_or(0);
+                    let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+                    let minimum_credits = self
+                        .app_context
+                        .fee_estimator()
+                        .estimate_identity_create(key_count);
+                    let (next, prefill) = deposit_event_outcome(
+                        current_step,
+                        self.funding_address.as_ref(),
+                        outputs,
+                        spendable_duffs,
+                        minimum_credits,
+                    );
+                    // Pre-fill the amount with the fee-reserve-capped balance when
+                    // the deposit lands, so the field and Create button populate.
+                    if prefill.is_some() {
+                        self.prefill_funding_amount = true;
                     }
+                    *step = next;
                 }
             }
             WalletFundedScreenStep::FundsReceived => {}
@@ -1083,7 +1432,7 @@ impl ScreenLike for AddNewIdentityScreen {
                             return false;
                         };
                         if let Some(wallet) = &self.selected_wallet {
-                            let wallet = wallet.read().unwrap();
+                            let wallet = wallet.read_recover();
                             wallet.known_addresses.contains_key(&address)
                         } else {
                             false
@@ -1097,9 +1446,19 @@ impl ScreenLike for AddNewIdentityScreen {
             WalletFundedScreenStep::Success => {}
         }
     }
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // Flip an in-flight asset-lock fetch to a retryable state so the picker
+        // shows a Retry button instead of a permanent "Loading…".
+        self.asset_lock_cache.mark_loading_failed();
+        false
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -1109,16 +1468,16 @@ impl ScreenLike for AddNewIdentityScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                let step = {*self.step.read().unwrap()};
+                let step = {*self.step.read_recover()};
                 if step == WalletFundedScreenStep::Success {
                     inner_action |= self.show_success(ui);
                     return;
@@ -1142,16 +1501,31 @@ impl ScreenLike for AddNewIdentityScreen {
                 }
 
                 if self.selected_wallet.is_none() {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        DashColors::WARNING,
+                        "You need a wallet before you can create an identity.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Set up a wallet").clicked() {
+                        inner_action |= AppAction::SetMainScreenThenGoToMainScreen(
+                            crate::ui::RootScreenType::RootScreenWalletsBalances,
+                        );
+                    }
                     return;
                 };
 
                 // Check if wallet needs unlocking
-                let wallet = self.selected_wallet.as_ref().unwrap();
+                let wallet = self
+                    .selected_wallet
+                    .as_ref()
+                    .expect("invariant: selected_wallet checked Some above");
 
                 // Try to open wallet without password if it doesn't use one
                 if !self.wallet_open_attempted {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                            .disable_auto_dismiss();
                     }
                     self.wallet_open_attempted = true;
                 }
@@ -1179,8 +1553,11 @@ impl ScreenLike for AddNewIdentityScreen {
 
                     // Display the heading with an info icon that shows a tooltip on hover
                     ui.horizontal(|ui| {
-                        let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                        let wallet = wallet_guard.read().unwrap();
+                        let wallet_guard = self
+                            .selected_wallet
+                            .as_ref()
+                            .expect("invariant: selected_wallet checked Some above");
+                        let wallet = wallet_guard.read_recover();
                         if wallet.identities.is_empty() {
                             ui.heading(format!(
                                 "{}. Choose an identity index for the wallet. Leaving this 0 is recommended.",
@@ -1241,41 +1618,10 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Local alias input section
-                ui.horizontal(|ui| {
-                    ui.heading(format!("{}. Set a local alias (optional).", step_number));
-                    crate::ui::helpers::info_icon_button(
-                        ui,
-                        "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
-                        This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
-                        You can change this alias anytime from the identity details screen.",
-                    );
-                });
-                step_number += 1;
-
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Alias:");
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.alias_input)
-                            .hint_text(egui::RichText::new("e.g., My Main Identity").color(DashColors::text_secondary(dark_mode)))
-                            .desired_width(250.0),
-                    );
-                });
-
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(
-                    egui::RichText::new("Note: This is a Dash Evo Tool nickname, not a DPNS username.")
-                        .small()
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
+                // Fund-first (design-spec §B.10): the funding method chooser is the
+                // first everyday-facing step. The local alias (optional) moves to a
+                // later step, rendered just before the Create button for whichever
+                // funding method is chosen (see `render_alias_input`).
                 ui.heading(
                     format!("{}. Choose your funding method.", step_number).as_str()
                 );
@@ -1287,7 +1633,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
 
                 // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = *self.funding_method.read().unwrap();
+                let funding_method = *self.funding_method.read_recover();
 
                 if funding_method == FundingMethod::NoSelection {
                     return;
@@ -1301,11 +1647,11 @@ impl ScreenLike for AddNewIdentityScreen {
                     FundingMethod::UseWalletBalance => {
                         inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
                     },
-                    FundingMethod::AddressWithQRCode => {
-                        inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
-                    },
                     FundingMethod::UsePlatformAddress => {
                         inner_action |= self.render_ui_by_platform_address(ui, step_number);
+                    },
+                    FundingMethod::ReceiveDeposit => {
+                        inner_action |= self.render_ui_by_receive_deposit(ui, step_number);
                     },
                 }
             });
@@ -1316,8 +1662,12 @@ impl ScreenLike for AddNewIdentityScreen {
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
-                    let mut popup = InfoPopup::new("Identity Information", &show_pop_up_info_text);
+                .show(ui, |ui| {
+                    let mut popup = InfoPopup::new(
+                        egui::Id::new("create_identity_info_popup"),
+                        "Identity Information",
+                        &show_pop_up_info_text,
+                    );
                     if popup.show(ui).inner {
                         self.show_pop_up_info = None;
                     }
@@ -1337,6 +1687,99 @@ impl ScreenLike for AddNewIdentityScreen {
             }
         }
 
+        // Drain the queued end-of-frame backend reads into one concurrent batch
+        // so none clobbers another (`AppAction`'s `|=` keeps only the last
+        // value).
+        let mut pending_tasks: Vec<BackendTask> = Vec::new();
+
+        // Auth-pubkey cache warm (cold-cache cover for the chooser, RK-2). One
+        // in-flight at a time via `warming_identity_keys`.
+        if let Some((seed_hash, identity_index)) = self.pending_warm_request.take() {
+            // Warm at least the default range, plus a margin for any
+            // advanced-mode keys already added beyond it.
+            let key_count = self
+                .default_key_count()
+                .max(self.identity_keys.others.len() as u32 + 2);
+            pending_tasks.push(BackendTask::WalletTask(
+                WalletTask::WarmIdentityAuthPubkeys {
+                    seed_hash,
+                    identity_index,
+                    key_count,
+                },
+            ));
+        }
+
+        // "Show WIF" derivation (advanced mode); the seed is fetched
+        // just-in-time in the backend and only the WIF returns.
+        if let Some((_key_id, derivation_path)) = self.pending_wif_request.take()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let seed_hash = wallet.read_recover().seed_hash();
+            pending_tasks.push(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
+                seed_hash,
+                derivation_path,
+            }));
+        }
+
+        // Fetch the selected wallet's tracked asset locks once (off the UI
+        // thread) so the funding-method gate and the picker can read them.
+        if let Some(wallet) = &self.selected_wallet {
+            let seed_hash = wallet.read_recover().seed_hash();
+            if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
+                pending_tasks.push(task);
+            }
+        }
+
+        // Derive the "Receive a new deposit" address off the UI thread; the QR
+        // view queues this when it has no address yet.
+        if let Some(seed_hash) = self.pending_funding_address_request.take() {
+            pending_tasks.push(BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress { seed_hash },
+            ));
+        }
+
+        match pending_tasks.len() {
+            0 => {}
+            1 => action |= AppAction::BackendTask(pending_tasks.pop().expect("len == 1")),
+            _ => {
+                action |=
+                    AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+            }
+        }
+
         action
+    }
+}
+
+#[cfg(test)]
+mod funding_method_tests {
+    use super::format_wallet_picker_label;
+
+    /// The picker label pairs the wallet alias with its spendable balance,
+    /// rendered in DASH, so the user can compare wallets before choosing one.
+    /// 0.5 DASH == 50_000_000 duffs.
+    #[test]
+    fn wallet_picker_label_shows_spendable_balance_in_dash() {
+        assert_eq!(
+            format_wallet_picker_label("Main", 50_000_000),
+            "Main — 0.5 DASH"
+        );
+    }
+
+    /// A zero-balance wallet still renders a well-formed label rather than an
+    /// empty or unit-less string.
+    #[test]
+    fn wallet_picker_label_renders_zero_balance() {
+        assert_eq!(format_wallet_picker_label("Empty", 0), "Empty — 0 DASH");
+    }
+
+    /// Structural guard: the label keeps the alias, an em-dash separator, and
+    /// the DASH unit — the shape UI code and any future i18n extraction rely on.
+    #[test]
+    fn wallet_picker_label_keeps_alias_separator_and_unit() {
+        let label = format_wallet_picker_label("Savings", 12_345_678);
+        assert!(label.starts_with("Savings"), "keeps the alias: {label}");
+        assert!(label.contains(" — "), "uses an em-dash separator: {label}");
+        assert!(label.ends_with(" DASH"), "shows the DASH unit: {label}");
     }
 }

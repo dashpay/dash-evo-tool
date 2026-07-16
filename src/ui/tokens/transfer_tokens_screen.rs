@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -27,7 +28,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
@@ -347,11 +348,7 @@ impl ScreenLike for TransferTokensScreen {
             }
         }
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
-            match self
-                .app_context
-                .db
-                .get_identity_token_balances(&self.app_context)
-            {
+            match self.app_context.identity_token_balances() {
                 Ok(token_balances) => {
                     self.max_amount = token_balances
                         .values()
@@ -378,9 +375,11 @@ impl ScreenLike for TransferTokensScreen {
     }
 
     /// Renders the UI components for the withdrawal screen
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -395,16 +394,16 @@ impl ScreenLike for TransferTokensScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        let central_panel_action = island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let central_panel_action = island_central_panel(ui, |ui| {
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Show the success screen if the transfer was successful
             if self.transfer_tokens_status == TransferTokensStatus::Complete {
@@ -427,7 +426,7 @@ impl ScreenLike for TransferTokensScreen {
             ));
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !identity.identity.public_keys().is_empty()
             } else {
                 !identity
@@ -481,8 +480,9 @@ impl ScreenLike for TransferTokensScreen {
             } else {
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }

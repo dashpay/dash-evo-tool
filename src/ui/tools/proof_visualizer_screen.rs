@@ -9,7 +9,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
-use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, ScrollArea, TextEdit, Ui};
 use egui::Color32;
 use std::sync::Arc;
 
@@ -79,7 +79,7 @@ impl ProofVisualizerScreen {
     fn show_input_field(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for GroveDB proof:");
         ui.add_space(5.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
             TextEdit::multiline(&mut self.input_data)
                 .desired_rows(6)
@@ -106,7 +106,7 @@ impl ProofVisualizerScreen {
         ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref json) = self.proof_string {
                 ui.add_space(5.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
                     TextEdit::multiline(&mut json.clone())
                         .desired_rows(10)
@@ -119,7 +119,7 @@ impl ProofVisualizerScreen {
                 ui.add_space(10.0);
             } else if let Some(ref error) = self.error {
                 ui.add_space(5.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
                     TextEdit::multiline(&mut error.clone())
                         .desired_rows(10)
@@ -145,23 +145,23 @@ impl ScreenLike for ProofVisualizerScreen {
         // Implement message display if needed
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsProofVisualizerScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             self.show_input_field(ui);
             self.show_output(ui);
             AppAction::None

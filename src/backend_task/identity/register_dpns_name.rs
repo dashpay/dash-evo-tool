@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
@@ -16,7 +15,7 @@ use dash_sdk::{
         platform_value::{Bytes32, Value},
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
-    drive::query::{WhereClause, WhereOperator},
+    drive::query::{SelectProjection, WhereClause, WhereOperator},
     platform::Fetch,
     platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
@@ -128,7 +127,7 @@ impl AppContext {
             .document_signing_key(&preorder_document_type)
             .ok_or(TaskError::NoDocumentSigningKey)?;
 
-        let fee_estimator = PlatformFeeEstimator::new();
+        let fee_estimator = self.fee_estimator();
         let estimated_fee = fee_estimator.estimate_document_batch(2);
 
         let balance_before = qualified_identity.identity.balance();
@@ -158,6 +157,7 @@ impl AppContext {
             .await?;
 
         let dpns_names_document_query = DocumentQuery {
+            select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
@@ -165,6 +165,8 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(qualified_identity.identity.id().into()),
             }],
+            group_by: Vec::new(),
+            having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
             start: None,
@@ -233,8 +235,7 @@ impl AppContext {
 
         qualified_identity.identity = refreshed_identity;
 
-        self.update_local_qualified_identity(&qualified_identity)
-            .map_err(|e| TaskError::Database { source: e })?;
+        self.update_local_qualified_identity(&qualified_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))

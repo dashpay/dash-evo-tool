@@ -21,12 +21,14 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Frame, Margin, TextEdit};
+use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -69,7 +71,17 @@ impl UpdateDataContractScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let qualified_identities: Vec<_> =
             app_context.load_local_user_identities().unwrap_or_default();
-        let selected_qualified_identity = qualified_identities.first().cloned();
+
+        // Seed from the app-scoped selected identity (W2 SYNC); fall back to first.
+        let selected_qualified_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| {
+                qualified_identities
+                    .iter()
+                    .find(|qi| qi.identity.id() == id)
+                    .cloned()
+            })
+            .or_else(|| qualified_identities.first().cloned());
 
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
             get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
@@ -78,9 +90,16 @@ impl UpdateDataContractScreen {
         };
 
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let known_contracts = app_context
-            .get_contracts(None, None)
-            .expect("Failed to load contracts")
+        let contracts = app_context.get_contracts().unwrap_or_else(|error| {
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "Your saved contracts could not be loaded. Try opening this screen again.",
+                MessageType::Error,
+            )
+            .with_details(error);
+            Vec::new()
+        });
+        let known_contracts = contracts
             .into_iter()
             .filter(|c| match &c.alias {
                 Some(alias) => !excluded_aliases.contains(&alias.as_str()),
@@ -171,7 +190,7 @@ impl UpdateDataContractScreen {
         ScrollArea::vertical()
             .max_height(ui.available_height() - 100.0)
             .show(ui, |ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let response = ui.add(
                     TextEdit::multiline(&mut self.contract_json_input)
                         .desired_rows(6)
@@ -235,7 +254,7 @@ impl UpdateDataContractScreen {
                     .contract_update;
                 let estimated_fee = base_fee.saturating_add(registration_fee);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))
@@ -261,14 +280,27 @@ impl UpdateDataContractScreen {
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
                 if ComponentStyles::add_primary_button(ui, "Update Contract").clicked() {
-                    // Fire off a backend task
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::UpdateDataContract(
-                            (**contract).clone(),
-                            self.selected_qualified_identity.clone().unwrap(), // unwrap should be safe here
-                            self.selected_key.clone().unwrap(), // unwrap should be safe here
-                        ),
-                    )));
+                    // The button is only reachable once an identity and key are
+                    // selected; guard rather than unwrap so a missing selection
+                    // degrades to an actionable banner instead of a panic.
+                    if let (Some(qualified_identity), Some(key)) = (
+                        self.selected_qualified_identity.clone(),
+                        self.selected_key.clone(),
+                    ) {
+                        app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                            ContractTask::UpdateDataContract(
+                                (**contract).clone(),
+                                qualified_identity,
+                                key,
+                            ),
+                        )));
+                    } else {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Select an identity and key before updating the contract.",
+                            MessageType::Error,
+                        );
+                    }
                 }
             }
             BroadcastStatus::FetchingNonce => {
@@ -372,9 +404,11 @@ impl ScreenLike for UpdateDataContractScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
@@ -384,12 +418,12 @@ impl ScreenLike for UpdateDataContractScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
                 return self.show_success(ui);
             }
@@ -450,7 +484,8 @@ impl ScreenLike for UpdateDataContractScreen {
                 .unwrap()
                 .width(300.0)
                 .label("Identity:")
-                .other_option(false),
+                .other_option(false)
+                .syncing_global(self.app_context.clone()),
             );
 
             // Handle identity change - auto-select key and update wallet
@@ -516,7 +551,8 @@ impl ScreenLike for UpdateDataContractScreen {
             // Render the wallet unlock if needed
             if let Some(wallet) = &self.selected_wallet {
                 if !self.wallet_open_attempted {
-                    let _ = try_open_wallet_no_password(wallet).or_show_error(ui.ctx());
+                    let _ = try_open_wallet_no_password(&self.app_context, wallet)
+                        .or_show_error(ui.ctx());
                     self.wallet_open_attempted = true;
                 }
                 if wallet_needs_unlock(wallet) {
@@ -562,12 +598,18 @@ impl ScreenLike for UpdateDataContractScreen {
                             {
                                 let platform_version = self.app_context.platform_version();
                                 self.selected_contract = Some(display_text.to_string());
-                                self.contract_json_input =
-                                    match contract.contract.to_json(platform_version) {
-                                        Ok(json) => serde_json::to_string_pretty(&json)
-                                            .expect("Expected to get string pretty"),
-                                        Err(e) => format!("Error serialising contract: {e}"),
-                                    };
+                                self.contract_json_input = match DataContractInSerializationFormat::try_from_platform_versioned(
+                                    &contract.contract,
+                                    platform_version,
+                                )
+                                .map_err(|e| e.to_string())
+                                .and_then(|fmt| {
+                                    serde_json::to_value(&fmt).map_err(|e| e.to_string())
+                                }) {
+                                    Ok(json) => serde_json::to_string_pretty(&json)
+                                        .expect("Expected to get string pretty"),
+                                    Err(e) => format!("Error serialising contract: {e}"),
+                                };
                             }
                         }
                     });
@@ -599,5 +641,27 @@ impl ScreenLike for UpdateDataContractScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With no wallet backend wired, `get_contracts()` fails and the constructor
+    /// must degrade to an empty known-contracts list instead of panicking.
+    ///
+    /// A real `AppState` wires the backend asynchronously, so whether
+    /// `get_contracts()` returns the pinned system contracts (dpns, dashpay, …)
+    /// would race the constructor — the source of the earlier flakiness. A
+    /// backend-less context makes the degrade path deterministic.
+    #[test]
+    fn constructor_degrades_when_contracts_cannot_be_loaded() {
+        let tmp = tempfile::tempdir().expect("temp data dir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+
+        let screen = UpdateDataContractScreen::new(&ctx);
+
+        assert!(screen.known_contracts.is_empty());
     }
 }

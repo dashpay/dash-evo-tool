@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -14,7 +15,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
+use crate::ui::helpers::{
+    TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
+};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -22,7 +25,6 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
@@ -30,13 +32,12 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::To
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -134,96 +135,16 @@ impl UpdateTokenConfigScreen {
             .token_config
             .authorized_action_takers_for_configuration_item(&self.change_item);
 
-        let group = match authorized_action_takers {
-            AuthorizedActionTakers::NoOne => {
-                super::set_error_banner(
-                    &self.app_context,
-                    "This action is not allowed on this token",
-                );
-                None
-            }
-            AuthorizedActionTakers::ContractOwner => {
-                if self.identity_token_info.data_contract.contract.owner_id()
-                    != self.identity_token_info.identity.identity.id()
-                {
-                    super::set_error_banner(
-                        &self.app_context,
-                        "You are not allowed to perform this action. Only the contract owner is.",
-                    );
-                }
-                None
-            }
-            AuthorizedActionTakers::Identity(identifier) => {
-                if identifier != self.identity_token_info.identity.identity.id() {
-                    super::set_error_banner(
-                        &self.app_context,
-                        "You are not allowed to perform this action",
-                    );
-                }
-                None
-            }
-            AuthorizedActionTakers::MainGroup => {
-                match self.identity_token_info.token_config.main_control_group() {
-                    None => {
-                        super::set_error_banner(
-                            &self.app_context,
-                            "Invalid contract: No main control group, though one should exist",
-                        );
-                        None
-                    }
-                    Some(group_pos) => {
-                        match self
-                            .identity_token_info
-                            .data_contract
-                            .contract
-                            .expected_group(group_pos)
-                        {
-                            Ok(group) => Some((group_pos, group.clone())),
-                            Err(e) => {
-                                super::set_error_banner(
-                                    &self.app_context,
-                                    &format!("Invalid contract: {}", e),
-                                );
-                                None
-                            }
-                        }
-                    }
-                }
-            }
-            AuthorizedActionTakers::Group(group_pos) => {
-                match self
-                    .identity_token_info
-                    .data_contract
-                    .contract
-                    .expected_group(group_pos)
-                {
-                    Ok(group) => Some((group_pos, group.clone())),
-                    Err(e) => {
-                        super::set_error_banner(
-                            &self.app_context,
-                            &format!("Invalid contract: {}", e),
-                        );
-                        None
-                    }
-                }
-            }
-        };
-
-        self.group = group;
-
-        // Update is_unilateral_group_member based on new group
-        self.is_unilateral_group_member = false;
-        if let Some((_, group)) = &self.group {
-            let your_power = group
-                .members()
-                .get(&self.identity_token_info.identity.identity.id());
-
-            if let Some(your_power) = your_power
-                && your_power >= &group.required_power()
-            {
-                self.is_unilateral_group_member = true;
-            }
+        let auth = check_token_authorization(
+            &authorized_action_takers,
+            &self.identity_token_info,
+            "Update",
+        );
+        if let Some(msg) = auth.error_message {
+            super::set_error_banner(&self.app_context, &msg);
         }
+        self.group = auth.group;
+        self.is_unilateral_group_member = auth.is_unilateral_group_member;
     }
 
     fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
@@ -719,7 +640,7 @@ impl UpdateTokenConfigScreen {
         // Display estimated fee before action button
         let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
         ui.add_space(10.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         egui::Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
@@ -746,7 +667,7 @@ impl UpdateTokenConfigScreen {
             &self.group_action_id,
         );
 
-        if (self.app_context.is_developer_mode() || !button_text.contains("Test"))
+        if (self.app_context.user_role().at_least(UserRole::Power) || !button_text.contains("Test"))
             && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
         {
             ui.add_space(20.0);
@@ -865,7 +786,7 @@ impl UpdateTokenConfigScreen {
                 authorized_identity_input.get_or_insert_with(String::new);
                 if let Some(id_str) = authorized_identity_input {
                     ui.horizontal(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.add_sized(
                             [300.0, 22.0],
                             egui::TextEdit::singleline(id_str)
@@ -875,17 +796,16 @@ impl UpdateTokenConfigScreen {
                         );
 
                         if !id_str.is_empty() {
-                            let is_valid =
-                                Identifier::from_string(id_str, Encoding::Base58).is_ok();
-                            let (symbol, color) = if is_valid {
+                            let parsed = Identifier::from_string(id_str, Encoding::Base58);
+                            let (symbol, color) = if parsed.is_ok() {
                                 ("✔", Color32::DARK_GREEN)
                             } else {
                                 ("×", Color32::RED)
                             };
                             ui.label(RichText::new(symbol).color(color).strong());
 
-                            if is_valid {
-                                *id = Identifier::from_string(id_str, Encoding::Base58).unwrap();
+                            if let Ok(parsed_id) = parsed {
+                                *id = parsed_id;
                             }
                         }
                     });
@@ -946,13 +866,15 @@ impl ScreenLike for UpdateTokenConfigScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action;
 
         // Build a top panel
         if self.group_action_id.is_some() {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
@@ -963,7 +885,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
             );
         } else {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
@@ -976,16 +898,16 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
         // Central panel
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if self.update_status == UpdateTokenConfigStatus::Complete {
                     action |= self.show_success_screen(ui);
@@ -996,7 +918,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 !self
@@ -1045,8 +967,9 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }

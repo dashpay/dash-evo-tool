@@ -60,31 +60,19 @@ pub async fn load_profile(
             .and_then(|v| v.as_text())
             .unwrap_or_default();
 
-        // Save to local database for caching
-        let network_str = app_context.network.to_string();
-        if let Err(e) = app_context.db.save_dashpay_profile(
+        // Mirror to upstream so DashpayView::profile observes the loaded state.
+        mirror_profile_to_backend(
+            app_context,
             &identity_id,
-            &network_str,
-            if display_name.is_empty() {
-                None
-            } else {
-                Some(display_name)
-            },
-            if bio.is_empty() { None } else { Some(bio) },
-            if avatar_url.is_empty() {
-                None
-            } else {
-                Some(avatar_url)
-            },
-            None,
-        ) {
-            tracing::error!("Failed to cache loaded profile in database: {}", e);
-        } else {
-            tracing::info!(
-                "Loaded profile cached in database for identity {}",
-                identity_id
-            );
-        }
+            Some(BackendProfileFields {
+                display_name: non_empty(display_name),
+                bio: non_empty(bio),
+                avatar_url: non_empty(avatar_url),
+                avatar_hash: None,
+                avatar_fingerprint: None,
+            }),
+        )
+        .await;
 
         Ok(BackendTaskSuccessResult::DashPayProfile(Some((
             display_name.to_string(),
@@ -92,17 +80,78 @@ pub async fn load_profile(
             avatar_url.to_string(),
         ))))
     } else {
-        // No profile found - cache this fact to avoid repeated network queries
-        let network_str = app_context.network.to_string();
-        if let Err(e) =
-            app_context
-                .db
-                .save_dashpay_profile(&identity_id, &network_str, None, None, None, None)
-        {
-            tracing::error!("Failed to cache 'no profile' state in database: {}", e);
-        }
+        // No profile found — clear any stale upstream entry for this owner.
+        mirror_profile_to_backend(app_context, &identity_id, None).await;
 
         Ok(BackendTaskSuccessResult::DashPayProfile(None))
+    }
+}
+
+/// Profile fields suitable for [`DashPayProfile`] construction. Used by the
+/// thin mirror that pushes profile state down to upstream `WalletBackend`.
+struct BackendProfileFields {
+    display_name: Option<String>,
+    bio: Option<String>,
+    avatar_url: Option<String>,
+    avatar_hash: Option<[u8; 32]>,
+    avatar_fingerprint: Option<[u8; 8]>,
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// Push the profile through the `WalletBackend` adapter, updating the
+/// upstream `ManagedIdentity` and refreshing the DET-local timestamp
+/// sidecar so [`DashpayView`] reports the current state.
+///
+/// Logs at `debug!` on failure rather than propagating — the platform
+/// document write already succeeded, and a local mirror miss does not
+/// break correctness (next refresh will re-fetch from platform).
+async fn mirror_profile_to_backend(
+    app_context: &Arc<AppContext>,
+    owner: &Identifier,
+    fields: Option<BackendProfileFields>,
+) {
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
+
+    let Ok(backend) = app_context.wallet_backend() else {
+        // Pre-init / headless: nothing to mirror. View paths fall back to
+        // the upstream-empty default until the backend is wired.
+        return;
+    };
+
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0);
+
+    let profile = fields.map(|f| DashPayProfile {
+        display_name: f.display_name,
+        bio: f.bio,
+        avatar_url: f.avatar_url,
+        avatar_hash: f.avatar_hash,
+        avatar_fingerprint: f.avatar_fingerprint,
+        public_message: None,
+    });
+
+    if let Err(e) = backend.dashpay_set_profile(owner, profile).await {
+        tracing::debug!(
+            owner = %owner.to_string(Encoding::Base58),
+            error = ?e,
+            "DashPay profile mirror to WalletBackend failed; view will re-fetch on next refresh"
+        );
+        return;
+    }
+
+    if let Err(e) = backend.dashpay_set_timestamps(owner, now_ms, now_ms) {
+        tracing::debug!(
+            owner = %owner.to_string(Encoding::Base58),
+            error = ?e,
+            "DashPay profile timestamp sidecar write failed; created_at/updated_at will read 0"
+        );
     }
 }
 
@@ -243,20 +292,19 @@ pub async fn update_profile(
             }
         }
 
-        // Save to local database for caching
-        let network_str = app_context.network.to_string();
-        if let Err(e) = app_context.db.save_dashpay_profile(
+        // Mirror updated profile into upstream so DashpayView sees it.
+        mirror_profile_to_backend(
+            app_context,
             &identity_id,
-            &network_str,
-            display_name_for_db.as_deref(),
-            bio_for_db.as_deref(),
-            avatar_url_for_db.as_deref(),
-            None,
-        ) {
-            tracing::error!("Failed to cache updated profile in database: {}", e);
-        } else {
-            tracing::info!("Profile cached in database for identity {}", identity_id);
-        }
+            Some(BackendProfileFields {
+                display_name: display_name_for_db.clone(),
+                bio: bio_for_db.clone(),
+                avatar_url: avatar_url_for_db.clone(),
+                avatar_hash: None,
+                avatar_fingerprint: None,
+            }),
+        )
+        .await;
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),
@@ -319,47 +367,24 @@ pub async fn update_profile(
             }
         }
 
-        // Save to local database for caching
-        let network_str = app_context.network.to_string();
-        if let Err(e) = app_context.db.save_dashpay_profile(
+        // Mirror new profile into upstream so DashpayView sees it.
+        mirror_profile_to_backend(
+            app_context,
             &identity_id,
-            &network_str,
-            display_name_for_db.as_deref(),
-            bio_for_db.as_deref(),
-            avatar_url_for_db.as_deref(),
-            None,
-        ) {
-            tracing::error!("Failed to cache new profile in database: {}", e);
-        } else {
-            tracing::info!(
-                "New profile cached in database for identity {}",
-                identity_id
-            );
-        }
+            Some(BackendProfileFields {
+                display_name: display_name_for_db.clone(),
+                bio: bio_for_db.clone(),
+                avatar_url: avatar_url_for_db.clone(),
+                avatar_hash: None,
+                avatar_fingerprint: None,
+            }),
+        )
+        .await;
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),
         ))
     }
-}
-
-pub async fn send_payment(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    from_identity: QualifiedIdentity,
-    to_contact_id: Identifier,
-    amount_dash: f64,
-    memo: Option<String>,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    super::payments::send_payment_to_contact(
-        app_context,
-        sdk,
-        from_identity,
-        to_contact_id,
-        amount_dash,
-        memo,
-    )
-    .await
 }
 
 pub async fn load_payment_history(
@@ -374,8 +399,7 @@ pub async fn load_payment_history(
         &identity.identity.id(),
         contact_id.as_ref(),
     )
-    .await
-    .map_err(|e| DashPayError::Internal { message: e })?;
+    .await?;
 
     // Format the results
     if history.is_empty() {

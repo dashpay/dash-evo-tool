@@ -1,6 +1,6 @@
 use crate::backend_task::dashpay::auto_accept_proof::verify_auto_accept_proof;
+use crate::backend_task::dashpay::contact_request_query;
 use crate::backend_task::dashpay::contact_requests::accept_contact_request;
-use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -10,7 +10,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use dash_sdk::platform::{Document, FetchMany, Identifier};
 use std::sync::Arc;
 
 /// Process incoming contact requests and check for autoAcceptProof
@@ -23,14 +23,9 @@ pub async fn process_auto_accept_requests(
     identity: QualifiedIdentity,
 ) -> Result<Vec<(Identifier, bool)>, TaskError> {
     let identity_id = identity.identity.id();
-    let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for incoming contact requests
-    let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
+    let mut incoming_query = contact_request_query(app_context)?;
 
     incoming_query = incoming_query.with_where(WhereClause {
         field: "toUserId".to_string(),
@@ -64,14 +59,10 @@ pub async fn process_auto_accept_requests(
                 );
 
                 // Extract accountReference for message construction (default to 0 if missing)
-                let account_reference = match props.get("accountReference") {
-                    Some(Value::U32(v)) => *v,
-                    Some(Value::U64(v)) => *v as u32,
-                    Some(Value::I64(v)) => *v as u32,
-                    Some(Value::U128(v)) => *v as u32,
-                    Some(Value::I128(v)) => *v as u32,
-                    _ => 0u32,
-                };
+                let account_reference = props
+                    .get("accountReference")
+                    .and_then(|value| value.to_integer::<u32>().ok())
+                    .unwrap_or_default();
 
                 // Verify the proof per DIP-0015
                 match verify_auto_accept_proof(
@@ -80,7 +71,9 @@ pub async fn process_auto_accept_requests(
                     identity.identity.id(),
                     &identity,
                     account_reference,
-                ) {
+                )
+                .await
+                {
                     Ok(true) => {
                         tracing::debug!(
                             "Valid autoAcceptProof, auto-accepting contact request from {}",

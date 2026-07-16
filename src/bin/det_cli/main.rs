@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if matches!(cli.command, Some(Commands::Serve)) {
-        return connect::run_stdio_server();
+        connect::run_stdio_server();
     }
 
     #[cfg(feature = "headless")]
@@ -126,16 +126,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    if let Err(e) = runtime.block_on(run(cli)) {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
-    }
-    Ok(())
+    let exit_code: i32 = match runtime.block_on(run(cli)) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            1
+        }
+    };
+
+    // Hard-exit: bypass Tokio runtime teardown to prevent coordinator OS threads
+    // (identity-sync, platform-address-sync, shielded-sync) from panicking when
+    // they poll `tokio::time::sleep` against a shutting-down timer wheel.
+    // The tool result has already been printed by this point; any SQLite writes
+    // issued before the tool returned are transaction-committed.
+    // See `DashMcpService::shutdown_wallet_backend` for the full race analysis.
+    use std::io::Write as _;
+    let _ = std::io::stdout().lock().flush();
+    let _ = std::io::stderr().lock().flush();
+    // TODO(graceful-teardown): replace with normal return once WalletBackend::quiesce() joins coordinator threads.
+    std::process::exit(exit_code);
 }
 
 async fn run(cli: Cli) -> Result<(), String> {
+    // An empty/whitespace bearer means "no key": the default .env ships
+    // `MCP_API_KEY=` (empty), which dotenvy sets as an empty string, so clap's
+    // env binding yields `Some("")`. Treat that exactly like an unset key —
+    // matching the HTTP server, which also disables auth on an empty key.
+    let bearer = cli
+        .bearer
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+
     // Mode selection: --standalone or no bearer -> stdio; bearer present -> HTTP.
-    let use_stdio = cli.standalone || cli.bearer.is_none();
+    let use_stdio = cli.standalone || bearer.is_none();
 
     let client: McpClient = if use_stdio {
         connect::connect_in_process()
@@ -143,7 +167,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             .map_err(|e| e.to_string())?
     } else {
         let addr = resolve_addr(cli.addr);
-        connect::connect_http(&addr, cli.bearer.as_deref())
+        connect::connect_http(&addr, bearer)
             .await
             .map_err(|e| e.to_string())?
     };

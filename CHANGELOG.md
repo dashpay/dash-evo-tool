@@ -180,6 +180,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Submitted Platform actions are no longer reported as rejected when only
+  confirmation failed**: if a state transition was broadcast but its result
+  could not be confirmed, the app now tells you to check whether it completed
+  before trying again instead of showing an unsafe rejection-and-retry message.
+
 - **Shielded actions now say when they are unavailable instead of failing
   obscurely**: if shielding, sending, or withdrawing shielded funds is not
   available on your network yet, the app says so and points you at a regular

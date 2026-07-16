@@ -117,6 +117,14 @@ impl IdentityHubScreen {
     }
 
     fn reset_contacts_for_identity_change(&mut self) {
+        release_request_guards_for_abandoned_confirmations(
+            &mut self.contacts_state,
+            self.pending_contact_info_confirmations.iter().chain(
+                self.contact_info_overwrite_dialog
+                    .iter()
+                    .map(|(_, key)| key),
+            ),
+        );
         self.contacts_state.reset_for_identity_change();
         self.pending_contact_info_tasks.clear();
         self.pending_contact_info_confirmations.clear();
@@ -153,9 +161,9 @@ impl IdentityHubScreen {
         }
     }
 
-    /// Reset identity-scoped view data after the owning application context
-    /// changes (for example, on a network switch). Paid-action guards survive
-    /// because only the correlated backend outcome can prove the task stopped.
+    /// Reset all identity-scoped state after the owning application context
+    /// changes. Abandoned confirmations release their guards; live paid actions
+    /// remain guarded, and stale guards are pruned during the contacts reset.
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
         self.profile_cache.reset();
@@ -615,6 +623,17 @@ fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, e
     }
 }
 
+fn release_request_guards_for_abandoned_confirmations<'a>(
+    state: &mut super::contacts::ContactsState,
+    keys: impl IntoIterator<Item = &'a ContactInfoTaskKey>,
+) {
+    for key in keys {
+        if let ContactInfoTaskKey::Request(request_id) = key {
+            state.release_request(request_id);
+        }
+    }
+}
+
 fn can_confirm_contact_info_overwrite(task: &DashPayTask) -> bool {
     match task {
         DashPayTask::UpdateContactInfo { update, .. } => {
@@ -912,6 +931,28 @@ mod tests {
 
         assert!(!state.is_in_flight(&id(2)));
         assert!(state.is_in_flight(&id(3)));
+    }
+
+    #[test]
+    fn abandoning_confirmations_releases_only_their_request_guards() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(1)));
+        assert!(state.begin_request(id(2)));
+        let keys = [
+            ContactInfoTaskKey::Request(id(2)),
+            ContactInfoTaskKey::Direct {
+                identity_id: id(3),
+                contact_id: id(4),
+            },
+        ];
+
+        release_request_guards_for_abandoned_confirmations(&mut state, &keys);
+
+        assert!(state.is_in_flight(&id(1)));
+        assert!(
+            !state.is_in_flight(&id(2)),
+            "a discarded confirmation has no running task left to protect"
+        );
     }
 
     #[test]

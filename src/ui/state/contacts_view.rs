@@ -15,8 +15,8 @@ use dash_sdk::platform::{Document, Identifier};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Threshold for surfacing an unusually long-running request without releasing
-/// its paid-action guard.
+/// Threshold for surfacing an unusually long-running request and pruning its
+/// paid-action guard on the next view reset.
 const REQUEST_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// A single cached contact-request entry, derived from a raw
@@ -37,7 +37,7 @@ pub struct ContactRequestEntry {
 /// Contacts-tab state owned by the hub screen.
 ///
 /// The load guard debounces the backend fetch to one dispatch per tab entry.
-/// Every view reset retains paid-action guards until a correlated result lands.
+/// View resets retain live paid-action guards and prune stale ones.
 #[derive(Debug, Default, Clone)]
 pub struct ContactsState {
     /// `true` once the populated shell has dispatched its loads for this tab
@@ -62,8 +62,8 @@ pub struct ContactsState {
     /// request ID and stamped with the dispatch time. Each of those actions is a
     /// signed, paid-for state transition, so a row keeps its buttons disabled
     /// until its result lands — a second click would buy a second transition.
-    /// Only a correlated terminal result or explicit confirmation cancellation
-    /// releases the guard.
+    /// A matching task outcome, abandoned confirmation, or reset after
+    /// [`REQUEST_IN_FLIGHT_TIMEOUT`] releases the guard.
     in_flight: HashMap<Identifier, Instant>,
 }
 
@@ -87,9 +87,13 @@ impl ContactsState {
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
+        let now = Instant::now();
+        self.in_flight.retain(|_, started| {
+            now.saturating_duration_since(*started) < REQUEST_IN_FLIGHT_TIMEOUT
+        });
     }
 
-    /// Reset identity-scoped view data while retaining paid work still running.
+    /// Reset identity-scoped view data while retaining live paid-action guards.
     pub fn reset_for_identity_change(&mut self) {
         self.reset();
     }
@@ -678,14 +682,49 @@ mod tests {
     }
 
     #[test]
-    fn identity_change_reset_preserves_the_in_flight_guards() {
+    fn identity_change_reset_preserves_in_flight_guards_and_clears_view_state() {
         let mut state = ContactsState::default();
+        state.incoming.push(ContactRequestEntry {
+            counterpart_id: id(1),
+            request_id: id(2),
+            relative_time: None,
+        });
+        state.outgoing.push(ContactRequestEntry {
+            counterpart_id: id(3),
+            request_id: id(4),
+            relative_time: None,
+        });
+        state.record_contacts(vec![contact(Some("Bao"), None, None)]);
+        *state.search_mut() = "bao".to_string();
+        assert!(state.claim_load());
         assert!(state.begin_request(id(2)));
+        state.in_flight.insert(
+            id(5),
+            Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
+        );
 
         state.reset_for_identity_change();
 
-        assert!(state.is_in_flight(&id(2)));
-        assert!(!state.begin_request(id(2)));
+        assert!(state.incoming().is_empty());
+        assert!(state.outgoing().is_empty());
+        assert_eq!(state.contacts_len(), 0);
+        assert!(state.search.is_empty());
+        assert!(
+            state.claim_load(),
+            "the new identity must trigger a fresh load"
+        );
+        assert!(
+            state.is_in_flight(&id(2)),
+            "an identity switch does not cancel the paid backend action"
+        );
+        assert!(
+            !state.begin_request(id(2)),
+            "returning to the request must not dispatch it a second time"
+        );
+        assert!(
+            !state.in_flight.contains_key(&id(5)),
+            "a timed-out guard must be physically pruned from the long-lived state"
+        );
     }
 
     #[test]

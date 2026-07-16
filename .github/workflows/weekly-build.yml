@@ -29,9 +29,6 @@ concurrency:
   group: weekly-build
   cancel-in-progress: false # weekly cadence: never interrupt a half-cut release
 
-env:
-  TARGET_BRANCH: v1.0-dev
-
 permissions: {}
 
 jobs:
@@ -53,7 +50,6 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Decide
@@ -73,7 +69,7 @@ jobs:
           # absent, not red.
           red=false
           for wf in tests.yml clippy.yml; do
-            concl=$(gh run list --workflow "$wf" --branch "${{ env.TARGET_BRANCH }}" --status completed \
+            concl=$(gh run list --workflow "$wf" --branch "${{ github.ref_name }}" --status completed \
                       --limit 1 --json conclusion --jq '.[0].conclusion // ""')
             case "$concl" in
               failure | cancelled | timed_out | startup_failure) red=true ;;
@@ -147,7 +143,6 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Delete stale weekly drafts
@@ -179,8 +174,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # See the SECURITY NOTE at the top of this file: GITHUB_TOKEN only.
-          # Use HEAD, not $GITHUB_SHA: checkout is pinned to TARGET_BRANCH, while
-          # GITHUB_SHA can reflect a different workflow_dispatch triggering ref.
+          # Use HEAD, not $GITHUB_SHA: default checkout resolves the triggering
+          # ref, so HEAD is the commit this workflow is intentionally building.
           git tag -a "$TAG" -m "Weekly draft pre-release $TAG" HEAD
           git push origin "refs/tags/$TAG"
 
@@ -240,8 +235,11 @@ jobs:
 
       - name: Upload Flatpak bundles and fetch release URL
         id: upload
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
         run: |
           set -euo pipefail
+          gh release edit "$TAG" --notes "<!-- weekly-version: ${VERSION} -->" -R "$GITHUB_REPOSITORY"
           gh release upload "$TAG" fp/*.flatpak --clobber -R "$GITHUB_REPOSITORY"
           url=$(gh release view "$TAG" --json url --jq .url -R "$GITHUB_REPOSITORY")
           echo "url=$url" >>"$GITHUB_OUTPUT"

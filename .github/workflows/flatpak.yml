@@ -46,20 +46,23 @@ jobs:
       - name: Resolve version override
         id: vsel
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           ov="${{ inputs.version_override }}"
           if [ -z "$ov" ] && [ "${{ github.event_name }}" = "release" ]; then
             tag="${{ github.event.release.tag_name }}"
-            if printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-weekly\.[0-9]{8}$'; then
-              # Undrafting a weekly release later fires this `release: published`
-              # trigger, which would otherwise rebuild from the *committed*
-              # Cargo.toml (still e.g. 1.0.0-dev) and clobber the correctly
-              # weekly-versioned bundle already on the release page. Reconstruct
-              # the identical version instead: checkout on a `release` event
-              # checks out the tag's own commit, so `--short=9` here reproduces
-              # the exact sha the weekly workflow baked in (must match the
-              # `--short=9` width used in weekly-build.yml's gate job).
+            # Recover the original version_override from the release notes marker
+            # `finalize` (weekly-build.yml) writes at creation time. This works for
+            # ANY accepted version shape (not just the canonical vX.Y.Z-weekly.YYYYMMDD
+            # pattern), so a custom `version` dispatch input survives undrafting too.
+            body=$(gh release view "$tag" --json body --jq .body -R "$GITHUB_REPOSITORY" 2>/dev/null || echo "")
+            marker=$(printf '%s' "$body" | grep -oE '<!-- weekly-version: [^ ]+ -->' | sed -E 's/<!-- weekly-version: (.+) -->/\1/' || true)
+            if [ -n "$marker" ]; then
+              ov="$marker"
+            elif printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-weekly\.[0-9]{8}$'; then
+              # Fallback for releases created before the marker existed.
               ov="${tag#v}+$(git rev-parse --short=9 HEAD)"
             fi
           fi

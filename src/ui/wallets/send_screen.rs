@@ -1,8 +1,8 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
@@ -17,7 +17,7 @@ use crate::model::fee_estimation::{
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::components::address_input::AddressInput;
+use crate::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
@@ -37,7 +37,8 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, RwLock};
 
 /// Source selection for sending
@@ -266,6 +267,7 @@ pub struct WalletSendScreen {
     // Unified send fields (simple mode)
     selected_source: Option<SourceSelection>,
     address_input: Option<AddressInput>,
+    address_input_snapshot_signature: Option<u64>,
     validated_destination: Option<ValidatedAddress>,
     amount: Option<Amount>,
     amount_input: Option<AmountInput>,
@@ -305,6 +307,7 @@ impl WalletSendScreen {
             selected_wallet_seed_hash: seed_hash,
             selected_source: Some(SourceSelection::CoreWallet),
             address_input: None,
+            address_input_snapshot_signature: None,
             validated_destination: None,
             amount: None,
             amount_input: None,
@@ -389,6 +392,7 @@ impl WalletSendScreen {
     /// Clear the AddressInput widget so it picks up the new network on next frame.
     pub(crate) fn invalidate_address_input(&mut self) {
         self.address_input = None;
+        self.address_input_snapshot_signature = None;
         self.validated_destination = None;
     }
 
@@ -411,6 +415,7 @@ impl WalletSendScreen {
 
     fn reset_form(&mut self) {
         self.address_input = None;
+        self.address_input_snapshot_signature = None;
         self.validated_destination = None;
         self.amount = None;
         self.amount_input = None;
@@ -2216,7 +2221,11 @@ impl WalletSendScreen {
     /// Build a fresh destination [`AddressInput`] for `allowed_kinds`, wired
     /// with wallet and identity autocomplete. Returns the widget so callers can
     /// assign it without holding a mutable borrow of `self` across the build.
-    fn build_address_input(&self, allowed_kinds: &[AddressKind]) -> AddressInput {
+    fn build_address_input(
+        &self,
+        allowed_kinds: &[AddressKind],
+        wallets: &[WalletWithSnapshot],
+    ) -> AddressInput {
         // Filter out the source identity (if any) to prevent self-sends.
         let source_identity_id = if let Some(SourceSelection::Identity(qi)) = &self.selected_source
         {
@@ -2235,22 +2244,8 @@ impl WalletSendScreen {
             .with_address_kinds(allowed_kinds)
             .with_exclude_change(true);
 
-        // Provide all wallet addresses for autocomplete.
-        if let Ok(wallets_guard) = self.app_context.wallets.read() {
-            let all_wallets: Vec<_> = wallets_guard
-                .values()
-                .map(|w| {
-                    let seed_hash = w.read().map(|g| g.seed_hash()).unwrap_or_default();
-                    (
-                        w.clone(),
-                        self.app_context.snapshot_address_balances(&seed_hash),
-                        self.app_context.snapshot_address_paths(&seed_hash),
-                    )
-                })
-                .collect();
-            if !all_wallets.is_empty() {
-                builder = builder.with_wallets(&all_wallets);
-            }
+        if !wallets.is_empty() {
+            builder = builder.with_wallets(wallets);
         }
 
         // Add identities for autocomplete (searchable by alias/DPNS name).
@@ -2261,11 +2256,65 @@ impl WalletSendScreen {
         builder
     }
 
+    fn address_input_wallets(&self) -> Vec<WalletWithSnapshot> {
+        self.app_context
+            .wallets
+            .read()
+            .map(|wallets| {
+                wallets
+                    .values()
+                    .map(|wallet| {
+                        let seed_hash = wallet
+                            .read()
+                            .map(|guard| guard.seed_hash())
+                            .unwrap_or_default();
+                        (
+                            wallet.clone(),
+                            self.app_context.snapshot_address_balances(&seed_hash),
+                            self.app_context.snapshot_address_paths(&seed_hash),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn address_input_snapshot_signature(wallets: &[WalletWithSnapshot]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for (wallet, balances, paths) in wallets {
+            let Ok(wallet) = wallet.read() else {
+                continue;
+            };
+            wallet.seed_hash().hash(&mut hasher);
+            wallet.alias.hash(&mut hasher);
+            balances.hash(&mut hasher);
+            for (address, path) in paths {
+                address.hash(&mut hasher);
+                for child in path {
+                    child.hash(&mut hasher);
+                }
+                if let Some(info) = wallet.platform_address_info.get(address) {
+                    info.balance.hash(&mut hasher);
+                    info.nonce.hash(&mut hasher);
+                }
+            }
+        }
+        hasher.finish()
+    }
+
     /// Render the destination address input for `allowed_kinds`. Lazily builds
-    /// the widget once (avoiding per-frame DB queries) then shows it.
+    /// the widget and refreshes its entries when snapshot-backed sources change.
     fn render_destination_input_with_kinds(&mut self, ui: &mut Ui, allowed_kinds: &[AddressKind]) {
+        let wallets = self.address_input_wallets();
+        let signature = Self::address_input_snapshot_signature(&wallets);
+        if self.address_input_snapshot_signature != Some(signature) {
+            if let Some(address_input) = &mut self.address_input {
+                address_input.set_wallets(&wallets);
+            }
+            self.address_input_snapshot_signature = Some(signature);
+        }
         if self.address_input.is_none() {
-            self.address_input = Some(self.build_address_input(allowed_kinds));
+            self.address_input = Some(self.build_address_input(allowed_kinds, &wallets));
         }
         let resp = self
             .address_input
@@ -2792,12 +2841,12 @@ impl WalletSendScreen {
     /// cross-network output sets, where the fee model differs; the caller then
     /// shows the neutral "calculated when you send" note.
     fn advanced_fee_estimate_credits(&self) -> Option<u64> {
-        let num_outputs = self
+        let row_output_count = self
             .advanced_outputs
             .iter()
             .filter(|o| !o.address.trim().is_empty())
             .count();
-        if num_outputs == 0 {
+        if row_output_count == 0 {
             return None;
         }
         let has_core_out = self
@@ -2817,10 +2866,13 @@ impl WalletSendScreen {
                     .filter(|i| !i.amount.trim().is_empty())
                     .count()
                     .max(1);
-                let fee_duffs = estimate_core_l1_send_fee_duffs(num_inputs, num_outputs);
+                let fee_duffs = estimate_core_l1_send_fee_duffs(num_inputs, row_output_count);
                 Some(fee_duffs.saturating_mul(CREDITS_PER_DUFF))
             }
             AdvancedSourceType::Platform if has_platform_out && !has_core_out => {
+                let outputs = Self::normalize_advanced_platform_outputs(&self.advanced_outputs)
+                    .ok()
+                    .filter(|outputs| !outputs.is_empty())?;
                 let num_inputs = self
                     .platform_inputs
                     .iter()
@@ -2830,11 +2882,26 @@ impl WalletSendScreen {
                 Some(estimate_platform_fee(
                     &self.app_context.fee_estimator(),
                     num_inputs,
-                    num_outputs,
+                    outputs.len(),
                 ))
             }
             _ => None,
         }
+    }
+
+    fn normalize_advanced_platform_outputs(
+        advanced_outputs: &[AdvancedOutput],
+    ) -> Result<BTreeMap<PlatformAddress, Credits>, String> {
+        let mut outputs = BTreeMap::new();
+        for output in advanced_outputs {
+            let destination = PlatformAddress::from_bech32m_string(output.address.trim())
+                .map_err(|e| format!("Invalid platform address: {}", e))?;
+            let credits = Self::parse_amount_to_credits(&output.amount)?;
+            if credits > 0 {
+                *outputs.entry(destination).or_insert(0) += credits;
+            }
+        }
+        Ok(outputs)
     }
 
     /// Render the estimated-fee line shown above the advanced-mode Send button.
@@ -3728,16 +3795,7 @@ impl WalletSendScreen {
             return Err("No valid Platform inputs specified".to_string());
         }
 
-        // Build outputs map
-        let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
-        for output in &self.advanced_outputs {
-            let destination = PlatformAddress::from_bech32m_string(output.address.trim())
-                .map_err(|e| format!("Invalid platform address: {}", e))?;
-            let credits = Self::parse_amount_to_credits(&output.amount)?;
-            if credits > 0 {
-                *outputs.entry(destination).or_insert(0) += credits;
-            }
-        }
+        let outputs = Self::normalize_advanced_platform_outputs(&self.advanced_outputs)?;
 
         if outputs.is_empty() {
             return Err("No valid Platform outputs specified".to_string());
@@ -3822,6 +3880,17 @@ impl WalletSendScreen {
                 fee_payer_index,
             },
         )))
+    }
+
+    fn task_result_updates_address_input(result: &BackendTaskSuccessResult) -> bool {
+        matches!(
+            result,
+            BackendTaskSuccessResult::GeneratedReceiveAddress { .. }
+                | BackendTaskSuccessResult::GeneratedPlatformReceiveAddress { .. }
+                | BackendTaskSuccessResult::PlatformAddressBalances { .. }
+                | BackendTaskSuccessResult::PlatformAddressSyncPushed { .. }
+                | BackendTaskSuccessResult::RefreshedWallet { .. }
+        )
     }
 }
 
@@ -3937,6 +4006,9 @@ impl ScreenLike for WalletSendScreen {
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
         self.send_banner.take_and_clear();
+        if Self::task_result_updates_address_input(&backend_task_success_result) {
+            self.address_input_snapshot_signature = None;
+        }
         match backend_task_success_result {
             crate::backend_task::BackendTaskSuccessResult::WalletPayment {
                 txid: _,
@@ -4050,14 +4122,42 @@ impl ScreenLike for WalletSendScreen {
         }
     }
 
-    fn refresh_on_arrival(&mut self) {}
+    fn refresh_on_arrival(&mut self) {
+        self.address_input_snapshot_signature = None;
+    }
 
-    fn refresh(&mut self) {}
+    fn refresh(&mut self) {
+        self.address_input_snapshot_signature = None;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
+    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+
+    fn testnet_core_address(key_byte: u8) -> Address {
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_slice(&[key_byte; 32]).expect("valid secret key");
+        let private_key = PrivateKey::new(secret_key, Network::Testnet);
+        let public_key = PublicKey::from_private_key(&secp, &private_key);
+        Address::p2pkh(&public_key, Network::Testnet)
+    }
+
+    fn bip44_receive_path(index: u32) -> DerivationPath {
+        DerivationPath::from(
+            [
+                ChildNumber::Hardened { index: 44 },
+                ChildNumber::Hardened { index: 1 },
+                ChildNumber::Hardened { index: 0 },
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index },
+            ]
+            .as_slice(),
+        )
+    }
 
     #[test]
     fn general_flow_is_not_a_preset() {
@@ -4133,5 +4233,110 @@ mod tests {
 
         let on_top = FeePreview::on_top(u64::MAX, 5);
         assert_eq!(on_top.total_debit_credits, u64::MAX);
+    }
+
+    #[test]
+    fn address_input_snapshot_signature_tracks_paths_and_balances() {
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed(
+                [7u8; 64],
+                Network::Testnet,
+                Some("Wallet".to_string()),
+                None,
+            )
+            .expect("wallet from seed"),
+        ));
+        let empty_wallets = vec![(wallet.clone(), BTreeMap::new(), BTreeMap::new())];
+        let empty_signature = WalletSendScreen::address_input_snapshot_signature(&empty_wallets);
+        assert_eq!(
+            empty_signature,
+            WalletSendScreen::address_input_snapshot_signature(&empty_wallets)
+        );
+
+        let address = testnet_core_address(3);
+        let paths = BTreeMap::from([(address.clone(), bip44_receive_path(0))]);
+        let with_path = vec![(wallet.clone(), BTreeMap::new(), paths.clone())];
+        let path_signature = WalletSendScreen::address_input_snapshot_signature(&with_path);
+        assert_ne!(empty_signature, path_signature);
+
+        let with_balance = vec![(wallet, BTreeMap::from([(address, 42)]), paths)];
+        assert_ne!(
+            path_signature,
+            WalletSendScreen::address_input_snapshot_signature(&with_balance)
+        );
+    }
+
+    #[test]
+    fn wallet_address_pool_results_request_address_input_refresh() {
+        let seed_hash = WalletSeedHash::default();
+        for result in [
+            BackendTaskSuccessResult::GeneratedReceiveAddress {
+                seed_hash,
+                address: "core".to_string(),
+            },
+            BackendTaskSuccessResult::GeneratedPlatformReceiveAddress {
+                seed_hash,
+                address: "platform".to_string(),
+            },
+            BackendTaskSuccessResult::PlatformAddressBalances {
+                seed_hash,
+                balances: BTreeMap::new(),
+                network: Network::Testnet,
+            },
+            BackendTaskSuccessResult::RefreshedWallet { warning: None },
+        ] {
+            assert!(WalletSendScreen::task_result_updates_address_input(&result));
+        }
+        assert!(!WalletSendScreen::task_result_updates_address_input(
+            &BackendTaskSuccessResult::None
+        ));
+    }
+
+    #[test]
+    fn advanced_platform_outputs_coalesce_duplicates_and_drop_zero_rows() {
+        let first = PlatformAddress::try_from(testnet_core_address(4))
+            .expect("core address converts to platform address");
+        let second = PlatformAddress::try_from(testnet_core_address(5))
+            .expect("core address converts to platform address");
+        let first_string = first.to_bech32m_string(Network::Testnet);
+        let second_string = second.to_bech32m_string(Network::Testnet);
+        let outputs = vec![
+            AdvancedOutput {
+                address: first_string.clone(),
+                amount: "1".to_string(),
+            },
+            AdvancedOutput {
+                address: first_string,
+                amount: "2".to_string(),
+            },
+            AdvancedOutput {
+                address: second_string,
+                amount: "0".to_string(),
+            },
+        ];
+
+        let normalized =
+            WalletSendScreen::normalize_advanced_platform_outputs(&outputs).expect("valid outputs");
+        let expected = WalletSendScreen::parse_amount_to_credits("1").expect("valid amount")
+            + WalletSendScreen::parse_amount_to_credits("2").expect("valid amount");
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(normalized.get(&first), Some(&expected));
+    }
+
+    #[test]
+    fn advanced_platform_outputs_are_empty_when_all_rows_are_zero() {
+        let address = PlatformAddress::try_from(testnet_core_address(6))
+            .expect("core address converts to platform address")
+            .to_bech32m_string(Network::Testnet);
+        let outputs = vec![AdvancedOutput {
+            address,
+            amount: "0".to_string(),
+        }];
+
+        assert!(
+            WalletSendScreen::normalize_advanced_platform_outputs(&outputs)
+                .expect("valid output")
+                .is_empty()
+        );
     }
 }

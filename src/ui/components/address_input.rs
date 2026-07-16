@@ -124,6 +124,12 @@ fn parse_tag(token: &str) -> Option<(TagKey, &str)> {
     Some((tag, value))
 }
 
+fn is_search_tag_query(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .any(|token| parse_tag(token).is_some())
+}
+
 /// A parsed GitHub-style search query: recognized filter tags plus leftover
 /// free-text tokens.
 ///
@@ -639,6 +645,10 @@ impl AddressInput {
     fn validate_input(&self) -> (Option<String>, Option<ValidatedAddress>) {
         let trimmed = self.input_text.trim();
         if trimmed.is_empty() {
+            return (None, None);
+        }
+
+        if is_search_tag_query(trimmed) {
             return (None, None);
         }
 
@@ -1989,6 +1999,57 @@ mod tests {
         assert_eq!(q.type_kinds, vec![AddressKind::Core]);
         assert!(q.wallet_values.is_empty());
         assert!(q.free_text.is_empty());
+    }
+
+    #[test]
+    fn recognized_search_tags_are_not_validated_as_addresses() {
+        for query in [
+            "type:",
+            "type:core",
+            "wallet:",
+            "wallet:abc",
+            "TYPE:Core WALLET:abc",
+        ] {
+            let input = AddressInput::new(Network::Testnet).with_initial_value(query.to_string());
+            let (error, validated) = input.validate_input();
+            assert!(
+                error.is_none(),
+                "recognized search query should not be address-validated: {query}"
+            );
+            assert!(validated.is_none());
+        }
+    }
+
+    #[test]
+    fn unknown_search_tag_is_still_validated_as_free_text() {
+        let input = AddressInput::new(Network::Testnet).with_initial_value("foo:bar");
+        let (error, validated) = input.validate_input();
+        assert_eq!(
+            error.as_deref(),
+            Some("This does not look like a valid address. Please check for typos.")
+        );
+        assert!(validated.is_none());
+    }
+
+    #[test]
+    fn search_tag_query_survives_wallet_snapshot_refresh() {
+        let mut input = core_wallet_input(Some("Wallet")).with_initial_value("type:core");
+        assert!(
+            input
+                .all_entries
+                .iter()
+                .any(|entry| entry.address_kind == AddressKind::Core)
+        );
+
+        input.set_wallets(&[]);
+
+        assert_eq!(input.input_text, "type:core");
+        assert!(
+            input
+                .all_entries
+                .iter()
+                .all(|entry| entry.address_kind != AddressKind::Core)
+        );
     }
 
     #[test]

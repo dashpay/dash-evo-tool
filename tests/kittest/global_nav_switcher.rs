@@ -258,3 +258,42 @@ fn switcher_wallet_only_on_wallets_root() {
         );
     });
 }
+
+fn assert_everyday_switcher_on_root(root_screen: RootScreenType, page_name: &str) {
+    with_isolated_data_dir(|| {
+        let harness = mount_app(root_screen);
+        assert!(
+            harness.query_by_label_contains("(no wallet yet)").is_some(),
+            "the global switcher's wallet placeholder must render on {page_name}"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("(no identity yet)")
+                .is_some(),
+            "the everyday spec must render the identity placeholder on {page_name}"
+        );
+    });
+}
+
+#[test]
+fn switcher_present_on_contracts_root() {
+    assert_everyday_switcher_on_root(RootScreenType::RootScreenDocumentQuery, "Contracts");
+}
+
+#[test]
+fn switcher_present_on_tokens_root() {
+    assert_everyday_switcher_on_root(RootScreenType::RootScreenMyTokenBalances, "Tokens");
+}
+
+#[test]
+fn switcher_present_on_tools_root() {
+    assert_everyday_switcher_on_root(
+        RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+        "Tools",
+    );
+}
+
+#[test]
+fn switcher_present_on_network_chooser_root() {
+    assert_everyday_switcher_on_root(RootScreenType::RootScreenNetworkChooser, "Network Chooser");
+}

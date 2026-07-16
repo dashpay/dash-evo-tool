@@ -12,7 +12,7 @@ use crate::ui::components::contract_chooser_panel::{
 };
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -704,10 +704,10 @@ impl ScreenLike for DocumentQueryScreen {
         );
         let mut action = AppAction::None;
         if self.app_context.network == Network::Mainnet {
-            action |= add_top_panel(
+            action |= add_top_panel_with_global_nav(
                 ui,
                 &self.app_context,
-                vec![("Contracts", AppAction::None)],
+                subdued_everyday_spec("Contracts", RootScreenType::RootScreenDocumentQuery),
                 vec![
                     load_contract_button,
                     register_contract_button,
@@ -721,10 +721,10 @@ impl ScreenLike for DocumentQueryScreen {
                 ],
             );
         } else {
-            action |= add_top_panel(
+            action |= add_top_panel_with_global_nav(
                 ui,
                 &self.app_context,
-                vec![("Contracts", AppAction::None)],
+                subdued_everyday_spec("Contracts", RootScreenType::RootScreenDocumentQuery),
                 vec![
                     load_contract_button,
                     register_contract_button,

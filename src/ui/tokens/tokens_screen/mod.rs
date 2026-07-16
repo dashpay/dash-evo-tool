@@ -71,7 +71,9 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{
+    add_top_panel, add_top_panel_with_global_nav, subdued_everyday_spec,
+};
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::ModalOpeningGuard;
@@ -2771,10 +2773,10 @@ impl ScreenLike for TokensScreen {
                 right_buttons.clone(),
             );
         } else {
-            action |= add_top_panel(
+            action |= add_top_panel_with_global_nav(
                 ui,
                 &self.app_context,
-                vec![("Tokens", AppAction::None)],
+                subdued_everyday_spec("Tokens", RootScreenType::RootScreenMyTokenBalances),
                 right_buttons.clone(),
             );
         }

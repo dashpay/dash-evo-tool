@@ -810,6 +810,16 @@ pub trait ScreenLike {
     /// UI-safe operation context; unattributed errors use `Unknown`.
     fn display_backend_task_error(&mut self, _context: &BackendTaskContext, _error: &TaskError) {}
 
+    /// Returns `true` when an outdated correlated error must not reach the
+    /// global banner.
+    fn should_suppress_backend_task_error(
+        &self,
+        _context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        false
+    }
+
     /// Called by `AppState` when a backend task fails with a typed error.
     ///
     /// Override to handle specific error variants (e.g., `CoreWalletNotConfigured`).
@@ -1103,6 +1113,14 @@ impl ScreenLike for Screen {
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
         delegate_to_screen!(self, screen => screen.display_backend_task_error(context, error))
+    }
+
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) -> bool {
+        delegate_to_screen!(self, screen => screen.should_suppress_backend_task_error(context, error))
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {

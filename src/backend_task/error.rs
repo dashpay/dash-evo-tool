@@ -1109,6 +1109,12 @@ pub enum TaskError {
     )]
     TokenBalanceRefreshInProgress,
 
+    /// Upstream skipped a token-balance refresh because another pass was still running.
+    #[error(
+        "Token balances are still being refreshed. Wait a moment and refresh the Tokens screen again."
+    )]
+    TokenBalanceRefreshSkipped,
+
     /// Connected server is behind (SdkError::StaleNode).
     #[error("The server you connected to is behind. Please retry.")]
     DapiStaleNode {

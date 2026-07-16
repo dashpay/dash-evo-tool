@@ -717,6 +717,10 @@ pub enum AppAction {
     AddScreen(Screen),
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
+    BackendTaskWithContext {
+        task: BackendTask,
+        context: BackendTaskContext,
+    },
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
     /// Wire the wallet backend (if needed) and start chain sync for the active
     /// context. Handled by the update loop, which owns the `TaskResult` sender
@@ -1409,10 +1413,14 @@ impl AppState {
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&mut self, task: BackendTask) {
+        let context = BackendTaskContext::from(&task);
+        self.handle_backend_task_with_context(task, context);
+    }
+
+    fn handle_backend_task_with_context(&mut self, task: BackendTask, context: BackendTaskContext) {
         let request_id = crate::backend_task::dashpay_request_id(&task);
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
-        let context = BackendTaskContext::from(&task);
         let watcher_context = context.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
@@ -2094,6 +2102,10 @@ impl App for AppState {
                 } => {
                     self.route_contact_request_error_to_hidden_hub(&err);
                     let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
+                    let suppress_stale_error = !is_database_clear
+                        && self
+                            .visible_screen_mut()
+                            .should_suppress_backend_task_error(&context, &err);
                     if is_database_clear {
                         if let Some(screen) = self
                             .main_screens
@@ -2107,8 +2119,9 @@ impl App for AppState {
                     }
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
-                    let handled =
-                        !is_database_clear && self.visible_screen_mut().display_task_error(&err);
+                    let handled = suppress_stale_error
+                        || (!is_database_clear
+                            && self.visible_screen_mut().display_task_error(&err));
 
                     if !handled {
                         let msg = err.to_string();
@@ -2287,6 +2300,9 @@ impl App for AppState {
                 }
                 AppAction::BackendTask(task) => {
                     self.handle_backend_task(task);
+                }
+                AppAction::BackendTaskWithContext { task, context } => {
+                    self.handle_backend_task_with_context(task, context);
                 }
                 AppAction::BackendTasks(tasks, mode) => {
                     self.handle_backend_tasks(tasks, mode);

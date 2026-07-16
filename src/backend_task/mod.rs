@@ -39,6 +39,7 @@ use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use migration::MigrationTask;
 use shielded::ShieldedTask;
@@ -65,6 +66,7 @@ pub mod update_data_contract;
 pub mod wallet;
 
 pub(crate) const NETWORK_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+static BACKEND_TASK_DISPATCH_ID: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) async fn await_network_request_with_timeout<T>(
     timeout_duration: Duration,
@@ -239,6 +241,12 @@ pub enum BackendTask {
 /// retain their query because the visible screen needs it for exact matching.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackendTaskContext {
+    /// One concrete dispatch of an operation that may otherwise be identical to
+    /// another in-flight task.
+    Dispatched {
+        dispatch_id: u64,
+        operation: Box<BackendTaskContext>,
+    },
     /// A complete document query.
     FetchDocuments(Box<DocumentQuery>),
     /// A paginated document query.
@@ -253,6 +261,41 @@ pub enum BackendTaskContext {
     Other,
     /// An error emitted without an originating backend task.
     Unknown,
+}
+
+impl BackendTaskContext {
+    pub(crate) fn for_dispatch(task: &BackendTask) -> Self {
+        Self::Dispatched {
+            dispatch_id: BACKEND_TASK_DISPATCH_ID.fetch_add(1, Ordering::Relaxed),
+            operation: Box::new(Self::from(task)),
+        }
+    }
+
+    fn operation(&self) -> &Self {
+        match self {
+            Self::Dispatched { operation, .. } => operation,
+            operation => operation,
+        }
+    }
+
+    pub(crate) fn is_fetch_documents(&self) -> bool {
+        matches!(self.operation(), Self::FetchDocuments(_))
+    }
+
+    pub(crate) fn is_fetch_documents_page(&self) -> bool {
+        matches!(self.operation(), Self::FetchDocumentsPage(_))
+    }
+
+    pub(crate) fn dispatched_document_fetch(&self) -> bool {
+        matches!(
+            self,
+            Self::Dispatched { operation, .. }
+                if matches!(
+                    operation.as_ref(),
+                    Self::FetchDocuments(_) | Self::FetchDocumentsPage(_)
+                )
+        )
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {

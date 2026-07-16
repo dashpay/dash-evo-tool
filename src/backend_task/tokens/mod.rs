@@ -809,13 +809,16 @@ mod tests {
     #[tokio::test]
     async fn timed_out_managed_request_is_reaped_after_completion() {
         let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let task_manager = std::sync::Arc::new(crate::utils::tasks::TaskManager::new());
         let error = crate::backend_task::await_managed_network_request_with_timeout(
             task_manager,
             "test_request_reaper",
             std::time::Duration::from_millis(1),
             async move {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                release_rx
+                    .await
+                    .expect("the test must release the timed-out request");
                 let _ = completed_tx.send(());
             },
             |source| TaskError::TokenBalanceRefreshTimeout { source },
@@ -827,6 +830,9 @@ mod tests {
             error,
             TaskError::TokenBalanceRefreshTimeout { .. }
         ));
+        release_tx
+            .send(())
+            .expect("the timed-out request must still be running");
         tokio::time::timeout(std::time::Duration::from_secs(1), completed_rx)
             .await
             .expect("the managed request must keep running")

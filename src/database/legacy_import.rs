@@ -48,10 +48,18 @@ pub(crate) struct LegacyScheduledVotes {
     pub unreadable: u32,
 }
 
-/// Per-identity top-up history keyed by identity id, mirroring the shape
-/// [`AppContext::save_top_ups`](crate::context::AppContext::save_top_ups)
-/// persists (`top_up_index -> amount`).
-pub(crate) type LegacyTopUps = Vec<([u8; 32], BTreeMap<u32, u64>)>;
+/// Outcome of one legacy top-up-history read.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct LegacyTopUps {
+    /// Per-identity history keyed by identity id.
+    pub top_ups: Vec<([u8; 32], BTreeMap<u32, u64>)>,
+    /// Rows that failed to decode. Never silently ignored by the caller.
+    pub unreadable: u32,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("the saved network setting is not recognized")]
+struct InvalidLegacyNetwork;
 
 /// One decoded local identity from the legacy `identity` table.
 ///
@@ -146,10 +154,14 @@ pub(crate) fn read_app_settings(conn: &Connection) -> rusqlite::Result<Option<Ap
         Err(e) => return Err(e),
     };
 
-    if let Some(s) = value_as_string(&values, "network")
-        && let Some(network) = network_from_legacy_str(&s)
-    {
-        settings.network = network;
+    if let Some(s) = value_as_string(&values, "network") {
+        settings.network = network_from_legacy_str(&s).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(InvalidLegacyNetwork),
+            )
+        })?;
     }
     if let Some(i) = value_as_i64(&values, "start_root_screen")
         && let Ok(i) = u32::try_from(i)
@@ -502,7 +514,7 @@ fn decode_top_up_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Vec<u8>, 
 /// contributes nothing — its top-ups are unreachable audit trail.
 pub(crate) fn read_top_ups(conn: &Connection, network: Network) -> rusqlite::Result<LegacyTopUps> {
     if !table_exists(conn, "top_up")? || !table_exists(conn, "identity")? {
-        return Ok(Vec::new());
+        return Ok(LegacyTopUps::default());
     }
 
     let mut stmt = conn.prepare(
@@ -516,6 +528,7 @@ pub(crate) fn read_top_ups(conn: &Connection, network: Network) -> rusqlite::Res
         mainnet_alias_for(network)
     ])?;
 
+    let mut out = LegacyTopUps::default();
     let mut grouped: BTreeMap<[u8; 32], BTreeMap<u32, u64>> = BTreeMap::new();
     while let Some(row) = rows.next()? {
         let (identity_id, index, amount) = match decode_top_up_columns(row) {
@@ -526,6 +539,7 @@ pub(crate) fn read_top_ups(conn: &Connection, network: Network) -> rusqlite::Res
                     error = ?e,
                     "Skipping legacy top-up row with an unreadable column",
                 );
+                out.unreadable = out.unreadable.saturating_add(1);
                 continue;
             }
         };
@@ -535,6 +549,7 @@ pub(crate) fn read_top_ups(conn: &Connection, network: Network) -> rusqlite::Res
                 blob_len = identity_id.len(),
                 "Skipping legacy top-up row with a non-32-byte identity id",
             );
+            out.unreadable = out.unreadable.saturating_add(1);
             continue;
         };
         grouped
@@ -543,7 +558,8 @@ pub(crate) fn read_top_ups(conn: &Connection, network: Network) -> rusqlite::Res
             .insert(index, amount);
     }
 
-    Ok(grouped.into_iter().collect())
+    out.top_ups = grouped.into_iter().collect();
+    Ok(out)
 }
 
 /// Decode the legacy `vote_choice` text, which is the `Display` form of
@@ -762,6 +778,26 @@ mod tests {
 
         let settings = read_app_settings(&conn).unwrap().expect("settings row");
         assert_eq!(settings.network, Network::Mainnet);
+    }
+
+    /// A present network value is authoritative. If it is unknown, falling
+    /// back to the Mainnet default would silently move the user to another
+    /// network, so the whole settings import must fail.
+    #[test]
+    fn app_settings_rejects_an_unknown_network_name() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_settings_table(&conn);
+        conn.execute(
+            "INSERT INTO settings (id, network, start_root_screen, database_version)
+             VALUES (1, 'not-a-network', 0, 40)",
+            [],
+        )
+        .unwrap();
+
+        assert!(
+            read_app_settings(&conn).is_err(),
+            "an unknown saved network must not silently become Mainnet",
+        );
     }
 
     /// The v0.9.0 schema has neither `theme_preference` nor the onboarding
@@ -1031,9 +1067,14 @@ mod tests {
 
         let top_ups = read_top_ups(&conn, Network::Testnet).unwrap();
 
-        assert_eq!(top_ups.len(), 1, "only the testnet identity's top-ups");
-        assert_eq!(top_ups[0].0, mine);
-        assert_eq!(top_ups[0].1, BTreeMap::from([(0, 1000), (1, 2000)]));
+        assert_eq!(top_ups.unreadable, 0);
+        assert_eq!(
+            top_ups.top_ups.len(),
+            1,
+            "only the testnet identity's top-ups"
+        );
+        assert_eq!(top_ups.top_ups[0].0, mine);
+        assert_eq!(top_ups.top_ups[0].1, BTreeMap::from([(0, 1000), (1, 2000)]));
     }
 
     /// A malformed amount (negative, so out of range for `u64`) skips its own
@@ -1067,9 +1108,10 @@ mod tests {
 
         let top_ups = read_top_ups(&conn, Network::Testnet).unwrap();
 
-        assert_eq!(top_ups.len(), 1);
+        assert_eq!(top_ups.unreadable, 1, "the malformed row is reported");
+        assert_eq!(top_ups.top_ups.len(), 1);
         assert_eq!(
-            top_ups[0].1,
+            top_ups.top_ups[0].1,
             BTreeMap::from([(0, 1000), (2, 2000)]),
             "the readable top-ups around a malformed row still import",
         );
@@ -1078,7 +1120,10 @@ mod tests {
     #[test]
     fn top_ups_absent_table_reads_empty() {
         let conn = Connection::open_in_memory().unwrap();
-        assert!(read_top_ups(&conn, Network::Testnet).unwrap().is_empty());
+        assert_eq!(
+            read_top_ups(&conn, Network::Testnet).unwrap(),
+            LegacyTopUps::default()
+        );
     }
 
     // ── Identities ───────────────────────────────────────────────────

@@ -15,6 +15,7 @@ use itertools::Itertools;
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
@@ -1842,6 +1843,25 @@ impl ScreenLike for DPNSScreen {
                 }
             }
         }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if matches!(
+            error,
+            TaskError::ScheduledVoteRejected { .. }
+                | TaskError::ScheduledVoteResultUnavailable
+                | TaskError::ScheduledVoteSweepFailed { .. }
+        ) {
+            self.scheduled_vote_cast_in_progress = false;
+            if let Ok(mut guard) = self.scheduled_votes.lock() {
+                for vote in guard.iter_mut() {
+                    if vote.1 == ScheduledVoteCastingStatus::InProgress {
+                        vote.1 = ScheduledVoteCastingStatus::Failed;
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {

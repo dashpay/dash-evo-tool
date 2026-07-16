@@ -2843,8 +2843,9 @@ mod test {
         assert!(!votes.votes[0].executed_successfully);
 
         let top_ups = read_top_ups(&conn, Network::Mainnet).unwrap();
-        assert_eq!(top_ups.len(), 1);
-        assert_eq!(top_ups[0].1.get(&0), Some(&100_000));
+        assert_eq!(top_ups.unreadable, 0);
+        assert_eq!(top_ups.top_ups.len(), 1);
+        assert_eq!(top_ups.top_ups[0].1.get(&0), Some(&100_000));
 
         let settings = read_app_settings(&conn)
             .unwrap()

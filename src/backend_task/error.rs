@@ -591,6 +591,34 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// Platform rejected a scheduled vote inside the otherwise successful
+    /// per-voter result payload.
+    #[error("The scheduled vote was not accepted. Wait a moment and try again.")]
+    ScheduledVoteRejected {
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+
+    /// The scheduled-vote call returned no per-voter verdict.
+    #[error("The scheduled vote result could not be confirmed. Wait a moment and try again.")]
+    ScheduledVoteResultUnavailable,
+
+    /// A periodic or post-migration scheduled-vote sweep failed. The network is
+    /// structured context for the app's per-network retry bookkeeping.
+    #[error("Scheduled votes could not be checked. Wait a moment and try again.")]
+    ScheduledVoteSweepFailed {
+        network: Network,
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A user deletion could not be recorded for a pending identity migration.
+    #[error("This identity could not be removed yet. Wait a moment and try again.")]
+    IdentityDeletionMigrationRecord {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
     /// An identity top-up history record could not be persisted to the
     /// per-network wallet k/v store.
     #[error("Could not save your top-up history. Check available disk space and try again.")]

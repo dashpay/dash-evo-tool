@@ -6,10 +6,12 @@
 //! [`sentinel_key_for`] in `det-app.sqlite` short-circuits subsequent
 //! launches **on the same network**.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+#[cfg(test)]
 use dash_sdk::platform::Identifier;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -226,12 +228,26 @@ pub enum MigrationError {
         source: KvAdapterError,
     },
 
+    /// Could not read, write or clear the durable unreadable-top-up warning.
+    #[error("could not access the unreadable top-up history warning")]
+    TopUpWarningRecord {
+        #[source]
+        source: KvAdapterError,
+    },
+
     /// Could not read, write or clear the durable unreadable-identity warning.
     /// That record is the only thing that survives the identity sentinel, so a
     /// failure here is surfaced rather than dropped — a silently-lost warning is
     /// a user who never learns their signing keys did not come across.
     #[error("could not access the unreadable-identity warning")]
     IdentityWarningRecord {
+        #[source]
+        source: KvAdapterError,
+    },
+
+    /// Could not persist the identity rows already processed by a partial pass.
+    #[error("could not record identity migration progress")]
+    IdentityProgressRecord {
         #[source]
         source: KvAdapterError,
     },
@@ -393,12 +409,13 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
 ///
 /// Both DET-owned passes write their sentinel unconditionally, so their counters
 /// exist for exactly one launch. What outlives them are the durable
-/// [`UnreadableVotesWarning`] and [`UnreadableIdentitiesWarning`] records, and
+/// [`UnreadableVotesWarning`], [`UnreadableTopUpsWarning`] and
+/// [`UnreadableIdentitiesWarning`] records, and
 /// those — never the counters — are what this function publishes: each is
 /// re-raised on every launch, not only the one that discovered it, until
-/// [`acknowledge_unreadable_votes`] / [`acknowledge_unreadable_identities`]
+/// [`acknowledge_unreadable_app_data`] / [`acknowledge_unreadable_identities`]
 /// retires it. When both are pending they ride one
-/// [`MigrationState::SucceededWithUnreadableIdentitiesAndVotes`], so a lone
+/// [`MigrationState::SucceededWithUnreadableData`], so a lone
 /// identity warning can never outrank the vote warning and silently cost the
 /// user a live vote deadline. If reading the vote-warning record fails, the vote
 /// half is withheld until a later launch reads it successfully — the identity
@@ -416,8 +433,7 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
 /// or when the wallet drain succeeded but the app-data or identity pass hit a
 /// hard failure — an unreadable legacy file, a k/v write error. Undecodable
 /// *rows* are not an error: they are counted and reported on
-/// [`MigrationState::SucceededWithUnreadableVotes`] /
-/// [`MigrationState::SucceededWithUnreadableIdentities`], because failing here
+/// [`MigrationState::SucceededWithUnreadableData`], because failing here
 /// would wedge the wallet drain behind a row the user cannot repair.
 ///
 /// One case returns `Ok` while publishing a failure banner itself: a hard
@@ -556,24 +572,24 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
                 // the read error as a *failure* state instead would tell the user the
                 // app-data pass did not finish — it did, and wrote its sentinel — and
                 // offer a retry that re-runs nothing.
-                match read_vote_warning(&app_context.app_kv(), app_context.network) {
-                    Ok(Some(warning)) => {
+                match read_unreadable_app_data(&app_context.app_kv(), app_context.network) {
+                    Ok(warning) if !warning.is_empty() => {
                         tracing::warn!(
                             target = "migration::finish_unwire",
                             unreadable,
                             imported = identities.imported,
-                            votes_unreadable = warning.count,
+                            votes_unreadable = warning.votes,
+                            top_ups_unreadable = warning.top_ups,
                             network = ?app_context.network,
                             "Some legacy identities and some legacy scheduled votes could not be decoded; they stay in the previous version's data.db and must be loaded / scheduled again",
                         );
-                        status.set_state(
-                            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
-                                identities: unreadable,
-                                votes: warning.count,
-                            },
-                        );
+                        status.set_state(MigrationState::SucceededWithUnreadableData {
+                            identities: unreadable,
+                            votes: warning.votes,
+                            top_ups: warning.top_ups,
+                        });
                     }
-                    Ok(None) => {
+                    Ok(_) => {
                         tracing::warn!(
                             target = "migration::finish_unwire",
                             unreadable,
@@ -581,8 +597,10 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
                             network = ?app_context.network,
                             "Some legacy identities could not be decoded; they stay in the previous version's data.db and must be loaded again",
                         );
-                        status.set_state(MigrationState::SucceededWithUnreadableIdentities {
-                            count: unreadable,
+                        status.set_state(MigrationState::SucceededWithUnreadableData {
+                            identities: unreadable,
+                            votes: 0,
+                            top_ups: 0,
                         });
                     }
                     Err(warning_error) => {
@@ -594,8 +612,10 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
                             network = ?app_context.network,
                             "Some legacy identities could not be decoded, and the pending vote-warning record could not be read so any vote notice is withheld until the next launch; the identity rows stay in the previous version's data.db and must be loaded again",
                         );
-                        status.set_state(MigrationState::SucceededWithUnreadableIdentities {
-                            count: unreadable,
+                        status.set_state(MigrationState::SucceededWithUnreadableData {
+                            identities: unreadable,
+                            votes: 0,
+                            top_ups: 0,
                         });
                     }
                 }
@@ -625,19 +645,24 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let app_data = app_data?;
     let moved_data = wallet_moved || app_data.moved_data() || identities.moved_data();
 
-    // The warning is read back from storage rather than taken from this pass's
+    // The warnings are read back from storage rather than taken from this pass's
     // counters: on every launch after the discovery run the import short-circuits
-    // on its sentinel and reports zero, yet the votes it could not decode still
-    // need re-scheduling. Re-published until the user acknowledges it.
-    if let Some(warning) = read_vote_warning(&app_context.app_kv(), app_context.network)? {
+    // on its sentinel and reports zero, yet unreadable votes still need
+    // re-scheduling and unreadable top-up history still needs review. Re-published
+    // until the user acknowledges it.
+    let warning = read_unreadable_app_data(&app_context.app_kv(), app_context.network)?;
+    if !warning.is_empty() {
         tracing::warn!(
             target = "migration::finish_unwire",
-            unreadable = warning.count,
+            votes_unreadable = warning.votes,
+            top_ups_unreadable = warning.top_ups,
             network = ?app_context.network,
-            "Some legacy scheduled votes could not be decoded; they stay in the previous version's data.db and must be scheduled again",
+            "Some legacy scheduled votes or top-up rows could not be decoded; they stay in the previous version's data.db and require user review",
         );
-        status.set_state(MigrationState::SucceededWithUnreadableVotes {
-            count: warning.count,
+        status.set_state(MigrationState::SucceededWithUnreadableData {
+            identities: 0,
+            votes: warning.votes,
+            top_ups: warning.top_ups,
         });
         return Ok(moved_data);
     }
@@ -743,12 +768,13 @@ async fn drain_wallets(app_context: &Arc<AppContext>) -> Result<bool, TaskError>
 
 /// Terminal state for a launch that reached the end without failing.
 /// `Success` raises the completion banner, so it is reserved for launches
-/// that actually moved data — a no-op launch stays `Idle`.
+/// that actually moved data — a no-op launch becomes `Ready` without raising a
+/// completion banner.
 fn terminal_state(moved_data: bool) -> MigrationState {
     if moved_data {
         MigrationState::Success
     } else {
-        MigrationState::Idle
+        MigrationState::Ready
     }
 }
 
@@ -855,7 +881,7 @@ fn vote_warning_key_for(network: Network) -> String {
 /// away, or who dismissed the banner without reading it, would never hear about
 /// it again — while the vote it names may still have a live deadline. This
 /// record outlives the pass: [`run`] re-publishes it on every launch until
-/// [`acknowledge_unreadable_votes`] clears it.
+/// [`acknowledge_unreadable_app_data`] clears it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UnreadableVotesWarning {
     /// Legacy vote rows the import could not decode. Never `0` — a zero-count
@@ -900,21 +926,92 @@ fn write_vote_warning(
 /// it. Clears the durable record so later launches stay quiet, and drops the
 /// banner. The legacy rows in `data.db` are untouched — only the notice is
 /// retired, so a build with a better decoder can still recover the votes.
-pub fn acknowledge_unreadable_votes(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+pub fn acknowledge_unreadable_app_data(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     let network = app_context.network;
-    app_context
-        .app_kv()
-        .delete(DetScope::Global, &vote_warning_key_for(network))
-        .map_err(|source| MigrationError::VoteWarningRecord { source })?;
+    clear_unreadable_app_data(&app_context.app_kv(), network)?;
     tracing::info!(
         target = "migration::finish_unwire",
         network = ?network,
-        "User acknowledged the unreadable-vote warning",
+        "User acknowledged the unreadable app-data warning",
     );
     app_context
         .migration_status()
-        .set_state(MigrationState::Idle);
+        .set_state(MigrationState::Ready);
     Ok(())
+}
+
+fn clear_unreadable_app_data(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+) -> Result<(), MigrationError> {
+    app_kv
+        .delete(DetScope::Global, &vote_warning_key_for(network))
+        .map_err(|source| MigrationError::VoteWarningRecord { source })?;
+    app_kv
+        .delete(DetScope::Global, &top_up_warning_key_for(network))
+        .map_err(|source| MigrationError::TopUpWarningRecord { source })?;
+    Ok(())
+}
+
+fn top_up_warning_key_for(network: Network) -> String {
+    format!(
+        "det:migration:unreadable_top_ups:{}:v1",
+        network_prefix(network)
+    )
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnreadableTopUpsWarning {
+    /// Legacy top-up rows the import could not decode.
+    pub count: u32,
+}
+
+fn read_top_up_warning(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+) -> Result<Option<UnreadableTopUpsWarning>, MigrationError> {
+    app_kv
+        .get::<UnreadableTopUpsWarning>(DetScope::Global, &top_up_warning_key_for(network))
+        .map_err(|source| MigrationError::TopUpWarningRecord { source })
+}
+
+fn write_top_up_warning(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+    count: u32,
+) -> Result<(), MigrationError> {
+    if count == 0 {
+        return Ok(());
+    }
+    app_kv
+        .put(
+            DetScope::Global,
+            &top_up_warning_key_for(network),
+            &UnreadableTopUpsWarning { count },
+        )
+        .map_err(|source| MigrationError::TopUpWarningRecord { source })
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct UnreadableAppData {
+    votes: u32,
+    top_ups: u32,
+}
+
+impl UnreadableAppData {
+    fn is_empty(self) -> bool {
+        self.votes == 0 && self.top_ups == 0
+    }
+}
+
+fn read_unreadable_app_data(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+) -> Result<UnreadableAppData, MigrationError> {
+    Ok(UnreadableAppData {
+        votes: read_vote_warning(app_kv, network)?.map_or(0, |warning| warning.count),
+        top_ups: read_top_up_warning(app_kv, network)?.map_or(0, |warning| warning.count),
+    })
 }
 
 /// Per-network key of the un-acknowledged unreadable-identity warning. Distinct
@@ -996,7 +1093,7 @@ pub fn acknowledge_unreadable_identities(app_context: &Arc<AppContext>) -> Resul
     );
     app_context
         .migration_status()
-        .set_state(MigrationState::Idle);
+        .set_state(MigrationState::Ready);
     Ok(())
 }
 
@@ -1084,6 +1181,7 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
         votes_skipped_existing = outcome.votes_skipped_existing,
         votes_unreadable = outcome.votes_unreadable,
         top_up_identities_imported = outcome.top_up_identities_imported,
+        top_ups_unreadable = outcome.top_ups_unreadable,
         network = ?network,
         "App-data migration pass complete",
     );
@@ -1094,6 +1192,7 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     // second chance. Ordered before the sentinel so a crash in between re-runs the
     // idempotent import rather than losing the warning.
     write_vote_warning(&app_kv, network, outcome.votes_unreadable)?;
+    write_top_up_warning(&app_kv, network, outcome.top_ups_unreadable)?;
 
     // The sentinel is written even when rows were unreadable: every *importable*
     // row is now in the k/v store, and the undecodable ones will never decode. A
@@ -1183,8 +1282,9 @@ where
     // and logs them — so an error here is structural and a retry is worth taking.
     let failure = match crate::database::legacy_import::read_top_ups(conn, network) {
         Ok(top_ups) => {
+            outcome.top_ups_unreadable = top_ups.unreadable;
             let mut first_error = None;
-            for (identity_id, history) in top_ups {
+            for (identity_id, history) in top_ups.top_ups {
                 let id = dash_sdk::platform::Identifier::from(identity_id);
                 match save_top_ups(&id, &history) {
                     Ok(()) => {
@@ -1226,6 +1326,67 @@ where
 /// them.
 pub fn identities_sentinel_key_for(network: Network) -> String {
     format!("det:migration:identities:{}:v1", network_prefix(network))
+}
+
+fn identities_progress_key_for(network: Network) -> String {
+    format!(
+        "det:migration:identity_progress:{}:v1",
+        network_prefix(network)
+    )
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct IdentityMigrationProgress {
+    processed: BTreeSet<[u8; 32]>,
+}
+
+fn read_identity_progress(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+) -> Result<IdentityMigrationProgress, MigrationError> {
+    app_kv
+        .get(DetScope::Global, &identities_progress_key_for(network))
+        .map(|progress| progress.unwrap_or_default())
+        .map_err(|source| MigrationError::IdentityProgressRecord { source })
+}
+
+fn write_identity_progress(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+    processed: &BTreeSet<[u8; 32]>,
+) -> Result<(), MigrationError> {
+    app_kv
+        .put(
+            DetScope::Global,
+            &identities_progress_key_for(network),
+            &IdentityMigrationProgress {
+                processed: processed.clone(),
+            },
+        )
+        .map_err(|source| MigrationError::IdentityProgressRecord { source })
+}
+
+/// Record an explicit identity deletion before removing its modern record.
+/// A later partial-pass retry then skips the stale legacy row even if the
+/// deletion races the migration's initial presence snapshot.
+pub(crate) fn record_identity_deletion(
+    app_context: &AppContext,
+    id: [u8; 32],
+) -> Result<(), MigrationError> {
+    if matches!(
+        app_context.migration_status().state().as_ref(),
+        MigrationState::Ready
+            | MigrationState::Success
+            | MigrationState::SucceededWithUnreadableData { .. }
+    ) {
+        return Ok(());
+    }
+    let app_kv = app_context.app_kv();
+    let mut progress = read_identity_progress(&app_kv, app_context.network)?;
+    if progress.processed.insert(id) {
+        write_identity_progress(&app_kv, app_context.network, &progress.processed)?;
+    }
+    Ok(())
 }
 
 /// Import the legacy `identity` rows — and the private keys they carry — into
@@ -1288,10 +1449,29 @@ fn migrate_identities(
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;
 
+    let mut progress = read_identity_progress(&app_kv, network)?;
+    let existing_ids = app_context.local_identity_ids().map_err(|source| {
+        MigrationError::IdentityImportFailed {
+            source: Box::new(source),
+        }
+    })?;
+    for id in existing_ids {
+        if app_context
+            .has_local_qualified_identity(&id)
+            .map_err(|source| MigrationError::IdentityImportFailed {
+                source: Box::new(source),
+            })?
+        {
+            progress.processed.insert(id.to_buffer());
+        }
+    }
+    write_identity_progress(&app_kv, network, &progress.processed)?;
+
     let outcome = migrate_identities_from_conn(
         &conn,
         network,
-        |id| app_context.has_local_qualified_identity(id),
+        &mut progress.processed,
+        |processed| write_identity_progress(&app_kv, network, processed),
         |qi, wallet| {
             // Diagnostic only — the link is imported either way (see the pure
             // body). An absent wallet means it failed to migrate or is locked.
@@ -1340,16 +1520,18 @@ fn migrate_identities(
 
 /// Pure identity-import body (testable without an `AppContext`).
 ///
-/// `is_present` is the skip-if-already-imported check; `insert` is the
-/// vault-routing writer.
-fn migrate_identities_from_conn<P, I>(
+/// `processed` contains identities already imported, already present in modern
+/// storage, or explicitly deleted. `record_processed` durably advances that set
+/// after each successful insert, and `insert` is the vault-routing writer.
+fn migrate_identities_from_conn<R, I>(
     conn: &Connection,
     network: Network,
-    mut is_present: P,
+    processed: &mut BTreeSet<[u8; 32]>,
+    mut record_processed: R,
     mut insert: I,
 ) -> Result<IdentityMigrationOutcome, MigrationError>
 where
-    P: FnMut(&Identifier) -> Result<bool, TaskError>,
+    R: FnMut(&BTreeSet<[u8; 32]>) -> Result<(), MigrationError>,
     I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<(), TaskError>,
 {
     let import_failed = |source: TaskError| MigrationError::IdentityImportFailed {
@@ -1370,8 +1552,6 @@ where
     };
 
     for row in legacy.identities {
-        let id = Identifier::from(row.id);
-
         // Skip an identity already in the store, wholesale. Reconciling
         // legacy-only keys into a present record is deliberately NOT attempted:
         // field absence cannot be told apart from a deliberate removal (a
@@ -1381,13 +1561,9 @@ where
         // is preserved, so those keys are recoverable by a later build. See the
         // known limitation in the design doc (§7) and the tracked follow-up.
         //
-        // Check-and-insert needs no transaction despite `insert` being
-        // INSERT-OR-REPLACE: no other writer can interleave. Every production
-        // identity writer is a `BackendTask::IdentityTask`, and
-        // `run_backend_task` rejects all `is_wallet_touching` tasks with
-        // `WalletStorageNotReady` for as long as the migration holds
-        // `MigrationState::Running` — which spans this whole pass.
-        if is_present(&id).map_err(import_failed)? {
+        // The processed set is stable during the pass: backend identity writers
+        // share the migration gate, and direct deletion rejects while it runs.
+        if processed.contains(&row.id) {
             outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
             continue;
         }
@@ -1396,6 +1572,8 @@ where
         // did not come across: it is what re-attaches the identity when the
         // wallet is restored or unlocked later.
         insert(&row.qi, &row.wallet).map_err(import_failed)?;
+        processed.insert(row.id);
+        record_processed(processed)?;
         outcome.imported = outcome.imported.saturating_add(1);
     }
 
@@ -1490,6 +1668,9 @@ struct AppDataMigrationOutcome {
     votes_unreadable: u32,
     /// Identities whose top-up history was written into the k/v store.
     top_up_identities_imported: u32,
+    /// Legacy top-up rows that could not be decoded. Non-fatal and surfaced
+    /// through a durable warning.
+    top_ups_unreadable: u32,
 }
 
 impl AppDataMigrationOutcome {
@@ -2205,6 +2386,40 @@ mod tests {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
     }
 
+    #[test]
+    fn unreadable_top_up_warning_is_durable_and_acknowledgeable() {
+        let app_kv = kv();
+        let network = Network::Testnet;
+
+        write_top_up_warning(&app_kv, network, 2).expect("write warning");
+        assert_eq!(
+            read_top_up_warning(&app_kv, network).expect("read warning"),
+            Some(UnreadableTopUpsWarning { count: 2 })
+        );
+
+        clear_unreadable_app_data(&app_kv, network).expect("acknowledge warning");
+        assert_eq!(
+            read_top_up_warning(&app_kv, network).expect("read cleared warning"),
+            None
+        );
+    }
+
+    #[test]
+    fn identity_progress_survives_a_failed_pass() {
+        let app_kv = kv();
+        let network = Network::Testnet;
+        let processed = BTreeSet::from([[0x11; 32], [0x22; 32]]);
+
+        write_identity_progress(&app_kv, network, &processed).expect("write progress");
+
+        assert_eq!(
+            read_identity_progress(&app_kv, network)
+                .expect("read progress")
+                .processed,
+            processed
+        );
+    }
+
     // ── App-data import: scheduled votes + top-up history ────────────
 
     mod app_data {
@@ -2286,6 +2501,7 @@ mod tests {
             assert_eq!(outcome.votes_imported, 1);
             assert_eq!(outcome.votes_unreadable, 0);
             assert_eq!(outcome.top_up_identities_imported, 1);
+            assert_eq!(outcome.top_ups_unreadable, 0);
 
             let votes = votes.borrow();
             assert_eq!(votes.len(), 1);
@@ -2387,6 +2603,32 @@ mod tests {
                 matches!(result, Err(MigrationError::TopUpHistoryWrite { .. })),
                 "a top-up write failure must reach the caller so the sentinel is withheld, got {result:?}",
             );
+        }
+
+        #[test]
+        fn unreadable_top_up_rows_are_counted_without_blocking_readable_history() {
+            let conn = legacy_conn();
+            conn.execute(
+                "INSERT INTO top_up (identity_id, top_up_index, amount) VALUES (?1, 1, -1)",
+                rusqlite::params![VOTER.as_slice()],
+            )
+            .expect("corrupt top up");
+            let saved = RefCell::new(Vec::new());
+
+            let outcome = migrate_app_data_from_conn(
+                &conn,
+                Network::Testnet,
+                &BTreeSet::new(),
+                |_| Ok(()),
+                |_, history| {
+                    saved.borrow_mut().push(history.clone());
+                    Ok(())
+                },
+            )
+            .expect("row-level damage is non-fatal");
+
+            assert_eq!(outcome.top_ups_unreadable, 1);
+            assert_eq!(saved.borrow()[0], BTreeMap::from([(0, 5_000)]));
         }
 
         /// A structurally unreadable `top_up` table (here: no `amount` column)
@@ -2518,7 +2760,8 @@ mod tests {
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                |_| Ok(false),
+                &mut BTreeSet::new(),
+                |_| Ok(()),
                 |qi, _| {
                     recorder
                         .imported
@@ -2557,10 +2800,12 @@ mod tests {
             insert_identity(&conn, fresh, Some(identity_blob(fresh)), true);
 
             let recorder = Recorder::default();
+            let mut processed = BTreeSet::from([existing]);
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                |id| Ok(id.to_buffer() == existing),
+                &mut processed,
+                |_| Ok(()),
                 |qi, _| {
                     recorder
                         .imported
@@ -2577,6 +2822,57 @@ mod tests {
                 *recorder.imported.borrow(),
                 vec![fresh],
                 "the already-present identity must never reach the insert writer",
+            );
+        }
+
+        #[test]
+        fn a_partial_hard_failure_does_not_reimport_an_earlier_identity() {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            create_identity_table(&conn);
+            let first = [0x11; 32];
+            let failing = [0x22; 32];
+            insert_identity(&conn, first, Some(identity_blob(first)), true);
+            insert_identity(&conn, failing, Some(identity_blob(failing)), true);
+
+            let attempts = RefCell::new(Vec::new());
+            let mut processed = BTreeSet::new();
+            let first_run = migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                &mut processed,
+                |_| Ok(()),
+                |qi, _| {
+                    let id = qi.identity.id().to_buffer();
+                    attempts.borrow_mut().push(id);
+                    if id == failing {
+                        Err(TaskError::WalletNotFound)
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(matches!(
+                first_run,
+                Err(MigrationError::IdentityImportFailed { .. })
+            ));
+            assert!(processed.contains(&first));
+
+            migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                &mut processed,
+                |_| Ok(()),
+                |qi, _| {
+                    attempts.borrow_mut().push(qi.identity.id().to_buffer());
+                    Ok(())
+                },
+            )
+            .expect("retry");
+
+            assert_eq!(
+                attempts.borrow().iter().filter(|id| **id == first).count(),
+                1,
+                "a previously imported identity must stay skipped even if the user removed it before the retry",
             );
         }
 
@@ -2597,7 +2893,8 @@ mod tests {
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                |_| Ok(false),
+                &mut BTreeSet::new(),
+                |_| Ok(()),
                 |qi, _| {
                     recorder
                         .imported
@@ -2638,7 +2935,8 @@ mod tests {
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                |_| Ok(false),
+                &mut BTreeSet::new(),
+                |_| Ok(()),
                 |_, wallet| {
                     links.borrow_mut().push(*wallet);
                     Ok(())
@@ -4014,6 +4312,36 @@ mod tests {
         .expect("AppContext")
     }
 
+    #[test]
+    fn identity_deletion_is_rejected_while_migration_is_running() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        ctx.migration_status().set_state(MigrationState::Running {
+            step: MigrationStep::Identities,
+        });
+
+        assert!(matches!(
+            ctx.delete_local_qualified_identity(&Identifier::from([0x11; 32])),
+            Err(TaskError::WalletStorageNotReady)
+        ));
+    }
+
+    #[test]
+    fn identity_deletion_before_migration_is_recorded_for_the_retry_filter() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let deleted = [0x33; 32];
+
+        record_identity_deletion(&ctx, deleted).expect("record deletion");
+
+        assert!(
+            read_identity_progress(&ctx.app_kv(), ctx.network)
+                .expect("read progress")
+                .processed
+                .contains(&deleted)
+        );
+    }
+
     #[tokio::test]
     async fn too_old_database_version_is_rejected_before_migration() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -4151,7 +4479,7 @@ mod tests {
     }
 
     /// F113 — a launch with no legacy rows must report `did_work = false`
-    /// and leave the migration state `Idle`, so the per-frame banner
+    /// and leave the migration state `Ready`, so the per-frame banner
     /// reconciler never shows a spurious "storage update complete".
     #[tokio::test]
     async fn run_with_no_legacy_rows_is_a_silent_noop() {
@@ -4162,13 +4490,13 @@ mod tests {
 
         assert!(!did_work, "fresh install moved no data");
         assert!(
-            matches!(*ctx.migration_status().state(), MigrationState::Idle),
-            "no-op launch must stay Idle, not publish Success",
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
+            "no-op launch must become Ready without publishing Success",
         );
     }
 
     /// F113 — once the per-network sentinel exists, a subsequent launch is
-    /// a no-op: `did_work = false` and the state stays `Idle` (no banner).
+    /// a no-op: `did_work = false` and the state becomes `Ready` (no banner).
     #[tokio::test]
     async fn run_with_sentinel_present_is_a_silent_noop() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -4181,8 +4509,8 @@ mod tests {
 
         assert!(!did_work, "sentinel-present launch moved no data");
         assert!(
-            matches!(*ctx.migration_status().state(), MigrationState::Idle),
-            "sentinel short-circuit must stay Idle",
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
+            "sentinel short-circuit must become Ready",
         );
     }
 
@@ -4706,7 +5034,11 @@ mod tests {
         assert_eq!(votes[0].contested_name, "alice");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableVotes { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 0,
+                votes: 1,
+                top_ups: 0,
+            },
             "the corrupt vote row must be surfaced to the user, not dropped in silence",
         );
 
@@ -4770,7 +5102,7 @@ mod tests {
             "a no-op launch must not rewrite the completion sentinel",
         );
         assert!(
-            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
             "a no-op launch must not publish a completion banner",
         );
 
@@ -4975,7 +5307,11 @@ mod tests {
 
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 1,
+                votes: 0,
+                top_ups: 0,
+            },
             "an unreadable notice record must not be reported as an app-data failure",
         );
 
@@ -5014,7 +5350,11 @@ mod tests {
         run(&ctx).await.expect("first launch");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableVotes { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 0,
+                votes: 1,
+                top_ups: 0,
+            },
             "the discovery run surfaces the warning",
         );
 
@@ -5024,20 +5364,24 @@ mod tests {
         run(&ctx).await.expect("second launch");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableVotes { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 0,
+                votes: 1,
+                top_ups: 0,
+            },
             "a warning the user may have missed must survive a restart",
         );
 
-        acknowledge_unreadable_votes(&ctx).expect("acknowledge");
+        acknowledge_unreadable_app_data(&ctx).expect("acknowledge");
         assert!(
-            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
             "acknowledging clears the banner immediately",
         );
 
         ctx.migration_status().set_state(MigrationState::Idle);
         run(&ctx).await.expect("third launch");
         assert!(
-            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
             "an acknowledged warning must never come back",
         );
 
@@ -5082,9 +5426,10 @@ mod tests {
         run(&ctx).await.expect("neither damaged row is fatal");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+            MigrationState::SucceededWithUnreadableData {
                 identities: 1,
                 votes: 1,
+                top_ups: 0,
             },
             "the discovery run must name BOTH remedies — the identity warning may \
              not swallow a vote with a live deadline",
@@ -5120,21 +5465,26 @@ mod tests {
         run(&ctx).await.expect("second launch");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+            MigrationState::SucceededWithUnreadableData {
                 identities: 1,
                 votes: 1,
+                top_ups: 0,
             },
             "the vote warning must survive a restart even while identities stay unreadable",
         );
 
         // Acknowledging retires the vote half only: the identities are still
         // unreadable, so their warning must keep coming back on its own.
-        acknowledge_unreadable_votes(&ctx).expect("acknowledge");
+        acknowledge_unreadable_app_data(&ctx).expect("acknowledge");
         ctx.migration_status().set_state(MigrationState::Idle);
         run(&ctx).await.expect("third launch");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 1,
+                votes: 0,
+                top_ups: 0,
+            },
             "an acknowledged vote warning must not come back, but the identity one must",
         );
 
@@ -5189,7 +5539,11 @@ mod tests {
         );
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 1,
+                votes: 0,
+                top_ups: 0,
+            },
             "precondition: the corrupt row is reported to the user",
         );
 
@@ -5219,7 +5573,11 @@ mod tests {
         // that never decoded.
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 1,
+                votes: 0,
+                top_ups: 0,
+            },
             "the unreadable row is still reported once the import itself is complete",
         );
 
@@ -5252,7 +5610,11 @@ mod tests {
         run(&ctx).await.expect("first launch");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 1,
+                votes: 0,
+                top_ups: 0,
+            },
             "the discovery run surfaces the warning",
         );
 
@@ -5271,20 +5633,24 @@ mod tests {
         run(&ctx).await.expect("second launch");
         assert_eq!(
             *ctx.migration_status().state(),
-            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            MigrationState::SucceededWithUnreadableData {
+                identities: 1,
+                votes: 0,
+                top_ups: 0,
+            },
             "a warning the user may have missed must survive a restart",
         );
 
         acknowledge_unreadable_identities(&ctx).expect("acknowledge");
         assert!(
-            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
             "acknowledging clears the banner immediately",
         );
 
         ctx.migration_status().set_state(MigrationState::Idle);
         run(&ctx).await.expect("third launch");
         assert!(
-            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            matches!(*ctx.migration_status().state(), MigrationState::Ready),
             "an acknowledged warning must never come back",
         );
 

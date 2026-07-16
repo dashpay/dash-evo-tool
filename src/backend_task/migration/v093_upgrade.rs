@@ -1459,8 +1459,10 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
     // …the user is told…
     assert_eq!(
         *ctx.migration_status().state(),
-        crate::context::migration_status::MigrationState::SucceededWithUnreadableIdentities {
-            count: 1
+        crate::context::migration_status::MigrationState::SucceededWithUnreadableData {
+            identities: 1,
+            votes: 0,
+            top_ups: 0,
         },
         "the user must learn that an identity did not come across",
     );

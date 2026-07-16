@@ -89,12 +89,11 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
         // to `Failed` instead would lock shielded spends over a corrupt vote row and
         // offer a retry for a shielded migration that never failed.
         MigrationState::Success
-        | MigrationState::SucceededWithUnreadableVotes { .. }
-        | MigrationState::SucceededWithUnreadableIdentities { .. }
-        | MigrationState::SucceededWithUnreadableIdentitiesAndVotes { .. }
+        | MigrationState::SucceededWithUnreadableData { .. }
         | MigrationState::FailedWithUnreadableIdentities { .. } => ShieldedIndicator::Verified,
         // Idle / non-shielded running step → no badge.
         MigrationState::Idle
+        | MigrationState::Ready
         | MigrationState::Running { .. }
         | MigrationState::AwaitingWalletPasswords { .. } => ShieldedIndicator::Hidden,
     }
@@ -928,7 +927,11 @@ mod tests {
         );
         assert_eq!(
             derive_shielded_indicator(
-                &MigrationState::SucceededWithUnreadableVotes { count: 1 },
+                &MigrationState::SucceededWithUnreadableData {
+                    identities: 0,
+                    votes: 1,
+                    top_ups: 0,
+                },
                 false,
             ),
             ShieldedIndicator::Verified,
@@ -936,7 +939,11 @@ mod tests {
         );
         assert_eq!(
             derive_shielded_indicator(
-                &MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+                &MigrationState::SucceededWithUnreadableData {
+                    identities: 1,
+                    votes: 0,
+                    top_ups: 0,
+                },
                 false,
             ),
             ShieldedIndicator::Verified,
@@ -944,9 +951,10 @@ mod tests {
         );
         assert_eq!(
             derive_shielded_indicator(
-                &MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                &MigrationState::SucceededWithUnreadableData {
                     identities: 1,
                     votes: 2,
+                    top_ups: 0,
                 },
                 false,
             ),

@@ -2254,6 +2254,46 @@ pub enum TaskError {
 }
 
 impl TaskError {
+    /// Reclassifies SDK reachability failures when every configured DAPI address is exhausted.
+    pub fn contextualize_dapi_availability(
+        self,
+        configured_total: usize,
+        live_count: usize,
+    ) -> Self {
+        if configured_total == 0 || live_count != 0 {
+            return self;
+        }
+
+        match self {
+            Self::DapiUnavailable { source_error }
+            | Self::DapiTimeout { source_error }
+            | Self::DapiConnectionRefused { source_error }
+            | Self::DapiNoAddresses { source_error } => {
+                Self::DapiAllAddressesExhausted { source_error }
+            }
+            Self::DashPayContactRequestActionFailed { request_id, source } => {
+                Self::DashPayContactRequestActionFailed {
+                    request_id,
+                    source: Box::new(
+                        (*source).contextualize_dapi_availability(configured_total, live_count),
+                    ),
+                }
+            }
+            Self::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source,
+            } => Self::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source: Box::new(
+                    (*source).contextualize_dapi_availability(configured_total, live_count),
+                ),
+            },
+            other => other,
+        }
+    }
+
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
     /// Three storage failures get honest, distinct copy; everything else keeps
@@ -2870,6 +2910,138 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
+
+    const DAPI_EXHAUSTED_MESSAGE: &str =
+        "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
+
+    fn dapi_connection_refused_error() -> TaskError {
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");
+        let source_error = Box::new(SdkError::DapiClientError(DapiClientError::Transport(
+            TransportError::Grpc(status),
+        )));
+        TaskError::DapiConnectionRefused { source_error }
+    }
+
+    fn dapi_sdk_source_ptr(error: &TaskError) -> *const SdkError {
+        match error {
+            TaskError::DapiConnectionRefused { source_error }
+            | TaskError::DapiAllAddressesExhausted { source_error } => &**source_error,
+            other => panic!("expected a DAPI reachability error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_exhausts_connection_refused_and_preserves_source() {
+        let error = dapi_connection_refused_error();
+        let original_source = dapi_sdk_source_ptr(&error);
+
+        let contextualized = error.contextualize_dapi_availability(1, 0);
+
+        assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+        match contextualized {
+            TaskError::DapiAllAddressesExhausted { source_error } => {
+                assert!(std::ptr::eq(&*source_error, original_source));
+            }
+            other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_keeps_connection_refused_when_an_address_is_live() {
+        let contextualized = dapi_connection_refused_error().contextualize_dapi_availability(1, 1);
+
+        assert!(matches!(
+            contextualized,
+            TaskError::DapiConnectionRefused { .. }
+        ));
+    }
+
+    #[test]
+    fn dapi_availability_context_distinguishes_exhaustion_from_missing_configuration() {
+        let exhausted = TaskError::from(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ))
+        .contextualize_dapi_availability(1, 0);
+        let unconfigured = TaskError::from(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ))
+        .contextualize_dapi_availability(0, 0);
+
+        assert!(matches!(
+            exhausted,
+            TaskError::DapiAllAddressesExhausted { .. }
+        ));
+        assert!(matches!(unconfigured, TaskError::DapiNoAddresses { .. }));
+    }
+
+    #[test]
+    fn dapi_availability_context_leaves_unrelated_errors_unchanged() {
+        let contextualized = TaskError::DocumentNotFound.contextualize_dapi_availability(1, 0);
+
+        assert!(matches!(contextualized, TaskError::DocumentNotFound));
+    }
+
+    #[test]
+    fn dapi_availability_context_recurses_through_contact_request_envelope() {
+        let request_id = Identifier::from([7; 32]);
+        let source = dapi_connection_refused_error();
+        let original_source = dapi_sdk_source_ptr(&source);
+        let error = TaskError::DashPayContactRequestActionFailed {
+            request_id,
+            source: Box::new(source),
+        };
+
+        let contextualized = error.contextualize_dapi_availability(1, 0);
+
+        assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+        match contextualized {
+            TaskError::DashPayContactRequestActionFailed {
+                request_id: actual_request_id,
+                source,
+            } => {
+                assert_eq!(actual_request_id, request_id);
+                assert!(matches!(
+                    source.as_ref(),
+                    TaskError::DapiAllAddressesExhausted { .. }
+                ));
+                assert!(std::ptr::eq(dapi_sdk_source_ptr(&source), original_source));
+            }
+            other => panic!("expected DashPayContactRequestActionFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_recurses_through_contact_info_envelope() {
+        let identity_id = Identifier::from([6; 32]);
+        let contact_id = Identifier::from([7; 32]);
+        let source = dapi_connection_refused_error();
+        let original_source = dapi_sdk_source_ptr(&source);
+        let error = TaskError::DashPayContactInfoActionFailed {
+            identity_id,
+            contact_id,
+            source: Box::new(source),
+        };
+
+        let contextualized = error.contextualize_dapi_availability(1, 0);
+
+        assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+        match contextualized {
+            TaskError::DashPayContactInfoActionFailed {
+                identity_id: actual_identity_id,
+                contact_id: actual_contact_id,
+                source,
+            } => {
+                assert_eq!(actual_identity_id, identity_id);
+                assert_eq!(actual_contact_id, contact_id);
+                assert!(matches!(
+                    source.as_ref(),
+                    TaskError::DapiAllAddressesExhausted { .. }
+                ));
+                assert!(std::ptr::eq(dapi_sdk_source_ptr(&source), original_source));
+            }
+            other => panic!("expected DashPayContactInfoActionFailed, got {other:?}"),
+        }
+    }
 
     #[test]
     fn a_request_action_failure_shows_the_underlying_reason_to_the_user() {

@@ -737,6 +737,21 @@ impl AppContext {
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let result = self.run_backend_task_inner(task, sender).await;
+        let (configured_total, live_count) = {
+            let sdk = self.sdk.load();
+            let address_list = sdk.address_list();
+            (address_list.len(), address_list.get_live_addresses().len())
+        };
+
+        result.map_err(|error| error.contextualize_dapi_availability(configured_total, live_count))
+    }
+
+    async fn run_backend_task_inner(
+        self: &Arc<Self>,
+        task: BackendTask,
+        sender: SenderAsync<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Refuse a shielded fund movement while shielded operations are
         // unavailable BEFORE `ensure_wallet_backend` runs. That bootstrap does
         // real work for any wallet-touching task — building the backend and, for

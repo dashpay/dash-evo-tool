@@ -6,7 +6,7 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use crate::ui::{MessageType, RootScreenType, ScreenType};
-use egui::{RichText, ScrollArea, Vec2};
+use egui::{RichText, ScrollArea, Vec2, WidgetInfo, WidgetType};
 use std::sync::Arc;
 
 /// The action the user wants to take after onboarding
@@ -199,11 +199,15 @@ impl WelcomeScreen {
                 });
             });
 
-        if response.response.hovered() {
+        let response = response.response.interact(egui::Sense::click());
+        if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+        response.widget_info(|| {
+            WidgetInfo::selected(WidgetType::RadioButton, true, selected, role.label())
+        });
 
-        response.response.interact(egui::Sense::click()).clicked()
+        response.clicked()
     }
 
     fn render_getting_started_section(&mut self, ui: &mut egui::Ui, dark_mode: bool) -> AppAction {

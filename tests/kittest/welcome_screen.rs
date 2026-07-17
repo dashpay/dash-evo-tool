@@ -1,8 +1,34 @@
 use crate::support::with_isolated_data_dir;
 use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::RootScreenType;
+use egui::accesskit::{Role, Toggled};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
+
+#[test]
+fn welcome_role_cards_expose_radio_accessibility_state() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        harness.run_steps(10);
+
+        for (label, toggled) in [
+            ("Default view", Toggled::False),
+            ("Expert view", Toggled::True),
+            ("Developer view", Toggled::False),
+        ] {
+            let card = harness.get_by_role_and_label(Role::RadioButton, label);
+            assert_eq!(card.accesskit_node().toggled(), Some(toggled));
+        }
+    });
+}
 
 /// The onboarding welcome row sets the app-global role and persists it, sharing
 /// the same vocabulary as the Settings selector so a role picked here is
@@ -34,7 +60,9 @@ fn welcome_role_selector_sets_and_persists_role() {
         // starting role would leave the selector idle, and the persisted `None`
         // would still *read back* as the default — a green assertion proving
         // nothing. A downgrade can only be observed if it was really written.
-        harness.get_by_label("Default view").click();
+        harness
+            .get_by_role_and_label(Role::RadioButton, "Default view")
+            .click();
         harness.run_steps(3);
 
         assert_eq!(

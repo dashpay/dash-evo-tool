@@ -50,6 +50,23 @@ fn first_already_loaded_id(
         .copied()
 }
 
+/// Whether [`ContractTask::SaveDataContract`] should reject a contract that is
+/// already loaded.
+///
+/// Ordinary saves (`NoTokensShouldBeAdded` / `AllTokensShouldBeAdded`) treat an
+/// already-loaded contract as a duplicate. Token-only insertion into an
+/// existing non-system contract (`SomeTokensShouldBeAdded`, including an empty
+/// position list) is allowed so callers such as `AddTokenByIdScreen` can ask
+/// the DB helper to add specifically requested tokens. The DB layer uses
+/// `INSERT OR IGNORE` for the contract row and upserts tokens, so re-saving an
+/// already-present token is a no-op rather than an error.
+fn reject_already_loaded_for_save(insert_tokens_too: &InsertTokensToo) -> bool {
+    !matches!(
+        insert_tokens_too,
+        InsertTokensToo::SomeTokensShouldBeAdded(_)
+    )
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContractTask {
     FetchContracts(Vec<Identifier>),
@@ -260,6 +277,10 @@ impl AppContext {
                 // duplicate user-contract insert a no-op, so without this
                 // check non-UI callers could appear to "save" a contract
                 // when the database state did not actually change.
+                //
+                // Exception: `SomeTokensShouldBeAdded` is a legitimate
+                // request to insert specific tokens into an already-saved
+                // non-system contract (see `reject_already_loaded_for_save`).
                 let contract_id = data_contract.id();
                 if self.is_system_contract_id(&contract_id) {
                     return Err(
@@ -268,13 +289,15 @@ impl AppContext {
                         },
                     );
                 }
-                let existing_ids = self.loaded_contract_ids()?;
-                if existing_ids.contains(&contract_id) {
-                    return Err(
-                        crate::backend_task::error::TaskError::ContractAlreadyLoaded {
-                            contract_id,
-                        },
-                    );
+                if reject_already_loaded_for_save(&insert_tokens_too) {
+                    let existing_ids = self.loaded_contract_ids()?;
+                    if existing_ids.contains(&contract_id) {
+                        return Err(
+                            crate::backend_task::error::TaskError::ContractAlreadyLoaded {
+                                contract_id,
+                            },
+                        );
+                    }
                 }
 
                 self.db.insert_contract_if_not_exists(
@@ -320,5 +343,27 @@ mod tests {
     #[test]
     fn first_already_loaded_id_returns_none_when_no_overlap() {
         assert!(first_already_loaded_id(&[id(1), id(2)], &[id(3), id(4)]).is_none());
+    }
+
+    #[test]
+    fn reject_already_loaded_for_ordinary_saves() {
+        assert!(reject_already_loaded_for_save(
+            &InsertTokensToo::NoTokensShouldBeAdded
+        ));
+        assert!(reject_already_loaded_for_save(
+            &InsertTokensToo::AllTokensShouldBeAdded
+        ));
+    }
+
+    #[test]
+    fn allow_already_loaded_when_requesting_specific_tokens() {
+        assert!(!reject_already_loaded_for_save(
+            &InsertTokensToo::SomeTokensShouldBeAdded(vec![0])
+        ));
+        // Empty requested list still means "token insertion path", not a
+        // plain duplicate-contract save — the DB helper simply inserts nothing.
+        assert!(!reject_already_loaded_for_save(
+            &InsertTokensToo::SomeTokensShouldBeAdded(vec![])
+        ));
     }
 }

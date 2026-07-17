@@ -9,7 +9,8 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, unavailable_preflight_outcome,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, failed_before_broadcast_outcome,
+    unavailable_preflight_outcome,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
@@ -69,6 +70,7 @@ pub struct ScheduledDPNSVote {
 
 fn classify_vote_attempt(
     attempt: &Result<vote_on_dpns_name::DpnsVoteAttempt, TaskError>,
+    timing: VoteTiming,
 ) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>) {
     match attempt {
         Ok(vote_on_dpns_name::DpnsVoteAttempt::Confirmed) => {
@@ -82,10 +84,7 @@ fn classify_vote_attempt(
             DpnsVoteTargetStatus::Rejected,
             Some(DpnsVoteFailure::PlatformRejected),
         ),
-        Err(_) => (
-            DpnsVoteTargetStatus::FailedBeforeSubmission,
-            Some(DpnsVoteFailure::SubmissionFailed),
-        ),
+        Err(_) => failed_before_broadcast_outcome(timing),
     }
 }
 
@@ -147,6 +146,11 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let is_scheduled_sweep =
+            matches!(&task, ContestedResourceTask::CastDueScheduledVotes { .. });
+        if !is_scheduled_sweep {
+            self.ensure_dpns_vote_recovery(sdk).await?;
+        }
         match task {
             ContestedResourceTask::QueryDPNSContests => self
                 .query_dpns_contested_resources(sdk, sender)
@@ -510,11 +514,12 @@ impl AppContext {
                                 &sdk,
                             )
                             .await;
-                        let (status, failure) = classify_vote_attempt(&attempt);
+                        let (status, failure) = classify_vote_attempt(&attempt, target.timing);
                         let confirmed = matches!(
                             &attempt,
                             Ok(vote_on_dpns_name::DpnsVoteAttempt::Confirmed)
                         );
+                        let mut retryable_scheduled_error = None;
                         match attempt {
                             Ok(vote_on_dpns_name::DpnsVoteAttempt::Confirmed) => {
                             }
@@ -551,11 +556,15 @@ impl AppContext {
                                     contested_name = %target.contested_name,
                                     "DPNS vote failed before a confirmed submission"
                                 );
-                                app_context.record_dpns_vote_diagnostic(
-                                    operation_id,
-                                    target.key.clone(),
-                                    error,
-                                );
+                                if matches!(target.timing, VoteTiming::Scheduled(_)) {
+                                    retryable_scheduled_error = Some(error);
+                                } else {
+                                    app_context.record_dpns_vote_diagnostic(
+                                        operation_id,
+                                        target.key.clone(),
+                                        error,
+                                    );
+                                }
                             }
                         }
                         let mirror_error = persist_terminal_then_legacy_mirror(
@@ -595,6 +604,9 @@ impl AppContext {
                                 target.key.vote_poll_id,
                                 target.requested_choice,
                             )?;
+                        }
+                        if let Some(error) = retryable_scheduled_error {
+                            return Err(error);
                         }
                     }
                     Ok(())
@@ -821,6 +833,20 @@ impl AppContext {
                     "Failed to execute a due DPNS vote operation; leaving it for recovery"
                 );
                 first_error.get_or_insert(error);
+                if let Err(recovery_error) =
+                    self.recover_interrupted_dpns_vote_operation(operation_id)
+                {
+                    tracing::error!(
+                        error = %recovery_error,
+                        operation_id = %operation_id,
+                        "Failed to recover an interrupted DPNS vote operation"
+                    );
+                    // Let the next contested task retry global recovery after
+                    // storage becomes available again. The targeted attempt is
+                    // preferred because this fallback can see unrelated work.
+                    *self.dpns_vote_recovery.lock().await = false;
+                    first_error.get_or_insert(recovery_error);
+                }
             }
         }
         if let Some(error) = first_error {
@@ -874,7 +900,7 @@ mod tests {
             TaskError::DpnsVoteTargetBusy,
         ));
         assert_eq!(
-            classify_vote_attempt(&attempt),
+            classify_vote_attempt(&attempt, VoteTiming::Scheduled(42)),
             (
                 DpnsVoteTargetStatus::Rejected,
                 Some(DpnsVoteFailure::PlatformRejected)
@@ -888,7 +914,7 @@ mod tests {
         let attempt = Ok(vote_on_dpns_name::DpnsVoteAttempt::Unconfirmed(
             TaskError::DpnsVoteTargetBusy,
         ));
-        let (status, _) = classify_vote_attempt(&attempt);
+        let (status, _) = classify_vote_attempt(&attempt, VoteTiming::Scheduled(42));
         assert_eq!(status, DpnsVoteTargetStatus::Unconfirmed);
         assert!(status.holds_lock());
     }
@@ -942,21 +968,75 @@ mod tests {
         }
     }
 
-    #[test]
-    fn scheduled_sweep_wraps_recovery_failures() {
-        let error = wrap_scheduled_vote_sweep_result::<BackendTaskSuccessResult>(
+    #[tokio::test]
+    async fn scheduled_sweep_dispatch_wraps_recovery_failures() {
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let database =
+            Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("test database"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let context = AppContext::new(
+            data_dir,
             Network::Testnet,
-            Err(TaskError::DpnsCurrentVoteUnavailable),
+            database,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
         )
-        .expect_err("a recovery failure must fail the scheduled sweep");
+        .expect("offline testnet AppContext");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(1);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+
+        let error = context
+            .run_contested_resource_task(
+                ContestedResourceTask::CastDueScheduledVotes {
+                    preserve_eligibility_since_ms: None,
+                },
+                &context.sdk(),
+                sender,
+            )
+            .await
+            .expect_err("an unwired recovery must fail the scheduled sweep");
 
         assert!(matches!(
             error,
             TaskError::ScheduledVoteSweepFailed {
                 network: Network::Testnet,
-                source,
-            } if matches!(source.as_ref(), TaskError::DpnsCurrentVoteUnavailable)
+                ..
+            }
         ));
+    }
+
+    #[test]
+    fn scheduled_pre_broadcast_failure_remains_retryable() {
+        let attempt = Err(TaskError::DpnsVoteTargetBusy);
+
+        assert_eq!(
+            classify_vote_attempt(&attempt, VoteTiming::Scheduled(42)),
+            (
+                DpnsVoteTargetStatus::Scheduled,
+                Some(DpnsVoteFailure::SubmissionFailed),
+            )
+        );
+        assert_eq!(
+            classify_vote_attempt(&attempt, VoteTiming::Now),
+            (
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                Some(DpnsVoteFailure::SubmissionFailed),
+            )
+        );
     }
 
     #[test]

@@ -223,7 +223,8 @@ pub struct AppContext {
     /// Serializes all nonce-consuming vote submissions per voter across tasks,
     /// while bounding unrelated voters globally.
     pub(crate) dpns_vote_dispatch: DpnsVoteDispatchCoordinator,
-    /// Runs crash recovery exactly once before this context accepts vote work.
+    /// Runs crash recovery before this context first accepts vote work.
+    /// Re-armed only if targeted recovery cannot persist after an executor error.
     pub(crate) dpns_vote_recovery: tokio::sync::Mutex<bool>,
     /// Full in-process diagnostics keyed to sanitized durable outcomes.
     dpns_vote_diagnostics:

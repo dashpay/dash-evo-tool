@@ -215,6 +215,7 @@ fn dpns_result_needs_hidden_masternode_route(
     matches!(
         result,
         BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
+            | BackendTaskSuccessResult::RefreshedDpnsContests
     ) && (selected != RootScreenType::RootScreenMasternodes || !screen_stack_is_empty)
 }
 
@@ -2952,6 +2953,15 @@ mod dpns_result_routing_tests {
             RootScreenType::RootScreenMasternodes,
             true,
             &result,
+        ));
+    }
+
+    #[test]
+    fn refreshed_contests_route_when_masternodes_root_is_hidden() {
+        assert!(dpns_result_needs_hidden_masternode_route(
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &BackendTaskSuccessResult::RefreshedDpnsContests,
         ));
     }
 }

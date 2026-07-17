@@ -300,6 +300,21 @@ fn cancel_all_scheduled_targets(kv: &DetKv, network: Network) -> Result<usize, T
     Ok(cancelled)
 }
 
+fn mark_interrupted_targets_unconfirmed(operation: &mut DpnsVoteOperation) -> bool {
+    let mut changed = false;
+    for outcome in &mut operation.targets {
+        if matches!(
+            outcome.status,
+            DpnsVoteTargetStatus::Submitting | DpnsVoteTargetStatus::Confirming
+        ) {
+            outcome.status = DpnsVoteTargetStatus::Unconfirmed;
+            outcome.failure = Some(DpnsVoteFailure::ResultUnconfirmed);
+            changed = true;
+        }
+    }
+    changed
+}
+
 impl AppContext {
     /// Durably claim one due scheduled target before any executor can observe it.
     pub(crate) fn queue_scheduled_dpns_vote_target(
@@ -543,20 +558,31 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         for mut operation in load_operations(&kv, self.network)? {
-            let mut changed = false;
-            for outcome in &mut operation.targets {
-                if matches!(
-                    outcome.status,
-                    DpnsVoteTargetStatus::Submitting | DpnsVoteTargetStatus::Confirming
-                ) {
-                    outcome.status = DpnsVoteTargetStatus::Unconfirmed;
-                    outcome.failure = Some(DpnsVoteFailure::ResultUnconfirmed);
-                    changed = true;
-                }
-            }
-            if changed {
+            if mark_interrupted_targets_unconfirmed(&mut operation) {
                 persist_operation(&kv, self.network, &operation)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Conservatively recover one operation after its executor has returned.
+    pub(crate) fn recover_interrupted_dpns_vote_operation(
+        &self,
+        operation_id: DpnsVoteOperationId,
+    ) -> Result<(), TaskError> {
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kv = self.det_kv()?;
+        let Some(mut operation): Option<DpnsVoteOperation> = kv
+            .get(DetScope::Global, &operation_key(self.network, operation_id))
+            .map_err(unreadable_operation_err)?
+        else {
+            return Ok(());
+        };
+        if mark_interrupted_targets_unconfirmed(&mut operation) {
+            persist_operation(&kv, self.network, &operation)?;
         }
         Ok(())
     }
@@ -984,25 +1010,15 @@ mod tests {
 
     #[test]
     fn interrupted_submission_recovers_to_unconfirmed() {
-        let kv = kv();
         let mut operation = operation(DpnsVoteTargetStatus::Submitting);
-        persist_operation(&kv, Network::Testnet, &operation).unwrap();
-
-        for outcome in &mut operation.targets {
-            if matches!(
-                outcome.status,
-                DpnsVoteTargetStatus::Submitting | DpnsVoteTargetStatus::Confirming
-            ) {
-                outcome.status = DpnsVoteTargetStatus::Unconfirmed;
-                outcome.failure = Some(DpnsVoteFailure::ResultUnconfirmed);
-            }
-        }
-        persist_operation(&kv, Network::Testnet, &operation).unwrap();
-
-        let restored = load_operations(&kv, Network::Testnet).unwrap();
+        assert!(mark_interrupted_targets_unconfirmed(&mut operation));
         assert_eq!(
-            restored[0].targets[0].status,
+            operation.targets[0].status,
             DpnsVoteTargetStatus::Unconfirmed
+        );
+        assert_eq!(
+            operation.targets[0].failure,
+            Some(DpnsVoteFailure::ResultUnconfirmed)
         );
     }
 }

@@ -19,10 +19,12 @@ impl AppContext {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::transfer_address_funds::TransferAddressFunds;
 
+        let backend = self.wallet_backend()?;
+
         // Clone wallet and SDK before the async operation to avoid holding guards across await
         let (wallet, sdk) = {
             let wallet = self.wallet_arc(&seed_hash)?.read()?.clone();
-            let sdk = self.sdk.load().as_ref().clone();
+            let sdk = backend.sdk().clone();
             (wallet, sdk)
         };
 
@@ -47,7 +49,6 @@ impl AppContext {
         // the scope returns — it never enters this layer by value.
         let network = self.network;
         let path_index = PlatformPathIndex::from_wallet(&wallet, network);
-        let backend = self.wallet_backend()?;
         let (address_infos, _height) = backend
             .secret_access()
             .with_secret_session(

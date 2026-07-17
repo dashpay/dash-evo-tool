@@ -416,6 +416,10 @@ impl std::fmt::Debug for WalletBackend {
 }
 
 impl WalletBackend {
+    pub(crate) fn sdk(&self) -> &Sdk {
+        self.inner.pwm.sdk()
+    }
+
     /// Construct the backend: open the upstream SQLite persister, build the
     /// `PlatformWalletManager` with the DET `EventBridge`, then register every
     /// persisted wallet via [`Self::load_from_persistor_seedless`] (per

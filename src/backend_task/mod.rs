@@ -120,6 +120,13 @@ fn contextualize_dapi_result(
     }
 }
 
+fn contextualize_wallet_backend_dapi_result(
+    result: Result<BackendTaskSuccessResult, TaskError>,
+    backend: &crate::wallet_backend::WalletBackend,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    contextualize_dapi_result(result, || DapiAddressAvailability::from_sdk(backend.sdk()))
+}
+
 fn contextualize_dapi_task_result(
     result: TaskResult,
     availability: DapiAddressAvailability,
@@ -810,14 +817,22 @@ impl AppContext {
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let uses_wallet_backend_sdk = matches!(
+            &task,
+            BackendTask::WalletTask(_) | BackendTask::ShieldedTask(_)
+        );
         let task_sdk = self.sdk.load_full();
         let result = self
             .run_backend_task_inner(task, sender, task_sdk.as_ref())
             .await;
 
-        contextualize_dapi_result(result, || {
-            DapiAddressAvailability::from_sdk(task_sdk.as_ref())
-        })
+        if uses_wallet_backend_sdk {
+            result
+        } else {
+            contextualize_dapi_result(result, || {
+                DapiAddressAvailability::from_sdk(task_sdk.as_ref())
+            })
+        }
     }
 
     async fn run_backend_task_inner(
@@ -1034,7 +1049,8 @@ impl AppContext {
         self: &Arc<Self>,
         task: WalletTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        match task {
+        let backend = self.wallet_backend()?;
+        let result = match task {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await
             }
@@ -1083,13 +1099,10 @@ impl AppContext {
                 self.sign_message_with_identity_key(identity_id, target, key_id, message, key_type)
                     .await
             }
-            WalletTask::ListTrackedAssetLocks { seed_hash } => {
-                let locks = self
-                    .wallet_backend()?
-                    .list_tracked_asset_locks(&seed_hash)
-                    .await?;
-                Ok(BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks })
-            }
+            WalletTask::ListTrackedAssetLocks { seed_hash } => backend
+                .list_tracked_asset_locks(&seed_hash)
+                .await
+                .map(|locks| BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }
@@ -1140,7 +1153,9 @@ impl AppContext {
                 )
                 .await
             }
-        }
+        };
+
+        contextualize_wallet_backend_dapi_result(result, backend.as_ref())
     }
 }
 
@@ -1194,6 +1209,53 @@ mod tests {
             result,
             Err(TaskError::DapiAllAddressesExhausted { .. })
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wallet_dapi_context_uses_the_wired_backend_sdk_after_app_sdk_swap() {
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let wallet_tmp = tempfile::tempdir().expect("wallet tempdir");
+        let ctx = test_app_context(wallet_tmp.path());
+        let wallet_sdk = ctx.sdk.load_full();
+        let wallet_addresses = wallet_sdk.address_list();
+        let addresses = wallet_addresses.get_live_addresses();
+        assert!(!addresses.is_empty(), "wallet SDK must have DAPI addresses");
+        for address in addresses {
+            assert!(wallet_addresses.ban(&address));
+        }
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend");
+
+        let replacement_tmp = tempfile::tempdir().expect("replacement tempdir");
+        let replacement_ctx = test_app_context(replacement_tmp.path());
+        let replacement_sdk = replacement_ctx.sdk.load_full();
+        assert!(
+            !replacement_sdk
+                .address_list()
+                .get_live_addresses()
+                .is_empty(),
+            "replacement SDK must have a live DAPI address"
+        );
+        ctx.sdk.store(replacement_sdk);
+
+        let backend = ctx.wallet_backend().expect("wired wallet backend");
+        let result = contextualize_wallet_backend_dapi_result(
+            Err(dapi_connection_refused_error()),
+            backend.as_ref(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DapiAllAddressesExhausted { .. })
+        ));
+
+        backend.shutdown().await;
     }
 
     #[test]

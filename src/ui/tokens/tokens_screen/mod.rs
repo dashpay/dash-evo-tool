@@ -51,7 +51,6 @@ use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, Texture
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
-use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
@@ -1473,6 +1472,18 @@ impl IntervalTimeUnit {
     }
 }
 
+/// Builds the sequential backend tasks for adding a token from search/details.
+///
+/// `SaveTokenLocally` now performs the contract ensure step atomically at the
+/// backend task boundary, so the UI no longer dispatches a separate
+/// `FetchContracts` preflight task.
+fn add_token_backend_tasks(token_info: TokenInfo) -> Vec<BackendTask> {
+    vec![
+        BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
+        BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
+    ]
+}
+
 fn my_tokens(
     app_context: &Arc<AppContext>,
     identities: &IndexMap<Identifier, QualifiedIdentity>,
@@ -2501,6 +2512,19 @@ impl TokensScreen {
             return Ok(AppAction::None);
         }
 
+        if let Err(e) = self
+            .app_context
+            .get_contract_by_id(&token_info.data_contract_id)
+        {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Unable to check whether this token's contract is already loaded. Please try again.",
+                MessageType::Error,
+            )
+            .with_details(e);
+            return Ok(AppAction::None);
+        }
+
         // Set adding status
         self.adding_token_start_time = Some(Utc::now());
         self.adding_token_name = Some(token_info.token_name.clone());
@@ -2513,16 +2537,8 @@ impl TokensScreen {
         handle.with_elapsed();
         self.operation_banner = Some(handle);
 
-        // Always save the token locally and refresh balances
-        // The contract will be fetched automatically when needed
         Ok(AppAction::BackendTasks(
-            vec![
-                BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![
-                    token_info.data_contract_id,
-                ]))),
-                BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(token_info))),
-                BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
-            ],
+            add_token_backend_tasks(token_info),
             BackendTasksExecutionMode::Sequential,
         ))
     }
@@ -3198,6 +3214,41 @@ mod tests {
                 std::env::set_var("LOCAL_core_rpc_password", "password");
             }
         });
+    }
+
+    fn sample_token_info() -> TokenInfo {
+        TokenInfo {
+            token_id: Identifier::from_bytes(&[0xA1; 32]).expect("valid id"),
+            token_name: "Sample".to_string(),
+            data_contract_id: Identifier::from_bytes(&[0xC1; 32]).expect("valid id"),
+            token_position: 0,
+            token_configuration: TokenConfiguration::V0(
+                TokenConfigurationV0::default_most_restrictive(),
+            ),
+            description: None,
+        }
+    }
+
+    #[test]
+    fn add_token_backend_tasks_uses_atomic_save_then_refresh() {
+        let tasks = add_token_backend_tasks(sample_token_info());
+        assert_eq!(tasks.len(), 2);
+        assert!(matches!(
+            &tasks[0],
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::SaveTokenLocally(_))
+        ));
+        assert!(matches!(
+            &tasks[1],
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances)
+        ));
+        assert!(
+            tasks
+                .iter()
+                .all(|task| !matches!(task, BackendTask::ContractTask(_))),
+            "add-token flow must rely on the atomic save task, not a separate fetch"
+        );
     }
 
     impl ChangeControlRulesUI {

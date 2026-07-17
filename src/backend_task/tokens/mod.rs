@@ -1,5 +1,6 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
@@ -216,6 +217,26 @@ pub enum TokenTask {
 }
 
 impl AppContext {
+    async fn ensure_token_contract_persisted(
+        &self,
+        contract_id: Identifier,
+        sdk: &Sdk,
+    ) -> Result<(), TaskError> {
+        if self.db.get_contract_by_id(contract_id, self)?.is_some() {
+            return Ok(());
+        }
+
+        let data_contract = DataContract::fetch_by_identifier(sdk, contract_id)
+            .await
+            .map_err(TaskError::from)?
+            .ok_or(TaskError::DataContractNotFound)?;
+
+        self.db
+            .insert_contract_if_not_exists(&data_contract, None, NoTokensShouldBeAdded, self)?;
+
+        Ok(())
+    }
+
     pub async fn run_token_task(
         self: &Arc<Self>,
         task: TokenTask,
@@ -552,6 +573,9 @@ impl AppContext {
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
+                self.ensure_token_contract_persisted(token_info.data_contract_id, sdk)
+                    .await?;
+
                 let token_config_bytes = bincode::encode_to_vec(
                     &token_info.token_configuration,
                     bincode::config::standard(),
@@ -783,5 +807,127 @@ impl AppContext {
 
         // 8) Wrap the whole struct in DataContract::V1
         Ok(DataContract::V1(contract_v1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::backend_task::BackendTask;
+    use crate::context::AppContext;
+    use crate::database::Database;
+    use crate::database::test_helpers::create_test_database;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
+    use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
+    use std::sync::{Arc, Once};
+    use tokio::sync::mpsc;
+
+    fn ensure_test_env() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| unsafe {
+            std::env::set_var("MAINNET_dapi_addresses", "http://127.0.0.1:1443");
+            std::env::set_var("MAINNET_core_host", "127.0.0.1");
+            std::env::set_var("MAINNET_core_rpc_port", "9998");
+            std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
+            std::env::set_var("MAINNET_core_rpc_password", "password");
+
+            std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
+            std::env::set_var("LOCAL_core_host", "127.0.0.1");
+            std::env::set_var("LOCAL_core_rpc_port", "20302");
+            std::env::set_var("LOCAL_core_rpc_user", "dashmate");
+            std::env::set_var("LOCAL_core_rpc_password", "password");
+        });
+    }
+
+    fn make_test_app_context(temp_dir: &std::path::Path, db: Arc<Database>) -> Arc<AppContext> {
+        ensure_test_env();
+        ensure_env_file(temp_dir);
+        AppContext::new(
+            temp_dir.to_path_buf(),
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+            eframe::egui::Context::default(),
+        )
+        .expect("construct AppContext for test")
+    }
+
+    fn throwaway_sender() -> SenderAsync<TaskResult> {
+        let (tx, _rx) = mpsc::channel(1);
+        SenderAsync::new(tx, eframe::egui::Context::default())
+    }
+
+    fn sample_identifier(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32 bytes is a valid identifier")
+    }
+
+    fn persist_contract_row(app_context: &AppContext, db: &Database, contract_id: Identifier) {
+        let mut contract = (*app_context.dpns_contract).clone();
+        contract.set_id(contract_id);
+        let bytes = contract
+            .serialize_to_bytes_with_platform_version(app_context.platform_version())
+            .expect("serialize cloned data contract");
+
+        db.execute(
+            "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, ?, ?)",
+            rusqlite::params![
+                contract_id.to_vec(),
+                bytes,
+                Option::<String>::None,
+                app_context.network.to_string()
+            ],
+        )
+        .expect("insert real contract row");
+    }
+
+    fn sample_token_info(contract_id: Identifier, token_id: Identifier) -> TokenInfo {
+        TokenInfo {
+            token_id,
+            token_name: "Sample".to_string(),
+            data_contract_id: contract_id,
+            token_position: 0,
+            token_configuration: TokenConfiguration::V0(
+                TokenConfigurationV0::default_most_restrictive(),
+            ),
+            description: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn save_token_locally_is_idempotent_when_contract_is_already_saved() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let db = Arc::new(create_test_database().expect("create in-memory db"));
+        let app_context = make_test_app_context(temp_dir.path(), Arc::clone(&db));
+        let contract_id = sample_identifier(0xC1);
+        let token_id = sample_identifier(0xA1);
+        persist_contract_row(&app_context, &db, contract_id);
+
+        for _ in 0..2 {
+            let result = app_context
+                .run_backend_task(
+                    BackendTask::TokenTask(Box::new(TokenTask::SaveTokenLocally(
+                        sample_token_info(contract_id, token_id),
+                    ))),
+                    throwaway_sender(),
+                )
+                .await;
+
+            assert!(
+                matches!(result, Ok(BackendTaskSuccessResult::SavedToken)),
+                "expected SavedToken, got {result:?}",
+            );
+        }
+
+        assert_eq!(
+            db.get_contract_id_by_token_id(&token_id, &app_context)
+                .expect("read saved token contract"),
+            Some(contract_id),
+        );
     }
 }

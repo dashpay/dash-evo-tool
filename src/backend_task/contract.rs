@@ -315,9 +315,57 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::backend_task::BackendTask;
+    use crate::backend_task::error::TaskError;
+    use crate::context::AppContext;
+    use crate::database::Database;
+    use crate::database::test_helpers::create_test_database;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::dashcore::Network;
+    use std::sync::{Arc, Once};
+    use tokio::sync::mpsc;
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32 bytes is a valid identifier")
+    }
+
+    fn ensure_test_env() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| unsafe {
+            std::env::set_var("MAINNET_dapi_addresses", "http://127.0.0.1:1443");
+            std::env::set_var("MAINNET_core_host", "127.0.0.1");
+            std::env::set_var("MAINNET_core_rpc_port", "9998");
+            std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
+            std::env::set_var("MAINNET_core_rpc_password", "password");
+
+            std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
+            std::env::set_var("LOCAL_core_host", "127.0.0.1");
+            std::env::set_var("LOCAL_core_rpc_port", "20302");
+            std::env::set_var("LOCAL_core_rpc_user", "dashmate");
+            std::env::set_var("LOCAL_core_rpc_password", "password");
+        });
+    }
+
+    fn make_test_app_context(temp_dir: &std::path::Path, db: Arc<Database>) -> Arc<AppContext> {
+        ensure_test_env();
+        ensure_env_file(temp_dir);
+        AppContext::new(
+            temp_dir.to_path_buf(),
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+            eframe::egui::Context::default(),
+        )
+        .expect("construct AppContext for test")
+    }
+
+    fn throwaway_sender() -> SenderAsync<TaskResult> {
+        let (tx, _rx) = mpsc::channel(1);
+        SenderAsync::new(tx, eframe::egui::Context::default())
     }
 
     #[test]
@@ -365,5 +413,30 @@ mod tests {
         assert!(!reject_already_loaded_for_save(
             &InsertTokensToo::SomeTokensShouldBeAdded(vec![])
         ));
+    }
+
+    #[tokio::test]
+    async fn fetch_contracts_still_rejects_already_loaded_contracts() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let db = Arc::new(create_test_database().expect("create in-memory db"));
+        let app_context = make_test_app_context(temp_dir.path(), db);
+        let contract_id = app_context.dpns_contract.id();
+
+        let result = app_context
+            .run_backend_task(
+                BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(vec![
+                    contract_id,
+                ]))),
+                throwaway_sender(),
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(TaskError::ContractAlreadyLoaded { contract_id: id }) if id == contract_id
+            ),
+            "expected ContractAlreadyLoaded, got {result:?}",
+        );
     }
 }

@@ -23,9 +23,16 @@ echo ">> Starting group with ${DASHMATE_V4} (migrates config + images)"
 npx -y "$DASHMATE_V4" group start --verbose
 
 echo ">> Waiting for protocol 12 to activate (next epoch boundary)"
+attempt=1
+max_attempts=60
 until curl -s --max-time 3 http://127.0.0.1:46657/block \
       | python3 -c "import json,sys; sys.exit(0 if json.load(sys.stdin)['block']['header']['version']['app']=='12' else 1)" 2>/dev/null; do
+  if [ "$attempt" -ge "$max_attempts" ]; then
+    echo "ERROR: protocol 12 did not activate after ${max_attempts} attempts (about 30 minutes)." >&2
+    exit 1
+  fi
+  curl -s --max-time 3 http://127.0.0.1:46657/block | python3 -c "import json,sys; h=json.load(sys.stdin)['block']['header']; print('height', h['height'], 'active', h['version']['app'], 'proposed', h.get('proposed_protocol_version'))" 2>/dev/null || true
   sleep 30
-  curl -s http://127.0.0.1:46657/block | python3 -c "import json,sys; h=json.load(sys.stdin)['block']['header']; print('height', h['height'], 'active', h['version']['app'], 'proposed', h.get('proposed_protocol_version'))" 2>/dev/null || true
+  attempt=$((attempt + 1))
 done
 echo ">> Network is now on protocol 12 (v4). Proofs are V1."

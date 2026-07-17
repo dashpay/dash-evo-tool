@@ -9,10 +9,11 @@ network are upgraded, the way a real user's install would be.
 
 ## Versions under test
 
-| Role | DET | pin |
-|------|-----|-----|
-| baseline (old) | `v0.9.3` — commit `3268b736` | dash-sdk platform rev `29f7492e` (platform 2.1.0, grovedb 3.1) |
-| upgrade (new)  | PR #887 `fix/qa-followups-885` — commit `8a47745a`, base `feat/legacy-identity-migration` | dash-sdk platform rev `93b967f9` (platform 4.0) |
+- **Baseline (old):** DET `v0.9.3` at commit `3268b736`, using dash-sdk
+  platform rev `29f7492e` (platform 2.1.0, grovedb 3.1).
+- **Upgrade (new):** DET PR #887, branch `fix/qa-followups-885` at commit
+  `8a47745a` and based on `feat/legacy-identity-migration`, using dash-sdk
+  platform rev `93b967f9` (platform 4.0).
 
 Network: local `dashmate` group, **3 masternodes**. Started on dashmate **v3**
 (protocol 11), then upgraded in place to **v4** (protocol 12) — mirroring a real
@@ -33,9 +34,9 @@ mainnet protocol upgrade between the two DET versions.
    0.9.3's SDK cannot decode (expected — this is why the app must be upgraded).
 
 3. **Ran the new DET (PR #887) on a copy of the 0.9.3 profile.** The DB migrated
-   cleanly (schema v11 -> v38, no data loss) and the evonode identity appeared in
-   the new **Masternodes** section: Active, all three key roles (Voting / Owner /
-   Payout) and the derived voter identity intact.
+   cleanly (schema v11 -> v38, no data loss) and the evonode identity appeared
+   in the new **Masternodes** section: Active, all three key roles (Voting /
+   Owner / Payout) and the derived voter identity intact.
 
 ## Results
 
@@ -47,9 +48,10 @@ mainnet protocol upgrade between the two DET versions.
 - **Key functionality: pass.** DET's *Key Info -> Sign Message* signs a known
   message with the migrated **owner** and **payout (TRANSFER)** keys; each
   signature (a) recovers to the key's expected address, (b) is byte-identical to
-  what `dashd signmessage` produces with the genuine private key (deterministic
-  RFC6979), and (c) is accepted by `dashd verifymessage`. This proves the private
-  key material survived migration and still signs correctly.
+  what Dash Core's `signmessage` RPC produces with the genuine private key
+  (deterministic RFC6979), and (c) is accepted by Dash Core's `verifymessage`
+  RPC. This proves the private key material survived migration and still signs
+  correctly.
 
 ## Additional scenario: password-encrypted wallet survives the upgrade
 

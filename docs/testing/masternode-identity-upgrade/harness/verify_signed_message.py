@@ -14,7 +14,8 @@ Exit code 0 and "MATCH" when the signature verifies for the address, else 1.
 
 Notes:
 - Implements secp256k1 public-key recovery and Dash's message-hash scheme
-  ("\\x19DarkCoin Signed Message:\\n" || varint(len) || message, double-SHA256).
+  ("\\x19DarkCoin Signed Message:\\n" || CompactSize(len) || message,
+  double-SHA256).
 - Address version byte defaults to 0x8c (Dash testnet/regtest/devnet, "y..."
   prefix); pass --mainnet for 0x4c ("X..." prefix).
 """
@@ -58,12 +59,24 @@ def point_mul(k, p):
     return r
 
 
-def varint(n):
-    return bytes([n]) if n < 0xFD else b"\xfd" + n.to_bytes(2, "little")
+def compact_size(n: int) -> bytes:
+    """Encode an unsigned integer using Dash Core's CompactSize format."""
+    if n < 0xFD:
+        return bytes([n])
+    if n <= 0xFFFF:
+        return b"\xfd" + n.to_bytes(2, "little")
+    if n <= 0xFFFFFFFF:
+        return b"\xfe" + n.to_bytes(4, "little")
+    return b"\xff" + n.to_bytes(8, "little")
 
 
 def dash_message_hash(message: str) -> bytes:
-    data = b"\x19DarkCoin Signed Message:\n" + varint(len(message)) + message.encode()
+    encoded_message = message.encode("utf-8")
+    data = (
+        b"\x19DarkCoin Signed Message:\n"
+        + compact_size(len(encoded_message))
+        + encoded_message
+    )
     return hashlib.sha256(hashlib.sha256(data).digest()).digest()
 
 

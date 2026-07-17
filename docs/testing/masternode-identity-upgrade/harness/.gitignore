@@ -2,9 +2,14 @@
 # and recoverable wallet seeds (the test wallet has no password).
 keys.json
 *.db
+*.db-*
 *.sqlite
 *.sqlite-*
+*-journal
+*-shm
+*-wal
 backups/
+backup-*/
 home-*/
 *.tgz
 network-backup*/

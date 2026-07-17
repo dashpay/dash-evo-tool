@@ -128,6 +128,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `.env` no longer has any effect on it. See
   [User Roles](docs/user-roles.md) for details.
 
+- **Welcome screen's experience-level picker is now three cards**: it matches
+  the Create Wallet / Import Wallet / Just Explore cards below it, with an
+  icon and a short description on each, and a highlighted border on the one
+  you're on. Same three levels, same behavior — just easier to compare at a
+  glance.
+
 ### Known Limitations
 
 - **Single-key wallets — send and balance refresh not available**: importing a

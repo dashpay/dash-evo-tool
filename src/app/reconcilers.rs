@@ -290,11 +290,20 @@ impl ConnectionBanner {
         // On the Welcome/onboarding screen the initial `Disconnected` state just
         // means "sync hasn't started" (no wallet, nothing asked SPV to connect),
         // not a real failure — suppress the alarming red banner until onboarding ends.
+        //
+        // Deliberately do NOT advance `previous_state` here (unlike the
+        // `spv_overlaying` branch above): `current_state` staying `Disconnected`
+        // is not transient the way Connecting/Syncing are, so recording it would
+        // make `state_changed` false on the very next frame. If onboarding ends
+        // while still Disconnected (`auto_start_spv` off, or genuinely offline),
+        // that would hit the early-return above before this branch is even
+        // reached, permanently hiding the real Disconnected banner for the rest
+        // of the session — silently breaking this function's own contract that
+        // real connection problems are still reported once onboarding ends.
         if onboarding_active && current_state == OverallConnectionState::Disconnected {
             if let Some(handle) = self.handle.take() {
                 handle.clear();
             }
-            self.previous_state = Some(current_state);
             return None;
         }
 
@@ -891,6 +900,46 @@ mod tests {
             Some(BackendTask::MigrationTask(
                 MigrationTask::AcknowledgeUnreadableAppData
             )),
+        );
+    }
+
+    /// Regression test for PR #907: a user who finishes onboarding while still
+    /// disconnected (`auto_start_spv` off, or genuinely offline) must still see
+    /// the real Disconnected banner. The suppression branch used to advance
+    /// `previous_state` to the suppressed value, which made `state_changed`
+    /// false on the very next frame — hitting the fast-path early return before
+    /// the onboarding check was even reached, and permanently hiding the
+    /// banner for the rest of the session.
+    #[test]
+    fn connection_banner_shows_disconnected_after_onboarding_ends_while_still_disconnected() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        // ConnectionStatus defaults to Disconnected — no sync has been asked for.
+        assert_eq!(
+            app_context.connection_status().overall_state(),
+            OverallConnectionState::Disconnected
+        );
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+
+        // Frame 1: onboarding active, Disconnected — suppressed.
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "the Disconnected banner must stay hidden while onboarding is active"
+        );
+
+        // Frame 2: onboarding still active, state unchanged — still suppressed.
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(banner.handle.is_none());
+
+        // Frame 3: onboarding ends, connection is still Disconnected — the real
+        // banner must now appear even though `current_state` never changed.
+        assert!(banner.update(&ctx, &app_context, false, false).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "a genuine Disconnected state must be reported once onboarding ends, \
+             even if the connection state itself never changed"
         );
     }
 }

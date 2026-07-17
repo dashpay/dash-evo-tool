@@ -81,6 +81,22 @@ pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_i
 pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
     "migration:ack:unreadable_identities_and_votes";
 
+const WALLET_BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShutdownOutcome {
+    Complete,
+    TaskManagerFailed,
+    WalletBackendTimedOut,
+}
+
+fn shutdown_hard_deadline() -> Duration {
+    crate::utils::tasks::SHUTDOWN_TIMEOUT
+        + WALLET_BACKEND_SHUTDOWN_TIMEOUT
+        + SHUTDOWN_DEADLINE_MARGIN
+}
+
 fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
     matches!(
         state,
@@ -684,10 +700,12 @@ pub struct AppState {
     migration: MigrationReconciler,
     /// Async shutdown receiver. `Some` until a graceful shutdown reaches a
     /// terminal state; the viewport is closed once the receiver resolves.
-    shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
+    shutdown_receiver: Option<tokio::sync::oneshot::Receiver<ShutdownOutcome>>,
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
+    /// True once every managed shutdown stage reached a terminal outcome.
+    shutdown_finished: bool,
     /// Platform-level accessibility (AccessKit) activation reconciler.
     accessibility: AccessibilityActivator,
     /// Shared MCP context -- follows network switches via `ArcSwap`.
@@ -1347,6 +1365,7 @@ impl AppState {
             migration: MigrationReconciler::new(),
             shutdown_receiver: None,
             shutdown_started: None,
+            shutdown_finished: false,
             accessibility: AccessibilityActivator::new(accessibility_enforced),
             #[cfg(feature = "mcp")]
             mcp_app_context,
@@ -1828,25 +1847,77 @@ impl AppState {
         }
     }
 
-    fn collect_created_context(contexts: &mut Vec<Arc<AppContext>>, task_result: TaskResult) {
-        if let TaskResult::Success { result, .. } = task_result
-            && let BackendTaskSuccessResult::NetworkContextCreated { context, .. } = *result
+    fn push_unique_context(contexts: &mut Vec<Arc<AppContext>>, context: Arc<AppContext>) {
+        if !contexts
+            .iter()
+            .any(|existing| Arc::ptr_eq(existing, &context))
         {
             contexts.push(context);
         }
     }
 
-    fn start_async_shutdown(&mut self) -> tokio::sync::oneshot::Receiver<()> {
-        self.subtasks.cancellation_token.cancel();
-        let mut contexts = self.network_contexts.values().cloned().collect::<Vec<_>>();
-        let subtasks = Arc::clone(&self.subtasks);
+    fn collect_created_context(contexts: &mut Vec<Arc<AppContext>>, task_result: TaskResult) {
+        if let TaskResult::Success { result, .. } = task_result
+            && let BackendTaskSuccessResult::NetworkContextCreated { context, .. } = *result
+        {
+            Self::push_unique_context(contexts, context);
+        }
+    }
+
+    async fn shutdown_wallet_backends(contexts: Vec<Arc<AppContext>>) -> ShutdownOutcome {
+        let mut wallet_backends = Vec::new();
+        for context in contexts {
+            if let Ok(backend) = context.wallet_backend()
+                && !wallet_backends
+                    .iter()
+                    .any(|existing| Arc::ptr_eq(existing, &backend))
+            {
+                wallet_backends.push(backend);
+            }
+        }
+
+        for backend in &wallet_backends {
+            backend.forget_all_secrets();
+        }
+
+        let shutdowns = futures::future::join_all(
+            wallet_backends
+                .iter()
+                .map(|wallet_backend| wallet_backend.shutdown()),
+        );
+        if tokio::time::timeout(WALLET_BACKEND_SHUTDOWN_TIMEOUT, shutdowns)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                timeout_secs = WALLET_BACKEND_SHUTDOWN_TIMEOUT.as_secs(),
+                "Wallet backend shutdown timed out; closing with degraded teardown"
+            );
+            ShutdownOutcome::WalletBackendTimedOut
+        } else {
+            ShutdownOutcome::Complete
+        }
+    }
+
+    fn initial_shutdown_contexts(&self) -> Vec<Arc<AppContext>> {
+        let mut contexts = Vec::new();
+        for context in self.network_contexts.values() {
+            Self::push_unique_context(&mut contexts, Arc::clone(context));
+        }
+        contexts
+    }
+
+    fn start_async_shutdown(&mut self) -> tokio::sync::oneshot::Receiver<ShutdownOutcome> {
+        let mut contexts = self.initial_shutdown_contexts();
+        let mut task_shutdown = self.subtasks.shutdown_async();
         let (_empty_sender, empty_receiver) = tokiompsc::channel(1);
         let mut task_result_receiver =
             std::mem::replace(&mut self.task_result_receiver, empty_receiver);
+        #[cfg(feature = "mcp")]
+        let mcp_app_context = self.mcp_app_context.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         tokio::spawn(async move {
-            let mut task_shutdown = subtasks.shutdown_async();
             let task_shutdown_completed = loop {
                 tokio::select! {
                     result = &mut task_shutdown => break result.is_ok(),
@@ -1863,23 +1934,69 @@ impl AppState {
                 Self::collect_created_context(&mut contexts, task_result);
             }
 
-            let wallet_backends = contexts
-                .iter()
-                .filter_map(|context| context.wallet_backend().ok())
-                .collect::<Vec<_>>();
-            futures::future::join_all(
-                wallet_backends
-                    .iter()
-                    .map(|wallet_backend| wallet_backend.shutdown()),
-            )
-            .await;
-
-            if task_shutdown_completed {
-                let _ = tx.send(());
+            #[cfg(feature = "mcp")]
+            if let Some(mcp_app_context) = mcp_app_context {
+                Self::push_unique_context(&mut contexts, mcp_app_context.load_full());
             }
+
+            let wallet_outcome = Self::shutdown_wallet_backends(contexts).await;
+            let outcome = if task_shutdown_completed {
+                wallet_outcome
+            } else {
+                ShutdownOutcome::TaskManagerFailed
+            };
+            let _ = tx.send(outcome);
         });
 
         rx
+    }
+
+    fn run_blocking_shutdown_fallback(&mut self) {
+        const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+        let mut contexts = self.initial_shutdown_contexts();
+        let mut task_shutdown = self.subtasks.shutdown_async();
+        let task_shutdown_completed = loop {
+            while let Ok(task_result) = self.task_result_receiver.try_recv() {
+                Self::collect_created_context(&mut contexts, task_result);
+            }
+
+            match task_shutdown.try_recv() {
+                Ok(()) => break true,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break false,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            }
+        };
+
+        while let Ok(task_result) = self.task_result_receiver.try_recv() {
+            Self::collect_created_context(&mut contexts, task_result);
+        }
+
+        #[cfg(feature = "mcp")]
+        if let Some(mcp_app_context) = &self.mcp_app_context {
+            Self::push_unique_context(&mut contexts, mcp_app_context.load_full());
+        }
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        tokio::spawn(async move {
+            let outcome = Self::shutdown_wallet_backends(contexts).await;
+            let _ = tx.send(outcome);
+        });
+
+        match rx.recv_timeout(WALLET_BACKEND_SHUTDOWN_TIMEOUT + SHUTDOWN_DEADLINE_MARGIN) {
+            Ok(ShutdownOutcome::Complete) if task_shutdown_completed => {}
+            Ok(outcome) => tracing::warn!(
+                ?outcome,
+                task_shutdown_completed,
+                "Blocking shutdown fallback completed with degraded teardown"
+            ),
+            Err(error) => tracing::warn!(
+                ?error,
+                "Blocking wallet backend shutdown did not report a terminal outcome"
+            ),
+        }
     }
 }
 
@@ -1895,8 +2012,19 @@ impl App for AppState {
             // Shutdown already in progress — check if it's done.
             let should_close = match self.shutdown_receiver.as_mut() {
                 Some(rx) => match rx.try_recv() {
-                    Ok(()) => {
-                        tracing::debug!("Async shutdown finished, closing viewport");
+                    Ok(outcome) => {
+                        self.shutdown_finished = true;
+                        match outcome {
+                            ShutdownOutcome::Complete => {
+                                tracing::debug!("Async shutdown finished, closing viewport");
+                            }
+                            ShutdownOutcome::TaskManagerFailed => tracing::warn!(
+                                "Task shutdown failed; closing with degraded teardown"
+                            ),
+                            ShutdownOutcome::WalletBackendTimedOut => tracing::warn!(
+                                "Wallet backend shutdown exceeded its deadline; closing with degraded teardown"
+                            ),
+                        }
                         true
                     }
                     Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
@@ -1907,8 +2035,7 @@ impl App for AppState {
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                         // Still waiting — check hard deadline to prevent infinite loop.
                         if let Some(started) = self.shutdown_started {
-                            let grace = crate::utils::tasks::SHUTDOWN_TIMEOUT
-                                + std::time::Duration::from_secs(5);
+                            let grace = shutdown_hard_deadline();
                             if started.elapsed() > grace {
                                 tracing::warn!(
                                     "Shutdown hard deadline exceeded, force-closing viewport"
@@ -2489,16 +2616,12 @@ impl App for AppState {
         // observers (TouchBar, etc.) while views are still alive.
         crate::platform::order_out_all_windows();
 
-        // The start marker persists after the completion receiver is consumed.
-        // Only force-closes that bypass update() need the blocking fallback.
-        if self.shutdown_started.is_some() {
-            tracing::debug!("on_exit: async shutdown was initiated, skipping blocking fallback");
+        if self.shutdown_finished {
+            tracing::debug!("on_exit: async shutdown finished, skipping blocking fallback");
             return;
         }
         tracing::debug!("on_exit: fallback blocking shutdown");
-        if let Err(e) = self.subtasks.shutdown() {
-            tracing::error!("Error during task shutdown: {}", e);
-        }
+        self.run_blocking_shutdown_fallback();
         tracing::debug!("App shutdown complete");
     }
 }
@@ -2893,5 +3016,58 @@ mod spv_overlay_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn collect_created_context_only_keeps_network_context_results() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let mut contexts = Vec::new();
+
+        AppState::collect_created_context(
+            &mut contexts,
+            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextCreated {
+                network: Network::Testnet,
+                context: Arc::clone(&context),
+                spv_started: false,
+            }),
+        );
+        assert_eq!(contexts.len(), 1);
+        assert!(Arc::ptr_eq(&contexts[0], &context));
+
+        AppState::collect_created_context(
+            &mut contexts,
+            TaskResult::unattributed_success(BackendTaskSuccessResult::NetworkContextCreated {
+                network: Network::Testnet,
+                context: Arc::clone(&context),
+                spv_started: false,
+            }),
+        );
+        assert_eq!(contexts.len(), 1);
+
+        AppState::collect_created_context(
+            &mut contexts,
+            TaskResult::unattributed_success(BackendTaskSuccessResult::None),
+        );
+        assert_eq!(contexts.len(), 1);
+
+        AppState::collect_created_context(
+            &mut contexts,
+            TaskResult::unattributed_error(TaskError::NoIdentitiesFound),
+        );
+        assert_eq!(contexts.len(), 1);
+    }
+
+    #[test]
+    fn viewport_deadline_covers_task_and_wallet_shutdown_budgets() {
+        assert!(
+            shutdown_hard_deadline()
+                >= crate::utils::tasks::SHUTDOWN_TIMEOUT + WALLET_BACKEND_SHUTDOWN_TIMEOUT
+        );
     }
 }

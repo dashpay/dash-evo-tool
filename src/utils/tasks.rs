@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, atomic::AtomicUsize};
+use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -8,19 +8,27 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub struct TaskManager {
     pub cancellation_token: CancellationToken, // Cancellation token for graceful shutdown
-    tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<&'static str>>>, // Subtasks for graceful shutdown
+    task_state: Arc<Mutex<TaskState>>,         // Subtasks and their registration barrier
     active_names: Arc<Mutex<Vec<&'static str>>>, // Names of currently running tasks
+}
+
+#[derive(Debug)]
+struct TaskState {
+    accepting: bool,
+    tasks: tokio::task::JoinSet<&'static str>,
 }
 
 /// TaskManager tracks spawned subtasks and allows for graceful shutdown of all tasks.
 impl TaskManager {
     pub fn new() -> Self {
         let cancellation_token = CancellationToken::new();
-        let subtasks = Arc::new(tokio::sync::Mutex::new(tokio::task::JoinSet::new()));
 
         TaskManager {
             cancellation_token,
-            tasks: subtasks,
+            task_state: Arc::new(Mutex::new(TaskState {
+                accepting: true,
+                tasks: tokio::task::JoinSet::new(),
+            })),
             active_names: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -34,11 +42,19 @@ impl TaskManager {
         F: std::future::Future<Output = ()> + Send + 'static,
         F::Output: Send + 'static,
     {
-        if let Ok(mut names) = self.active_names.lock() {
-            names.push(name);
+        let mut state = self.task_state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.accepting {
+            tracing::debug!(task = name, "Rejected task registration during shutdown");
+            return;
         }
-        let subtasks = self.tasks.clone();
-        tokio::spawn(spawn_subtask(subtasks, name, future));
+        state.tasks.spawn(async move {
+            future.await;
+            name
+        });
+        self.active_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(name);
     }
 
     /// Start an asynchronous graceful shutdown of all subtasks.
@@ -47,14 +63,13 @@ impl TaskManager {
     /// shutdown is complete (or timed out). This does **not** block the calling
     /// thread, so the UI can keep repainting while tasks wind down.
     pub fn shutdown_async(&self) -> tokio::sync::oneshot::Receiver<()> {
-        let cancel = self.cancellation_token.clone();
-        let subtasks = self.tasks.clone();
+        let tasks = self.begin_shutdown();
         let active_names = self.active_names.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
         tokio::task::spawn(async move {
-            let completed = shutdown_inner(&cancel, &subtasks, &active_names, "async").await;
+            let completed = shutdown_inner(tasks, &active_names, "async").await;
 
             tracing::debug!(
                 "Async shutdown complete, {} subtasks finished cleanly",
@@ -74,8 +89,7 @@ impl TaskManager {
     ///
     /// This is an equivalent of `Runtime::shutdown_timeout` but for subtasks.
     pub fn shutdown(&self) -> Result<(), String> {
-        let cancel = self.cancellation_token.clone();
-        let subtasks = self.tasks.clone();
+        let tasks = self.begin_shutdown();
         let active_names = self.active_names.clone();
 
         // a bit naive synchronization to wait for shutdown
@@ -83,7 +97,7 @@ impl TaskManager {
 
         // we need to run this task in separate task to avoid cancelling it during shutdown
         tokio::task::spawn(async move {
-            let completed = shutdown_inner(&cancel, &subtasks, &active_names, "blocking").await;
+            let completed = shutdown_inner(tasks, &active_names, "blocking").await;
 
             // notify that shutdown is complete
             if tx.send(completed).is_err() {
@@ -107,33 +121,35 @@ impl TaskManager {
 
         Ok(())
     }
+
+    fn begin_shutdown(&self) -> tokio::task::JoinSet<&'static str> {
+        let tasks = {
+            let mut state = self.task_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.accepting = false;
+            std::mem::take(&mut state.tasks)
+        };
+        self.cancellation_token.cancel();
+        tasks
+    }
 }
 
-/// Shared shutdown logic: cancel all tasks, join with timeout, abort remaining.
+/// Join the tasks captured by the registration barrier, aborting on timeout.
 ///
 /// Returns the number of tasks that completed cleanly within the timeout.
 /// The `label` is used in log messages to distinguish async vs blocking callers.
 async fn shutdown_inner(
-    cancel: &CancellationToken,
-    subtasks: &Arc<tokio::sync::Mutex<tokio::task::JoinSet<&'static str>>>,
+    mut tasks: tokio::task::JoinSet<&'static str>,
     active_names: &Arc<Mutex<Vec<&'static str>>>,
     label: &str,
 ) -> usize {
-    tracing::trace!("{label}: cancelling all tasks");
-    cancel.cancel();
-
-    let completed = Arc::new(AtomicUsize::new(0));
-
-    let counter = completed.clone();
-    let tasks_list = subtasks.clone();
+    let mut completed = 0;
     let names_for_join = active_names.clone();
-    let timed_out = timeout(SHUTDOWN_TIMEOUT, async move {
-        let mut tasks = tasks_list.lock().await;
+    let timed_out = timeout(SHUTDOWN_TIMEOUT, async {
         let total = tasks.len();
         tracing::trace!(total, "{label}: joining tasks");
         let start = std::time::Instant::now();
         while let Some(handle) = tasks.join_next().await {
-            let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            completed += 1;
             match &handle {
                 Ok(name) => {
                     // Remove one instance of this name from active list
@@ -144,14 +160,14 @@ async fn shutdown_inner(
                     }
                     tracing::trace!(
                         task = name,
-                        task_num = i,
+                        task_num = completed,
                         total,
                         elapsed_ms = start.elapsed().as_millis() as u64,
                         "{label}: task joined OK"
                     );
                 }
                 Err(e) => tracing::trace!(
-                    task_num = i,
+                    task_num = completed,
                     total,
                     elapsed_ms = start.elapsed().as_millis() as u64,
                     error = %e,
@@ -163,10 +179,9 @@ async fn shutdown_inner(
     .await;
 
     if timed_out.is_err() {
-        let done = completed.load(std::sync::atomic::Ordering::Relaxed);
         let remaining: Vec<&str> = active_names.lock().map(|n| n.clone()).unwrap_or_default();
         tracing::trace!(
-            completed = done,
+            completed,
             remaining_count = remaining.len(),
             remaining_tasks = ?remaining,
             "{label}: timed out waiting for tasks, aborting remaining"
@@ -187,29 +202,42 @@ async fn shutdown_inner(
     }
 
     // Abort all remaining tasks
-    subtasks.lock().await.shutdown().await;
+    tasks.shutdown().await;
 
-    completed.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-#[inline(always)]
-async fn spawn_subtask<F>(
-    subtasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<&'static str>>>,
-    name: &'static str,
-    future: F,
-) where
-    F: std::future::Future<Output = ()> + Send + 'static,
-    F::Output: Send + 'static,
-{
-    let mut subtasks_lock = subtasks.lock().await;
-    subtasks_lock.spawn(async move {
-        future.await;
-        name
-    });
+    completed
 }
 
 impl Default for TaskManager {
     fn default() -> Self {
         TaskManager::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_rejects_tasks_submitted_after_the_barrier() {
+        let manager = TaskManager::new();
+        let accepted_task_ran = Arc::new(AtomicBool::new(false));
+        let ran = Arc::clone(&accepted_task_ran);
+        manager.spawn_sync("accepted-task", async move {
+            ran.store(true, Ordering::Release);
+        });
+
+        let shutdown = manager.shutdown_async();
+        let late_task_ran = Arc::new(AtomicBool::new(false));
+        let ran = Arc::clone(&late_task_ran);
+
+        manager.spawn_sync("late-task", async move {
+            ran.store(true, Ordering::Release);
+        });
+
+        shutdown.await.expect("shutdown completion");
+        tokio::task::yield_now().await;
+        assert!(accepted_task_ran.load(Ordering::Acquire));
+        assert!(!late_task_ran.load(Ordering::Acquire));
     }
 }

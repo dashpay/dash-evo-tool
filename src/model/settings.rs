@@ -417,6 +417,10 @@ pub(crate) fn detect_dash_qt_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Captured from the pre-change wire struct with live `core_backend_mode = 0`.
+    const PRE_CHANGE_APP_SETTINGS_WIRE: &[u8] =
+        b"\x07testnet\x03\x01\x0c/opt/dash-qt\x00\x01\x04Dark\x00\x01\x01\x08Beginner\x00\x01";
+
     /// S1: verify the `AppSettings` defaults for a fresh install (no blob in
     /// k/v yet). `auto_start_spv` intentionally differs from the old DB column
     /// default (0/false): new installs sync without a manual step; existing
@@ -518,25 +522,13 @@ mod tests {
     /// bincode format and corrupt already-stored `det:settings:v1` blobs.
     #[test]
     fn reserved_core_backend_mode_byte_preserves_wire_layout() {
-        let wire = AppSettingsWire {
-            network: "testnet".to_string(),
-            root_screen_type: 3,
-            dash_qt_path: Some("/opt/dash-qt".to_string()),
-            overwrite_dash_conf: false,
-            disable_zmq: true,
-            theme_mode: "Dark".to_string(),
-            _reserved_core_backend_mode: 0, // legacy "RPC" value from an old blob
-            onboarding_completed: true,
-            show_evonode_tools: true,
-            user_mode: "Beginner".to_string(),
-            close_dash_qt_on_exit: false,
-            auto_start_spv: true,
+        let decode_or_default = |bytes| {
+            bincode::serde::decode_from_slice::<AppSettings, _>(bytes, bincode::config::standard())
+                .map(|(settings, _)| settings)
+                .unwrap_or_default()
         };
-        let encoded =
-            bincode::serde::encode_to_vec(&wire, bincode::config::standard()).expect("encode");
-        let (decoded, _): (AppSettings, _) =
-            bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
-                .expect("decode");
+
+        let decoded = decode_or_default(PRE_CHANGE_APP_SETTINGS_WIRE);
         // Fields after the reserved byte must be read from the correct
         // offset — a shifted layout would scramble these.
         assert!(decoded.onboarding_completed);
@@ -548,6 +540,17 @@ mod tests {
         // Fields before it, for completeness.
         assert_eq!(decoded.network, Network::Testnet);
         assert!(matches!(decoded.theme_mode, ThemeMode::Dark));
+
+        let truncated = decode_or_default(
+            &PRE_CHANGE_APP_SETTINGS_WIRE[..PRE_CHANGE_APP_SETTINGS_WIRE.len() - 1],
+        );
+        assert_eq!(truncated.network, Network::Mainnet);
+        assert_eq!(
+            truncated.root_screen_type,
+            RootScreenType::RootScreenDashpay
+        );
+        assert!(matches!(truncated.theme_mode, ThemeMode::System));
+        assert!(!truncated.onboarding_completed);
     }
 
     /// S3: legacy "dash" network value (used by databases predating the

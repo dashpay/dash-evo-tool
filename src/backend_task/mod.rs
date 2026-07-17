@@ -1,5 +1,5 @@
 use crate::app::TaskResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
@@ -105,14 +105,40 @@ where
     }
 }
 
-fn contextualize_dapi_result<T>(
-    result: Result<T, TaskError>,
-    availability: impl FnOnce() -> (usize, usize),
-) -> Result<T, TaskError> {
-    result.map_err(|error| {
-        let (configured_total, live_count) = availability();
-        error.contextualize_dapi_availability(configured_total, live_count)
-    })
+fn contextualize_dapi_result(
+    result: Result<BackendTaskSuccessResult, TaskError>,
+    availability: impl FnOnce() -> DapiAddressAvailability,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    match result {
+        Ok(value) if value.contains_dapi_reachability_failure() => {
+            Ok(value.contextualize_dapi_availability(availability()))
+        }
+        Err(error) if error.contains_dapi_reachability_failure() => {
+            Err(error.contextualize_dapi_availability(availability()))
+        }
+        other => other,
+    }
+}
+
+fn contextualize_dapi_task_result(
+    result: TaskResult,
+    availability: DapiAddressAvailability,
+) -> TaskResult {
+    match result {
+        TaskResult::Success { context, result } if result.contains_dapi_reachability_failure() => {
+            TaskResult::Success {
+                context,
+                result: Box::new((*result).contextualize_dapi_availability(availability)),
+            }
+        }
+        TaskResult::Error { context, error } if error.contains_dapi_reachability_failure() => {
+            TaskResult::Error {
+                context,
+                error: error.contextualize_dapi_availability(availability),
+            }
+        }
+        other => other,
+    }
 }
 
 /// Returns `true` for backend tasks that read or write the
@@ -709,6 +735,43 @@ pub enum BackendTaskSuccessResult {
     },
 }
 
+impl BackendTaskSuccessResult {
+    fn contains_dapi_reachability_failure(&self) -> bool {
+        match self {
+            Self::DPNSVoteResults(results) => results.iter().any(|(_, _, result)| {
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains_dapi_reachability_failure())
+            }),
+            Self::RefreshedWallet { warning } => warning
+                .as_ref()
+                .is_some_and(|error| error.contains_dapi_reachability_failure()),
+            _ => false,
+        }
+    }
+
+    fn contextualize_dapi_availability(self, availability: DapiAddressAvailability) -> Self {
+        match self {
+            Self::DPNSVoteResults(results) => Self::DPNSVoteResults(
+                results
+                    .into_iter()
+                    .map(|(name, choice, result)| {
+                        let result = result.map_err(|error| {
+                            error.contextualize_shared_dapi_availability(availability)
+                        });
+                        (name, choice, result)
+                    })
+                    .collect(),
+            ),
+            Self::RefreshedWallet { warning } => Self::RefreshedWallet {
+                warning: warning
+                    .map(|error| error.contextualize_shared_dapi_availability(availability)),
+            },
+            other => other,
+        }
+    }
+}
+
 impl AppContext {
     /// Run backend tasks sequentially
     pub async fn run_backend_tasks_sequential(
@@ -753,8 +816,7 @@ impl AppContext {
             .await;
 
         contextualize_dapi_result(result, || {
-            let address_list = task_sdk.address_list();
-            (address_list.len(), address_list.get_live_addresses().len())
+            DapiAddressAvailability::from_sdk(task_sdk.as_ref())
         })
     }
 
@@ -1108,24 +1170,25 @@ mod tests {
 
         let mut replacement_addresses = AddressList::new();
         replacement_addresses.add("http://127.0.0.1:3001".parse().expect("address"));
-        let replacement_result =
-            contextualize_dapi_result::<()>(Err(dapi_connection_refused_error()), || {
-                (
-                    replacement_addresses.len(),
-                    replacement_addresses.get_live_addresses().len(),
-                )
+        let replacement_result: Result<BackendTaskSuccessResult, TaskError> =
+            contextualize_dapi_result(Err(dapi_connection_refused_error()), || {
+                DapiAddressAvailability {
+                    configured_total: replacement_addresses.len(),
+                    live_count: replacement_addresses.get_live_addresses().len(),
+                }
             });
         assert!(matches!(
             replacement_result,
             Err(TaskError::DapiConnectionRefused { .. })
         ));
 
-        let result = contextualize_dapi_result::<()>(Err(dapi_connection_refused_error()), || {
-            (
-                task_addresses.len(),
-                task_addresses.get_live_addresses().len(),
-            )
-        });
+        let result: Result<BackendTaskSuccessResult, TaskError> =
+            contextualize_dapi_result(Err(dapi_connection_refused_error()), || {
+                DapiAddressAvailability {
+                    configured_total: task_addresses.len(),
+                    live_count: task_addresses.get_live_addresses().len(),
+                }
+            });
 
         assert!(matches!(
             result,
@@ -1137,13 +1200,78 @@ mod tests {
     fn dapi_success_skips_availability_inspection() {
         let inspected = std::cell::Cell::new(false);
 
-        let result = contextualize_dapi_result(Ok(42), || {
+        let result = contextualize_dapi_result(Ok(BackendTaskSuccessResult::None), || {
             inspected.set(true);
-            (1, 0)
+            DapiAddressAvailability {
+                configured_total: 1,
+                live_count: 0,
+            }
         });
 
-        assert!(matches!(result, Ok(42)));
+        assert!(matches!(result, Ok(BackendTaskSuccessResult::None)));
         assert!(!inspected.get());
+    }
+
+    #[test]
+    fn dapi_context_maps_errors_embedded_in_success_results() {
+        let result = contextualize_dapi_result(
+            Ok(BackendTaskSuccessResult::DPNSVoteResults(vec![(
+                "alice".to_owned(),
+                ResourceVoteChoice::Lock,
+                Err(Arc::new(dapi_connection_refused_error())),
+            )])),
+            || DapiAddressAvailability {
+                configured_total: 1,
+                live_count: 0,
+            },
+        );
+
+        let Ok(BackendTaskSuccessResult::DPNSVoteResults(results)) = result else {
+            panic!("expected DPNS vote results");
+        };
+        assert!(matches!(
+            results[0].2,
+            Err(ref error) if matches!(error.as_ref(), TaskError::DapiAllAddressesExhausted { .. })
+        ));
+    }
+
+    #[test]
+    fn dapi_context_maps_spawned_dpns_query_task_result() {
+        let result = contextualize_dapi_task_result(
+            TaskResult::unattributed_error(dapi_connection_refused_error()),
+            DapiAddressAvailability {
+                configured_total: 1,
+                live_count: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            TaskResult::Error {
+                error: TaskError::DapiAllAddressesExhausted { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn dapi_context_maps_refreshed_wallet_warning() {
+        let result = contextualize_dapi_result(
+            Ok(BackendTaskSuccessResult::RefreshedWallet {
+                warning: Some(Arc::new(dapi_connection_refused_error())),
+            }),
+            || DapiAddressAvailability {
+                configured_total: 1,
+                live_count: 0,
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Ok(BackendTaskSuccessResult::RefreshedWallet {
+                warning: Some(error)
+            }) if matches!(error.as_ref(), TaskError::DapiAllAddressesExhausted { .. })
+        ));
     }
 
     #[test]

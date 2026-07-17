@@ -172,6 +172,16 @@ pub enum VoteTiming {
     Scheduled(TimestampMillis),
 }
 
+pub(crate) fn unavailable_preflight_outcome(
+    timing: VoteTiming,
+) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>) {
+    let status = match timing {
+        VoteTiming::Scheduled(_) => DpnsVoteTargetStatus::Scheduled,
+        VoteTiming::Now => DpnsVoteTargetStatus::FailedBeforeSubmission,
+    };
+    (status, Some(DpnsVoteFailure::CurrentVoteUnavailable))
+}
+
 /// One reviewed node × contest action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DpnsVoteTarget {

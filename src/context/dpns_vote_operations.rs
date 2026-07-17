@@ -4,7 +4,7 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, unavailable_preflight_outcome,
 };
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
@@ -526,8 +526,8 @@ impl AppContext {
                 }
             }
             DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
-                outcome.status = DpnsVoteTargetStatus::Unconfirmed;
-                outcome.failure = Some(DpnsVoteFailure::CurrentVoteUnavailable);
+                (outcome.status, outcome.failure) =
+                    unavailable_preflight_outcome(outcome.target.timing);
             }
         }
         let still_queued = outcome.status == DpnsVoteTargetStatus::Queued;
@@ -818,6 +818,24 @@ mod tests {
             !transition_scheduled_target_to_queued(&kv, Network::Testnet, scheduled.id, &key,)
                 .unwrap(),
             "a second executor must not claim the same schedule"
+        );
+    }
+
+    #[test]
+    fn unavailable_preflight_preserves_retryability_by_timing() {
+        assert_eq!(
+            unavailable_preflight_outcome(VoteTiming::Scheduled(42)),
+            (
+                DpnsVoteTargetStatus::Scheduled,
+                Some(DpnsVoteFailure::CurrentVoteUnavailable),
+            )
+        );
+        assert_eq!(
+            unavailable_preflight_outcome(VoteTiming::Now),
+            (
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                Some(DpnsVoteFailure::CurrentVoteUnavailable),
+            )
         );
     }
 

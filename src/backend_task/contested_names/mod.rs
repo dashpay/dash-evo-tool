@@ -9,7 +9,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, unavailable_preflight_outcome,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
@@ -355,6 +355,7 @@ impl AppContext {
             });
         }
         let was_persisted = self.dpns_vote_operation(operation.id)?.is_some();
+        let mut preflight_unavailable = false;
         if operation
             .targets
             .iter()
@@ -371,8 +372,13 @@ impl AppContext {
                 .collect::<Vec<_>>();
             for key in queued_keys {
                 let state = self.dpns_current_vote_state(key.voter_id, key.vote_poll_id)?;
+                let unavailable = matches!(
+                    state,
+                    DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable
+                );
                 if was_persisted {
                     self.revalidate_queued_dpns_vote_target(operation.id, &key, state)?;
+                    preflight_unavailable |= unavailable;
                     continue;
                 }
                 let Some(outcome) = operation
@@ -391,7 +397,9 @@ impl AppContext {
                         }
                     }
                     DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
-                        return Err(TaskError::DpnsCurrentVoteUnavailable);
+                        (outcome.status, outcome.failure) =
+                            unavailable_preflight_outcome(outcome.target.timing);
+                        preflight_unavailable = true;
                     }
                 }
             }
@@ -598,6 +606,10 @@ impl AppContext {
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?;
 
+        if preflight_unavailable {
+            return Err(TaskError::DpnsCurrentVoteUnavailable);
+        }
+
         Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: self.network,
             operation_id: operation.id,
@@ -741,25 +753,28 @@ impl AppContext {
                 let VoteTiming::Scheduled(scheduled_at) = outcome.target.timing else {
                     continue;
                 };
-                if outcome.status == DpnsVoteTargetStatus::Scheduled
-                    && scheduled_vote_is_due(
-                        scheduled_at,
-                        false,
-                        now_ms,
-                        preserve_eligibility_since_ms,
-                    )
-                    && self.queue_scheduled_dpns_vote_target(operation.id, &outcome.target.key)?
-                {
-                    outcome.status = DpnsVoteTargetStatus::Queued;
-                    due = true;
-                    in_progress.push(ScheduledDPNSVote {
-                        contested_name: outcome.target.contested_name.clone(),
-                        voter_id: outcome.target.key.voter_id,
-                        choice: outcome.target.requested_choice,
-                        unix_timestamp: scheduled_at,
-                        executed_successfully: false,
-                    });
+                if !scheduled_target_should_execute(
+                    outcome.status,
+                    scheduled_at,
+                    now_ms,
+                    preserve_eligibility_since_ms,
+                ) {
+                    continue;
                 }
+                if outcome.status == DpnsVoteTargetStatus::Scheduled
+                    && !self.queue_scheduled_dpns_vote_target(operation.id, &outcome.target.key)?
+                {
+                    continue;
+                }
+                outcome.status = DpnsVoteTargetStatus::Queued;
+                due = true;
+                in_progress.push(ScheduledDPNSVote {
+                    contested_name: outcome.target.contested_name.clone(),
+                    voter_id: outcome.target.key.voter_id,
+                    choice: outcome.target.requested_choice,
+                    unix_timestamp: scheduled_at,
+                    executed_successfully: false,
+                });
             }
             if due {
                 due_operations.push(operation);
@@ -829,6 +844,22 @@ fn scheduled_vote_is_due(
     !executed_successfully
         && scheduled_at_ms <= now_ms
         && scheduled_at_ms.saturating_add(SCHEDULED_VOTE_MAX_LATENESS_MS) >= eligibility_cutoff_ms
+}
+
+fn scheduled_target_should_execute(
+    status: DpnsVoteTargetStatus,
+    scheduled_at_ms: u64,
+    now_ms: u64,
+    preserve_eligibility_since_ms: Option<u64>,
+) -> bool {
+    status == DpnsVoteTargetStatus::Queued
+        || (status == DpnsVoteTargetStatus::Scheduled
+            && scheduled_vote_is_due(
+                scheduled_at_ms,
+                false,
+                now_ms,
+                preserve_eligibility_since_ms,
+            ))
 }
 
 #[cfg(test)]
@@ -925,6 +956,25 @@ mod tests {
                 network: Network::Testnet,
                 source,
             } if matches!(source.as_ref(), TaskError::DpnsCurrentVoteUnavailable)
+        ));
+    }
+
+    #[test]
+    fn queued_schedule_remains_eligible_for_redrive() {
+        let now_ms = 1_000_000;
+        let stale_scheduled_at = now_ms - SCHEDULED_VOTE_MAX_LATENESS_MS - 1;
+
+        assert!(scheduled_target_should_execute(
+            DpnsVoteTargetStatus::Queued,
+            stale_scheduled_at,
+            now_ms,
+            None,
+        ));
+        assert!(!scheduled_target_should_execute(
+            DpnsVoteTargetStatus::Scheduled,
+            stale_scheduled_at,
+            now_ms,
+            None,
         ));
     }
 

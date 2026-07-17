@@ -259,6 +259,8 @@ pub enum BackendTaskContext {
     ClearNetworkDatabase,
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
+    /// Receive-address derivation for one wallet's deposit flow.
+    GenerateReceiveAddress { seed_hash: WalletSeedHash },
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -298,6 +300,13 @@ impl BackendTaskContext {
                 )
         )
     }
+
+    pub(crate) fn generated_receive_address_wallet(&self) -> Option<WalletSeedHash> {
+        match self.operation() {
+            Self::GenerateReceiveAddress { seed_hash } => Some(*seed_hash),
+            _ => None,
+        }
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {
@@ -328,6 +337,11 @@ impl From<&BackendTask> for BackendTaskContext {
                 _ => Self::Other,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
+                Self::GenerateReceiveAddress {
+                    seed_hash: *seed_hash,
+                }
+            }
             _ => Self::Other,
         }
     }
@@ -578,6 +592,9 @@ pub enum BackendTaskSuccessResult {
     ClaimedTokens(FeeResult),
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
+    /// A requested foreground refresh found the upstream balance sync already
+    /// running, so no second pass was started.
+    TokenBalanceRefreshAlreadyInFlight,
     SavedToken,
 
     // Identity operation results (replacing string messages)
@@ -1493,5 +1510,21 @@ mod tests {
         assert!(!is_terminal_storage_open_error(
             &TaskError::WalletStorageNotReady
         ));
+    }
+
+    #[test]
+    fn receive_address_context_retains_the_wallet_identity() {
+        let seed_hash = [7; 32];
+        let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+        let context = BackendTaskContext::from(&task);
+
+        assert_eq!(context.generated_receive_address_wallet(), Some(seed_hash));
+        assert_eq!(
+            BackendTaskContext::from(&BackendTask::WalletTask(
+                WalletTask::ListTrackedAssetLocks { seed_hash },
+            ))
+            .generated_receive_address_wallet(),
+            None,
+        );
     }
 }

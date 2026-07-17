@@ -33,6 +33,7 @@ use crate::ui::state::account_summary::{
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use crate::wallet_backend::TransactionHistoryStatus;
 use crate::wallet_backend::poison::RwLockRecover;
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -239,6 +240,10 @@ pub struct WalletsBalancesScreen {
     /// Transaction count at the time `cached_tx_indices` was last built.
     /// Used to detect list growth that doesn't make existing indices OOB.
     cached_tx_source_len: Option<usize>,
+    /// Last hydration notice applied to the transaction-history banner. This
+    /// prevents a dismissed persistent notice from being recreated every frame.
+    transaction_history_notice: Option<(WalletSeedHash, TransactionHistoryStatus)>,
+    transaction_history_banner: MessageBanner,
     /// Persistent warning banner rendered on the single-key wallet detail
     /// view when the app is running on the SPV backend. Stored on the screen
     /// (rather than constructed fresh each frame) so the underlying tracing
@@ -369,6 +374,8 @@ impl WalletsBalancesScreen {
             pending_wallet_refresh_on_switch: false,
             cached_tx_indices: None,
             cached_tx_source_len: None,
+            transaction_history_notice: None,
+            transaction_history_banner: MessageBanner::new(),
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
             import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
             restore_single_key_dialog: RestoreSingleKeyDialog::new(),
@@ -1729,6 +1736,26 @@ impl WalletsBalancesScreen {
             .map(|wb| wb.has_snapshot(&selected_seed_hash))
             .unwrap_or(false);
         let transactions = self.snapshot_transactions(&selected_seed_hash);
+
+        let history_status = self
+            .app_context
+            .wallet_backend()
+            .map(|backend| backend.transaction_history_status(&selected_seed_hash))
+            .unwrap_or_default();
+        let notice = (selected_seed_hash, history_status.clone());
+        if self.transaction_history_notice.as_ref() != Some(&notice) {
+            self.transaction_history_notice = Some(notice);
+            match history_status.error() {
+                Some(error) => {
+                    self.transaction_history_banner
+                        .set_message(error, MessageType::Warning)
+                        .set_details(error)
+                        .disable_auto_dismiss();
+                }
+                None => self.transaction_history_banner.clear(),
+            }
+        }
+        self.transaction_history_banner.show(ui);
 
         if !backend_ready {
             ui.label("Syncing transactions from the network…");

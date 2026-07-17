@@ -522,13 +522,11 @@ mod tests {
     /// bincode format and corrupt already-stored `det:settings:v1` blobs.
     #[test]
     fn reserved_core_backend_mode_byte_preserves_wire_layout() {
-        let decode_or_default = |bytes| {
-            bincode::serde::decode_from_slice::<AppSettings, _>(bytes, bincode::config::standard())
-                .map(|(settings, _)| settings)
-                .unwrap_or_default()
-        };
-
-        let decoded = decode_or_default(PRE_CHANGE_APP_SETTINGS_WIRE);
+        let (decoded, _) = bincode::serde::decode_from_slice::<AppSettings, _>(
+            PRE_CHANGE_APP_SETTINGS_WIRE,
+            bincode::config::standard(),
+        )
+        .expect("the complete legacy settings blob must decode");
         // Fields after the reserved byte must be read from the correct
         // offset — a shifted layout would scramble these.
         assert!(decoded.onboarding_completed);
@@ -540,17 +538,20 @@ mod tests {
         // Fields before it, for completeness.
         assert_eq!(decoded.network, Network::Testnet);
         assert!(matches!(decoded.theme_mode, ThemeMode::Dark));
+    }
 
-        let truncated = decode_or_default(
-            &PRE_CHANGE_APP_SETTINGS_WIRE[..PRE_CHANGE_APP_SETTINGS_WIRE.len() - 1],
+    #[test]
+    fn truncated_settings_blob_is_rejected() {
+        let truncated = &PRE_CHANGE_APP_SETTINGS_WIRE[..PRE_CHANGE_APP_SETTINGS_WIRE.len() - 1];
+
+        assert!(
+            bincode::serde::decode_from_slice::<AppSettings, _>(
+                truncated,
+                bincode::config::standard(),
+            )
+            .is_err(),
+            "boot must distinguish a corrupt saved preference from a fresh install",
         );
-        assert_eq!(truncated.network, Network::Mainnet);
-        assert_eq!(
-            truncated.root_screen_type,
-            RootScreenType::RootScreenDashpay
-        );
-        assert!(matches!(truncated.theme_mode, ThemeMode::System));
-        assert!(!truncated.onboarding_completed);
     }
 
     /// S3: legacy "dash" network value (used by databases predating the

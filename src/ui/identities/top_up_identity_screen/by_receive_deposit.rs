@@ -4,40 +4,12 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
-    spendable_covers_minimum,
+    should_queue_funding_address, snapshot_deposit_outcome,
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::theme::DashColors;
 use egui::{Color32, RichText, Ui, Vec2};
 use std::time::Duration;
-
-fn snapshot_deposit_outcome(
-    current_step: WalletFundedScreenStep,
-    address_balance_duffs: u64,
-    spendable_duffs: u64,
-    minimum_credits: u64,
-) -> (WalletFundedScreenStep, bool) {
-    let advance = current_step == WalletFundedScreenStep::WaitingOnFunds
-        && address_balance_duffs > 0
-        && spendable_covers_minimum(spendable_duffs, minimum_credits);
-    (
-        if advance {
-            WalletFundedScreenStep::FundsReceived
-        } else {
-            current_step
-        },
-        advance,
-    )
-}
-
-fn should_queue_funding_address(
-    has_address: bool,
-    request_pending: bool,
-    request_in_flight: bool,
-    request_failed: bool,
-) -> bool {
-    !has_address && !request_pending && !request_in_flight && !request_failed
-}
 
 impl TopUpIdentityScreen {
     /// Queue a deposit-address derivation unless one is already shown, in
@@ -109,13 +81,12 @@ impl TopUpIdentityScreen {
         });
 
         ui.add_space(8.0);
-        // Show what has arrived at THIS address specifically (accumulated per
-        // deposit), never whole-wallet balance — leftover change elsewhere must
-        // not read as progress toward this deposit.
-        let received = self.received_at_funding_address_duffs;
+        // Show only funds currently available at this address. Unrelated wallet
+        // funds must never read as progress toward this deposit.
+        let received = self.funding_address_balance_duffs;
         if received > 0 {
             ui.label(format!(
-                "Received {received_amount} at this address so far. Waiting for at least \
+                "This address has {received_amount} available. Waiting for at least \
                  {minimum_amount}.",
                 received_amount = Amount::dash_from_duffs(received),
             ));
@@ -144,18 +115,13 @@ impl TopUpIdentityScreen {
             .get(address)
             .copied()
             .unwrap_or(0);
-        self.received_at_funding_address_duffs = address_balance_duffs;
+        self.funding_address_balance_duffs = address_balance_duffs;
 
-        let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
         let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
         let current_step = self.current_step();
-        let (next_step, should_prefill) = snapshot_deposit_outcome(
-            current_step,
-            address_balance_duffs,
-            spendable_duffs,
-            minimum_credits,
-        );
-        if should_prefill {
+        let (next_step, prefill) =
+            snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);
+        if prefill.is_some() {
             self.prefill_funding_amount = true;
             self.set_step(next_step);
         }
@@ -228,38 +194,5 @@ impl TopUpIdentityScreen {
         ui.add_space(20.0);
 
         action
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn snapshot_poll_advances_top_up_when_deposit_event_was_missed() {
-        assert_eq!(
-            snapshot_deposit_outcome(
-                WalletFundedScreenStep::WaitingOnFunds,
-                50_000,
-                50_000,
-                50_000_000,
-            ),
-            (WalletFundedScreenStep::FundsReceived, true)
-        );
-        assert_eq!(
-            snapshot_deposit_outcome(
-                WalletFundedScreenStep::WaitingOnFunds,
-                0,
-                50_000,
-                50_000_000,
-            ),
-            (WalletFundedScreenStep::WaitingOnFunds, false)
-        );
-    }
-
-    #[test]
-    fn in_flight_top_up_address_request_is_not_queued_again() {
-        assert!(!should_queue_funding_address(false, false, true, false));
-        assert!(should_queue_funding_address(false, false, false, false));
     }
 }

@@ -105,6 +105,48 @@ pub fn spendable_covers_minimum(spendable_duffs: u64, minimum_credits: u64) -> b
     spendable_duffs.saturating_mul(CREDITS_PER_DUFF) >= minimum_credits
 }
 
+/// Resolve a polling snapshot for the address shown by the deposit flow.
+/// Advancement and prefill are both bounded by funds at that address, never by
+/// unrelated spendable funds elsewhere in the wallet.
+pub fn snapshot_deposit_outcome(
+    current_step: WalletFundedScreenStep,
+    address_balance_duffs: u64,
+    minimum_credits: u64,
+) -> (WalletFundedScreenStep, Option<u64>) {
+    let advance = current_step == WalletFundedScreenStep::WaitingOnFunds
+        && spendable_covers_minimum(address_balance_duffs, minimum_credits);
+    let next_step = if advance {
+        WalletFundedScreenStep::FundsReceived
+    } else {
+        current_step
+    };
+    let prefill =
+        advance.then(|| max_amount_after_fee_reserve(address_balance_duffs, minimum_credits));
+    (next_step, prefill)
+}
+
+/// Whether the QR flow should dispatch a new receive-address request.
+pub fn should_queue_funding_address(
+    has_address: bool,
+    request_pending: bool,
+    request_in_flight: bool,
+    request_failed: bool,
+) -> bool {
+    !has_address && !request_pending && !request_in_flight && !request_failed
+}
+
+/// Restore an amount-entry step after a failed funding task without moving a
+/// deposit-address failure away from its retry view.
+pub fn step_after_task_failure(current_step: WalletFundedScreenStep) -> WalletFundedScreenStep {
+    match current_step {
+        WalletFundedScreenStep::WaitingForAssetLock
+        | WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+            WalletFundedScreenStep::ReadyToCreate
+        }
+        _ => current_step,
+    }
+}
+
 /// The largest amount, in credits, a "Max" button can safely offer from a
 /// wallet holding `spendable_duffs`, after reserving `fee_credits` for the
 /// platform fee. Built on `spendable_duffs` (not the wallet's `total`, which
@@ -129,8 +171,7 @@ pub fn round_up_dash_4dp(dash: f64) -> f64 {
 /// address contributes nothing. Returns `0` when no address is shown yet.
 ///
 /// This decides only whether *this* event touched the shown address; the
-/// cumulative "received so far" figure comes from the wallet's spendable
-/// snapshot, since deposits across separate events accumulate there.
+/// cumulative available amount comes from that address's UTXO snapshot.
 pub fn deposit_matches(
     funding_address: Option<&Address>,
     outputs: &[(OutPoint, TxOut, Address)],
@@ -145,23 +186,20 @@ pub fn deposit_matches(
 
 /// Next funding step after a received-UTXO event arrives while awaiting a
 /// deposit. Advances to [`WalletFundedScreenStep::FundsReceived`] only when the
-/// deposit landed on the shown `funding_address` AND the wallet's cumulative
-/// `spendable_duffs` now covers `minimum_credits`; otherwise the step is left
-/// unchanged. The step guard means a matching deposit seen while another method
-/// is active never forces an advance.
+/// outputs in this event paid enough to the shown `funding_address` to cover
+/// `minimum_credits`; otherwise the step is left unchanged. The per-frame
+/// snapshot reconciler handles totals accumulated across multiple events. The
+/// step guard prevents another funding method from advancing spuriously.
 pub fn deposit_step_after_utxo(
     current_step: WalletFundedScreenStep,
     funding_address: Option<&Address>,
     outputs: &[(OutPoint, TxOut, Address)],
-    spendable_duffs: u64,
     minimum_credits: u64,
 ) -> WalletFundedScreenStep {
     if current_step != WalletFundedScreenStep::WaitingOnFunds {
         return current_step;
     }
-    if deposit_matches(funding_address, outputs) > 0
-        && spendable_covers_minimum(spendable_duffs, minimum_credits)
-    {
+    if spendable_covers_minimum(deposit_matches(funding_address, outputs), minimum_credits) {
         WalletFundedScreenStep::FundsReceived
     } else {
         current_step
@@ -178,18 +216,12 @@ pub fn deposit_event_outcome(
     current_step: WalletFundedScreenStep,
     funding_address: Option<&Address>,
     outputs: &[(OutPoint, TxOut, Address)],
-    spendable_duffs: u64,
     fee_credits: u64,
 ) -> (WalletFundedScreenStep, Option<u64>) {
-    let next_step = deposit_step_after_utxo(
-        current_step,
-        funding_address,
-        outputs,
-        spendable_duffs,
-        fee_credits,
-    );
+    let deposited_duffs = deposit_matches(funding_address, outputs);
+    let next_step = deposit_step_after_utxo(current_step, funding_address, outputs, fee_credits);
     let prefill_credits = (next_step == WalletFundedScreenStep::FundsReceived)
-        .then(|| max_amount_after_fee_reserve(spendable_duffs, fee_credits));
+        .then(|| max_amount_after_fee_reserve(deposited_duffs, fee_credits));
     (next_step, prefill_credits)
 }
 
@@ -633,7 +665,7 @@ mod tests {
         assert_eq!(deposit_matches(None, &outputs), 0);
     }
 
-    /// TC-QRFUND-04: a matching deposit that lifts spendable to the minimum
+    /// TC-QRFUND-04: a matching deposit that covers the minimum
     /// advances the wizard to the amount step.
     #[test]
     fn deposit_step_advances_when_matched_and_minimum_covered() {
@@ -645,7 +677,6 @@ mod tests {
                 WalletFundedScreenStep::WaitingOnFunds,
                 Some(&shown),
                 &outputs,
-                100, // spendable duffs
                 minimum_credits,
             ),
             WalletFundedScreenStep::FundsReceived
@@ -657,14 +688,13 @@ mod tests {
     #[test]
     fn deposit_step_stays_waiting_below_minimum() {
         let shown = addr(1);
-        let outputs = [output(40_000, &shown)];
+        let outputs = [output(40, &shown)];
         let minimum_credits = 100 * CREDITS_PER_DUFF;
         assert_eq!(
             deposit_step_after_utxo(
                 WalletFundedScreenStep::WaitingOnFunds,
                 Some(&shown),
                 &outputs,
-                40, // spendable duffs, below the 100-duff minimum
                 minimum_credits,
             ),
             WalletFundedScreenStep::WaitingOnFunds
@@ -672,7 +702,7 @@ mod tests {
     }
 
     /// TC-QRFUND-06: a deposit to a different address never advances the wizard,
-    /// even when spendable happens to cover the minimum.
+    /// even when unrelated wallet funds happen to cover the minimum.
     #[test]
     fn deposit_step_stays_waiting_for_other_address() {
         let shown = addr(1);
@@ -684,7 +714,6 @@ mod tests {
                 WalletFundedScreenStep::WaitingOnFunds,
                 Some(&shown),
                 &outputs,
-                100,
                 minimum_credits,
             ),
             WalletFundedScreenStep::WaitingOnFunds
@@ -706,7 +735,7 @@ mod tests {
             WalletFundedScreenStep::WaitingForAssetLock,
         ] {
             assert_eq!(
-                deposit_step_after_utxo(step, Some(&shown), &outputs, 100, minimum_credits),
+                deposit_step_after_utxo(step, Some(&shown), &outputs, minimum_credits),
                 step,
                 "guard must not change step {step:?}"
             );
@@ -726,7 +755,6 @@ mod tests {
             WalletFundedScreenStep::WaitingOnFunds,
             Some(&shown),
             &outputs,
-            100_000, // spendable duffs, well above the fee
             fee_credits,
         );
         assert_eq!(next, WalletFundedScreenStep::FundsReceived);
@@ -745,17 +773,51 @@ mod tests {
     #[test]
     fn below_minimum_deposit_yields_no_prefill() {
         let shown = addr(1);
-        let outputs = [output(40_000, &shown)];
+        let outputs = [output(40, &shown)];
         let fee_credits = 100 * CREDITS_PER_DUFF;
         let (next, prefill) = deposit_event_outcome(
             WalletFundedScreenStep::WaitingOnFunds,
             Some(&shown),
             &outputs,
-            40, // below the 100-duff minimum
             fee_credits,
         );
         assert_eq!(next, WalletFundedScreenStep::WaitingOnFunds);
         assert_eq!(prefill, None);
+    }
+
+    #[test]
+    fn unrelated_wallet_balance_does_not_complete_a_partial_deposit() {
+        let shown = addr(1);
+        let outputs = [output(1, &shown)];
+        let minimum_credits = 50_000_000;
+
+        assert_eq!(
+            snapshot_deposit_outcome(WalletFundedScreenStep::WaitingOnFunds, 1, minimum_credits,),
+            (WalletFundedScreenStep::WaitingOnFunds, None),
+        );
+        assert_eq!(
+            deposit_event_outcome(
+                WalletFundedScreenStep::WaitingOnFunds,
+                Some(&shown),
+                &outputs,
+                minimum_credits,
+            ),
+            (WalletFundedScreenStep::WaitingOnFunds, None),
+        );
+    }
+
+    #[test]
+    fn shared_address_request_and_failure_helpers_cover_both_identity_flows() {
+        assert!(!should_queue_funding_address(false, false, true, false));
+        assert!(should_queue_funding_address(false, false, false, false));
+        assert_eq!(
+            step_after_task_failure(WalletFundedScreenStep::WaitingOnFunds),
+            WalletFundedScreenStep::WaitingOnFunds,
+        );
+        assert_eq!(
+            step_after_task_failure(WalletFundedScreenStep::WaitingForAssetLock),
+            WalletFundedScreenStep::ReadyToCreate,
+        );
     }
 
     /// A deposit to a different address never advances, so it never pre-fills.
@@ -769,7 +831,6 @@ mod tests {
             WalletFundedScreenStep::WaitingOnFunds,
             Some(&shown),
             &outputs,
-            100_000,
             fee_credits,
         );
         assert_eq!(next, WalletFundedScreenStep::WaitingOnFunds);

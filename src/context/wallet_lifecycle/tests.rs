@@ -3705,6 +3705,13 @@ async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corru
     assert_eq!(history[0].txid, expected_txid);
     assert_eq!(history[0].timestamp, u64::from(timestamp));
     assert_eq!(history[0].net_amount, 250_000);
+    assert!(matches!(
+        backend.transaction_history_status(&seed_hash),
+        crate::wallet_backend::TransactionHistoryStatus::Partial {
+            skipped_rows: 1,
+            ..
+        }
+    ));
 
     backend.shutdown().await;
 }

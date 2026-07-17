@@ -100,7 +100,7 @@ pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSIO
 pub use loader::LoadedWallets;
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
-pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
+pub use snapshot::{DetUtxo, DetWalletBalance, TransactionHistoryStatus, WalletSnapshot};
 use token_balance::TokenBalanceStore;
 pub use token_balance::UpstreamTokenBalances;
 pub use wallet_meta::WalletMetaView;
@@ -143,7 +143,6 @@ use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::PlatformWalletManager;
 use platform_wallet_storage::secrets::SecretStore;
@@ -151,7 +150,7 @@ use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, WalletTransactionHistoryError};
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
 use crate::model::selected_identity::SelectedIdentity;
@@ -284,8 +283,19 @@ const MAX_PERSISTED_TRANSACTION_SKIP_CONTEXTS: usize = 5;
 
 #[derive(Debug, Default)]
 struct PersistedTransactionHydration {
-    records: Vec<TransactionRecord>,
+    hydrated_rows: usize,
     skipped_rows: usize,
+}
+
+fn record_persisted_transaction_skip(
+    skipped_rows: &mut usize,
+    sampled_contexts: &mut Vec<String>,
+    context: impl FnOnce() -> String,
+) {
+    *skipped_rows = skipped_rows.saturating_add(1);
+    if sampled_contexts.len() < MAX_PERSISTED_TRANSACTION_SKIP_CONTEXTS {
+        sampled_contexts.push(context());
+    }
 }
 
 /// Per-wallet platform-address warm-start seed: `(seed_hash, owned
@@ -1087,9 +1097,25 @@ impl WalletBackend {
     fn hydrate_persisted_transactions_nonfatal(&self, wallet_id: &WalletId) {
         match self.hydrate_persisted_transactions(wallet_id) {
             Ok(outcome) => {
+                let status = if outcome.skipped_rows == 0 {
+                    TransactionHistoryStatus::Complete
+                } else {
+                    let error = Arc::new(TaskError::WalletTransactionHistoryPartial {
+                        source: WalletTransactionHistoryError::RowsSkipped {
+                            skipped_rows: outcome.skipped_rows,
+                        },
+                    });
+                    TransactionHistoryStatus::Partial {
+                        skipped_rows: outcome.skipped_rows,
+                        error,
+                    }
+                };
+                self.inner
+                    .snapshots
+                    .set_transaction_history_status(*wallet_id, status);
                 tracing::debug!(
                     wallet_id = %hex::encode(wallet_id),
-                    hydrated_rows = outcome.records.len(),
+                    hydrated_rows = outcome.hydrated_rows,
                     skipped_rows = outcome.skipped_rows,
                     "Persisted transaction history hydration complete"
                 );
@@ -1099,6 +1125,12 @@ impl WalletBackend {
                     wallet_id = %hex::encode(wallet_id),
                     error = ?error,
                     "Persisted transaction history could not be loaded; continuing wallet registration"
+                );
+                self.inner.snapshots.set_transaction_history_status(
+                    *wallet_id,
+                    TransactionHistoryStatus::Unavailable {
+                        error: Arc::new(error),
+                    },
                 );
             }
         }
@@ -1128,12 +1160,6 @@ impl WalletBackend {
         .map_err(&storage_error)?;
         let mut skipped_rows = 0;
         let mut skipped_contexts = Vec::new();
-        let mut record_skip = |context: String| {
-            skipped_rows += 1;
-            if skipped_contexts.len() < MAX_PERSISTED_TRANSACTION_SKIP_CONTEXTS {
-                skipped_contexts.push(context);
-            }
-        };
         let txid_bytes = {
             // Upstream's public API decodes full records one txid at a time.
             // Enumerate only its keys here, then delegate every record read.
@@ -1153,7 +1179,11 @@ impl WalletBackend {
                 match row {
                     Ok(bytes) => txid_bytes.push(bytes),
                     Err(source) => {
-                        record_skip(format!("row {row_index} read failed: {source:?}"));
+                        record_persisted_transaction_skip(
+                            &mut skipped_rows,
+                            &mut skipped_contexts,
+                            || format!("row {row_index} read failed: {source:?}"),
+                        );
                     }
                 }
             }
@@ -1166,26 +1196,34 @@ impl WalletBackend {
             let txid = match dash_sdk::dpp::dashcore::Txid::from_slice(&bytes) {
                 Ok(txid) => txid,
                 Err(source) => {
-                    record_skip(format!(
-                        "invalid transaction id length {}: {source:?}",
-                        bytes.len()
-                    ));
+                    record_persisted_transaction_skip(
+                        &mut skipped_rows,
+                        &mut skipped_contexts,
+                        || format!("invalid transaction id length {}: {source:?}", bytes.len()),
+                    );
                     continue;
                 }
             };
             match self.inner.persister.get_core_tx_record(*wallet_id, &txid) {
                 Ok(Some(record)) => records.push(record),
                 Ok(None) => {
-                    record_skip(format!("record disappeared for transaction id {txid}"));
+                    record_persisted_transaction_skip(
+                        &mut skipped_rows,
+                        &mut skipped_contexts,
+                        || format!("record disappeared for transaction id {txid}"),
+                    );
                 }
                 Err(source) => {
-                    record_skip(format!(
-                        "record read failed for transaction id {txid}: {source:?}"
-                    ));
+                    record_persisted_transaction_skip(
+                        &mut skipped_rows,
+                        &mut skipped_contexts,
+                        || format!("record read failed for transaction id {txid}: {source:?}"),
+                    );
                 }
             }
         }
 
+        let hydrated_rows = records.len();
         self.inner
             .snapshots
             .hydrate_transactions(wallet_id, records.iter());
@@ -1198,7 +1236,7 @@ impl WalletBackend {
             );
         }
         Ok(PersistedTransactionHydration {
-            records,
+            hydrated_rows,
             skipped_rows,
         })
     }
@@ -2361,6 +2399,18 @@ impl WalletBackend {
             .snapshots
             .snapshot(seed_hash)
             .transactions
+            .clone()
+    }
+
+    /// Startup hydration status for the display-only transaction history.
+    pub fn transaction_history_status(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> TransactionHistoryStatus {
+        self.inner
+            .snapshots
+            .snapshot(seed_hash)
+            .transaction_history_status
             .clone()
     }
 

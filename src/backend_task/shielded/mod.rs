@@ -1,7 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::{Check, FeatureGate};
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::PlatformPathIndex;
 use dash_sdk::dpp::address_funds::{OrchardAddress, PlatformAddress};
@@ -55,6 +55,16 @@ pub enum ShieldedTask {
     },
 }
 
+pub(super) fn shielded_operations_unavailable_error(ctx: &AppContext) -> Option<TaskError> {
+    match FeatureGate::ShieldedOperations.first_unmet_check(ctx) {
+        None => None,
+        Some(Check::Capability(_)) => Some(TaskError::ShieldedOperationsNetworkUnavailable),
+        Some(Check::MinRole(_) | Check::Experimental(_)) => {
+            Some(TaskError::ShieldedOperationsRoleUnavailable)
+        }
+    }
+}
+
 impl AppContext {
     /// Run a shielded-pool task by forwarding to the upstream coordinator
     /// through the [`WalletBackend`](crate::wallet_backend::WalletBackend)
@@ -70,11 +80,12 @@ impl AppContext {
         self: &Arc<Self>,
         task: ShieldedTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        if !FeatureGate::ShieldedOperations.is_available(self) {
+        if let Some(error) = shielded_operations_unavailable_error(self) {
             tracing::warn!(
+                ?error,
                 "Refused a shielded fund movement because shielded operations are unavailable"
             );
-            return Err(TaskError::ShieldedOperationsUnavailable);
+            return Err(error);
         }
 
         let backend = self.wallet_backend()?;
@@ -249,8 +260,38 @@ mod tests {
         let result = ctx.run_backend_task(task, sender).await;
 
         assert!(
-            matches!(&result, Err(TaskError::ShieldedOperationsUnavailable)),
+            matches!(
+                &result,
+                Err(TaskError::ShieldedOperationsNetworkUnavailable)
+            ),
             "a direct backend dispatch must reject unsupported shielded writes before moving funds: {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shielded_handler_reports_role_gate_before_touching_the_backend() {
+        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
+        assert!(ctx.wallet_backend().is_err(), "precondition");
+
+        let result = ctx
+            .run_shielded_task(ShieldedTask::ShieldFromAssetLock {
+                seed_hash: WalletSeedHash::default(),
+                amount_duffs: 1,
+            })
+            .await;
+
+        assert!(
+            matches!(&result, Err(TaskError::ShieldedOperationsRoleUnavailable)),
+            "the handler must explain that the user's role blocks shielded operations: {result:?}"
+        );
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "the role gate must return before the handler touches the wallet backend"
         );
     }
 
@@ -280,7 +321,10 @@ mod tests {
         let result = ctx.run_backend_task(task, sender).await;
 
         assert!(
-            matches!(&result, Err(TaskError::ShieldedOperationsUnavailable)),
+            matches!(
+                &result,
+                Err(TaskError::ShieldedOperationsNetworkUnavailable)
+            ),
             "the pre-check must reject the shielded write: {result:?}"
         );
         assert!(

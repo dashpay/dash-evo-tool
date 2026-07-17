@@ -634,97 +634,105 @@ impl ShieldedTabView {
         // network must be able to settle. Where shielded operations are
         // unavailable, hide the action controls (balance, address, and notes
         // stay visible) rather than offer a dead end the backend would reject.
-        if FeatureGate::ShieldedOperations.is_available(&self.app_context) {
-            // J-3 spend lock: any verifying / failed indicator pauses spends
-            // regardless of the local sync state. Computed once so the
-            // hover-text and the "Spending paused" notice agree.
-            let spend_locked = matches!(
-                indicator,
-                ShieldedIndicator::Verifying | ShieldedIndicator::Failed
-            );
+        match FeatureGate::ShieldedOperations.first_unmet_check(&self.app_context) {
+            None => {
+                // J-3 spend lock: any verifying / failed indicator pauses spends
+                // regardless of the local sync state. Computed once so the
+                // hover-text and the "Spending paused" notice agree.
+                let spend_locked = matches!(
+                    indicator,
+                    ShieldedIndicator::Verifying | ShieldedIndicator::Failed
+                );
 
-            // Action buttons
-            ui.horizontal(|ui| {
-                let shield_btn =
-                    egui::Button::new(RichText::new("Shield").color(Color32::WHITE).size(14.0))
-                        .fill(DashColors::DASH_BLUE);
-                if ui
-                    .add_enabled(!self.syncing && !spend_locked, shield_btn)
-                    .on_hover_text(if spend_locked {
-                        SHIELDED_SPEND_LOCKED_TOOLTIP
-                    } else {
-                        "Shield funds from a platform or core address into the shielded pool"
-                    })
-                    .clicked()
-                {
-                    action |= self.open_send_flow(SendFlow::Shield);
-                }
-
-                let can_spend =
-                    !self.syncing && self.tree_synced && self.shielded_balance > 0 && !spend_locked;
-
-                let send_btn = egui::Button::new(
-                    RichText::new("Send (Private)")
-                        .color(Color32::WHITE)
-                        .size(14.0),
-                )
-                .fill(DashColors::DASH_BLUE);
-                if ui
-                    .add_enabled(can_spend, send_btn)
-                    .on_hover_text(if spend_locked {
-                        SHIELDED_SPEND_LOCKED_TOOLTIP
-                    } else if self.tree_synced {
-                        "Transfer privately within the shielded pool"
-                    } else {
-                        "Sync notes first to enable spending"
-                    })
-                    .clicked()
-                {
-                    action |= self.open_send_flow(SendFlow::ShieldedSend);
-                }
-
-                let unshield_btn =
-                    egui::Button::new(RichText::new("Unshield").color(Color32::WHITE).size(14.0))
-                        .fill(DashColors::DASH_BLUE);
-                if ui
-                    .add_enabled(can_spend, unshield_btn)
-                    .on_hover_text(if spend_locked {
-                        SHIELDED_SPEND_LOCKED_TOOLTIP
-                    } else if self.tree_synced {
-                        "Unshield credits to a platform address"
-                    } else {
-                        "Sync notes first to enable spending"
-                    })
-                    .clicked()
-                {
-                    action |= self.open_send_flow(SendFlow::Unshield);
-                }
-            });
-
-            // J-3 "Spending paused" row — icon + text per TC-A11Y-006 so
-            // colour-blind / greyscale users get the same signal as the
-            // disabled-button affordance.
-            if spend_locked {
-                ui.add_space(2.0);
+                // Action buttons
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(SHIELDED_LOCK_ICON));
-                    ui.label(
-                        RichText::new(SHIELDED_SPEND_LOCKED_LABEL)
-                            .size(12.0)
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
+                    let shield_btn =
+                        egui::Button::new(RichText::new("Shield").color(Color32::WHITE).size(14.0))
+                            .fill(DashColors::DASH_BLUE);
+                    if ui
+                        .add_enabled(!self.syncing && !spend_locked, shield_btn)
+                        .on_hover_text(if spend_locked {
+                            SHIELDED_SPEND_LOCKED_TOOLTIP
+                        } else {
+                            "Shield funds from a platform or core address into the shielded pool"
+                        })
+                        .clicked()
+                    {
+                        action |= self.open_send_flow(SendFlow::Shield);
+                    }
+
+                    let can_spend = !self.syncing
+                        && self.tree_synced
+                        && self.shielded_balance > 0
+                        && !spend_locked;
+
+                    let send_btn = egui::Button::new(
+                        RichText::new("Send (Private)")
+                            .color(Color32::WHITE)
+                            .size(14.0),
+                    )
+                    .fill(DashColors::DASH_BLUE);
+                    if ui
+                        .add_enabled(can_spend, send_btn)
+                        .on_hover_text(if spend_locked {
+                            SHIELDED_SPEND_LOCKED_TOOLTIP
+                        } else if self.tree_synced {
+                            "Transfer privately within the shielded pool"
+                        } else {
+                            "Sync notes first to enable spending"
+                        })
+                        .clicked()
+                    {
+                        action |= self.open_send_flow(SendFlow::ShieldedSend);
+                    }
+
+                    let unshield_btn = egui::Button::new(
+                        RichText::new("Unshield").color(Color32::WHITE).size(14.0),
+                    )
+                    .fill(DashColors::DASH_BLUE);
+                    if ui
+                        .add_enabled(can_spend, unshield_btn)
+                        .on_hover_text(if spend_locked {
+                            SHIELDED_SPEND_LOCKED_TOOLTIP
+                        } else if self.tree_synced {
+                            "Unshield credits to a platform address"
+                        } else {
+                            "Sync notes first to enable spending"
+                        })
+                        .clicked()
+                    {
+                        action |= self.open_send_flow(SendFlow::Unshield);
+                    }
                 });
+
+                // J-3 "Spending paused" row — icon + text per TC-A11Y-006 so
+                // colour-blind / greyscale users get the same signal as the
+                // disabled-button affordance.
+                if spend_locked {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(SHIELDED_LOCK_ICON));
+                        ui.label(
+                            RichText::new(SHIELDED_SPEND_LOCKED_LABEL)
+                                .size(12.0)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    });
+                }
             }
-        } else {
-            let label = match FeatureGate::ShieldedOperations.first_unmet_check(&self.app_context) {
-                Some(Check::Experimental(_)) => SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL,
-                _ => SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL,
-            };
-            ui.label(
-                RichText::new(label)
-                    .size(12.0)
-                    .color(DashColors::text_secondary(dark_mode)),
-            );
+            Some(check) => {
+                let label = match check {
+                    Check::Capability(_) => SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL,
+                    Check::MinRole(_) | Check::Experimental(_) => {
+                        SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL
+                    }
+                };
+                ui.label(
+                    RichText::new(label)
+                        .size(12.0)
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            }
         }
 
         ui.add_space(15.0);

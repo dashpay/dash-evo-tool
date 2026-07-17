@@ -324,11 +324,16 @@ mod tests {
     }
 
     #[test]
-    fn shielded_operations_are_available_at_activation_for_developer() {
-        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
-        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+    fn shielded_operations_are_available_at_activation_for_unlocked_roles() {
+        for role in [UserRole::Power, UserRole::Developer] {
+            let (_tmp, ctx) = ctx_with_role(role);
+            ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
-        assert!(FeatureGate::ShieldedOperations.is_available(&ctx));
+            assert!(
+                FeatureGate::ShieldedOperations.is_available(&ctx),
+                "shielded operations must be available at activation for {role:?}"
+            );
+        }
     }
 
     #[test]

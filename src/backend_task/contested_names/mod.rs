@@ -88,6 +88,13 @@ fn classify_vote_attempt(
     }
 }
 
+fn missing_voter_outcome(
+    timing: VoteTiming,
+) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>, bool) {
+    let (status, failure) = failed_before_broadcast_outcome(timing);
+    (status, failure, matches!(timing, VoteTiming::Scheduled(_)))
+}
+
 fn classify_reconciled_vote(
     observed: Option<ResourceVoteChoice>,
     requested: ResourceVoteChoice,
@@ -486,15 +493,22 @@ impl AppContext {
                 let operation_id = operation.id;
                 async move {
                     let Some(voter) = voter else {
+                        let mut scheduled_voter_missing = false;
                         for target in targets {
                             if app_context.claim_dpns_vote_target(operation_id, &target.key)? {
+                                let (status, failure, retryable) =
+                                    missing_voter_outcome(target.timing);
                                 app_context.update_dpns_vote_target(
                                     operation_id,
                                     &target.key,
-                                    DpnsVoteTargetStatus::FailedBeforeSubmission,
-                                    Some(DpnsVoteFailure::SubmissionFailed),
+                                    status,
+                                    failure,
                                 )?;
+                                scheduled_voter_missing |= retryable;
                             }
+                        }
+                        if scheduled_voter_missing {
+                            return Err(TaskError::IdentityNotFoundLocally);
                         }
                         return Ok::<(), TaskError>(());
                     };
@@ -1035,6 +1049,18 @@ mod tests {
             (
                 DpnsVoteTargetStatus::FailedBeforeSubmission,
                 Some(DpnsVoteFailure::SubmissionFailed),
+            )
+        );
+    }
+
+    #[test]
+    fn scheduled_missing_voter_remains_retryable() {
+        assert_eq!(
+            missing_voter_outcome(VoteTiming::Scheduled(42)),
+            (
+                DpnsVoteTargetStatus::Scheduled,
+                Some(DpnsVoteFailure::SubmissionFailed),
+                true,
             )
         );
     }

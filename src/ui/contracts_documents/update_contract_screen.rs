@@ -79,9 +79,15 @@ impl UpdateDataContractScreen {
 
         // Only user-added contracts are editable; built-in system contracts
         // are skipped at the source instead of being materialized and then
-        // filtered out.
+        // filtered out. Keep degraded construction on failure, but surface a
+        // user-facing banner with technical details (MessageBanner logs).
         let known_contracts = app_context.get_user_contracts().unwrap_or_else(|e| {
-            tracing::error!("Failed to load user contracts: {e}");
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "Unable to load your contracts. Please try again.",
+                MessageType::Error,
+            )
+            .with_details(e);
             Vec::new()
         });
 

@@ -192,7 +192,7 @@ impl<A: TokenAction> TokenActionScreen<A> {
         let selected_wallet =
             get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
                 .unwrap_or_else(|e| {
-                    super::set_error_banner(app_context, &e);
+                    super::set_error_banner(app_context, &e.to_string());
                     None
                 });
 

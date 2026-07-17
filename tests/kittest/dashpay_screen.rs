@@ -13,6 +13,7 @@ use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::ui::ScreenLike;
+use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::dashpay::add_contact_screen::AddContactScreen;
 use dash_evo_tool::ui::dashpay::contact_requests::ContactRequests;
 use dash_evo_tool::ui::dashpay::contacts_list::ContactsList;
@@ -27,7 +28,10 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// On the Contacts subscreen, a `MissingEncryptionKey` error must route to
@@ -166,6 +170,34 @@ fn contact_requests_defaults_to_app_scoped_identity() {
     });
 }
 
+/// `ContactRequests::new()` must suppress only the typed startup
+/// `MissingDocumentSigningKey` selection banner for wallet-less identities.
+#[test]
+fn contact_requests_startup_suppresses_missing_document_signing_key_banner() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let (_h, ctx) = build_ctx();
+
+        let selected = seed_dp_identity(&ctx, 0xD5, "CR Startup Missing Key");
+        ctx.set_selected_identity(Some(selected));
+        MessageBanner::clear_all_global(ctx.egui_ctx());
+
+        let screen = ContactRequests::new(ctx.clone());
+
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(selected),
+            "ContactRequests must still select the app-scoped identity at startup"
+        );
+        assert!(
+            !MessageBanner::has_global(ctx.egui_ctx()),
+            "ContactRequests startup must suppress the typed missing-document-signing-key banner"
+        );
+    });
+}
+
 /// `PaymentHistory::new()` must default to the app-scoped identity.
 #[test]
 fn payment_history_defaults_to_app_scoped_identity() {
@@ -214,6 +246,85 @@ fn profile_screen_defaults_to_app_scoped_identity() {
     });
 }
 
+/// `ProfileScreen::new()` must suppress only the typed startup
+/// `MissingDocumentSigningKey` selection banner for wallet-less identities.
+#[test]
+fn profile_screen_startup_suppresses_missing_document_signing_key_banner() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let (_h, ctx) = build_ctx();
+
+        let selected = seed_dp_identity(&ctx, 0x23, "PS Startup Missing Key");
+        ctx.set_selected_identity(Some(selected));
+        MessageBanner::clear_all_global(ctx.egui_ctx());
+
+        let screen = ProfileScreen::new(ctx.clone());
+
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(selected),
+            "ProfileScreen must still select the app-scoped identity at startup"
+        );
+        assert!(
+            !MessageBanner::has_global(ctx.egui_ctx()),
+            "ProfileScreen startup must suppress the typed missing-document-signing-key banner"
+        );
+    });
+}
+
+/// Explicit/user-initiated profile identity selection must still surface the
+/// typed `MissingDocumentSigningKey` error through `ResultBannerExt`.
+#[test]
+fn profile_screen_user_selection_surfaces_missing_document_signing_key_banner() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let (_h, ctx) = build_ctx();
+
+        let alpha = seed_dp_identity(&ctx, 0x24, "PS Explicit Alpha");
+        let beta = seed_dp_identity(&ctx, 0x25, "PS Explicit Beta");
+        ctx.set_selected_identity(Some(alpha));
+        MessageBanner::clear_all_global(ctx.egui_ctx());
+
+        let screen = Rc::new(RefCell::new(ProfileScreen::new(ctx.clone())));
+        assert!(
+            !MessageBanner::has_global(ctx.egui_ctx()),
+            "startup construction should not leave a banner before user selection"
+        );
+
+        let screen_for_ui = Rc::clone(&screen);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 140.0))
+            .build_ui(move |ui| {
+                let _ = screen_for_ui.borrow_mut().render(ui);
+            });
+
+        harness.step();
+        assert!(
+            !MessageBanner::has_global(ctx.egui_ctx()),
+            "initial render should not publish the startup-suppressed error"
+        );
+
+        harness.get_by_value("PS Explicit Alpha").click();
+        harness.run_steps(2);
+        harness.get_by_label("PS Explicit Beta").click();
+        harness.run_steps(2);
+
+        assert_eq!(
+            ctx.selected_identity_id(),
+            Some(beta),
+            "the picker interaction must be a real user-initiated selection"
+        );
+        assert!(
+            MessageBanner::has_global(ctx.egui_ctx()),
+            "explicit identity selection must publish MissingDocumentSigningKey"
+        );
+    });
+}
+
 /// `QRCodeGeneratorScreen::new()` must default to the app-scoped identity.
 #[test]
 fn qr_generator_defaults_to_app_scoped_identity() {
@@ -234,6 +345,34 @@ fn qr_generator_defaults_to_app_scoped_identity() {
             screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
             Some(second),
             "QRCodeGeneratorScreen must default to the app-scoped selected identity"
+        );
+    });
+}
+
+/// `QRCodeGeneratorScreen::new()` must suppress only the typed startup
+/// `MissingDocumentSigningKey` selection banner for wallet-less identities.
+#[test]
+fn qr_generator_startup_suppresses_missing_document_signing_key_banner() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let (_h, ctx) = build_ctx();
+
+        let selected = seed_dp_identity(&ctx, 0x45, "QRG Startup Missing Key");
+        ctx.set_selected_identity(Some(selected));
+        MessageBanner::clear_all_global(ctx.egui_ctx());
+
+        let screen = QRCodeGeneratorScreen::new(ctx.clone());
+
+        assert_eq!(
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
+            Some(selected),
+            "QRCodeGeneratorScreen must still select the app-scoped identity at startup"
+        );
+        assert!(
+            !MessageBanner::has_global(ctx.egui_ctx()),
+            "QRCodeGeneratorScreen startup must suppress the typed missing-document-signing-key banner"
         );
     });
 }

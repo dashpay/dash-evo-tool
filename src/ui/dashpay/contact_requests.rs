@@ -15,7 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
-use crate::ui::identities::{get_selected_wallet, is_missing_document_signing_key_error};
+use crate::ui::identities::{auto_selected_wallet_or_banner, get_selected_wallet};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -115,19 +115,10 @@ impl ContactRequests {
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
-            // Get wallet for the selected identity. Suppress the expected
-            // "missing document-signing key" error on auto-select (some
-            // identities, e.g. evonodes, legitimately lack one); surface
-            // anything else so we don't silently hide real failures.
-            new_self.selected_wallet =
-                match get_selected_wallet(&preferred, Some(&app_context), None) {
-                    Ok(wallet) => wallet,
-                    Err(e) if is_missing_document_signing_key_error(&e) => None,
-                    Err(e) => {
-                        MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                        None
-                    }
-                };
+            new_self.selected_wallet = auto_selected_wallet_or_banner(
+                app_context.egui_ctx(),
+                get_selected_wallet(&preferred, Some(&app_context), None),
+            );
         }
 
         new_self

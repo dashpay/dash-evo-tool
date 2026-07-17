@@ -1,12 +1,19 @@
+use std::error::Error as StdError;
+use std::fmt;
 use std::sync::{Arc, RwLock};
 
 use dash_sdk::{
-    dpp::data_contract::accessors::v0::DataContractV0Getters, platform::IdentityPublicKey,
+    dpp::{
+        data_contract::accessors::v0::DataContractV0Getters,
+        data_contract::errors::DataContractError,
+    },
+    platform::IdentityPublicKey,
 };
 
 use crate::{
     context::AppContext,
     model::{qualified_identity::QualifiedIdentity, wallet::Wallet},
+    ui::{MessageType, components::MessageBanner},
 };
 
 pub mod add_existing_identity_screen;
@@ -19,18 +26,79 @@ pub mod top_up_identity_screen;
 pub mod transfer_screen;
 pub mod withdraw_screen;
 
-/// Substring used to identify the "missing document-signing key" error returned
-/// by [`get_selected_wallet`] when an identity has no key suitable for signing
-/// document state transitions. Callsites that auto-select an identity (e.g.
-/// DashPay startup) use this to suppress the expected case while still
-/// surfacing unrelated errors.
-const MISSING_DOCUMENT_SIGNING_KEY_MARKER: &str =
-    "doesn't have an authentication key for signing document transitions";
+#[derive(Debug)]
+pub enum SelectedWalletError {
+    DpnsPreorderDocumentTypeNotFound {
+        source: DataContractError,
+    },
+    MissingDocumentSigningKey {
+        identity_label: Option<String>,
+        identity_id: String,
+    },
+    NoKeyProvided,
+}
 
-/// Returns `true` if the given error string is the expected
-/// "identity has no document-signing key" error from [`get_selected_wallet`].
-pub fn is_missing_document_signing_key_error(error: &str) -> bool {
-    error.contains(MISSING_DOCUMENT_SIGNING_KEY_MARKER)
+impl fmt::Display for SelectedWalletError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DpnsPreorderDocumentTypeNotFound { .. } => {
+                write!(f, "DPNS preorder document type not found")
+            }
+            Self::MissingDocumentSigningKey {
+                identity_label,
+                identity_id,
+            } => {
+                if let Some(identity_label) = identity_label {
+                    write!(
+                        f,
+                        "Identity {identity_label} ({identity_id}) cannot sign DashPay actions \
+                         because it has no signing key. Add a signing key with high or critical \
+                         security level to this identity, or choose a different identity."
+                    )
+                } else {
+                    write!(
+                        f,
+                        "Identity {identity_id} cannot sign DashPay actions because it has no \
+                         signing key. Add a signing key with high or critical security level to \
+                         this identity, or choose a different identity."
+                    )
+                }
+            }
+            Self::NoKeyProvided => write!(f, "No key provided when getting selected wallet"),
+        }
+    }
+}
+
+impl StdError for SelectedWalletError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::DpnsPreorderDocumentTypeNotFound { source } => Some(source),
+            Self::MissingDocumentSigningKey { .. } | Self::NoKeyProvided => None,
+        }
+    }
+}
+
+/// Returns `true` if the given error is the expected "identity has no
+/// document-signing key" error from [`get_selected_wallet`].
+pub fn is_missing_document_signing_key_error(error: &SelectedWalletError) -> bool {
+    matches!(error, SelectedWalletError::MissingDocumentSigningKey { .. })
+}
+
+/// Applies the auto-selection policy for screen construction:
+/// suppress the expected missing-document-signing-key error for
+/// auto-selected identities, but surface every other failure.
+pub fn auto_selected_wallet_or_banner(
+    ctx: &egui::Context,
+    result: Result<Option<Arc<RwLock<Wallet>>>, SelectedWalletError>,
+) -> Option<Arc<RwLock<Wallet>>> {
+    match result {
+        Ok(wallet) => wallet,
+        Err(error) if is_missing_document_signing_key_error(&error) => None,
+        Err(error) => {
+            MessageBanner::set_global(ctx, &error, MessageType::Error);
+            None
+        }
+    }
 }
 
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
@@ -57,8 +125,8 @@ pub fn is_missing_document_signing_key_error(error: &str) -> bool {
 /// # Returns
 ///
 /// Returns `Ok(Some(Arc<RwLock<Wallet>>))` if a matching wallet is found,
-/// `Ok(None)` if no wallet is associated with the key, or `Err(String)` if
-/// an error is encountered.
+/// `Ok(None)` if no wallet is associated with the key, or
+/// `Err(SelectedWalletError)` if an error is encountered.
 ///
 /// # Errors
 ///
@@ -69,7 +137,7 @@ pub fn get_selected_wallet(
     qualified_identity: &QualifiedIdentity,
     app_context: Option<&AppContext>,
     selected_key: Option<&IdentityPublicKey>,
-) -> Result<Option<Arc<RwLock<Wallet>>>, String> {
+) -> Result<Option<Arc<RwLock<Wallet>>>, SelectedWalletError> {
     // If `app_context` is provided, use the DPNS-based approach.
     let public_key = if let Some(context) = app_context {
         let dpns_contract = &context.dpns_contract;
@@ -77,7 +145,7 @@ pub fn get_selected_wallet(
         // Attempt to fetch the `preorder` document type from the DPNS contract.
         let preorder_document_type = dpns_contract
             .document_type_for_name("preorder")
-            .map_err(|e| format!("DPNS preorder document type not found: {}", e))?;
+            .map_err(|source| SelectedWalletError::DpnsPreorderDocumentTypeNotFound { source })?;
 
         // Attempt to retrieve the public key from the identity.
         qualified_identity
@@ -85,26 +153,20 @@ pub fn get_selected_wallet(
             .ok_or_else(|| {
                 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-                let identity_label = qualified_identity
-                    .alias
-                    .as_deref()
-                    .or_else(|| {
-                        qualified_identity
-                            .dpns_names
-                            .first()
-                            .map(|n| n.name.as_str())
-                    })
-                    .unwrap_or("");
-                format!(
-                    "Identity {} ({}) {}",
-                    identity_label,
-                    qualified_identity.identity.id().to_string(Encoding::Base58),
-                    MISSING_DOCUMENT_SIGNING_KEY_MARKER,
-                )
+                let identity_label = qualified_identity.alias.as_deref().or_else(|| {
+                    qualified_identity
+                        .dpns_names
+                        .first()
+                        .map(|n| n.name.as_str())
+                });
+                SelectedWalletError::MissingDocumentSigningKey {
+                    identity_label: identity_label.map(str::to_owned),
+                    identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),
+                }
             })?
     } else {
         // Fallback: directly use the provided selected key.
-        selected_key.ok_or_else(|| "No key provided when getting selected wallet".to_string())?
+        selected_key.ok_or(SelectedWalletError::NoKeyProvided)?
     };
 
     // Once we have the public key (either from DPNS or directly), ask which
@@ -214,6 +276,64 @@ mod tests {
         assert!(
             selected.is_some(),
             "the wallet deriving this key must be found whichever placement names it"
+        );
+    }
+
+    fn missing_document_signing_key_error(identity_label: Option<&str>) -> SelectedWalletError {
+        SelectedWalletError::MissingDocumentSigningKey {
+            identity_label: identity_label.map(str::to_owned),
+            identity_id: "TestIdentityId".to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_document_signing_key_display_includes_label_when_present() {
+        let error = missing_document_signing_key_error(Some("Test Identity"));
+
+        assert_eq!(
+            error.to_string(),
+            "Identity Test Identity (TestIdentityId) cannot sign DashPay actions because it has \
+             no signing key. Add a signing key with high or critical security level to this \
+             identity, or choose a different identity."
+        );
+    }
+
+    #[test]
+    fn missing_document_signing_key_display_uses_identity_id_without_label() {
+        let error = missing_document_signing_key_error(None);
+
+        assert_eq!(
+            error.to_string(),
+            "Identity TestIdentityId cannot sign DashPay actions because it has no signing key. \
+             Add a signing key with high or critical security level to this identity, or choose \
+             a different identity."
+        );
+    }
+
+    #[test]
+    fn auto_selection_policy_suppresses_missing_document_signing_key() {
+        let ctx = egui::Context::default();
+
+        let wallet =
+            auto_selected_wallet_or_banner(&ctx, Err(missing_document_signing_key_error(None)));
+
+        assert!(wallet.is_none());
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "automatic selection must suppress the typed missing-document-signing-key banner"
+        );
+    }
+
+    #[test]
+    fn auto_selection_policy_surfaces_unrelated_selected_wallet_error() {
+        let ctx = egui::Context::default();
+
+        let wallet = auto_selected_wallet_or_banner(&ctx, Err(SelectedWalletError::NoKeyProvided));
+
+        assert!(wallet.is_none());
+        assert!(
+            MessageBanner::has_global(&ctx),
+            "automatic selection must only suppress MissingDocumentSigningKey"
         );
     }
 }

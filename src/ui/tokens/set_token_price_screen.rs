@@ -264,7 +264,7 @@ impl SetTokenPriceScreen {
         let selected_wallet =
             get_selected_wallet(&identity_token_info.identity, None, possible_key).unwrap_or_else(
                 |e| {
-                    set_error_banner(&e);
+                    set_error_banner(&e.to_string());
                     None
                 },
             );

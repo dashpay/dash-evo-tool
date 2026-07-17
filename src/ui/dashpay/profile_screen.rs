@@ -17,7 +17,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identities::{auto_selected_wallet_or_banner, get_selected_wallet};
 use crate::ui::state::AvatarCache;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -134,9 +134,10 @@ impl ProfileScreen {
                 new_self.selected_identity_string
             );
 
-            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+            new_self.selected_wallet = auto_selected_wallet_or_banner(
+                app_context.egui_ctx(),
+                get_selected_wallet(&preferred, Some(&app_context), None),
+            );
         }
 
         new_self

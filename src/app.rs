@@ -110,6 +110,76 @@ fn show_legacy_settings_import_warning(
     handle.with_details(error);
 }
 
+fn legacy_settings_import_requires_network_selection(
+    error: &crate::backend_task::migration::legacy_settings::SettingsImportError,
+) -> bool {
+    matches!(
+        error,
+        crate::backend_task::migration::legacy_settings::SettingsImportError::LegacyRead { .. }
+            | crate::backend_task::migration::legacy_settings::SettingsImportError::Write { .. }
+    )
+}
+
+fn initial_root_screen(
+    persisted: RootScreenType,
+    persisted_is_registered: bool,
+    network_selection_required: bool,
+) -> RootScreenType {
+    if network_selection_required {
+        RootScreenType::RootScreenNetworkChooser
+    } else if persisted_is_registered {
+        persisted
+    } else {
+        FALLBACK_ROOT_SCREEN
+    }
+}
+
+fn show_welcome_screen(onboarding_completed: bool, network_selection_required: bool) -> bool {
+    !onboarding_completed && !network_selection_required
+}
+
+fn network_selection_allows_root(
+    network_selection_required: bool,
+    root_screen: RootScreenType,
+) -> bool {
+    !network_selection_required || root_screen == RootScreenType::RootScreenNetworkChooser
+}
+
+fn network_selection_allows_action(network_selection_required: bool, action: &AppAction) -> bool {
+    !network_selection_required || matches!(action, AppAction::None | AppAction::SwitchNetwork(_))
+}
+
+#[cfg(any(test, feature = "mcp"))]
+fn network_selection_allows_mcp_start(network_selection_required: bool) -> bool {
+    !network_selection_required
+}
+
+fn boot_auto_start_spv(
+    onboarding_completed: bool,
+    auto_start_spv: bool,
+    network_selection_required: bool,
+) -> bool {
+    onboarding_completed && auto_start_spv && !network_selection_required
+}
+
+fn clear_scheduled_vote_sweep_guard_on_error(
+    in_progress: &mut BTreeSet<Network>,
+    context: &BackendTaskContext,
+    error: &TaskError,
+) {
+    let network = match (context, error) {
+        (_, TaskError::ScheduledVoteSweepFailed { network, .. }) => Some(*network),
+        (
+            BackendTaskContext::ScheduledVoteSweep { network },
+            TaskError::BackendTaskFailed { .. },
+        ) => Some(*network),
+        _ => None,
+    };
+    if let Some(network) = network {
+        in_progress.remove(&network);
+    }
+}
+
 fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -262,6 +332,44 @@ mod backend_task_join_tests {
         assert!(
             !format!("{error:?}").contains("backend task panic"),
             "panic payload must be redacted from diagnostics"
+        );
+    }
+
+    #[tokio::test]
+    async fn panicking_scheduled_vote_sweep_clears_in_progress_guard() {
+        let network = Network::Testnet;
+        let unrelated_network = Network::Regtest;
+        let mut in_progress = BTreeSet::from([network, unrelated_network]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = SenderAsync::new(tx, egui::Context::default());
+        let join_handle = tokio::task::spawn_blocking(|| panic!("scheduled sweep panic"));
+
+        forward_backend_task_join_error(
+            join_handle,
+            sender,
+            None,
+            BackendTaskContext::ScheduledVoteSweep { network },
+        )
+        .await;
+
+        let TaskResult::Error { context, error } = rx
+            .recv()
+            .await
+            .expect("join failure result must be forwarded")
+        else {
+            panic!("expected a scheduled-vote sweep error");
+        };
+        assert!(matches!(error, TaskError::BackendTaskFailed { .. }));
+
+        clear_scheduled_vote_sweep_guard_on_error(&mut in_progress, &context, &error);
+
+        assert!(
+            !in_progress.contains(&network),
+            "a terminal panic must allow the next scheduled-vote sweep"
+        );
+        assert!(
+            in_progress.contains(&unrelated_network),
+            "a terminal panic must not release another network's sweep guard"
         );
     }
 
@@ -655,6 +763,8 @@ pub struct AppState {
     network_switch_pending: Option<Network>,
     /// Progress banner displayed while a network switch is in progress.
     network_switch_banner: Option<BannerHandle>,
+    /// Whether boot must remain on the network chooser until the user confirms a network.
+    network_selection_required: bool,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
@@ -693,6 +803,9 @@ pub struct AppState {
     /// Shared MCP context -- follows network switches via `ArcSwap`.
     #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
+    /// MCP configuration held until a required boot-time network selection succeeds.
+    #[cfg(feature = "mcp")]
+    mcp_server_pending_config: Option<crate::mcp::McpConfig>,
     /// The egui secret prompt host, kept so newly-created (on-demand) network
     /// contexts can have it installed before their backend is wired.
     secret_prompt_host: Arc<dyn crate::wallet_backend::SecretPrompt>,
@@ -963,20 +1076,26 @@ impl AppState {
         // out of legacy `data.db` before they are read below. This has to run
         // here, ahead of the read: the active network is chosen from the blob
         // a few lines down, and booting a testnet user onto mainnet is a
-        // safety hazard. A failure is not fatal — the boot continues on
-        // defaults and the (unwritten) sentinel makes the next launch retry.
-        match crate::backend_task::migration::legacy_settings::import_legacy_settings(&app_kv, &db)
-        {
-            Ok(outcome) => tracing::debug!(?outcome, "Legacy settings import"),
-            Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    "Could not import preferences from the previous version — using defaults; \
-                     the next launch retries",
-                );
-                show_legacy_settings_import_warning(&ctx, &e);
-            }
-        }
+        // safety hazard. Read/write failures force explicit network selection;
+        // the (unwritten) sentinel makes the next launch retry.
+        let network_selection_required =
+            match crate::backend_task::migration::legacy_settings::import_legacy_settings(
+                &app_kv, &db,
+            ) {
+                Ok(outcome) => {
+                    tracing::debug!(?outcome, "Legacy settings import");
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = ?e,
+                        "Could not import preferences from the previous version — using defaults; \
+                         the next launch retries",
+                    );
+                    show_legacy_settings_import_warning(&ctx, &e);
+                    legacy_settings_import_requires_network_selection(&e)
+                }
+            };
 
         let settings = match app_kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY) {
             Ok(Some(s)) => s,
@@ -1157,7 +1276,11 @@ impl AppState {
         // task that wires the backend goes on to start SPV. Folding the start
         // into the spawned init closes the boot race where a synchronous
         // `start_spv()` fired before the fire-and-forget wiring could finish.
-        let boot_auto_start_spv = onboarding_completed && settings.auto_start_spv;
+        let boot_auto_start_spv = boot_auto_start_spv(
+            onboarding_completed,
+            settings.auto_start_spv,
+            network_selection_required,
+        );
         for (&net, app_ctx) in network_contexts.iter() {
             let auto_start = boot_auto_start_spv && net == chosen_network;
             Self::spawn_backend_init(
@@ -1171,28 +1294,26 @@ impl AppState {
 
         // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
         #[cfg(feature = "mcp")]
-        let mcp_app_context = {
+        let (mcp_app_context, mcp_server_pending_config) = {
             if let Some(mcp_config) = crate::mcp::McpConfig::from_env() {
                 let initial_ctx = active_context.clone();
                 let mcp_ctx = Arc::new(arc_swap::ArcSwap::new(initial_ctx));
-                let ctx_for_server = mcp_ctx.clone();
-                let cancel = subtasks.cancellation_token.clone();
-                subtasks.spawn_sync("mcp-server", async move {
-                    if let Err(e) =
-                        crate::mcp::start_http_server(ctx_for_server, mcp_config, cancel).await
-                    {
-                        tracing::error!("MCP server failed: {e}");
-                    }
-                });
-                tracing::debug!("MCP server enabled");
-                Some(mcp_ctx)
+                let pending_config =
+                    if network_selection_allows_mcp_start(network_selection_required) {
+                        Self::spawn_mcp_server(&subtasks, mcp_ctx.clone(), mcp_config);
+                        None
+                    } else {
+                        tracing::debug!("MCP server deferred until network selection");
+                        Some(mcp_config)
+                    };
+                (Some(mcp_ctx), pending_config)
             } else {
                 let reason = match std::env::var("MCP_API_KEY") {
                     Ok(ref k) if !k.is_empty() => "MCP_API_KEY is set but invalid (too short)",
                     _ => "MCP_API_KEY not set",
                 };
                 tracing::debug!("MCP server disabled ({reason})");
-                None
+                (None, None)
             }
         };
 
@@ -1314,11 +1435,11 @@ impl AppState {
         // Resolve the effective selected root screen. If the persisted value is
         // no longer registered, fall back to `FALLBACK_ROOT_SCREEN` so
         // `active_root_screen_mut()` does not panic on first frame.
-        let selected_main_screen = if main_screens.contains_key(&persisted_main_screen) {
-            persisted_main_screen
-        } else {
-            FALLBACK_ROOT_SCREEN
-        };
+        let selected_main_screen = initial_root_screen(
+            persisted_main_screen,
+            main_screens.contains_key(&persisted_main_screen),
+            network_selection_required,
+        );
 
         let mut app_state = Self {
             main_screens,
@@ -1329,6 +1450,7 @@ impl AppState {
             network_contexts,
             network_switch_pending: None,
             network_switch_banner: None,
+            network_selection_required,
             task_result_sender,
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
@@ -1338,7 +1460,10 @@ impl AppState {
             scheduled_vote_recovery_last_attempt: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
-            show_welcome_screen: !onboarding_completed,
+            show_welcome_screen: show_welcome_screen(
+                onboarding_completed,
+                network_selection_required,
+            ),
             welcome_screen: None,
             connection_banner: ConnectionBanner::new(),
             // Arm the block for the boot SPV sync when it auto-starts (F-SPV-A:
@@ -1350,6 +1475,8 @@ impl AppState {
             accessibility: AccessibilityActivator::new(accessibility_enforced),
             #[cfg(feature = "mcp")]
             mcp_app_context,
+            #[cfg(feature = "mcp")]
+            mcp_server_pending_config,
             secret_prompt_host,
             secret_prompt_receiver,
             active_secret_prompt: None,
@@ -1447,6 +1574,21 @@ impl AppState {
                 reason.on_wire_error(&e);
             }
         });
+    }
+
+    #[cfg(feature = "mcp")]
+    fn spawn_mcp_server(
+        subtasks: &Arc<TaskManager>,
+        app_context: Arc<arc_swap::ArcSwap<AppContext>>,
+        config: crate::mcp::McpConfig,
+    ) {
+        let cancel = subtasks.cancellation_token.clone();
+        subtasks.spawn_sync("mcp-server", async move {
+            if let Err(error) = crate::mcp::start_http_server(app_context, config, cancel).await {
+                tracing::error!(%error, "MCP server failed");
+            }
+        });
+        tracing::debug!("MCP server enabled");
     }
 
     // Handle the backend task and send the result through the channel.
@@ -1605,6 +1747,7 @@ impl AppState {
         }
 
         self.chosen_network = network;
+        self.network_selection_required = false;
 
         let app_context = self.current_app_context().clone();
 
@@ -1631,6 +1774,13 @@ impl AppState {
         if let Some(ref mcp_ctx) = self.mcp_app_context {
             mcp_ctx.store(app_context.clone());
             tracing::debug!("MCP context switched to {:?}", network);
+        }
+        #[cfg(feature = "mcp")]
+        if let (Some(mcp_ctx), Some(config)) = (
+            self.mcp_app_context.clone(),
+            self.mcp_server_pending_config.take(),
+        ) {
+            Self::spawn_mcp_server(&self.subtasks, mcp_ctx, config);
         }
 
         // Deliberately clear stale banners from the previous network context.
@@ -1797,6 +1947,9 @@ impl AppState {
     }
 
     fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
+        if !network_selection_allows_root(self.network_selection_required, root_screen_type) {
+            return;
+        }
         self.select_main_screen(root_screen_type);
         self.active_root_screen_mut().refresh_on_arrival();
         self.current_app_context()
@@ -2107,6 +2260,13 @@ impl App for AppState {
                 } => {
                     self.network_switch_pending = None;
                     self.network_switch_banner.take_and_clear();
+                    let current_context = self.current_app_context().clone();
+                    if let Some(screen) = self
+                        .main_screens
+                        .get_mut(&RootScreenType::RootScreenNetworkChooser)
+                    {
+                        screen.change_context(current_context);
+                    }
                     MessageBanner::set_global(ctx, err.to_string(), MessageType::Error)
                         .disable_auto_dismiss();
                 }
@@ -2123,9 +2283,13 @@ impl App for AppState {
                 }
                 TaskResult::Error {
                     context,
-                    error: err @ TaskError::ScheduledVoteSweepFailed { network, .. },
+                    error: err @ TaskError::ScheduledVoteSweepFailed { .. },
                 } => {
-                    self.scheduled_vote_sweeps_in_progress.remove(&network);
+                    clear_scheduled_vote_sweep_guard_on_error(
+                        &mut self.scheduled_vote_sweeps_in_progress,
+                        &context,
+                        &err,
+                    );
                     self.visible_screen_mut()
                         .display_backend_task_error(&context, &err);
                     let handled = self.visible_screen_mut().display_task_error(&err);
@@ -2142,6 +2306,11 @@ impl App for AppState {
                     context,
                     error: err,
                 } => {
+                    clear_scheduled_vote_sweep_guard_on_error(
+                        &mut self.scheduled_vote_sweeps_in_progress,
+                        &context,
+                        &err,
+                    );
                     self.route_contact_request_error_to_hidden_hub(&err);
                     let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
                     let suppress_stale_error = !is_database_clear
@@ -2208,7 +2377,9 @@ impl App for AppState {
             self.scheduled_vote_sweep_deferred_since_ms
                 .entry(network)
                 .or_insert_with(unix_time_ms);
-        } else if !self.scheduled_vote_sweeps_in_progress.contains(&network) {
+        } else if !self.network_selection_required
+            && !self.scheduled_vote_sweeps_in_progress.contains(&network)
+        {
             let preserve_eligibility_since_ms = self
                 .scheduled_vote_sweep_deferred_since_ms
                 .get(&network)
@@ -2227,11 +2398,14 @@ impl App for AppState {
                         .insert(network, now);
                 }
                 self.scheduled_vote_sweeps_in_progress.insert(network);
-                self.handle_backend_task(BackendTask::ContestedResourceTask(
-                    ContestedResourceTask::CastDueScheduledVotes {
-                        preserve_eligibility_since_ms,
-                    },
-                ));
+                self.handle_backend_task_with_context(
+                    BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::CastDueScheduledVotes {
+                            preserve_eligibility_since_ms,
+                        },
+                    ),
+                    BackendTaskContext::ScheduledVoteSweep { network },
+                );
             }
         }
 
@@ -2305,7 +2479,9 @@ impl App for AppState {
         {
             self.handle_backend_task(task);
         }
-        if let Some(task) = self.migration.dispatch_cold_start(&active_context) {
+        if !self.network_selection_required
+            && let Some(task) = self.migration.dispatch_cold_start(&active_context)
+        {
             self.handle_backend_task(task);
         }
         self.migration
@@ -2317,6 +2493,9 @@ impl App for AppState {
         self.drain_overlay_actions(ctx);
 
         for action in actions {
+            if !network_selection_allows_action(self.network_selection_required, &action) {
+                continue;
+            }
             match action {
                 AppAction::None => {}
                 AppAction::AddScreen(screen) => self.screen_stack.push(screen),
@@ -2520,6 +2699,63 @@ mod migration_banner_tests {
 
         assert!(MessageBanner::has_global(&ctx));
         MessageBanner::clear_global_message(&ctx, LEGACY_SETTINGS_IMPORT_WARNING);
+    }
+
+    #[test]
+    fn legacy_settings_io_failure_requires_explicit_network_selection() {
+        use crate::backend_task::migration::legacy_settings::SettingsImportError;
+        use crate::wallet_backend::KvAdapterError;
+
+        let read_error = SettingsImportError::LegacyRead {
+            source: rusqlite::Error::InvalidQuery,
+        };
+        let write_error = SettingsImportError::Write {
+            source: KvAdapterError::Truncated,
+        };
+
+        for error in [&read_error, &write_error] {
+            let selection_required = legacy_settings_import_requires_network_selection(error);
+            assert!(selection_required);
+            assert_eq!(
+                initial_root_screen(
+                    RootScreenType::RootScreenWalletsBalances,
+                    true,
+                    selection_required,
+                ),
+                RootScreenType::RootScreenNetworkChooser,
+            );
+            assert!(!show_welcome_screen(false, selection_required));
+            assert!(!boot_auto_start_spv(true, true, selection_required));
+            assert!(!network_selection_allows_root(
+                selection_required,
+                RootScreenType::RootScreenWalletsBalances,
+            ));
+            assert!(network_selection_allows_root(
+                selection_required,
+                RootScreenType::RootScreenNetworkChooser,
+            ));
+            assert!(!network_selection_allows_action(
+                selection_required,
+                &AppAction::StartSpv,
+            ));
+            assert!(!network_selection_allows_action(
+                selection_required,
+                &AppAction::BackendTask(BackendTask::None),
+            ));
+            assert!(network_selection_allows_action(
+                selection_required,
+                &AppAction::SwitchNetwork(Network::Mainnet),
+            ));
+            assert!(!network_selection_allows_mcp_start(selection_required));
+        }
+
+        let version_error = SettingsImportError::LegacyDataTooOld {
+            found: 1,
+            minimum_supported: 11,
+        };
+        assert!(!legacy_settings_import_requires_network_selection(
+            &version_error
+        ));
     }
 
     #[test]

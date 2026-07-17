@@ -2985,10 +2985,17 @@ impl WalletSendScreen {
             .as_ref()
             .map(|amount| format_credits_as_dash(amount.value()))
             .unwrap_or_else(|| "0 DASH".to_string());
-        let fee = Self::confirmation_fee_sentence(
-            self.current_fee_preview()
-                .map(|preview| preview.fee_credits),
-        );
+        let fee_preview = self.current_fee_preview();
+        let fee = Self::confirmation_fee_sentence(fee_preview.map(|preview| preview.fee_credits));
+
+        if let Some(recipient_receives_credits) =
+            fee_preview.and_then(|preview| preview.recipient_receives_credits)
+        {
+            let recipient_amount = format_credits_as_dash(recipient_receives_credits);
+            return format!(
+                "You are about to send an entered amount of {amount} to {destination}. The network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. {fee} Confirm this transaction only if the destination, amount, and fee are correct."
+            );
+        }
 
         format!(
             "You are about to send {amount} to {destination}. {fee} Confirm this transaction only if the destination, amount, and fee are correct."
@@ -4431,6 +4438,69 @@ mod tests {
         assert!(
             matches!(*observed_action, AppAction::BackendTask(_)),
             "the confirm action must dispatch the prepared backend task, got {observed_action:?}"
+        );
+    }
+
+    #[test]
+    fn simple_confirmation_reports_recipient_amount_when_fee_is_deducted() {
+        let (mut screen, _temp_dir) = send_screen();
+        let destination_address =
+            PlatformAddress::try_from(testnet_core_address(8)).expect("platform destination");
+        let destination = destination_address.to_bech32m_string(Network::Testnet);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Platform {
+            address: destination_address,
+            bech32m: destination.clone(),
+        });
+        screen.amount = Some(Amount::new_dash(1.0));
+
+        let preview = screen.current_fee_preview().expect("fee preview");
+        let amount = format_credits_as_dash(screen.amount.as_ref().expect("amount").value());
+        let recipient_amount = format_credits_as_dash(
+            preview
+                .recipient_receives_credits
+                .expect("deducted recipient amount"),
+        );
+        let estimated_fee = format_credits_as_dash(preview.fee_credits);
+
+        assert_eq!(
+            screen.simple_send_confirmation_message(),
+            format!(
+                "You are about to send an entered amount of {amount} to {destination}. The network fee will be deducted from the output amount, so the recipient will receive {recipient_amount}. The estimated network fee is approximately {estimated_fee}. Confirm this transaction only if the destination, amount, and fee are correct."
+            )
+        );
+    }
+
+    #[test]
+    fn simple_confirmation_reports_entered_amount_when_fee_is_added_on_top() {
+        let (mut screen, _temp_dir) = send_screen();
+        let source_core = testnet_core_address(9);
+        let source_platform =
+            PlatformAddress::try_from(source_core.clone()).expect("platform source");
+        let destination_address =
+            PlatformAddress::try_from(testnet_core_address(10)).expect("platform destination");
+        let destination = destination_address.to_bech32m_string(Network::Testnet);
+        screen.selected_source = Some(SourceSelection::PlatformAddresses(vec![(
+            source_platform,
+            source_core,
+            2 * CREDITS_PER_DUFF * 100_000_000,
+        )]));
+        screen.validated_destination = Some(ValidatedAddress::Platform {
+            address: destination_address,
+            bech32m: destination.clone(),
+        });
+        screen.amount = Some(Amount::new_dash(1.0));
+
+        let preview = screen.current_fee_preview().expect("fee preview");
+        assert_eq!(preview.recipient_receives_credits, None);
+        let amount = format_credits_as_dash(screen.amount.as_ref().expect("amount").value());
+        let estimated_fee = format_credits_as_dash(preview.fee_credits);
+
+        assert_eq!(
+            screen.simple_send_confirmation_message(),
+            format!(
+                "You are about to send {amount} to {destination}. The estimated network fee is approximately {estimated_fee}. Confirm this transaction only if the destination, amount, and fee are correct."
+            )
         );
     }
 

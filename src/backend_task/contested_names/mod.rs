@@ -104,6 +104,16 @@ fn persist_terminal_then_legacy_mirror(
     Ok(update_legacy_mirror().err())
 }
 
+fn wrap_scheduled_vote_sweep_result<T>(
+    network: Network,
+    result: Result<T, TaskError>,
+) -> Result<T, TaskError> {
+    result.map_err(|source| TaskError::ScheduledVoteSweepFailed {
+        network,
+        source: Box::new(source),
+    })
+}
+
 /// Logs a Drive proof-verification failure raised by a contested-resource query.
 ///
 /// No-op unless `e` is a [`dash_sdk::Error::Proof`] carrying a GroveDB proof
@@ -137,7 +147,6 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        self.ensure_dpns_vote_recovery(sdk).await?;
         match task {
             ContestedResourceTask::QueryDPNSContests => self
                 .query_dpns_contested_resources(sdk, sender)
@@ -162,13 +171,15 @@ impl AppContext {
             }
             ContestedResourceTask::CastDueScheduledVotes {
                 preserve_eligibility_since_ms,
-            } => self
-                .cast_due_scheduled_votes(sdk, sender, preserve_eligibility_since_ms)
-                .await
-                .map_err(|source| TaskError::ScheduledVoteSweepFailed {
-                    network: self.network,
-                    source: Box::new(source),
-                }),
+            } => {
+                let result = async {
+                    self.ensure_dpns_vote_recovery(sdk).await?;
+                    self.cast_due_scheduled_votes(sdk, sender, preserve_eligibility_since_ms)
+                        .await
+                }
+                .await;
+                wrap_scheduled_vote_sweep_result(self.network, result)
+            }
             ContestedResourceTask::ClearAllScheduledVotes => {
                 self.cancel_all_scheduled_dpns_vote_targets()?;
                 if let Err(error) = self.clear_all_scheduled_votes() {
@@ -898,6 +909,23 @@ mod tests {
         ] {
             assert_ne!(status, DpnsVoteTargetStatus::Scheduled);
         }
+    }
+
+    #[test]
+    fn scheduled_sweep_wraps_recovery_failures() {
+        let error = wrap_scheduled_vote_sweep_result::<BackendTaskSuccessResult>(
+            Network::Testnet,
+            Err(TaskError::DpnsCurrentVoteUnavailable),
+        )
+        .expect_err("a recovery failure must fail the scheduled sweep");
+
+        assert!(matches!(
+            error,
+            TaskError::ScheduledVoteSweepFailed {
+                network: Network::Testnet,
+                source,
+            } if matches!(source.as_ref(), TaskError::DpnsCurrentVoteUnavailable)
+        ));
     }
 
     /// Migration extends only eligibility windows that overlap its wait.

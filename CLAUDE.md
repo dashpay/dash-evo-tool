@@ -55,7 +55,7 @@ On every **non-draft** PR that touches Rust code, and on pushes to `v*-dev`, Git
 | `tests.yml` | `cargo test --all-features --workspace` and `cargo test --doc --all-features --workspace` |
 | `clippy.yml` | `cargo fmt --all -- --check` and `cargo clippy --all-features --all-targets -- -D warnings` |
 
-Both are path-filtered to changes that can affect a build or test result: `**/*.rs` (which includes `build.rs`), `**/Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, `rust-toolchain.toml`, and the workflow file itself. A documentation-only change deliberately runs neither.
+The workflows are path-filtered independently, each on `**/*.rs` (which includes `build.rs`), `**/Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, and its own workflow file. `tests.yml` additionally watches `tests/backend-e2e/**`, so a documentation-only change under that directory (e.g. `tests/backend-e2e/README.md`) still triggers the test workflow; other documentation-only changes run neither workflow.
 
 Because CI always runs the full sweep, locally you should:
 
@@ -66,7 +66,7 @@ Because CI always runs the full sweep, locally you should:
 
 Two gaps where CI will **not** cover you:
 
-- **Draft PRs run no automatic CI.** Both workflows are gated on `github.event.pull_request.draft != true`, so a draft PR's `pull_request` runs are suppressed. Either mark it ready for review (`ready_for_review` triggers the full run), or trigger a run by hand — both workflows expose `workflow_dispatch`, so you can run them against the branch from the Actions tab or with `gh workflow run tests.yml --ref <branch>`. A manual run tests the **branch head**, not the PR merge commit, so it does not prove the merged result is green.
+- **Draft PRs run no automatic CI.** Both workflows are gated on `github.event.pull_request.draft != true`, so a draft PR's `pull_request` runs are suppressed. Neither workflow declares a `workflow_dispatch` trigger, so there is no way to run them by hand against a draft branch — mark the PR ready for review (`ready_for_review` triggers the full run) to get CI coverage.
 - **Backend E2E tests are not in CI.** The step is commented out in `tests.yml`, and the tests are `#[ignore]`d. If a change touches backend behaviour that only `tests/backend-e2e/` covers, run those locally; CI will not.
 
 A green CI run is only meaningful if it actually executed your tests. `cargo test <filter>` exits 0 and prints `test result: ok` even when the filter matches nothing — when checking a run, confirm your new test names appear in the log rather than trusting the exit code.

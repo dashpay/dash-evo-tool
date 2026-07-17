@@ -105,6 +105,16 @@ where
     }
 }
 
+fn contextualize_dapi_result<T>(
+    result: Result<T, TaskError>,
+    availability: impl FnOnce() -> (usize, usize),
+) -> Result<T, TaskError> {
+    result.map_err(|error| {
+        let (configured_total, live_count) = availability();
+        error.contextualize_dapi_availability(configured_total, live_count)
+    })
+}
+
 /// Returns `true` for backend tasks that read or write the
 /// `WalletBackend` (and therefore the upstream `SecretStore` / sidecar
 /// k/v). These tasks must short-circuit with
@@ -737,20 +747,22 @@ impl AppContext {
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let result = self.run_backend_task_inner(task, sender).await;
-        let (configured_total, live_count) = {
-            let sdk = self.sdk.load();
-            let address_list = sdk.address_list();
-            (address_list.len(), address_list.get_live_addresses().len())
-        };
+        let task_sdk = self.sdk.load_full();
+        let result = self
+            .run_backend_task_inner(task, sender, task_sdk.as_ref())
+            .await;
 
-        result.map_err(|error| error.contextualize_dapi_availability(configured_total, live_count))
+        contextualize_dapi_result(result, || {
+            let address_list = task_sdk.address_list();
+            (address_list.len(), address_list.get_live_addresses().len())
+        })
     }
 
     async fn run_backend_task_inner(
         self: &Arc<Self>,
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
+        sdk: &dash_sdk::Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Refuse a shielded fund movement while shielded operations are
         // unavailable BEFORE `ensure_wallet_backend` runs. That bootstrap does
@@ -787,8 +799,6 @@ impl AppContext {
         // covers every way a load can end before its claim, not just these two.
         let _load_dispatch = identity_load_ticket(&task)
             .map(|(identity_id, token)| self.backstop_identity_load(identity_id, token));
-
-        let sdk = self.sdk.load().as_ref().clone();
 
         // Wallet/identity/DashPay/core/shielded flows go through
         // `WalletBackend`. Build it lazily on first such task (idempotent) —
@@ -837,35 +847,35 @@ impl AppContext {
 
         match task {
             BackendTask::ContractTask(contract_task) => {
-                Ok(self.run_contract_task(*contract_task, &sdk, sender).await?)
+                Ok(self.run_contract_task(*contract_task, sdk, sender).await?)
             }
             BackendTask::ContestedResourceTask(contested_resource_task) => Ok(self
-                .run_contested_resource_task(contested_resource_task, &sdk, sender)
+                .run_contested_resource_task(contested_resource_task, sdk, sender)
                 .await?),
             BackendTask::IdentityTask(identity_task) => {
-                Ok(self.run_identity_task(identity_task, &sdk, sender).await?)
+                Ok(self.run_identity_task(identity_task, sdk, sender).await?)
             }
             BackendTask::DocumentTask(document_task) => {
-                Ok(self.run_document_task(*document_task, &sdk).await?)
+                Ok(self.run_document_task(*document_task, sdk).await?)
             }
             BackendTask::CoreTask(core_task) => Ok(self.run_core_task(core_task).await?),
             BackendTask::DashPayTask(dashpay_task) => {
-                Ok(self.run_dashpay_task(*dashpay_task, &sdk).await?)
+                Ok(self.run_dashpay_task(*dashpay_task, sdk).await?)
             }
             BackendTask::BroadcastStateTransition(state_transition) => Ok(self
-                .broadcast_state_transition(state_transition, &sdk)
+                .broadcast_state_transition(state_transition, sdk)
                 .await?),
             BackendTask::TokenTask(token_task) => {
-                Ok(self.run_token_task(*token_task, &sdk, sender).await?)
+                Ok(self.run_token_task(*token_task, sdk, sender).await?)
             }
             BackendTask::SystemTask(system_task) => {
                 Ok(self.run_system_task(system_task, sender).await?)
             }
-            BackendTask::PlatformInfo(platform_info_task) => Ok(self
-                .run_platform_info_task(platform_info_task, &sdk)
-                .await?),
+            BackendTask::PlatformInfo(platform_info_task) => {
+                Ok(self.run_platform_info_task(platform_info_task, sdk).await?)
+            }
             BackendTask::GroveSTARKTask(grovestark_task) => {
-                Ok(grovestark::run_grovestark_task(grovestark_task, &sdk).await?)
+                Ok(grovestark::run_grovestark_task(grovestark_task, sdk).await?)
             }
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
             BackendTask::ShieldedTask(shielded_task) => {
@@ -1075,6 +1085,66 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dapi_connection_refused_error() -> TaskError {
+        use dash_sdk::Error as SdkError;
+        use dash_sdk::dapi_client::DapiClientError;
+        use dash_sdk::dapi_client::transport::TransportError;
+
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");
+        TaskError::from(SdkError::DapiClientError(DapiClientError::Transport(
+            TransportError::Grpc(status),
+        )))
+    }
+
+    #[test]
+    fn dapi_context_uses_the_task_sdk_generation() {
+        use dash_sdk::dapi_client::{Address, AddressList};
+
+        let exhausted_address: Address = "http://127.0.0.1:3000".parse().expect("address");
+        let mut task_addresses = AddressList::new();
+        task_addresses.add(exhausted_address.clone());
+        assert!(task_addresses.ban(&exhausted_address));
+
+        let mut replacement_addresses = AddressList::new();
+        replacement_addresses.add("http://127.0.0.1:3001".parse().expect("address"));
+        let replacement_result =
+            contextualize_dapi_result::<()>(Err(dapi_connection_refused_error()), || {
+                (
+                    replacement_addresses.len(),
+                    replacement_addresses.get_live_addresses().len(),
+                )
+            });
+        assert!(matches!(
+            replacement_result,
+            Err(TaskError::DapiConnectionRefused { .. })
+        ));
+
+        let result = contextualize_dapi_result::<()>(Err(dapi_connection_refused_error()), || {
+            (
+                task_addresses.len(),
+                task_addresses.get_live_addresses().len(),
+            )
+        });
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DapiAllAddressesExhausted { .. })
+        ));
+    }
+
+    #[test]
+    fn dapi_success_skips_availability_inspection() {
+        let inspected = std::cell::Cell::new(false);
+
+        let result = contextualize_dapi_result(Ok(42), || {
+            inspected.set(true);
+            (1, 0)
+        });
+
+        assert!(matches!(result, Ok(42)));
+        assert!(!inspected.get());
+    }
 
     #[test]
     fn backend_task_context_preserves_document_query_and_fetch_kind() {

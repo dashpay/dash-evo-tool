@@ -1,21 +1,15 @@
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
+use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 
-/// The platform protocol version that first defines the shielded state
-/// transitions (shield, shielded transfer, unshield, shield from asset lock,
-/// shielded withdrawal) — `None` while they remain unshipped, which is the case
-/// on every released version today, so [`Capability::ShieldedProtocol`] is unmet
-/// on every network.
+/// Shielded state transitions activate at upstream rs-platform-version's
+/// [`SHIELDED_POOL_INITIAL_PROTOCOL_VERSION`] (protocol v12), sourced directly
+/// so DET stays aligned if upstream renumbers the feature.
 ///
-/// TODO: set this to the activation version when upstream ships the shielded state
-/// transitions, then re-check the shielded gates (the tripwire test below fails
-/// until they are). Do NOT infer activation from
-/// `FeatureVersionBounds::max_version > 0` instead: `check_version` is
-/// `v >= min && v <= max`, so `{min: 0, max: 0}` is a legitimately checkable v0
-/// bound — `identity_create_state_transition`, a live feature, ships exactly that
-/// triple — not an "undefined" marker. A shielded transition released at v0 would
-/// read as permanently absent. See the PR #879 review.
-const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> = None;
+/// Do not infer activation from `FeatureVersionBounds::max_version > 0`:
+/// `{ min: 0, max: 0 }` is a valid v0 bound, not an undefined marker.
+const SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> =
+    Some(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
 /// A runtime capability of the connected platform, evaluated against the live
 /// context. Independent of the user's role — it answers "does the connected
@@ -38,7 +32,7 @@ impl Capability {
     fn is_met(self, ctx: &AppContext) -> bool {
         match self {
             Capability::ShieldedProtocol => match SHIELDED_ACTIVATION_PROTOCOL_VERSION {
-                // Not shipped anywhere yet, so no network can offer it.
+                // A closed gate makes the capability unavailable on every network.
                 None => false,
                 // The version fetched from the connected network, not the hardcoded
                 // default — the capability is per-network. The boot value (0, "not
@@ -303,30 +297,47 @@ mod tests {
         }
     }
 
-    /// Tripwire. Shielded state transitions have not shipped, so
-    /// [`SHIELDED_ACTIVATION_PROTOCOL_VERSION`] is still `None`: the capability is
-    /// unmet on every protocol version upstream defines, and the "capability met"
-    /// half of the AND cannot be exercised yet.
-    ///
-    /// This test fails the moment that constant names a version upstream actually
-    /// ships. That is the point: whoever activates the capability must then
-    /// re-check the shielded gates and add the missing
-    /// `capability ∧ role ⇒ available` case below.
     #[test]
-    fn no_known_protocol_version_reaches_the_shielded_activation_version() {
+    fn shielded_capability_tracks_the_activation_boundary() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
         let versions = known_protocol_versions();
         assert!(!versions.is_empty(), "the probe must find some versions");
 
         for version in versions {
             ctx.set_platform_protocol_version(version);
-            assert!(
-                !Capability::ShieldedProtocol.is_met(&ctx),
-                "protocol v{version} now reaches the shielded activation version \
-                 ({SHIELDED_ACTIVATION_PROTOCOL_VERSION:?}) — the shielded gates have a \
-                 reachable capability and need re-checking"
+            assert_eq!(
+                Capability::ShieldedProtocol.is_met(&ctx),
+                version >= SHIELDED_POOL_INITIAL_PROTOCOL_VERSION,
+                "shielded capability on protocol v{version}"
             );
         }
+    }
+
+    #[test]
+    fn shielded_operations_are_available_at_activation_for_developer() {
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+
+        assert!(FeatureGate::ShieldedOperations.is_available(&ctx));
+    }
+
+    #[test]
+    fn shielded_operations_are_unavailable_before_activation_for_developer() {
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
+            .checked_sub(1)
+            .expect("shielded activation must follow the boot protocol version");
+        ctx.set_platform_protocol_version(version);
+
+        assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
+    }
+
+    #[test]
+    fn shielded_operations_are_unavailable_at_activation_for_everyday_user() {
+        let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
+        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+
+        assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
     }
 
     /// AND semantics. `ShieldedOperations` is the first multi-check gate: it needs

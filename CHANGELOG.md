@@ -41,6 +41,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Shielded transactions are available on supported networks**: sending,
+  receiving, shielding, and unshielding are enabled when the connected network's
+  protocol version supports them, including mainnet. These operations were
+  previously gated off everywhere pending upstream activation.
+
 - **The first launch after an upgrade asks for each password-protected wallet's
   password**: the app moves your wallets into a new storage format on that first
   launch, and it needs each protected wallet's password to finish the move for

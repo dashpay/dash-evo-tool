@@ -98,6 +98,13 @@ pub(crate) fn scheduled_vote_sweep_is_quiet(error: &TaskError) -> bool {
     )
 }
 
+fn generic_backend_task_error_message_type(error: &TaskError) -> MessageType {
+    match error {
+        TaskError::TokenBalanceRefreshSkipped => MessageType::Info,
+        _ => MessageType::Error,
+    }
+}
+
 const LEGACY_SETTINGS_IMPORT_WARNING: &str = "The app could not confirm that your network preference was restored from the previous version. Check the selected network before using the application.";
 
 fn show_legacy_settings_import_warning(
@@ -237,6 +244,18 @@ mod backend_task_join_tests {
             panic!("expected an unattributed task error");
         };
         assert_eq!(context, BackendTaskContext::Unknown);
+    }
+
+    #[test]
+    fn token_balance_refresh_skipped_uses_info_banner_severity() {
+        assert_eq!(
+            generic_backend_task_error_message_type(&TaskError::TokenBalanceRefreshSkipped),
+            MessageType::Info
+        );
+        assert_eq!(
+            generic_backend_task_error_message_type(&TaskError::NoIdentitiesFound),
+            MessageType::Error
+        );
     }
 
     #[tokio::test]
@@ -2167,14 +2186,17 @@ impl App for AppState {
 
                     if !handled {
                         let msg = err.to_string();
-                        let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
-                        handle.disable_auto_dismiss();
+                        let message_type = generic_backend_task_error_message_type(&err);
+                        let handle = MessageBanner::set_global(ctx, &msg, message_type);
+                        if message_type == MessageType::Error {
+                            handle.disable_auto_dismiss();
+                        }
                         // TaskError Debug output is shown to users, deliberately.
                         // Ensure inner error types don't expose secrets.
                         handle.with_details(&err);
                         if !is_database_clear {
                             self.visible_screen_mut()
-                                .display_message(&msg, MessageType::Error);
+                                .display_message(&msg, message_type);
                         }
                     }
                 }

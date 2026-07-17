@@ -3571,10 +3571,10 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
     backend2.shutdown().await;
 }
 
-/// Persisted Core transactions must populate DET's display snapshot during a
-/// seedless cold boot, before any live wallet event can replay them.
+/// A corrupt persisted Core transaction must not hide the wallet or prevent
+/// valid history from populating its first seedless cold-boot snapshot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_boot_hydrates_persisted_transaction_history_without_live_events() {
+async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corrupt() {
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Transaction};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
@@ -3669,14 +3669,39 @@ async fn cold_boot_hydrates_persisted_transaction_history_without_live_events() 
         .expect("flush transaction record");
     drop(persister);
 
+    let connection = rusqlite::Connection::open(&persister_path)
+        .expect("open upstream persister for corruption fixture");
+    connection
+        .execute(
+            "INSERT INTO core_transactions \
+                (wallet_id, txid, height, block_hash, block_time, finalized, record_blob) \
+             SELECT wallet_id, X'A1', height, block_hash, block_time, finalized, record_blob \
+             FROM core_transactions WHERE wallet_id = ?1 LIMIT 1",
+            [wallet_id.as_slice()],
+        )
+        .expect("insert invalid-width transaction id");
+    drop(connection);
+
     let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
     ctx.ensure_wallet_backend(sender)
         .await
-        .expect("wire cold-boot backend");
+        .expect("corrupt history must not prevent cold-boot registration");
     let backend = ctx.wallet_backend().expect("cold-boot backend");
     let history = backend.transaction_history(&seed_hash);
 
-    assert_eq!(history.len(), 1, "persisted history must load at cold boot");
+    assert!(
+        backend.is_wallet_registered(&seed_hash),
+        "the wallet must remain registered when one history row is corrupt"
+    );
+    assert!(
+        backend.has_snapshot(&seed_hash),
+        "the wallet must remain visible when one history row is corrupt"
+    );
+    assert_eq!(
+        history.len(),
+        1,
+        "the corrupt row must be skipped without dropping valid history"
+    );
     assert_eq!(history[0].txid, expected_txid);
     assert_eq!(history[0].timestamp, u64::from(timestamp));
     assert_eq!(history[0].net_amount, 250_000);

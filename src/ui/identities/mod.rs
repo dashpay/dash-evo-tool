@@ -51,16 +51,16 @@ impl fmt::Display for SelectedWalletError {
                 if let Some(identity_label) = identity_label {
                     write!(
                         f,
-                        "Identity {identity_label} ({identity_id}) cannot sign DashPay actions \
-                         because it has no signing key. Add a signing key with high or critical \
-                         security level to this identity, or choose a different identity."
+                        "Identity {identity_label} ({identity_id}) cannot sign this action \
+                         because it has no high-security signing key. Add a high-security \
+                         signing key to this identity, or choose a different identity."
                     )
                 } else {
                     write!(
                         f,
-                        "Identity {identity_id} cannot sign DashPay actions because it has no \
-                         signing key. Add a signing key with high or critical security level to \
-                         this identity, or choose a different identity."
+                        "Identity {identity_id} cannot sign this action because it has no \
+                         high-security signing key. Add a high-security signing key to this \
+                         identity, or choose a different identity."
                     )
                 }
             }
@@ -292,9 +292,9 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Identity Test Identity (TestIdentityId) cannot sign DashPay actions because it has \
-             no signing key. Add a signing key with high or critical security level to this \
-             identity, or choose a different identity."
+            "Identity Test Identity (TestIdentityId) cannot sign this action because it has no \
+             high-security signing key. Add a high-security signing key to this identity, or \
+             choose a different identity."
         );
     }
 
@@ -304,9 +304,9 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Identity TestIdentityId cannot sign DashPay actions because it has no signing key. \
-             Add a signing key with high or critical security level to this identity, or choose \
-             a different identity."
+            "Identity TestIdentityId cannot sign this action because it has no high-security \
+             signing key. Add a high-security signing key to this identity, or choose a \
+             different identity."
         );
     }
 

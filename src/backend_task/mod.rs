@@ -899,7 +899,7 @@ impl AppContext {
                 // context, which fast-failed with `WalletBackendNotYetWired` and
                 // reported `spv_started=false`. Wiring first removes that race so
                 // `spv_started` reflects whether sync actually began.
-                let spv_started = if start_spv {
+                let spv_started = if start_spv && !self.subtasks.cancellation_token.is_cancelled() {
                     match new_ctx
                         .ensure_wallet_backend_and_start_spv(sender.clone())
                         .await
@@ -916,6 +916,11 @@ impl AppContext {
                 } else {
                     false
                 };
+                if self.subtasks.cancellation_token.is_cancelled()
+                    && let Ok(backend) = new_ctx.wallet_backend()
+                {
+                    backend.shutdown().await;
+                }
                 Ok(BackendTaskSuccessResult::NetworkContextCreated {
                     network,
                     context: new_ctx,

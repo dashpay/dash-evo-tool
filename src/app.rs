@@ -682,8 +682,8 @@ pub struct AppState {
     spv_block: SpvBlockReconciler,
     /// Data-migration banner + cold-start `FinishUnwire` dispatch reconciler.
     migration: MigrationReconciler,
-    /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
-    /// the viewport is closed once the receiver resolves.
+    /// Async shutdown receiver. `Some` until a graceful shutdown reaches a
+    /// terminal state; the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
@@ -1827,6 +1827,60 @@ impl AppState {
             );
         }
     }
+
+    fn collect_created_context(contexts: &mut Vec<Arc<AppContext>>, task_result: TaskResult) {
+        if let TaskResult::Success { result, .. } = task_result
+            && let BackendTaskSuccessResult::NetworkContextCreated { context, .. } = *result
+        {
+            contexts.push(context);
+        }
+    }
+
+    fn start_async_shutdown(&mut self) -> tokio::sync::oneshot::Receiver<()> {
+        self.subtasks.cancellation_token.cancel();
+        let mut contexts = self.network_contexts.values().cloned().collect::<Vec<_>>();
+        let subtasks = Arc::clone(&self.subtasks);
+        let (_empty_sender, empty_receiver) = tokiompsc::channel(1);
+        let mut task_result_receiver =
+            std::mem::replace(&mut self.task_result_receiver, empty_receiver);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            let mut task_shutdown = subtasks.shutdown_async();
+            let task_shutdown_completed = loop {
+                tokio::select! {
+                    result = &mut task_shutdown => break result.is_ok(),
+                    task_result = task_result_receiver.recv() => {
+                        let Some(task_result) = task_result else {
+                            break task_shutdown.await.is_ok();
+                        };
+                        Self::collect_created_context(&mut contexts, task_result);
+                    }
+                }
+            };
+
+            while let Ok(task_result) = task_result_receiver.try_recv() {
+                Self::collect_created_context(&mut contexts, task_result);
+            }
+
+            let wallet_backends = contexts
+                .iter()
+                .filter_map(|context| context.wallet_backend().ok())
+                .collect::<Vec<_>>();
+            futures::future::join_all(
+                wallet_backends
+                    .iter()
+                    .map(|wallet_backend| wallet_backend.shutdown()),
+            )
+            .await;
+
+            if task_shutdown_completed {
+                let _ = tx.send(());
+            }
+        });
+
+        rx
+    }
 }
 
 impl App for AppState {
@@ -1837,37 +1891,41 @@ impl App for AppState {
         // When the user closes the window we cancel the native close, show a banner,
         // and start an async shutdown. Once all tasks have finished (or timed out)
         // we issue Close ourselves.
-        if let Some(rx) = &mut self.shutdown_receiver {
+        if self.shutdown_started.is_some() {
             // Shutdown already in progress — check if it's done.
-            let should_close = match rx.try_recv() {
-                Ok(()) => {
-                    tracing::debug!("Async shutdown finished, closing viewport");
-                    true
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    // Sender dropped without sending — shutdown task likely panicked.
-                    tracing::warn!("Shutdown channel closed unexpectedly (possible panic)");
-                    true
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    // Still waiting — check hard deadline to prevent infinite loop.
-                    if let Some(started) = self.shutdown_started {
-                        let grace = crate::utils::tasks::SHUTDOWN_TIMEOUT
-                            + std::time::Duration::from_secs(5);
-                        if started.elapsed() > grace {
-                            tracing::warn!(
-                                "Shutdown hard deadline exceeded, force-closing viewport"
-                            );
-                            true
+            let should_close = match self.shutdown_receiver.as_mut() {
+                Some(rx) => match rx.try_recv() {
+                    Ok(()) => {
+                        tracing::debug!("Async shutdown finished, closing viewport");
+                        true
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        // Sender dropped without sending — shutdown task likely panicked.
+                        tracing::warn!("Shutdown channel closed unexpectedly (possible panic)");
+                        true
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                        // Still waiting — check hard deadline to prevent infinite loop.
+                        if let Some(started) = self.shutdown_started {
+                            let grace = crate::utils::tasks::SHUTDOWN_TIMEOUT
+                                + std::time::Duration::from_secs(5);
+                            if started.elapsed() > grace {
+                                tracing::warn!(
+                                    "Shutdown hard deadline exceeded, force-closing viewport"
+                                );
+                                true
+                            } else {
+                                false
+                            }
                         } else {
                             false
                         }
-                    } else {
-                        false
                     }
-                }
+                },
+                None => true,
             };
             if should_close {
+                self.shutdown_receiver.take();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 ctx.request_repaint();
@@ -1887,7 +1945,7 @@ impl App for AppState {
                 MessageType::Warning,
             );
             tracing::debug!("Close requested, starting async shutdown");
-            self.shutdown_receiver = Some(self.subtasks.shutdown_async());
+            self.shutdown_receiver = Some(self.start_async_shutdown());
             self.shutdown_started = Some(std::time::Instant::now());
             ctx.request_repaint();
             return;
@@ -2431,11 +2489,9 @@ impl App for AppState {
         // observers (TouchBar, etc.) while views are still alive.
         crate::platform::order_out_all_windows();
 
-        // If shutdown_receiver is Some, the async shutdown was already initiated
-        // in update(). Skip the blocking fallback to avoid double-shutdown.
-        // The blocking path only runs when the window was force-closed without
-        // going through update() (e.g., OS-level kill, alt-F4 on some platforms).
-        if self.shutdown_receiver.is_some() {
+        // The start marker persists after the completion receiver is consumed.
+        // Only force-closes that bypass update() need the blocking fallback.
+        if self.shutdown_started.is_some() {
             tracing::debug!("on_exit: async shutdown was initiated, skipping blocking fallback");
             return;
         }

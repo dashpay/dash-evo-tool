@@ -109,10 +109,20 @@ impl WelcomeScreen {
 
         let mut role = self.app_context.user_role();
         let previous = role;
-        ui.horizontal(|ui| {
-            for option in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
-                ui.radio_value(&mut role, option, option.label());
-            }
+        let card_spacing = 16.0;
+        let card_visual_width = 170.0 + (Spacing::MD * 2.0) + 2.0;
+        let total_width = (card_visual_width * 3.0) + (card_spacing * 2.0);
+
+        ui.allocate_ui(Vec2::new(total_width, 140.0), |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = card_spacing;
+
+                for option in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+                    if self.render_role_card(ui, dark_mode, option, role == option) {
+                        role = option;
+                    }
+                }
+            });
         });
 
         if role != previous {
@@ -132,18 +142,68 @@ impl WelcomeScreen {
         }
 
         ui.add_space(6.0);
-        // Description of the selected mode, then a reversibility hint.
-        ui.label(
-            RichText::new(role.description())
-                .size(12.0)
-                .color(DashColors::text_secondary(dark_mode)),
-        );
-        ui.add_space(2.0);
         ui.label(
             RichText::new("You can change this later in Network Settings.")
                 .size(11.0)
                 .color(DashColors::text_secondary(dark_mode)),
         );
+    }
+
+    fn render_role_card(
+        &self,
+        ui: &mut egui::Ui,
+        dark_mode: bool,
+        role: UserRole,
+        selected: bool,
+    ) -> bool {
+        let fill = if selected {
+            DashColors::selected(dark_mode)
+        } else {
+            DashColors::background(dark_mode)
+        };
+        let stroke = if selected {
+            egui::Stroke::new(2.0, DashColors::DASH_BLUE)
+        } else {
+            egui::Stroke::new(1.0, DashColors::border_light(dark_mode))
+        };
+
+        let response = egui::Frame::new()
+            .fill(fill)
+            .stroke(stroke)
+            .corner_radius(Shape::RADIUS_LG)
+            .shadow(Shadow::small())
+            .inner_margin(Spacing::MD)
+            .show(ui, |ui| {
+                ui.set_min_size(Vec2::new(170.0, 100.0));
+                ui.set_max_size(Vec2::new(170.0, 100.0));
+
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(role.role_icon()).size(24.0));
+
+                    ui.add_space(5.0);
+
+                    ui.label(
+                        RichText::new(role.label())
+                            .size(14.0)
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+
+                    ui.add_space(6.0);
+
+                    ui.label(
+                        RichText::new(role.description())
+                            .size(11.0)
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                });
+            });
+
+        if response.response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        response.response.interact(egui::Sense::click()).clicked()
     }
 
     fn render_getting_started_section(&mut self, ui: &mut egui::Ui, dark_mode: bool) -> AppAction {

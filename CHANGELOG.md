@@ -180,6 +180,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Token balance refresh status**: requesting a refresh while token balances
+  are already updating now shows a brief informational note instead of a red
+  error banner that must be dismissed.
+
 - **Topping up an identity from more than one funding wallet no longer gets
   stuck loading**: requesting a new deposit address at the same time as
   refreshing your asset-lock transactions could silently drop the refresh,

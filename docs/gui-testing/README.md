@@ -43,13 +43,15 @@ the corresponding failure:
 sudo apt-get install -y libxkbcommon-x11-0 mesa-vulkan-drivers xdotool
 ```
 
-Build in the checkout under test, then derive the executable from Cargo's
-portable target-directory convention. If the machine uses an external Cargo
-target directory, export `CARGO_TARGET_DIR` before both commands.
+Build in the checkout under test, then ask Cargo for the effective target
+directory. This honors `CARGO_TARGET_DIR` and any `target-dir` configured in
+Cargo's configuration files.
 
 ```bash
 cargo build
-BIN="${CARGO_TARGET_DIR:-target}/debug/dash-evo-tool"
+TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | \
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+BIN="$TARGET_DIR/debug/dash-evo-tool"
 test -x "$BIN"
 ```
 
@@ -120,9 +122,9 @@ transitions and omits purely decorative visuals, so use it for semantic labels
 and structure while using screenshots for pixels, colors, and final visual
 confirmation. Capture durable screenshots with `scrot -o <path>.png`.
 
-An installed `desktop-gui` automation skill may provide convenient screenshot
-and input tooling, but it is optional; the complete launch and accessibility
-procedure is versioned above.
+The complete recipe is versioned here because an installed `desktop-gui`
+automation skill is not available to every contributor. When present, that
+skill may still provide convenient screenshot and input tooling.
 
 ## Non-negotiable safety rules
 

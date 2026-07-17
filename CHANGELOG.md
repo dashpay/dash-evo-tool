@@ -39,6 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   interactive there, and adding it to the remaining screens, is tracked as a
   follow-up.
 
+### Fixed
+
+- **Shielded availability notice**: now distinguishes when the connected network
+  does not support shielded sending from when the current interface mode does
+  not unlock it.
+
 ### Changed
 
 - **Shielded transactions are available on supported networks**: sending,

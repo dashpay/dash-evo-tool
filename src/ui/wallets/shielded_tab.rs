@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::{Check, FeatureGate};
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::address::truncate_address;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -45,9 +45,15 @@ pub const SHIELDED_MIGRATION_ERROR_LABEL: &str =
 pub const SHIELDED_TAB_SKIPPED_LABEL: &str =
     "Shielded features are paused until the next launch. Restart the app to retry the migration.";
 /// Shown in place of the Shield / Send / Unshield controls when the connected
-/// network does not yet support shielded operations. Viewing balance, address,
-/// and notes stays available.
-pub const SHIELDED_OPERATIONS_UNAVAILABLE_LABEL: &str = "Shielded sending is not available on this network yet. You can still view your shielded balance and receive address.";
+/// network does not yet support shielded state transitions. Viewing balance,
+/// address, and notes stays available.
+pub const SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL: &str = "Shielded sending is not available on this network yet. You can still view your shielded balance and receive address.";
+/// Shown in place of the Shield / Send / Unshield controls when the connected
+/// network supports shielded state transitions but the user's interface mode
+/// does not unlock them yet. Viewing balance, address, and notes stays
+/// available.
+// Keep "Expert view" aligned with the experimental threshold if it changes.
+pub const SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL: &str = "Shielded sending needs Expert view or higher. You can still view your shielded balance and receive address. Switch your interface mode in Settings to use it.";
 
 /// J-3 indicator state. Derived purely from [`MigrationState`] and the
 /// session-local "skip" flag, so the same inputs always yield the same
@@ -710,8 +716,12 @@ impl ShieldedTabView {
                 });
             }
         } else {
+            let label = match FeatureGate::ShieldedOperations.first_unmet_check(&self.app_context) {
+                Some(Check::Experimental(_)) => SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL,
+                _ => SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL,
+            };
             ui.label(
-                RichText::new(SHIELDED_OPERATIONS_UNAVAILABLE_LABEL)
+                RichText::new(label)
                     .size(12.0)
                     .color(DashColors::text_secondary(dark_mode)),
             );
@@ -843,15 +853,27 @@ mod tests {
         );
     }
 
-    /// The notice shown when shielded operations are unavailable is i18n-clean
-    /// (a complete sentence) and tells the user what they can still do, so the
-    /// gated-off action controls never read as a dead end.
+    /// The network notice is complete and says what remains available.
     #[test]
-    fn operations_unavailable_label_is_i18n_clean() {
-        assert!(SHIELDED_OPERATIONS_UNAVAILABLE_LABEL.ends_with('.'));
+    fn network_unavailable_label_is_i18n_clean() {
+        assert!(SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL.ends_with('.'));
         assert!(
-            SHIELDED_OPERATIONS_UNAVAILABLE_LABEL.contains("view"),
+            SHIELDED_OPERATIONS_NETWORK_UNAVAILABLE_LABEL.contains("view"),
             "the notice must state what the user can still do"
+        );
+    }
+
+    /// The role notice is complete, actionable, and names the required tier.
+    #[test]
+    fn role_unavailable_label_is_i18n_clean() {
+        assert!(SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL.ends_with('.'));
+        assert!(
+            SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL.contains("view"),
+            "the notice must state what the user can still do"
+        );
+        assert!(
+            SHIELDED_OPERATIONS_ROLE_UNAVAILABLE_LABEL.contains("Expert view"),
+            "the notice must name the interface mode that unlocks shielded sending"
         );
     }
 

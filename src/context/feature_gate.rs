@@ -158,6 +158,16 @@ impl FeatureGate {
     pub fn is_available(self, ctx: &AppContext) -> bool {
         self.checks().iter().all(|c| c.is_met(ctx))
     }
+
+    /// The first check that fails to hold for this gate, or `None` if every
+    /// check passes (equivalent to `is_available` returning `true`). Lets a
+    /// caller surface which axis is actually blocking availability — e.g.
+    /// distinguishing "the network doesn't support this yet" (a
+    /// [`Check::Capability`]) from "your interface mode doesn't unlock this" (a
+    /// [`Check::Experimental`]) — instead of a single opaque `false`.
+    pub fn first_unmet_check(self, ctx: &AppContext) -> Option<Check> {
+        self.checks().iter().copied().find(|c| !c.is_met(ctx))
+    }
 }
 
 #[cfg(test)]
@@ -338,6 +348,33 @@ mod tests {
         ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
 
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
+    }
+
+    #[test]
+    fn shielded_operations_reports_the_first_unmet_check() {
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        let version = SHIELDED_POOL_INITIAL_PROTOCOL_VERSION
+            .checked_sub(1)
+            .expect("shielded activation must follow the boot protocol version");
+        ctx.set_platform_protocol_version(version);
+        assert_eq!(
+            FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
+            Some(Check::Capability(Capability::ShieldedProtocol))
+        );
+
+        let (_tmp, ctx) = ctx_with_role(UserRole::Everyday);
+        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        assert_eq!(
+            FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
+            Some(Check::Experimental(ExperimentalFeature::Shielded))
+        );
+
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
+        assert_eq!(
+            FeatureGate::ShieldedOperations.first_unmet_check(&ctx),
+            None
+        );
     }
 
     /// AND semantics. `ShieldedOperations` is the first multi-check gate: it needs

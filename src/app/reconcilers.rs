@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dash_sdk::dpp::dashcore::Network;
 use eframe::egui;
@@ -226,12 +226,17 @@ impl SpvBlockReconciler {
     }
 }
 
+/// Maximum startup interval for hiding pre-sync `Disconnected` during onboarding.
+const ONBOARDING_DISCONNECTED_SUPPRESSION_DURATION: Duration = Duration::from_secs(120);
+
 /// Reconciles the connection-status banner with the overall connection state.
 pub(super) struct ConnectionBanner {
     /// Previous state, to detect transitions. `None` forces re-evaluation.
     previous_state: Option<OverallConnectionState>,
     /// Handle to the current connection banner, if displayed.
     handle: Option<BannerHandle>,
+    /// Start of the bounded onboarding-only `Disconnected` suppression window.
+    onboarding_started: Instant,
 }
 
 impl ConnectionBanner {
@@ -239,6 +244,7 @@ impl ConnectionBanner {
         Self {
             previous_state: None,
             handle: None,
+            onboarding_started: Instant::now(),
         }
     }
 
@@ -287,23 +293,18 @@ impl ConnectionBanner {
             return None;
         }
 
-        // On the Welcome/onboarding screen the initial `Disconnected` state just
-        // means "sync hasn't started" (no wallet, nothing asked SPV to connect),
-        // not a real failure — suppress the alarming red banner until onboarding ends.
-        //
-        // Deliberately do NOT advance `previous_state` here (unlike the
-        // `spv_overlaying` branch above): `current_state` staying `Disconnected`
-        // is not transient the way Connecting/Syncing are, so recording it would
-        // make `state_changed` false on the very next frame. If onboarding ends
-        // while still Disconnected (`auto_start_spv` off, or genuinely offline),
-        // that would hit the early-return above before this branch is even
-        // reached, permanently hiding the real Disconnected banner for the rest
-        // of the session — silently breaking this function's own contract that
-        // real connection problems are still reported once onboarding ends.
-        if onboarding_active && current_state == OverallConnectionState::Disconnected {
+        // The Welcome screen initially reads Disconnected before sync starts.
+        // Bound suppression so a stuck onboarding flag cannot hide real failures.
+        if onboarding_active
+            && current_state == OverallConnectionState::Disconnected
+            && self.onboarding_started.elapsed() < ONBOARDING_DISCONNECTED_SUPPRESSION_DURATION
+        {
             if let Some(handle) = self.handle.take() {
                 handle.clear();
             }
+            // Invalidate rather than cache either state so suppression exit and
+            // recurring pre-suppression states both force reconciliation.
+            self.previous_state = None;
             return None;
         }
 
@@ -940,6 +941,54 @@ mod tests {
             banner.handle.is_some(),
             "a genuine Disconnected state must be reported once onboarding ends, \
              even if the connection state itself never changed"
+        );
+    }
+
+    #[test]
+    fn connection_banner_restores_recurring_error_after_onboarding_suppression() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let connection_status = app_context.connection_status();
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "the first SPV error must be reported"
+        );
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Idle);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "Disconnected must be suppressed while onboarding is active"
+        );
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "a recurring SPV error must be restored after Disconnected suppression"
+        );
+    }
+
+    #[test]
+    fn connection_banner_reports_disconnected_after_onboarding_suppression_expires() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+        banner.onboarding_started = Instant::now() - ONBOARDING_DISCONNECTED_SUPPRESSION_DURATION;
+
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "Disconnected must be reported after bounded onboarding suppression expires"
         );
     }
 }

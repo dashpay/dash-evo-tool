@@ -252,12 +252,15 @@ impl ConnectionBanner {
 
     /// Update the banner for the current connection state. `spv_overlaying`
     /// suppresses the redundant Connecting/Syncing copy while the SPV block is
-    /// up. Returns a [`BackendTask`] to dispatch on the first `Synced`.
+    /// up; `onboarding_active` suppresses the initial `Disconnected` banner while
+    /// the Welcome screen is showing (pre-sync, not a real failure). Returns a
+    /// [`BackendTask`] to dispatch on the first `Synced`.
     pub(super) fn update(
         &mut self,
         ctx: &egui::Context,
         app_context: &Arc<AppContext>,
         spv_overlaying: bool,
+        onboarding_active: bool,
     ) -> Option<BackendTask> {
         let connection_status = app_context.connection_status();
         let current_state = connection_status.overall_state();
@@ -277,6 +280,17 @@ impl ConnectionBanner {
                 OverallConnectionState::Connecting | OverallConnectionState::Syncing
             )
         {
+            if let Some(handle) = self.handle.take() {
+                handle.clear();
+            }
+            self.previous_state = Some(current_state);
+            return None;
+        }
+
+        // On the Welcome/onboarding screen the initial `Disconnected` state just
+        // means "sync hasn't started" (no wallet, nothing asked SPV to connect),
+        // not a real failure — suppress the alarming red banner until onboarding ends.
+        if onboarding_active && current_state == OverallConnectionState::Disconnected {
             if let Some(handle) = self.handle.take() {
                 handle.clear();
             }

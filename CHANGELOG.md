@@ -294,3 +294,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Two settings changes made in quick succession could occasionally cause one
   of them to be silently lost. Saving settings is now a single atomic step,
   so no change is dropped.
+- The onboarding Welcome screen on first launch no longer shows a red
+  "Disconnected — check your internet connection" banner before you have done
+  anything. On a fresh start there is no wallet yet and no sync has been
+  attempted, so that message was misleading; it now stays hidden until you
+  finish onboarding, and real connection problems are still reported afterwards.

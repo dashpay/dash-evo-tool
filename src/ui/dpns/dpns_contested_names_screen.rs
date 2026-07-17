@@ -1945,12 +1945,7 @@ impl ScreenLike for DPNSScreen {
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         let handled = scheduled_vote_sweep_is_quiet(error);
-        if matches!(
-            error,
-            TaskError::ScheduledVoteRejected { .. }
-                | TaskError::ScheduledVoteResultUnavailable
-                | TaskError::ScheduledVoteSweepFailed { .. }
-        ) {
+        if matches!(error, TaskError::ScheduledVoteSweepFailed { .. }) {
             self.scheduled_vote_cast_in_progress = false;
             if let Ok(mut guard) = self.scheduled_votes.lock() {
                 for vote in guard.iter_mut() {
@@ -2274,21 +2269,5 @@ mod tests {
         screen.scheduled_vote_cast_in_progress = true;
         assert!(screen.display_task_error(&error));
         assert!(!screen.scheduled_vote_cast_in_progress);
-    }
-
-    #[test]
-    fn direct_scheduled_vote_error_remains_available_to_global_handling() {
-        let (ctx, _temp_dir) = offline_ctx();
-        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
-
-        screen.scheduled_vote_cast_in_progress = true;
-        assert!(!screen.display_task_error(&TaskError::ScheduledVoteResultUnavailable));
-        assert!(!screen.scheduled_vote_cast_in_progress);
-
-        let sweep_error = TaskError::ScheduledVoteSweepFailed {
-            network: Network::Regtest,
-            source: Box::new(TaskError::ScheduledVoteResultUnavailable),
-        };
-        assert!(!screen.display_task_error(&sweep_error));
     }
 }

@@ -64,6 +64,15 @@ impl DpnsVotingCenter {
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
+        if matches!(result, BackendTaskSuccessResult::RefreshedDpnsContests) {
+            self.vote_state_refresh_dispatched = false;
+            match self.app_context.ongoing_contested_names() {
+                Ok(contests) => self.contests = contests,
+                Err(error) => {
+                    tracing::warn!(?error, "Could not reload refreshed DPNS contests");
+                }
+            }
+        }
         self.submitted_operation =
             updated_submitted_operation(self.submitted_operation, context, result);
     }
@@ -313,6 +322,16 @@ impl DpnsVotingCenter {
         self.step_heading(ui, "Step 2 of 3: Votes");
         ui.label("Choose one requested vote for each contested name.");
         let mut outcome = VotingCenterOutcome::None;
+        if self.contests.is_empty() {
+            ui.separator();
+            ui.label("No active contests are available. Refresh contests to check again.");
+            if ComponentStyles::add_secondary_button(ui, "Refresh contests", dark_mode).clicked() {
+                self.vote_state_refresh_dispatched = true;
+                outcome = VotingCenterOutcome::Action(Box::new(AppAction::BackendTask(
+                    BackendTask::ContestedResourceTask(ContestedResourceTask::QueryDPNSContests),
+                )));
+            }
+        }
         for contest in &self.contests {
             let name = &contest.normalized_contested_name;
             ui.separator();
@@ -1175,7 +1194,45 @@ fn status_explanation(status: DpnsVoteTargetStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
     use crate::model::contested_name::Contestant;
+    use crate::model::user_role::UserRoleCell;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let context = AppContext::new(
+            data_dir,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            UserRoleCell::default(),
+        )
+        .expect("offline AppContext");
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        context
+            .ensure_wallet_backend(SenderAsync::new(sender, context.egui_ctx().clone()))
+            .await
+            .expect("wire wallet backend offline");
+        (context, temp_dir)
+    }
 
     fn contestant(id: Identifier, name: &str) -> Contestant {
         Contestant {
@@ -1341,5 +1398,59 @@ mod tests {
             updated_submitted_operation(Some(submitted), &context, &result),
             Some(stored)
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refreshed_contests_replace_the_voting_center_snapshot() {
+        let (context, _temp_dir) = offline_ctx().await;
+        let mut center = DpnsVotingCenter::new(&context, None, Vec::new());
+        assert!(center.contests.is_empty());
+        context
+            .insert_name_contests_as_normalized_names(vec!["dominguez".to_owned()])
+            .expect("seed refreshed contest");
+        center.vote_state_refresh_dispatched = true;
+
+        center.display_backend_task_result(
+            &BackendTaskContext::Other,
+            &BackendTaskSuccessResult::RefreshedDpnsContests,
+        );
+
+        assert_eq!(center.contests.len(), 1);
+        assert_eq!(center.contests[0].normalized_contested_name, "dominguez");
+        assert!(!center.vote_state_refresh_dispatched);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn empty_votes_step_offers_a_contest_refresh_action() {
+        let (context, _temp_dir) = offline_ctx().await;
+        let center = Rc::new(RefCell::new(DpnsVotingCenter::new(
+            &context,
+            None,
+            Vec::new(),
+        )));
+        let dispatched = Rc::new(Cell::new(false));
+        let center_for_ui = Rc::clone(&center);
+        let dispatched_for_ui = Rc::clone(&dispatched);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 400.0))
+            .build_ui(move |ui| {
+                if matches!(
+                    center_for_ui.borrow_mut().render_votes(ui),
+                    VotingCenterOutcome::Action(action)
+                        if matches!(
+                            *action,
+                            AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                                ContestedResourceTask::QueryDPNSContests
+                            ))
+                        )
+                ) {
+                    dispatched_for_ui.set(true);
+                }
+            });
+
+        harness.get_by_label("Refresh contests").click();
+        harness.run();
+
+        assert!(dispatched.get());
     }
 }

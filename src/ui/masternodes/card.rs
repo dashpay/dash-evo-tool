@@ -55,8 +55,8 @@ pub fn voter_readiness_label(voting_present: bool) -> &'static str {
     }
 }
 
-/// DPNS status line with count-first precedence (§10.1): open contests first
-/// (actionable), then a pending scheduled vote, then none.
+/// DPNS status line with count-first precedence (§10.1): open contests first,
+/// then failed or pending scheduled votes, then none.
 pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
     if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
         if summary.open_contest_count == 0 {
@@ -86,6 +86,8 @@ pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
                 summary.open_contest_count, summary.needs_vote_count
             )
         }
+    } else if summary.has_failed_scheduled_vote {
+        "Scheduled vote needs attention".to_string()
     } else if summary.has_scheduled_vote {
         "Vote scheduled".to_string()
     } else {
@@ -436,6 +438,17 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(dpns_status_line(summary), "Vote scheduled");
+    }
+
+    #[test]
+    fn terminal_scheduled_failure_needs_attention() {
+        let summary = MasternodeContestSummary {
+            has_scheduled_vote: false,
+            has_failed_scheduled_vote: true,
+            ..Default::default()
+        };
+
+        assert_eq!(dpns_status_line(summary), "Scheduled vote needs attention");
     }
 
     #[test]

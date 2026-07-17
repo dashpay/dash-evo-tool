@@ -45,8 +45,8 @@ impl ContestedName {
 ///
 /// Composed by a display-layer read of existing contest + scheduled-vote state
 /// (no new backend concept). Feeds the count-first status line: open contests
-/// take precedence, then a pending scheduled vote, then "no open contests"
-/// (requirements §10.1).
+/// take precedence, then failed or pending scheduled votes, then no open
+/// contests (requirements §10.1).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum MasternodeVoteStateSummary {
     #[default]
@@ -64,8 +64,10 @@ pub struct MasternodeContestSummary {
     /// Whether every active contest has a proved current-vote state.
     pub vote_state: MasternodeVoteStateSummary,
     /// Whether the node has at least one pending (not-yet-executed) scheduled
-    /// vote, reusing the DPNS Scheduled Votes screen's existing state.
+    /// vote in the authoritative operation journal.
     pub has_scheduled_vote: bool,
+    /// Whether a scheduled target reached a terminal failure that needs review.
+    pub has_failed_scheduled_vote: bool,
 }
 
 impl MasternodeContestSummary {

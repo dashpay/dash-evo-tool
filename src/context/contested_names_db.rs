@@ -11,7 +11,9 @@ use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{
     ContestState, Contestant, ContestedName, MasternodeVoteStateSummary,
 };
-use crate::model::dpns_voting::DpnsCurrentVoteState;
+use crate::model::dpns_voting::{
+    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteTargetStatus, VoteTiming,
+};
 use crate::wallet_backend::{DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
@@ -32,6 +34,32 @@ const CONTESTED_NAME_KEY_PREFIX: &str = "det:contested_name:";
 
 fn contested_name_key(normalized_name: &str) -> String {
     format!("{CONTESTED_NAME_KEY_PREFIX}{normalized_name}")
+}
+
+fn scheduled_vote_journal_summary(
+    operations: &[DpnsVoteOperation],
+    voter_id: Identifier,
+) -> (bool, bool) {
+    let mut pending = false;
+    let mut failed = false;
+    for outcome in operations.iter().flat_map(|operation| &operation.targets) {
+        if outcome.target.key.voter_id != voter_id
+            || !matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+        {
+            continue;
+        }
+        if matches!(
+            outcome.status,
+            DpnsVoteTargetStatus::Rejected
+                | DpnsVoteTargetStatus::FailedBeforeSubmission
+                | DpnsVoteTargetStatus::NotApplied
+        ) {
+            failed = true;
+        } else if outcome.status.holds_lock() {
+            pending = true;
+        }
+    }
+    (pending, failed)
 }
 
 /// Persisted shape of a single DPNS contest. Contenders are nested so
@@ -242,16 +270,15 @@ impl AppContext {
             .count();
         let vote_state = vote_state_summary(&states);
 
-        let has_scheduled_vote = self
-            .get_scheduled_votes()?
-            .iter()
-            .any(|vote| vote.voter_id == voter_id && !vote.executed_successfully);
+        let (has_scheduled_vote, has_failed_scheduled_vote) =
+            scheduled_vote_journal_summary(&self.dpns_vote_operations()?, voter_id);
 
         Ok(crate::model::contested_name::MasternodeContestSummary {
             open_contest_count,
             needs_vote_count,
             vote_state,
             has_scheduled_vote,
+            has_failed_scheduled_vote,
         })
     }
 
@@ -592,6 +619,31 @@ mod tests {
                 DpnsCurrentVoteState::Unavailable,
             ]),
             MasternodeVoteStateSummary::Unavailable
+        );
+    }
+
+    #[test]
+    fn terminal_schedule_failure_is_not_reported_as_pending() {
+        let voter_id = Identifier::from([7; 32]);
+        let mut operation = DpnsVoteOperation::new(vec![
+            crate::model::dpns_voting::DpnsVoteTarget {
+                key: crate::model::dpns_voting::DpnsVoteTargetKey {
+                    network: Network::Testnet,
+                    voter_id,
+                    vote_poll_id: Identifier::from([8; 32]),
+                },
+                voter_alias: Some("Eve".to_owned()),
+                contested_name: "dominguez".to_owned(),
+                requested_choice: dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock,
+                current_choice: None,
+                timing: VoteTiming::Scheduled(42),
+            },
+        ]);
+        operation.targets[0].status = DpnsVoteTargetStatus::FailedBeforeSubmission;
+
+        assert_eq!(
+            scheduled_vote_journal_summary(&[operation], voter_id),
+            (false, true)
         );
     }
 }

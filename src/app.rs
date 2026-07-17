@@ -207,6 +207,17 @@ fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
 }
 
+fn dpns_result_needs_hidden_masternode_route(
+    selected: RootScreenType,
+    screen_stack_is_empty: bool,
+    result: &BackendTaskSuccessResult,
+) -> bool {
+    matches!(
+        result,
+        BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
+    ) && (selected != RootScreenType::RootScreenMasternodes || !screen_stack_is_empty)
+}
+
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
 /// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
 /// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
@@ -361,7 +372,7 @@ mod backend_task_join_tests {
 
         let unavailable_result = TaskError::ScheduledVoteSweepFailed {
             network: Network::Regtest,
-            source: Box::new(TaskError::ScheduledVoteResultUnavailable),
+            source: Box::new(TaskError::DpnsCurrentVoteUnavailable),
         };
         assert!(!scheduled_vote_sweep_is_quiet(&unavailable_result));
 
@@ -1826,6 +1837,26 @@ impl AppState {
         }
     }
 
+    fn route_dpns_vote_result_to_hidden_masternodes(
+        &mut self,
+        context: &BackendTaskContext,
+        result: &BackendTaskSuccessResult,
+    ) {
+        if !dpns_result_needs_hidden_masternode_route(
+            self.selected_main_screen,
+            self.screen_stack.is_empty(),
+            result,
+        ) {
+            return;
+        }
+        if let Some(screen) = self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenMasternodes)
+        {
+            screen.display_backend_task_result(context, result.clone());
+        }
+    }
+
     /// Promote at most one queued passphrase request before overlay handling.
     fn activate_secret_prompt(&mut self, ctx: &egui::Context) {
         if self.active_secret_prompt.is_none()
@@ -1969,6 +2000,7 @@ impl App for AppState {
                 } => {
                     let unboxed_message = *message;
                     self.route_contact_request_result_to_hidden_hub(&unboxed_message);
+                    self.route_dpns_vote_result_to_hidden_masternodes(&context, &unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::Refresh => {
@@ -2890,6 +2922,36 @@ mod contact_request_routing_tests {
         assert!(identity_hub_is_visible(
             RootScreenType::RootScreenIdentityHub,
             true
+        ));
+    }
+}
+
+#[cfg(test)]
+mod dpns_result_routing_tests {
+    use super::*;
+    use crate::model::dpns_voting::DpnsVoteOperationId;
+
+    #[test]
+    fn correlated_vote_result_routes_when_masternodes_root_is_hidden() {
+        let result = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: Network::Testnet,
+            operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
+        };
+
+        assert!(dpns_result_needs_hidden_masternode_route(
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &result,
+        ));
+        assert!(dpns_result_needs_hidden_masternode_route(
+            RootScreenType::RootScreenMasternodes,
+            false,
+            &result,
+        ));
+        assert!(!dpns_result_needs_hidden_masternode_route(
+            RootScreenType::RootScreenMasternodes,
+            true,
+            &result,
         ));
     }
 }

@@ -591,18 +591,6 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// Platform rejected a scheduled vote inside the otherwise successful
-    /// per-voter result payload.
-    #[error("The scheduled vote was not accepted. Wait a moment and try again.")]
-    ScheduledVoteRejected {
-        #[source]
-        source: std::sync::Arc<TaskError>,
-    },
-
-    /// The scheduled-vote call returned no per-voter verdict.
-    #[error("The scheduled vote result could not be confirmed. Wait a moment and try again.")]
-    ScheduledVoteResultUnavailable,
-
     /// A periodic or post-migration scheduled-vote sweep failed. The network is
     /// structured context for the app's per-network retry bookkeeping.
     #[error("Scheduled votes could not be checked. Wait a moment and try again.")]

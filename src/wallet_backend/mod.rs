@@ -121,6 +121,8 @@ where
     SyncNow: FnOnce() -> SyncFuture,
     SyncFuture: std::future::Future<Output = ()>,
 {
+    // TODO: Upstream `IdentitySyncManager::sync_now()` should return a performed/skipped
+    // outcome or completion generation; before/after `is_syncing()` samples are racy.
     if is_syncing() {
         return TokenBalanceSyncOutcome::AlreadyInFlight;
     }
@@ -141,6 +143,7 @@ use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::PlatformWalletManager;
 use platform_wallet_storage::secrets::SecretStore;
@@ -277,6 +280,13 @@ const REGISTRATION_RESOLVE_BACKOFF: std::time::Duration = std::time::Duration::f
 /// from DET's `WalletSeedHash` = `SHA256(seed_bytes)`. The map is the bridge:
 /// populated once per wallet at registration, read by every DET-keyed call.
 type WalletId = [u8; 32];
+const MAX_PERSISTED_TRANSACTION_SKIP_CONTEXTS: usize = 5;
+
+#[derive(Debug, Default)]
+struct PersistedTransactionHydration {
+    records: Vec<TransactionRecord>,
+    skipped_rows: usize,
+}
 
 /// Per-wallet platform-address warm-start seed: `(seed_hash, owned
 /// [`PlatformAddressEntry`] list, optional (timestamp, height) cursor)`.
@@ -704,7 +714,6 @@ impl WalletBackend {
                 continue;
             };
 
-            self.hydrate_persisted_transactions(&wallet_id)?;
             self.inner.id_map.write()?.insert(seed_hash, wallet_id);
             self.inner
                 .wallets
@@ -713,6 +722,7 @@ impl WalletBackend {
             self.inner
                 .snapshots
                 .register_wallet(seed_hash, wallet_id, pw);
+            self.hydrate_persisted_transactions_nonfatal(&wallet_id);
             self.inner.snapshots.recompute(&wallet_id);
             tracing::debug!(
                 wallet = %hex::encode(seed_hash),
@@ -1061,7 +1071,6 @@ impl WalletBackend {
             return Err(TaskError::WalletRegistrationXpubMismatch);
         }
 
-        self.hydrate_persisted_transactions(&wallet_id)?;
         self.inner.id_map.write()?.insert(seed_hash, wallet_id);
         self.inner
             .wallets
@@ -1070,13 +1079,37 @@ impl WalletBackend {
         self.inner
             .snapshots
             .register_wallet(seed_hash, wallet_id, pw);
+        self.hydrate_persisted_transactions_nonfatal(&wallet_id);
         self.inner.snapshots.recompute(&wallet_id);
         Ok(())
     }
 
+    fn hydrate_persisted_transactions_nonfatal(&self, wallet_id: &WalletId) {
+        match self.hydrate_persisted_transactions(wallet_id) {
+            Ok(outcome) => {
+                tracing::debug!(
+                    wallet_id = %hex::encode(wallet_id),
+                    hydrated_rows = outcome.records.len(),
+                    skipped_rows = outcome.skipped_rows,
+                    "Persisted transaction history hydration complete"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    wallet_id = %hex::encode(wallet_id),
+                    error = ?error,
+                    "Persisted transaction history could not be loaded; continuing wallet registration"
+                );
+            }
+        }
+    }
+
     /// Restore persisted public transaction records before publishing a
     /// wallet's first display snapshot. This path never touches wallet secrets.
-    fn hydrate_persisted_transactions(&self, wallet_id: &WalletId) -> Result<(), TaskError> {
+    fn hydrate_persisted_transactions(
+        &self,
+        wallet_id: &WalletId,
+    ) -> Result<PersistedTransactionHydration, TaskError> {
         use crate::backend_task::error::WalletTransactionHistoryError;
         use dash_sdk::dpp::dashcore::hashes::Hash;
         use platform_wallet::changeset::PlatformWalletPersistence;
@@ -1093,6 +1126,14 @@ impl WalletBackend {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .map_err(&storage_error)?;
+        let mut skipped_rows = 0;
+        let mut skipped_contexts = Vec::new();
+        let mut record_skip = |context: String| {
+            skipped_rows += 1;
+            if skipped_contexts.len() < MAX_PERSISTED_TRANSACTION_SKIP_CONTEXTS {
+                skipped_contexts.push(context);
+            }
+        };
         let txid_bytes = {
             // Upstream's public API decodes full records one txid at a time.
             // Enumerate only its keys here, then delegate every record read.
@@ -1107,37 +1148,59 @@ impl WalletBackend {
             let rows = statement
                 .query_map([wallet_id.as_slice()], |row| row.get::<_, Vec<u8>>(0))
                 .map_err(&storage_error)?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(&storage_error)?
+            let mut txid_bytes = Vec::new();
+            for (row_index, row) in rows.enumerate() {
+                match row {
+                    Ok(bytes) => txid_bytes.push(bytes),
+                    Err(source) => {
+                        record_skip(format!("row {row_index} read failed: {source:?}"));
+                    }
+                }
+            }
+            txid_bytes
         };
         drop(connection);
 
         let mut records = Vec::with_capacity(txid_bytes.len());
         for bytes in txid_bytes {
-            let txid = dash_sdk::dpp::dashcore::Txid::from_slice(&bytes).map_err(|source| {
-                TaskError::WalletTransactionHistoryLoad {
-                    source: WalletTransactionHistoryError::Persistence {
-                        source: WalletStorageError::HashDecode { source }.into(),
-                    },
+            let txid = match dash_sdk::dpp::dashcore::Txid::from_slice(&bytes) {
+                Ok(txid) => txid,
+                Err(source) => {
+                    record_skip(format!(
+                        "invalid transaction id length {}: {source:?}",
+                        bytes.len()
+                    ));
+                    continue;
                 }
-            })?;
-            let record = self
-                .inner
-                .persister
-                .get_core_tx_record(*wallet_id, &txid)
-                .map_err(|source| TaskError::WalletTransactionHistoryLoad {
-                    source: WalletTransactionHistoryError::Persistence { source },
-                })?
-                .ok_or(TaskError::WalletTransactionHistoryLoad {
-                    source: WalletTransactionHistoryError::RecordMissing { txid },
-                })?;
-            records.push(record);
+            };
+            match self.inner.persister.get_core_tx_record(*wallet_id, &txid) {
+                Ok(Some(record)) => records.push(record),
+                Ok(None) => {
+                    record_skip(format!("record disappeared for transaction id {txid}"));
+                }
+                Err(source) => {
+                    record_skip(format!(
+                        "record read failed for transaction id {txid}: {source:?}"
+                    ));
+                }
+            }
         }
 
         self.inner
             .snapshots
             .hydrate_transactions(wallet_id, records.iter());
-        Ok(())
+        if skipped_rows > 0 {
+            tracing::warn!(
+                wallet_id = %hex::encode(wallet_id),
+                skipped_rows,
+                sampled_contexts = ?skipped_contexts,
+                "Persisted transaction history loaded with skipped rows"
+            );
+        }
+        Ok(PersistedTransactionHydration {
+            records,
+            skipped_rows,
+        })
     }
 
     /// Wipe every piece of DET-local state for a forgotten wallet — the

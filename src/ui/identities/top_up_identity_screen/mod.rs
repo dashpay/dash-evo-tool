@@ -46,6 +46,20 @@ use std::sync::{Arc, RwLock};
 const WALLET_SELECTION_TOOLTIP: &str = "This wallet will provide the address for receiving funds \
 and create the asset lock transaction to top up your identity.";
 
+fn pending_backend_tasks_action(
+    mut lock_fetches: Vec<BackendTask>,
+    funding_address_request: Option<BackendTask>,
+) -> AppAction {
+    if let Some(task) = funding_address_request {
+        lock_fetches.push(task);
+    }
+    match lock_fetches.len() {
+        0 => AppAction::None,
+        1 => AppAction::BackendTask(lock_fetches.pop().expect("len == 1")),
+        _ => AppAction::BackendTasks(lock_fetches, BackendTasksExecutionMode::Concurrent),
+    }
+}
+
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
     step: Arc<RwLock<WalletFundedScreenStep>>,
@@ -59,8 +73,9 @@ pub struct TopUpIdentityScreen {
     /// method. Set when the QR view needs an address; drained at the end of
     /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
     pending_funding_address_request: Option<WalletSeedHash>,
-    /// Set when a derived deposit address could not be parsed, so the QR view
-    /// stops auto-retrying and offers a manual retry instead of spinning forever.
+    funding_address_request_in_flight: bool,
+    /// Set when deposit-address generation or parsing fails, so the QR view
+    /// offers a manual retry instead of spinning forever.
     funding_address_request_failed: bool,
     /// Duffs received so far at `funding_address` (accumulated per deposit
     /// event), for the "received so far" line — a per-address running total, not
@@ -99,6 +114,7 @@ impl TopUpIdentityScreen {
             wallet: None,
             funding_address: None,
             pending_funding_address_request: None,
+            funding_address_request_in_flight: false,
             funding_address_request_failed: false,
             received_at_funding_address_duffs: 0,
             prefill_funding_amount: false,
@@ -247,6 +263,7 @@ impl TopUpIdentityScreen {
             self.wallet_open_attempted = false;
             self.funding_address = None;
             self.pending_funding_address_request = None;
+            self.funding_address_request_in_flight = false;
             self.funding_address_request_failed = false;
             self.received_at_funding_address_duffs = 0;
             self.prefill_funding_amount = false;
@@ -286,6 +303,7 @@ impl TopUpIdentityScreen {
         self.set_step(step);
         self.funding_address = None;
         self.pending_funding_address_request = None;
+        self.funding_address_request_in_flight = false;
         self.funding_address_request_failed = false;
         self.received_at_funding_address_duffs = 0;
         self.prefill_funding_amount = false;
@@ -396,6 +414,7 @@ impl TopUpIdentityScreen {
                     self.set_step(WalletFundedScreenStep::WaitingOnFunds);
                     self.funding_address = None;
                     self.pending_funding_address_request = None;
+                    self.funding_address_request_in_flight = false;
                     self.funding_address_request_failed = false;
                     self.received_at_funding_address_duffs = 0;
                     self.prefill_funding_amount = false;
@@ -558,6 +577,11 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            if self.funding_address_request_in_flight {
+                self.funding_address_request_in_flight = false;
+                self.funding_address_request_failed = true;
+                return;
+            }
             // Reset step so UI is not stuck on waiting messages
             let step = self.current_step();
             if step == WalletFundedScreenStep::WaitingForPlatformAcceptance
@@ -586,6 +610,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 .map(|w| w.seed_hash() == *seed_hash)
                 .unwrap_or(false);
             if is_ours {
+                self.funding_address_request_in_flight = false;
                 match address.parse::<Address<_>>() {
                     Ok(addr) => {
                         self.funding_address = Some(addr.assume_checked());
@@ -897,19 +922,68 @@ impl ScreenLike for TopUpIdentityScreen {
                     .collect()
             })
             .unwrap_or_default();
-        let tasks = self.asset_lock_cache.ensure_requested_many(seed_hashes);
-        if !tasks.is_empty() {
-            action |= AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent);
-        }
+        let lock_fetches = self.asset_lock_cache.ensure_requested_many(seed_hashes);
 
         // Derive the "Receive a new deposit" address off the UI thread; the QR
         // view queues this when it has no address yet.
-        if let Some(seed_hash) = self.pending_funding_address_request.take() {
-            action |= AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress { seed_hash },
-            ));
+        let funding_address_request =
+            self.pending_funding_address_request
+                .take()
+                .map(|seed_hash| {
+                    BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash })
+                });
+        if funding_address_request.is_some() {
+            self.funding_address_request_in_flight = true;
         }
+        action |= pending_backend_tasks_action(lock_fetches, funding_address_request);
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_frame_dispatch_keeps_lock_fetches_and_receive_address_request() {
+        let lock_seed_a = [1u8; 32];
+        let lock_seed_b = [2u8; 32];
+        let receive_seed = [3u8; 32];
+        let action = pending_backend_tasks_action(
+            vec![
+                BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
+                    seed_hash: lock_seed_a,
+                }),
+                BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
+                    seed_hash: lock_seed_b,
+                }),
+            ],
+            Some(BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress {
+                    seed_hash: receive_seed,
+                },
+            )),
+        );
+
+        let AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) = action else {
+            panic!("same-frame tasks must be dispatched as one concurrent batch");
+        };
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash })
+                if *seed_hash == lock_seed_a
+        )));
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash })
+                if *seed_hash == lock_seed_b
+        )));
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash })
+                if *seed_hash == receive_seed
+        )));
     }
 }

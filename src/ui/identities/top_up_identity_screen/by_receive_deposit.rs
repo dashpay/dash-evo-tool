@@ -4,21 +4,52 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
+    spendable_covers_minimum,
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::theme::DashColors;
 use egui::{Color32, RichText, Ui, Vec2};
 use std::time::Duration;
 
+fn snapshot_deposit_outcome(
+    current_step: WalletFundedScreenStep,
+    address_balance_duffs: u64,
+    spendable_duffs: u64,
+    minimum_credits: u64,
+) -> (WalletFundedScreenStep, bool) {
+    let advance = current_step == WalletFundedScreenStep::WaitingOnFunds
+        && address_balance_duffs > 0
+        && spendable_covers_minimum(spendable_duffs, minimum_credits);
+    (
+        if advance {
+            WalletFundedScreenStep::FundsReceived
+        } else {
+            current_step
+        },
+        advance,
+    )
+}
+
+fn should_queue_funding_address(
+    has_address: bool,
+    request_pending: bool,
+    request_in_flight: bool,
+    request_failed: bool,
+) -> bool {
+    !has_address && !request_pending && !request_in_flight && !request_failed
+}
+
 impl TopUpIdentityScreen {
     /// Queue a deposit-address derivation unless one is already shown, in
     /// flight, or a prior derivation failed. Idempotent, so it is safe to call
     /// every frame from the QR view.
     fn queue_funding_address_request(&mut self) {
-        if self.funding_address.is_some()
-            || self.pending_funding_address_request.is_some()
-            || self.funding_address_request_failed
-        {
+        if !should_queue_funding_address(
+            self.funding_address.is_some(),
+            self.pending_funding_address_request.is_some(),
+            self.funding_address_request_in_flight,
+            self.funding_address_request_failed,
+        ) {
             return;
         }
         if let Some(wallet) = &self.wallet
@@ -96,12 +127,47 @@ impl TopUpIdentityScreen {
         }
     }
 
+    fn reconcile_funding_deposit(&mut self) {
+        let Some(address) = self.funding_address.as_ref() else {
+            return;
+        };
+        let Some(seed_hash) = self
+            .wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+        else {
+            return;
+        };
+        let address_balance_duffs = self
+            .app_context
+            .snapshot_address_balances(&seed_hash)
+            .get(address)
+            .copied()
+            .unwrap_or(0);
+        self.received_at_funding_address_duffs = address_balance_duffs;
+
+        let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
+        let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
+        let current_step = self.current_step();
+        let (next_step, should_prefill) = snapshot_deposit_outcome(
+            current_step,
+            address_balance_duffs,
+            spendable_duffs,
+            minimum_credits,
+        );
+        if should_prefill {
+            self.prefill_funding_amount = true;
+            self.set_step(next_step);
+        }
+    }
+
     /// Render the "Receive a new deposit" funding method: a scannable deposit
     /// address while waiting, then an editable amount and Top Up button once the
     /// deposit arrives. A "Choose a different funding method" affordance is
     /// present throughout so the user is never trapped.
     pub fn render_ui_by_receive_deposit(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         let mut action = AppAction::None;
+        self.reconcile_funding_deposit();
         let step = self.current_step();
 
         if step == WalletFundedScreenStep::WaitingOnFunds {
@@ -162,5 +228,38 @@ impl TopUpIdentityScreen {
         ui.add_space(20.0);
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_poll_advances_top_up_when_deposit_event_was_missed() {
+        assert_eq!(
+            snapshot_deposit_outcome(
+                WalletFundedScreenStep::WaitingOnFunds,
+                50_000,
+                50_000,
+                50_000_000,
+            ),
+            (WalletFundedScreenStep::FundsReceived, true)
+        );
+        assert_eq!(
+            snapshot_deposit_outcome(
+                WalletFundedScreenStep::WaitingOnFunds,
+                0,
+                50_000,
+                50_000_000,
+            ),
+            (WalletFundedScreenStep::WaitingOnFunds, false)
+        );
+    }
+
+    #[test]
+    fn in_flight_top_up_address_request_is_not_queued_again() {
+        assert!(!should_queue_funding_address(false, false, true, false));
+        assert!(should_queue_funding_address(false, false, false, false));
     }
 }

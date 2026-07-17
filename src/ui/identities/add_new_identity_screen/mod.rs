@@ -66,6 +66,17 @@ fn format_wallet_picker_label(alias: &str, spendable_duffs: u64) -> String {
     format!("{alias} — {}", Amount::dash_from_duffs(spendable_duffs))
 }
 
+fn step_after_task_failure(
+    current_step: WalletFundedScreenStep,
+    funding_address_request_in_flight: bool,
+) -> WalletFundedScreenStep {
+    if funding_address_request_in_flight {
+        current_step
+    } else {
+        WalletFundedScreenStep::ReadyToCreate
+    }
+}
+
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<WalletFundedScreenStep>>,
@@ -80,8 +91,9 @@ pub struct AddNewIdentityScreen {
     /// method. Set when the QR view needs an address; drained at the end of
     /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
     pending_funding_address_request: Option<WalletSeedHash>,
-    /// Set when a derived deposit address could not be parsed, so the QR view
-    /// stops auto-retrying and offers a manual retry instead of spinning forever.
+    funding_address_request_in_flight: bool,
+    /// Set when deposit-address generation or parsing fails, so the QR view
+    /// offers a manual retry instead of spinning forever.
     funding_address_request_failed: bool,
     /// Duffs received so far at `funding_address` (accumulated per deposit
     /// event), for the "received so far" line — a per-address running total, not
@@ -181,6 +193,7 @@ impl AddNewIdentityScreen {
             selected_wallet: None, // updated later
             funding_address: None,
             pending_funding_address_request: None,
+            funding_address_request_in_flight: false,
             funding_address_request_failed: false,
             received_at_funding_address_duffs: 0,
             prefill_funding_amount: false,
@@ -445,6 +458,7 @@ impl AddNewIdentityScreen {
             // wallet; `update_wallet` re-derives the funding method/step.
             self.funding_address = None;
             self.pending_funding_address_request = None;
+            self.funding_address_request_in_flight = false;
             self.funding_address_request_failed = false;
             self.received_at_funding_address_duffs = 0;
             self.prefill_funding_amount = false;
@@ -656,6 +670,7 @@ impl AddNewIdentityScreen {
                     }
                     self.funding_address = None;
                     self.pending_funding_address_request = None;
+                    self.funding_address_request_in_flight = false;
                     self.funding_address_request_failed = false;
                     self.received_at_funding_address_duffs = 0;
                     self.prefill_funding_amount = false;
@@ -679,6 +694,7 @@ impl AddNewIdentityScreen {
         self.user_chose_funding_method = false;
         self.funding_address = None;
         self.pending_funding_address_request = None;
+        self.funding_address_request_in_flight = false;
         self.funding_address_request_failed = false;
         self.received_at_funding_address_duffs = 0;
         self.prefill_funding_amount = false;
@@ -1300,10 +1316,15 @@ impl AddNewIdentityScreen {
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            // Reset step so we stop showing "Waiting for Platform acknowledgement".
-            // The error itself is displayed by the global MessageBanner.
+            let address_request_was_in_flight = self.funding_address_request_in_flight;
+            if address_request_was_in_flight {
+                self.funding_address_request_in_flight = false;
+                self.funding_address_request_failed = true;
+            }
+            // Address failures stay on the QR retry state; other failures return
+            // to the existing creation controls. AppState displays the banner.
             let mut step = self.step.write_recover();
-            *step = WalletFundedScreenStep::ReadyToCreate;
+            *step = step_after_task_failure(*step, address_request_was_in_flight);
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -1339,6 +1360,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     .map(|w| w.seed_hash() == *seed_hash)
                     .unwrap_or(false);
                 if is_ours {
+                    self.funding_address_request_in_flight = false;
                     match address.parse::<Address<_>>() {
                         Ok(addr) => {
                             self.funding_address = Some(addr.assume_checked());
@@ -1733,6 +1755,7 @@ impl ScreenLike for AddNewIdentityScreen {
         // Derive the "Receive a new deposit" address off the UI thread; the QR
         // view queues this when it has no address yet.
         if let Some(seed_hash) = self.pending_funding_address_request.take() {
+            self.funding_address_request_in_flight = true;
             pending_tasks.push(BackendTask::WalletTask(
                 WalletTask::GenerateReceiveAddress { seed_hash },
             ));
@@ -1753,7 +1776,20 @@ impl ScreenLike for AddNewIdentityScreen {
 
 #[cfg(test)]
 mod funding_method_tests {
-    use super::format_wallet_picker_label;
+    use super::{format_wallet_picker_label, step_after_task_failure};
+    use crate::ui::identities::funding_common::WalletFundedScreenStep;
+
+    #[test]
+    fn address_generation_failure_keeps_create_flow_waiting_with_retry() {
+        assert_eq!(
+            step_after_task_failure(WalletFundedScreenStep::WaitingOnFunds, true),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+        assert_eq!(
+            step_after_task_failure(WalletFundedScreenStep::WaitingForAssetLock, false),
+            WalletFundedScreenStep::ReadyToCreate
+        );
+    }
 
     /// The picker label pairs the wallet alias with its spendable balance,
     /// rendered in DASH, so the user can compare wallets before choosing one.

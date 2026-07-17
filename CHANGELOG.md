@@ -129,10 +129,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [User Roles](docs/user-roles.md) for details.
 
 - **Welcome screen's experience-level picker is now three cards**: it matches
-  the Create Wallet / Import Wallet / Just Explore cards below it, with an
-  icon and a short description on each, and a highlighted border on the one
-  you're on. Same three levels, same behavior — just easier to compare at a
-  glance.
+  the visual style of the Create Wallet / Import Wallet / Just Explore cards
+  below it. Each role card adds an icon and a short description, and the one
+  you're on gets a highlighted border. Same three levels, same behavior — just
+  easier to compare at a glance.
 
 ### Known Limitations
 

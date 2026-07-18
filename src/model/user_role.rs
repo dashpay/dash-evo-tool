@@ -96,6 +96,15 @@ impl UserRole {
         }
     }
 
+    /// Icon glyph shown with this role in the onboarding experience-level cards.
+    pub fn role_icon(self) -> &'static str {
+        match self {
+            UserRole::Everyday => "\u{1F464}",  // 👤 bust in silhouette
+            UserRole::Power => "\u{1F6E0}",     // 🛠 hammer and wrench
+            UserRole::Developer => "\u{1F4BB}", // 💻 laptop
+        }
+    }
+
     /// Compact label for the always-visible interface-mode indicator in the nav
     /// rail. `None` for the default role, which shows no indicator; the raised
     /// roles use single-word forms of their [`label`](Self::label) that fit the
@@ -261,6 +270,13 @@ mod tests {
                 assert_ne!(a.description(), b.description());
             }
         }
+    }
+
+    #[test]
+    fn role_icons_match_each_experience_level() {
+        assert_eq!(UserRole::Everyday.role_icon(), "\u{1F464}");
+        assert_eq!(UserRole::Power.role_icon(), "\u{1F6E0}");
+        assert_eq!(UserRole::Developer.role_icon(), "\u{1F4BB}");
     }
 
     /// The nav-rail indicator is hidden for the default role and shows a

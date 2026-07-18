@@ -8,6 +8,8 @@ use dash_sdk::dpp::dashcore::Network;
 use serde::Deserialize;
 use tempfile::NamedTempFile;
 
+pub(crate) static CONFIG_PERSISTENCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub mainnet_config: Option<NetworkConfig>,

@@ -1473,28 +1473,40 @@ impl ScreenLike for NetworkChooserScreen {
         {
             self.discovery_in_progress = false;
 
-            // Update config with new addresses
-            let data_dir = &self.current_app_context().data_dir;
-            if let Ok(mut config) = Config::load_from(data_dir) {
-                let mut network_cfg = config
-                    .config_for_network(network)
-                    .clone()
-                    .unwrap_or_default();
-                network_cfg.dapi_addresses = Some(addresses_csv);
-                config.update_config_for_network(network, network_cfg.clone());
+            let config_loaded = {
+                let _persistence_guard = crate::config::CONFIG_PERSISTENCE_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-                if let Err(e) = config.save(data_dir) {
-                    tracing::error!("Failed to save config after DAPI discovery: {e}");
-                }
+                // Update config with new addresses
+                let data_dir = &self.current_app_context().data_dir;
+                if let Ok(mut config) = Config::load_from(data_dir) {
+                    let mut network_cfg = config
+                        .config_for_network(network)
+                        .clone()
+                        .unwrap_or_default();
+                    network_cfg.dapi_addresses = Some(addresses_csv);
+                    config.update_config_for_network(network, network_cfg.clone());
 
-                // Update in-memory config and schedule async SDK reinit
-                if let Some(app_context) = self.context_for_network(network) {
-                    if let Ok(mut cfg_lock) = app_context.config.write() {
-                        *cfg_lock = network_cfg;
+                    if let Err(e) = config.save(data_dir) {
+                        tracing::error!("Failed to save config after DAPI discovery: {e}");
                     }
-                    self.pending_reinit_after_discovery = true;
-                }
 
+                    // Update in-memory config and schedule async SDK reinit
+                    if let Some(app_context) = self.context_for_network(network) {
+                        if let Ok(mut cfg_lock) = app_context.config.write() {
+                            *cfg_lock = network_cfg;
+                        }
+                        self.pending_reinit_after_discovery = true;
+                    }
+
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if config_loaded {
                 MessageBanner::set_global(
                     self.current_app_context().egui_ctx(),
                     format!("Updated to {count} node addresses."),

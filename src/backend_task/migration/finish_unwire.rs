@@ -17,7 +17,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::error::TaskError;
-use crate::config::Config;
+use crate::config::{CONFIG_PERSISTENCE_LOCK, Config};
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -402,9 +402,8 @@ async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
 
 /// Runs one best-effort refresh with an injected discovery operation.
 ///
-/// Run-triggered passes hold `migration_run` from sentinel read through completion, so they cannot race each other.
-/// The independent manual "Refresh DAPI endpoints" path in `network_chooser_screen.rs` takes no such guard,
-/// leaving its load-save sequence as the accepted narrow-window race.
+/// Run-triggered passes still hold their per-context `migration_run`, while migration and manual refresh
+/// share a process-wide guard across whole-file config persistence, including different network contexts.
 async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
 where
     D: FnOnce(Network) -> F,
@@ -479,44 +478,49 @@ async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
         }
     };
 
-    let mut config = match Config::load_from(&app_context.data_dir) {
-        Ok(config) => config,
-        Err(error) => {
+    {
+        let _persistence_guard = CONFIG_PERSISTENCE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut config = match Config::load_from(&app_context.data_dir) {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    ?network,
+                    ?error,
+                    "Could not load the network configuration after automatic DAPI discovery; the refresh will retry on the next launch",
+                );
+                return;
+            }
+        };
+        let mut network_config = config
+            .config_for_network(network)
+            .clone()
+            .unwrap_or_default();
+        network_config.dapi_addresses = Some(addresses_csv);
+        config.update_config_for_network(network, network_config.clone());
+        if let Err(error) = config.save(&app_context.data_dir) {
             tracing::warn!(
                 target = "migration::finish_unwire",
                 ?network,
                 ?error,
-                "Could not load the network configuration after automatic DAPI discovery; the refresh will retry on the next launch",
+                "Could not save automatically discovered DAPI nodes; the refresh will retry on the next launch",
             );
             return;
         }
-    };
-    let mut network_config = config
-        .config_for_network(network)
-        .clone()
-        .unwrap_or_default();
-    network_config.dapi_addresses = Some(addresses_csv);
-    config.update_config_for_network(network, network_config.clone());
-    if let Err(error) = config.save(&app_context.data_dir) {
-        tracing::warn!(
-            target = "migration::finish_unwire",
-            ?network,
-            ?error,
-            "Could not save automatically discovered DAPI nodes; the refresh will retry on the next launch",
-        );
-        return;
-    }
 
-    match app_context.config.write() {
-        Ok(mut live_config) => *live_config = network_config,
-        Err(error) => {
-            tracing::warn!(
-                target = "migration::finish_unwire",
-                ?network,
-                ?error,
-                "Could not update the live network configuration with discovered DAPI nodes; the refresh will retry on the next launch",
-            );
-            return;
+        match app_context.config.write() {
+            Ok(mut live_config) => *live_config = network_config,
+            Err(error) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    ?network,
+                    ?error,
+                    "Could not update the live network configuration with discovered DAPI nodes; the refresh will retry on the next launch",
+                );
+                return;
+            }
         }
     }
 
@@ -2642,6 +2646,7 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::NetworkConfig;
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2757,6 +2762,151 @@ mod tests {
                 .dapi_addresses
                 .as_deref(),
             Some(addresses),
+        );
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ConfigPersistenceEvent {
+        FirstEntered,
+        FirstPausedBeforeSave,
+        SecondAttempting,
+        SecondEntered,
+        SecondSaved,
+        FirstSaved,
+    }
+
+    #[tokio::test]
+    async fn dapi_config_persistence_serializes_across_networks() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: Some("https://mainnet-old.example:443".to_string()),
+                ..Default::default()
+            }),
+            testnet_config: Some(NetworkConfig {
+                dapi_addresses: Some("https://testnet-old.example:443".to_string()),
+                ..Default::default()
+            }),
+            devnet_config: None,
+            local_config: None,
+        }
+        .save(tmp.path())
+        .expect("write initial config");
+
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+        let first_data_dir = tmp.path().to_path_buf();
+        let first_event_tx = event_tx.clone();
+        let first = std::thread::spawn(move || {
+            let _persistence_guard = CONFIG_PERSISTENCE_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            first_event_tx
+                .send(ConfigPersistenceEvent::FirstEntered)
+                .expect("report first entry");
+            let mut config = Config::load_from(&first_data_dir).expect("first load");
+            let mut network_config = config
+                .config_for_network(Network::Mainnet)
+                .clone()
+                .expect("mainnet config");
+            network_config.dapi_addresses = Some("https://mainnet-new.example:443".to_string());
+            config.update_config_for_network(Network::Mainnet, network_config);
+            first_event_tx
+                .send(ConfigPersistenceEvent::FirstPausedBeforeSave)
+                .expect("report first pause");
+            release_first_rx.recv().expect("release first save");
+            config.save(&first_data_dir).expect("first save");
+            first_event_tx
+                .send(ConfigPersistenceEvent::FirstSaved)
+                .expect("report first save");
+        });
+
+        assert_eq!(
+            event_rx.recv().expect("first entry event"),
+            ConfigPersistenceEvent::FirstEntered,
+        );
+        assert_eq!(
+            event_rx.recv().expect("first pause event"),
+            ConfigPersistenceEvent::FirstPausedBeforeSave,
+        );
+
+        let second_data_dir = tmp.path().to_path_buf();
+        let second_event_tx = event_tx.clone();
+        let second = std::thread::spawn(move || {
+            second_event_tx
+                .send(ConfigPersistenceEvent::SecondAttempting)
+                .expect("report second attempt");
+            let _persistence_guard = CONFIG_PERSISTENCE_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            second_event_tx
+                .send(ConfigPersistenceEvent::SecondEntered)
+                .expect("report second entry");
+            let mut config = Config::load_from(&second_data_dir).expect("second load");
+            let mut network_config = config
+                .config_for_network(Network::Testnet)
+                .clone()
+                .expect("testnet config");
+            network_config.dapi_addresses = Some("https://testnet-new.example:443".to_string());
+            config.update_config_for_network(Network::Testnet, network_config);
+            config.save(&second_data_dir).expect("second save");
+            second_event_tx
+                .send(ConfigPersistenceEvent::SecondSaved)
+                .expect("report second save");
+        });
+
+        assert_eq!(
+            event_rx.recv().expect("second attempt event"),
+            ConfigPersistenceEvent::SecondAttempting,
+        );
+        let premature_entry = event_rx.recv_timeout(std::time::Duration::from_millis(250));
+        let premature_save = if premature_entry.is_ok() {
+            Some(
+                event_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("second save before first release"),
+            )
+        } else {
+            None
+        };
+
+        release_first_tx.send(()).expect("release first");
+        first.join().expect("join first persistence section");
+        second.join().expect("join second persistence section");
+
+        assert_eq!(
+            premature_entry,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+            "the second persistence section entered before the first released",
+        );
+        assert!(
+            premature_save.is_none(),
+            "the second persistence section saved before the first released: {premature_save:?}",
+        );
+        assert_eq!(
+            event_rx.try_iter().collect::<Vec<_>>(),
+            [
+                ConfigPersistenceEvent::FirstSaved,
+                ConfigPersistenceEvent::SecondEntered,
+                ConfigPersistenceEvent::SecondSaved,
+            ],
+        );
+
+        let saved = Config::load_from(tmp.path()).expect("load final config");
+        assert_eq!(
+            saved
+                .config_for_network(Network::Mainnet)
+                .as_ref()
+                .and_then(|config| config.dapi_addresses.as_deref()),
+            Some("https://mainnet-new.example:443"),
+        );
+        assert_eq!(
+            saved
+                .config_for_network(Network::Testnet)
+                .as_ref()
+                .and_then(|config| config.dapi_addresses.as_deref()),
+            Some("https://testnet-new.example:443"),
         );
     }
 

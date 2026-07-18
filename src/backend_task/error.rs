@@ -20,6 +20,26 @@ use dash_sdk::platform::Identifier;
 use std::fmt;
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DapiAddressAvailability {
+    pub(crate) configured_total: usize,
+    pub(crate) live_count: usize,
+}
+
+impl DapiAddressAvailability {
+    pub(crate) fn from_sdk(sdk: &dash_sdk::Sdk) -> Self {
+        let address_list = sdk.address_list();
+        Self {
+            configured_total: address_list.len(),
+            live_count: address_list.get_live_addresses().len(),
+        }
+    }
+
+    fn all_configured_addresses_are_exhausted(self) -> bool {
+        self.configured_total != 0 && self.live_count == 0
+    }
+}
+
 /// Why an existing DashPay `contactInfo` payload could not be preserved.
 #[derive(Debug, Error)]
 pub enum ContactInfoReadError {
@@ -591,10 +611,18 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// Platform rejected a scheduled vote inside the otherwise successful
-    /// per-voter result payload.
+    /// A scheduled vote failed inside the otherwise successful per-voter result payload.
     #[error("The scheduled vote was not accepted. Wait a moment and try again.")]
     ScheduledVoteRejected {
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+
+    /// Every configured DAPI address was exhausted while casting a scheduled vote.
+    #[error(
+        "All Dash network servers are temporarily unreachable. Please wait a minute and retry."
+    )]
+    ScheduledVoteAllAddressesExhausted {
         #[source]
         source: std::sync::Arc<TaskError>,
     },
@@ -607,6 +635,16 @@ pub enum TaskError {
     /// structured context for the app's per-network retry bookkeeping.
     #[error("Scheduled votes could not be checked. Wait a moment and try again.")]
     ScheduledVoteSweepFailed {
+        network: Network,
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// Every configured DAPI address was exhausted during a scheduled-vote sweep.
+    #[error(
+        "All Dash network servers are temporarily unreachable. Please wait a minute and retry."
+    )]
+    ScheduledVoteSweepAllAddressesExhausted {
         network: Network,
         #[source]
         source: Box<TaskError>,
@@ -1048,13 +1086,13 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// All DAPI servers exhausted (NoAvailableAddressesToRetry).
+    /// Every configured DAPI address is exhausted or currently unreachable.
     #[error(
         "All Dash network servers are temporarily unreachable. Please wait a minute and retry."
     )]
     DapiAllAddressesExhausted {
         #[source]
-        source_error: Box<SdkError>,
+        source: std::sync::Arc<TaskError>,
     },
 
     /// SDK operation timed out (SdkError::TimeoutReached).
@@ -2254,6 +2292,124 @@ pub enum TaskError {
 }
 
 impl TaskError {
+    /// Reclassifies SDK reachability failures when every configured DAPI address is exhausted.
+    pub(crate) fn contextualize_dapi_availability(
+        self,
+        availability: DapiAddressAvailability,
+    ) -> Self {
+        if !availability.all_configured_addresses_are_exhausted()
+            || self.is_dapi_availability_contextualized()
+            || !self.contains_dapi_reachability_failure()
+        {
+            return self;
+        }
+
+        match self {
+            Self::WalletDataClearIncomplete {
+                failed,
+                first_error,
+            } => Self::WalletDataClearIncomplete {
+                failed,
+                first_error: Box::new((*first_error).contextualize_dapi_availability(availability)),
+            },
+            Self::IdentityKeyAddedButNotSaved { source } => Self::IdentityKeyAddedButNotSaved {
+                source: Box::new((*source).contextualize_dapi_availability(availability)),
+            },
+            Self::ScheduledVoteRejected { source } => {
+                Self::ScheduledVoteAllAddressesExhausted { source }
+            }
+            Self::ScheduledVoteSweepFailed { network, source } => {
+                Self::ScheduledVoteSweepAllAddressesExhausted { network, source }
+            }
+            Self::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source,
+            } => Self::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source: Box::new((*source).contextualize_dapi_availability(availability)),
+            },
+            Self::DashPayContactRequestActionFailed { request_id, source } => {
+                Self::DashPayContactRequestActionFailed {
+                    request_id,
+                    source: Box::new((*source).contextualize_dapi_availability(availability)),
+                }
+            }
+            Self::WalletRegistrationFlightFailed { source } => {
+                Self::WalletRegistrationFlightFailed {
+                    source: source.contextualize_shared_dapi_availability(availability),
+                }
+            }
+            other => Self::DapiAllAddressesExhausted {
+                source: std::sync::Arc::new(other),
+            },
+        }
+    }
+
+    pub(crate) fn contextualize_shared_dapi_availability(
+        self: std::sync::Arc<Self>,
+        availability: DapiAddressAvailability,
+    ) -> std::sync::Arc<Self> {
+        if !availability.all_configured_addresses_are_exhausted()
+            || self.is_dapi_availability_contextualized()
+            || !self.contains_dapi_reachability_failure()
+        {
+            return self;
+        }
+
+        std::sync::Arc::new(Self::DapiAllAddressesExhausted { source: self })
+    }
+
+    fn is_dapi_availability_contextualized(&self) -> bool {
+        matches!(
+            self,
+            Self::DapiAllAddressesExhausted { .. }
+                | Self::ScheduledVoteAllAddressesExhausted { .. }
+                | Self::ScheduledVoteSweepAllAddressesExhausted { .. }
+        )
+    }
+
+    pub(crate) fn contains_dapi_reachability_failure(&self) -> bool {
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(self);
+
+        while let Some(error) = current {
+            if let Some(task_error) = error.downcast_ref::<Self>()
+                && matches!(
+                    task_error,
+                    Self::DapiUnavailable { .. }
+                        | Self::DapiTimeout { .. }
+                        | Self::DapiConnectionRefused { .. }
+                        | Self::DapiNoAddresses { .. }
+                )
+            {
+                return true;
+            }
+
+            if let Some(task_error) = error.downcast_ref::<Box<Self>>()
+                && task_error.contains_dapi_reachability_failure()
+            {
+                return true;
+            }
+
+            if let Some(task_error) = error.downcast_ref::<std::sync::Arc<Self>>()
+                && task_error.contains_dapi_reachability_failure()
+            {
+                return true;
+            }
+
+            if let Some(sdk_error) = error.downcast_ref::<SdkError>()
+                && sdk_error_is_dapi_reachability_failure(sdk_error)
+            {
+                return true;
+            }
+
+            current = error.source();
+        }
+
+        false
+    }
+
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
     /// Three storage failures get honest, distinct copy; everything else keeps
@@ -2801,7 +2957,9 @@ impl From<SdkError> for TaskError {
             }
             SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_)) => {
                 TaskError::DapiAllAddressesExhausted {
-                    source_error: boxed,
+                    source: std::sync::Arc::new(TaskError::SdkError {
+                        source_error: boxed,
+                    }),
                 }
             }
             SdkError::DapiClientError(_) => TaskError::SdkError {
@@ -2826,7 +2984,9 @@ impl From<SdkError> for TaskError {
                 source_error: boxed,
             },
             SdkError::NoAvailableAddressesToRetry(_) => TaskError::DapiAllAddressesExhausted {
-                source_error: boxed,
+                source: std::sync::Arc::new(TaskError::SdkError {
+                    source_error: boxed,
+                }),
             },
             SdkError::Cancelled(_) => TaskError::OperationCancelled {
                 source_error: boxed,
@@ -2854,6 +3014,18 @@ impl From<SdkError> for TaskError {
     }
 }
 
+fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
+    match error {
+        SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(status))) => {
+            status.code() == Code::Unavailable
+        }
+        SdkError::DapiClientError(DapiClientError::NoAvailableAddresses)
+        | SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_))
+        | SdkError::NoAvailableAddressesToRetry(_) => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2870,6 +3042,250 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
+
+    const DAPI_EXHAUSTED_MESSAGE: &str =
+        "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
+
+    fn dapi_connection_refused_error() -> TaskError {
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");
+        let source_error = Box::new(SdkError::DapiClientError(DapiClientError::Transport(
+            TransportError::Grpc(status),
+        )));
+        TaskError::DapiConnectionRefused { source_error }
+    }
+
+    fn wallet_sdk_connection_refused_error() -> platform_wallet::error::PlatformWalletError {
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");
+        platform_wallet::error::PlatformWalletError::Sdk(SdkError::DapiClientError(
+            DapiClientError::Transport(TransportError::Grpc(status)),
+        ))
+    }
+
+    fn availability(configured_total: usize, live_count: usize) -> DapiAddressAvailability {
+        DapiAddressAvailability {
+            configured_total,
+            live_count,
+        }
+    }
+
+    fn dapi_sdk_source_ptr(error: &TaskError) -> *const SdkError {
+        match error {
+            TaskError::DapiConnectionRefused { source_error } => &**source_error,
+            TaskError::DapiAllAddressesExhausted { source } => dapi_sdk_source_ptr(source),
+            other => panic!("expected a DAPI reachability error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_exhausts_connection_refused_and_preserves_source() {
+        let error = dapi_connection_refused_error();
+        let original_source = dapi_sdk_source_ptr(&error);
+
+        let contextualized = error.contextualize_dapi_availability(availability(1, 0));
+
+        assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+        match contextualized {
+            TaskError::DapiAllAddressesExhausted { source } => {
+                assert!(std::ptr::eq(dapi_sdk_source_ptr(&source), original_source));
+            }
+            other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_keeps_connection_refused_when_an_address_is_live() {
+        let contextualized =
+            dapi_connection_refused_error().contextualize_dapi_availability(availability(1, 1));
+
+        assert!(matches!(
+            contextualized,
+            TaskError::DapiConnectionRefused { .. }
+        ));
+    }
+
+    #[test]
+    fn dapi_availability_context_distinguishes_exhaustion_from_missing_configuration() {
+        let exhausted = TaskError::from(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ))
+        .contextualize_dapi_availability(availability(1, 0));
+        let unconfigured = TaskError::from(SdkError::DapiClientError(
+            DapiClientError::NoAvailableAddresses,
+        ))
+        .contextualize_dapi_availability(availability(0, 0));
+
+        assert!(matches!(
+            exhausted,
+            TaskError::DapiAllAddressesExhausted { .. }
+        ));
+        assert!(matches!(unconfigured, TaskError::DapiNoAddresses { .. }));
+    }
+
+    #[test]
+    fn dapi_availability_context_leaves_unrelated_errors_unchanged() {
+        let contextualized =
+            TaskError::DocumentNotFound.contextualize_dapi_availability(availability(1, 0));
+
+        assert!(matches!(contextualized, TaskError::DocumentNotFound));
+    }
+
+    #[test]
+    fn dapi_availability_context_recurses_through_contact_request_envelope() {
+        let request_id = Identifier::from([7; 32]);
+        let source = dapi_connection_refused_error();
+        let original_source = dapi_sdk_source_ptr(&source);
+        let error = TaskError::DashPayContactRequestActionFailed {
+            request_id,
+            source: Box::new(source),
+        };
+
+        let contextualized = error.contextualize_dapi_availability(availability(1, 0));
+
+        assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+        match contextualized {
+            TaskError::DashPayContactRequestActionFailed {
+                request_id: actual_request_id,
+                source,
+            } => {
+                assert_eq!(actual_request_id, request_id);
+                assert!(matches!(
+                    source.as_ref(),
+                    TaskError::DapiAllAddressesExhausted { .. }
+                ));
+                assert!(std::ptr::eq(dapi_sdk_source_ptr(&source), original_source));
+            }
+            other => panic!("expected contact-request context, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_recurses_through_contact_info_envelope() {
+        let identity_id = Identifier::from([6; 32]);
+        let contact_id = Identifier::from([7; 32]);
+        let source = dapi_connection_refused_error();
+        let original_source = dapi_sdk_source_ptr(&source);
+        let error = TaskError::DashPayContactInfoActionFailed {
+            identity_id,
+            contact_id,
+            source: Box::new(source),
+        };
+
+        let contextualized = error.contextualize_dapi_availability(availability(1, 0));
+
+        assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+        match contextualized {
+            TaskError::DashPayContactInfoActionFailed {
+                identity_id: actual_identity_id,
+                contact_id: actual_contact_id,
+                source,
+            } => {
+                assert_eq!(actual_identity_id, identity_id);
+                assert_eq!(actual_contact_id, contact_id);
+                assert!(matches!(
+                    source.as_ref(),
+                    TaskError::DapiAllAddressesExhausted { .. }
+                ));
+                assert!(std::ptr::eq(dapi_sdk_source_ptr(&source), original_source));
+            }
+            other => panic!("expected contact-info context, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_detects_wallet_operation_sdk_failures() {
+        let identity_id = Identifier::from([8; 32]);
+        let errors = [
+            TaskError::IdentityCreateRejected {
+                source: Box::new(wallet_sdk_connection_refused_error()),
+            },
+            TaskError::IdentityTopUpRejected {
+                identity_id,
+                source: Box::new(wallet_sdk_connection_refused_error()),
+            },
+            TaskError::PlatformAddressFundRejected {
+                source: Box::new(wallet_sdk_connection_refused_error()),
+            },
+        ];
+
+        for (index, error) in errors.into_iter().enumerate() {
+            let contextualized = error.contextualize_dapi_availability(availability(1, 0));
+            assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+            let TaskError::DapiAllAddressesExhausted { source } = contextualized else {
+                panic!("expected wallet SDK failure to be classified as endpoint exhaustion");
+            };
+            match index {
+                0 => assert!(matches!(
+                    source.as_ref(),
+                    TaskError::IdentityCreateRejected { .. }
+                )),
+                1 => assert!(matches!(
+                    source.as_ref(),
+                    TaskError::IdentityTopUpRejected {
+                        identity_id: actual,
+                        ..
+                    } if *actual == identity_id
+                )),
+                2 => assert!(matches!(
+                    source.as_ref(),
+                    TaskError::PlatformAddressFundRejected { .. }
+                )),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn dapi_availability_context_detects_reachability_through_any_task_error_source() {
+        let error = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Testnet,
+            source: Box::new(dapi_connection_refused_error()),
+        };
+
+        let contextualized = error.contextualize_dapi_availability(availability(1, 0));
+
+        assert_eq!(contextualized.to_string(), DAPI_EXHAUSTED_MESSAGE);
+        let TaskError::ScheduledVoteSweepAllAddressesExhausted { network, source } = contextualized
+        else {
+            panic!("expected exhausted scheduled-vote sweep context");
+        };
+        assert_eq!(network, Network::Testnet);
+        assert!(matches!(
+            source.as_ref(),
+            TaskError::DapiConnectionRefused { .. }
+        ));
+
+        let shared_error = TaskError::ScheduledVoteRejected {
+            source: std::sync::Arc::new(dapi_connection_refused_error()),
+        };
+        let contextualized = shared_error.contextualize_dapi_availability(availability(1, 0));
+        assert!(matches!(
+            contextualized,
+            TaskError::ScheduledVoteAllAddressesExhausted { source }
+                if matches!(source.as_ref(), TaskError::DapiConnectionRefused { .. })
+        ));
+    }
+
+    #[test]
+    fn dapi_context_keeps_non_dapi_scheduled_vote_messages() {
+        let rejected = TaskError::ScheduledVoteRejected {
+            source: std::sync::Arc::new(TaskError::DocumentNotFound),
+        }
+        .contextualize_dapi_availability(availability(1, 0));
+        assert_eq!(
+            rejected.to_string(),
+            "The scheduled vote was not accepted. Wait a moment and try again."
+        );
+
+        let sweep = TaskError::ScheduledVoteSweepFailed {
+            network: Network::Testnet,
+            source: Box::new(TaskError::DocumentNotFound),
+        }
+        .contextualize_dapi_availability(availability(1, 0));
+        assert_eq!(
+            sweep.to_string(),
+            "Scheduled votes could not be checked. Wait a moment and try again."
+        );
+    }
 
     #[test]
     fn a_request_action_failure_shows_the_underlying_reason_to_the_user() {

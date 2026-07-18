@@ -384,6 +384,7 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
     validate_legacy_database_version(version)
 }
 
+#[cfg(not(test))]
 async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
     refresh_dapi_nodes_once_with(app_context, |network| async move {
         crate::backend_task::dapi_discovery::discover_and_format(network, None).await
@@ -391,12 +392,38 @@ async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
     .await;
 }
 
+#[cfg(test)]
+async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
+    refresh_dapi_nodes_once_with(app_context, |_| async {
+        Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
+    })
+    .await;
+}
+
+/// Runs one best-effort refresh with an injected discovery operation.
+///
+/// Config persistence intentionally shares the manual refresh's unlocked load-mutate-save;
+/// concurrent settings saves may overwrite either snapshot in this accepted narrow window.
 async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
 where
     D: FnOnce(Network) -> F,
     F: Future<
         Output = Result<(usize, String), crate::backend_task::dapi_discovery::DapiDiscoveryError>,
     >,
+{
+    refresh_dapi_nodes_once_with_legacy_check(app_context, discover, detect_legacy_rows).await;
+}
+
+async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
+    app_context: &Arc<AppContext>,
+    discover: D,
+    detect_legacy: L,
+) where
+    D: FnOnce(Network) -> F,
+    F: Future<
+        Output = Result<(usize, String), crate::backend_task::dapi_discovery::DapiDiscoveryError>,
+    >,
+    L: FnOnce(&AppContext) -> Result<bool, MigrationError>,
 {
     let network = app_context.network;
     let app_kv = app_context.app_kv();
@@ -416,7 +443,7 @@ where
         }
     }
 
-    match detect_legacy_rows(app_context) {
+    match detect_legacy(app_context) {
         Ok(true) => {}
         Ok(false) => {
             write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
@@ -427,9 +454,8 @@ where
                 target = "migration::finish_unwire",
                 ?network,
                 ?error,
-                "Could not inspect the previous version's data for automatic DAPI refresh; recording the refresh as unnecessary",
+                "Could not inspect the previous version's data for automatic DAPI refresh; node discovery will retry on the next launch",
             );
-            write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
             return;
         }
     }
@@ -536,10 +562,10 @@ fn write_dapi_refresh_completion(
 /// decide whether to surface a "storage update complete" banner — a no-op
 /// launch must not show one.
 ///
-/// Before the recovery passes, a best-effort DAPI refresh runs under its own
-/// sentinel. It never changes migration state or propagates an error, so node
-/// discovery cannot affect the precedence below or delay access to recovered
-/// funds and identities.
+/// A best-effort DAPI refresh starts concurrently under its own sentinel. It
+/// never changes migration state or propagates an error, so node discovery
+/// cannot affect the precedence below or delay access to recovered funds and
+/// identities.
 ///
 /// Three independent recovery passes, each under its own sentinel, in this order:
 ///
@@ -638,7 +664,11 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
 }
 
 async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
-    run_under_guard_with_dapi_refresh(app_context, refresh_dapi_nodes_once(app_context)).await
+    let ctx = Arc::clone(app_context);
+    std::mem::drop(tokio::spawn(async move {
+        refresh_dapi_nodes_once(&ctx).await;
+    }));
+    run_under_guard_with_dapi_refresh(app_context, std::future::ready(())).await
 }
 
 async fn run_under_guard_with_dapi_refresh<F>(
@@ -2706,6 +2736,42 @@ mod tests {
                 .as_deref(),
             Some(addresses),
         );
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_legacy_detection_failure_retries_then_completes() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with_legacy_check(
+            &ctx,
+            |_| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((1, "https://unused.example:443".to_string()))
+            },
+            |_| {
+                Err(MigrationError::LegacyDbRead {
+                    table: "wallet",
+                    source: rusqlite::Error::InvalidQuery,
+                })
+            },
+        )
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!dapi_refresh_is_complete(&ctx));
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://retry.example:443".to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

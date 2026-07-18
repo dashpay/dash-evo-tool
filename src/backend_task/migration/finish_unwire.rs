@@ -402,8 +402,9 @@ async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
 
 /// Runs one best-effort refresh with an injected discovery operation.
 ///
-/// Config persistence intentionally shares the manual refresh's unlocked load-mutate-save;
-/// concurrent settings saves may overwrite either snapshot in this accepted narrow window.
+/// Run-triggered passes hold `migration_run` from sentinel read through completion, so they cannot race each other.
+/// The independent manual "Refresh DAPI endpoints" path in `network_chooser_screen.rs` takes no such guard,
+/// leaving its load-save sequence as the accepted narrow-window race.
 async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
 where
     D: FnOnce(Network) -> F,
@@ -443,6 +444,11 @@ async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
         }
     }
 
+    if !matches!(network, Network::Mainnet | Network::Testnet) {
+        write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
+        return;
+    }
+
     match detect_legacy(app_context) {
         Ok(true) => {}
         Ok(false) => {
@@ -458,11 +464,6 @@ async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
             );
             return;
         }
-    }
-
-    if !matches!(network, Network::Mainnet | Network::Testnet) {
-        write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
-        return;
     }
 
     let (count, addresses_csv) = match discover(network).await {
@@ -663,9 +664,22 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     }
 }
 
+/// Owns `migration_run` for the full detached refresh after the launching pass releases it.
+/// The launching pass never awaits this handle, so waiting for its guard cannot deadlock.
+fn spawn_dapi_refresh<F>(app_context: &Arc<AppContext>, refresh: F) -> tokio::task::JoinHandle<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let ctx = Arc::clone(app_context);
+    tokio::spawn(async move {
+        let _refresh_guard = ctx.migration_run.lock().await;
+        refresh.await;
+    })
+}
+
 async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let ctx = Arc::clone(app_context);
-    std::mem::drop(tokio::spawn(async move {
+    std::mem::drop(spawn_dapi_refresh(app_context, async move {
         refresh_dapi_nodes_once(&ctx).await;
     }));
     run_under_guard_with_dapi_refresh(app_context, std::future::ready(())).await
@@ -2649,6 +2663,14 @@ mod tests {
             .is_some()
     }
 
+    async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
+        // `run` deliberately detaches this work; yield so it queues for the guard,
+        // then acquire the same guard after the refresh releases it.
+        tokio::task::yield_now().await;
+        let guard = app_context.migration_run.lock().await;
+        drop(guard);
+    }
+
     fn seed_legacy_single_key(app_context: &AppContext) {
         let path = app_context.db.db_file_path().expect("file-backed database");
         let conn = Connection::open(path).expect("open legacy database");
@@ -2807,18 +2829,69 @@ mod tests {
         backend.shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dapi_refresh_launches_are_serialized() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let release_first = Arc::new(tokio::sync::Notify::new());
+
+        let first_attempts = Arc::clone(&attempts);
+        let first_started_task = Arc::clone(&first_started);
+        let release_first_task = Arc::clone(&release_first);
+        let first = spawn_dapi_refresh(&ctx, async move {
+            first_attempts.fetch_add(1, Ordering::SeqCst);
+            first_started_task.notify_one();
+            release_first_task.notified().await;
+        });
+        first_started.notified().await;
+
+        let second_attempts = Arc::clone(&attempts);
+        let second_started = Arc::new(tokio::sync::Notify::new());
+        let second_started_task = Arc::clone(&second_started);
+        let second = spawn_dapi_refresh(&ctx, async move {
+            second_attempts.fetch_add(1, Ordering::SeqCst);
+            second_started_task.notify_one();
+        });
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                second_started.notified(),
+            )
+            .await
+            .is_err(),
+            "a second refresh must wait for the first refresh's migration guard",
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        release_first.notify_one();
+        first.await.expect("join first refresh");
+        second.await.expect("join second refresh");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
     #[tokio::test]
-    async fn dapi_refresh_devnet_legacy_install_skips_discovery() {
+    async fn dapi_refresh_devnet_detection_failure_completes_without_discovery() {
         let _env_guard = CONFIG_ENV_LOCK.lock().await;
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = app_context_for_network(tmp.path(), Network::Devnet);
-        seed_legacy_single_key(&ctx);
         let calls = AtomicUsize::new(0);
 
-        refresh_dapi_nodes_once_with(&ctx, |_| async {
-            calls.fetch_add(1, Ordering::SeqCst);
-            Ok((1, "https://unused.example:443".to_string()))
-        })
+        refresh_dapi_nodes_once_with_legacy_check(
+            &ctx,
+            |_| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((1, "https://unused.example:443".to_string()))
+            },
+            |_| {
+                Err(MigrationError::LegacyDbRead {
+                    table: "wallet",
+                    source: rusqlite::Error::InvalidQuery,
+                })
+            },
+        )
         .await;
 
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -5717,6 +5790,7 @@ mod tests {
             run(&ctx).await.expect("first run"),
             "the first launch moves legacy data",
         );
+        wait_for_dapi_refresh(&ctx).await;
         assert!(backend.is_wallet_registered(&seed_hash));
         assert_eq!(ctx.get_scheduled_votes().expect("read votes").len(), 1);
         let sentinel_after_first = read_sentinel(&ctx.app_kv(), network)
@@ -6170,6 +6244,7 @@ mod tests {
         let backend = ctx.wallet_backend().expect("backend wired");
 
         run(&ctx).await.expect("first launch");
+        wait_for_dapi_refresh(&ctx).await;
 
         let deleted_id = Identifier::from(deleted);
         assert!(

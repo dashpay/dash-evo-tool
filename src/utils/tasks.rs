@@ -6,9 +6,33 @@ use tokio_util::sync::CancellationToken;
 /// Timeout duration for graceful shutdown.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+// `Shared` needs a cloneable output; the mutex-wrapped option lets one observer take `JoinError`.
 type BlockingTaskCompletion = futures::future::Shared<
     futures::future::BoxFuture<'static, Arc<Mutex<Option<Result<(), tokio::task::JoinError>>>>>,
 >;
+
+struct ActiveTaskGuard {
+    active_names: Arc<Mutex<Vec<&'static str>>>,
+    name: &'static str,
+}
+
+impl ActiveTaskGuard {
+    fn new(active_names: Arc<Mutex<Vec<&'static str>>>, name: &'static str) -> Self {
+        Self { active_names, name }
+    }
+}
+
+impl Drop for ActiveTaskGuard {
+    fn drop(&mut self) {
+        let mut names = self
+            .active_names
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(position) = names.iter().position(|name| *name == self.name) {
+            names.swap_remove(position);
+        }
+    }
+}
 
 #[derive(Clone)]
 struct TrackedBlockingTask {
@@ -84,14 +108,16 @@ impl TaskManager {
             tracing::debug!(task = name, "Rejected task registration during shutdown");
             return;
         }
-        state.tasks.spawn(async move {
-            future.await;
-            name
-        });
         self.active_names
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(name);
+        let active_names = Arc::clone(&self.active_names);
+        state.tasks.spawn(async move {
+            let _active_task = ActiveTaskGuard::new(active_names, name);
+            future.await;
+            name
+        });
     }
 
     /// Spawn blocking work and retain its real task handle through shutdown.
@@ -117,11 +143,20 @@ impl TaskManager {
         let completion = async move { Arc::new(Mutex::new(Some(join_handle.await))) }
             .boxed()
             .shared();
+        state
+            .blocking_tasks
+            .retain(|task| task.completion.peek().is_none());
         state.blocking_tasks.push(TrackedBlockingTask {
             name,
             completion: completion.clone(),
         });
+        self.active_names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(name);
+        let active_names = Arc::clone(&self.active_names);
         state.tasks.spawn(async move {
+            let _active_task = ActiveTaskGuard::new(active_names, name);
             let result = completion
                 .await
                 .lock()
@@ -132,10 +167,11 @@ impl TaskManager {
             }
             name
         });
-        self.active_names
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(name);
+    }
+
+    /// Maximum time used by the ordinary-task and blocking-task shutdown phases.
+    pub const fn graceful_shutdown_budget() -> Duration {
+        SHUTDOWN_TIMEOUT.saturating_add(SHUTDOWN_TIMEOUT)
     }
 
     /// Start an asynchronous graceful shutdown of all subtasks.
@@ -169,61 +205,6 @@ impl TaskManager {
         });
 
         rx
-    }
-
-    /// Shutdown all subtasks gracefully (blocking).
-    ///
-    /// Ordinary tasks are aborted after [`SHUTDOWN_TIMEOUT`]. Blocking work is
-    /// then awaited for the same bound and returns an error if still running.
-    /// Blocks the calling thread. Prefer [`shutdown_async`] for a responsive UI.
-    ///
-    /// This is an equivalent of `Runtime::shutdown_timeout` but for subtasks.
-    pub fn shutdown(&self) -> Result<(), String> {
-        let tasks = self.begin_shutdown();
-        let active_names = self.active_names.clone();
-
-        // a bit naive synchronization to wait for shutdown
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<(usize, TaskShutdownOutcome)>();
-
-        // we need to run this task in separate task to avoid cancelling it during shutdown
-        tokio::task::spawn(async move {
-            let result = shutdown_all_inner(
-                tasks,
-                &active_names,
-                "blocking",
-                SHUTDOWN_TIMEOUT,
-                SHUTDOWN_TIMEOUT,
-            )
-            .await;
-
-            // notify that shutdown is complete
-            if tx.send(result).is_err() {
-                tracing::error!("Failed to send shutdown completion signal");
-            }
-        });
-
-        // wait for the shutdown task to finish
-        const WAIT_TIME: Duration = Duration::from_millis(100);
-        let mut completed = 0;
-        let mut outcome = TaskShutdownOutcome::BackendTasksTimedOut;
-        for _ in 0..(2 * SHUTDOWN_TIMEOUT.as_millis()) / WAIT_TIME.as_millis() {
-            if let Ok((count, shutdown_outcome)) = rx.try_recv() {
-                completed = count;
-                outcome = shutdown_outcome;
-                break;
-            }
-            // wait for a short time to avoid busy waiting
-            std::thread::sleep(WAIT_TIME);
-        }
-
-        tracing::debug!("Shutdown complete, {} subtasks finished cleanly", completed);
-
-        match outcome {
-            TaskShutdownOutcome::Complete => Ok(()),
-            TaskShutdownOutcome::BackendTasksTimedOut => {
-                Err("backend task blocking work timed out during shutdown".to_owned())
-            }
-        }
     }
 
     fn begin_shutdown(&self) -> ShutdownTasks {
@@ -272,7 +253,6 @@ async fn shutdown_inner(
     shutdown_timeout: Duration,
 ) -> usize {
     let mut completed = 0;
-    let names_for_join = active_names.clone();
     let timed_out = timeout(shutdown_timeout, async {
         let total = tasks.len();
         tracing::trace!(total, "{label}: joining tasks");
@@ -281,12 +261,6 @@ async fn shutdown_inner(
             completed += 1;
             match &handle {
                 Ok(name) => {
-                    // Remove one instance of this name from active list
-                    if let Ok(mut names) = names_for_join.lock()
-                        && let Some(pos) = names.iter().position(|n| *n == *name)
-                    {
-                        names.swap_remove(pos);
-                    }
                     tracing::trace!(
                         task = name,
                         task_num = completed,
@@ -379,6 +353,67 @@ impl Default for TaskManager {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_blocking_entry_is_pruned_on_next_registration() {
+        let manager = TaskManager::new();
+        let (joined_tx, joined_rx) = tokio::sync::oneshot::channel();
+        manager.spawn_blocking_sync(
+            "completed-backend-task",
+            || {},
+            move |_| async move {
+                let _ = joined_tx.send(());
+            },
+        );
+        joined_rx.await.expect("completed task observer ran");
+
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        manager.spawn_blocking_sync(
+            "pending-backend-task",
+            move || {
+                release_rx.recv().expect("wait for task release");
+            },
+            |_| async {},
+        );
+
+        let tracked = manager
+            .task_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .blocking_tasks
+            .len();
+        release_tx.send(()).expect("release pending task");
+
+        assert_eq!(tracked, 1, "only the pending blocking task stays tracked");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn panicking_on_join_callback_is_removed_from_active_names() {
+        let manager = TaskManager::new();
+        manager.spawn_blocking_sync(
+            "panicking-on-join",
+            || {},
+            |_| async { panic!("on_join panic for regression coverage") },
+        );
+
+        let _ = shutdown_all_inner(
+            manager.begin_shutdown(),
+            &manager.active_names,
+            "test",
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(
+            manager
+                .active_names
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty(),
+            "completed work is not reported as active when its callback panics"
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn shutdown_rejects_tasks_submitted_after_the_barrier() {

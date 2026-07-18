@@ -186,6 +186,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Closing the app now finishes wallet activity and clears in-memory secrets**:
+  wallet cleanup still completes if you close the app again while it is already
+  closing or if a network change is still connecting.
+
 - **Submitted Platform actions are no longer reported as rejected when only
   confirmation failed**: if a state transition was broadcast but its result
   could not be confirmed, the app now tells you to check whether it completed

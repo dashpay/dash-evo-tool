@@ -157,6 +157,7 @@ fn clear_scheduled_vote_sweep_guard_on_error(
 ) {
     let network = match (context, error) {
         (_, TaskError::ScheduledVoteSweepFailed { network, .. }) => Some(*network),
+        (_, TaskError::ScheduledVoteSweepAllAddressesExhausted { network, .. }) => Some(*network),
         (
             BackendTaskContext::ScheduledVoteSweep { network },
             TaskError::BackendTaskFailed { .. },
@@ -2296,7 +2297,9 @@ impl App for AppState {
                 }
                 TaskResult::Error {
                     context,
-                    error: err @ TaskError::ScheduledVoteSweepFailed { .. },
+                    error:
+                        err @ (TaskError::ScheduledVoteSweepFailed { .. }
+                        | TaskError::ScheduledVoteSweepAllAddressesExhausted { .. }),
                 } => {
                     clear_scheduled_vote_sweep_guard_on_error(
                         &mut self.scheduled_vote_sweeps_in_progress,

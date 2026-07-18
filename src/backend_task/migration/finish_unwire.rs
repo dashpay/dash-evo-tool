@@ -7,6 +7,7 @@
 //! launches **on the same network**.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
@@ -16,6 +17,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::error::TaskError;
+use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -41,6 +43,15 @@ pub fn sentinel_key_for(network: Network) -> String {
         "{SENTINEL_KEY_PREFIX}:{}:{SENTINEL_KEY_VERSION}",
         network_prefix(network)
     )
+}
+
+/// Per-network completion key for automatic DAPI refresh during an upgrade.
+///
+/// This pass cannot share the wallet-drain sentinel: a prior launch may finish
+/// moving wallets while node discovery is temporarily unavailable. Keeping a
+/// separate key lets discovery retry without rerunning or gating fund recovery.
+pub fn dapi_refresh_sentinel_key_for(network: Network) -> String {
+    format!("det:migration:dapi_refresh:{}:v1", network_prefix(network))
 }
 
 /// Tables sniffed during detection. Any non-empty row count flips the
@@ -373,6 +384,149 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
     validate_legacy_database_version(version)
 }
 
+async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
+    refresh_dapi_nodes_once_with(app_context, |network| async move {
+        crate::backend_task::dapi_discovery::discover_and_format(network, None).await
+    })
+    .await;
+}
+
+async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
+where
+    D: FnOnce(Network) -> F,
+    F: Future<
+        Output = Result<(usize, String), crate::backend_task::dapi_discovery::DapiDiscoveryError>,
+    >,
+{
+    let network = app_context.network;
+    let app_kv = app_context.app_kv();
+    let sentinel_key = dapi_refresh_sentinel_key_for(network);
+
+    match app_kv.get::<MigrationCompletion>(DetScope::Global, &sentinel_key) {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Could not read the automatic DAPI refresh sentinel; node discovery will retry on the next launch",
+            );
+            return;
+        }
+    }
+
+    match detect_legacy_rows(app_context) {
+        Ok(true) => {}
+        Ok(false) => {
+            write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Could not inspect the previous version's data for automatic DAPI refresh; recording the refresh as unnecessary",
+            );
+            write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
+            return;
+        }
+    }
+
+    if !matches!(network, Network::Mainnet | Network::Testnet) {
+        write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
+        return;
+    }
+
+    let (count, addresses_csv) = match discover(network).await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Automatic DAPI node discovery failed during migration; it will retry on the next launch",
+            );
+            return;
+        }
+    };
+
+    let mut config = match Config::load_from(&app_context.data_dir) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Could not load the network configuration after automatic DAPI discovery; the refresh will retry on the next launch",
+            );
+            return;
+        }
+    };
+    let mut network_config = config
+        .config_for_network(network)
+        .clone()
+        .unwrap_or_default();
+    network_config.dapi_addresses = Some(addresses_csv);
+    config.update_config_for_network(network, network_config.clone());
+    if let Err(error) = config.save(&app_context.data_dir) {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?network,
+            ?error,
+            "Could not save automatically discovered DAPI nodes; the refresh will retry on the next launch",
+        );
+        return;
+    }
+
+    match app_context.config.write() {
+        Ok(mut live_config) => *live_config = network_config,
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Could not update the live network configuration with discovered DAPI nodes; the refresh will retry on the next launch",
+            );
+            return;
+        }
+    }
+
+    if let Err(error) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?network,
+            ?error,
+            "Could not reinitialize network clients after automatic DAPI refresh; the saved addresses will be used on the next launch",
+        );
+    }
+
+    tracing::info!(
+        target = "migration::finish_unwire",
+        ?network,
+        count,
+        "Automatically refreshed DAPI nodes during migration",
+    );
+    write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 1);
+}
+
+fn write_dapi_refresh_completion(
+    app_kv: &crate::wallet_backend::DetKv,
+    sentinel_key: &str,
+    network: Network,
+    network_count: u32,
+) {
+    if let Err(error) = write_completion_sentinel(app_kv, sentinel_key, network_count) {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?network,
+            ?error,
+            "Could not write the automatic DAPI refresh sentinel; the pass may retry on the next launch",
+        );
+    }
+}
+
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
 /// the sentinels are already present.
 ///
@@ -382,7 +536,12 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
 /// decide whether to surface a "storage update complete" banner — a no-op
 /// launch must not show one.
 ///
-/// Three independent passes, each under its own sentinel, in this order:
+/// Before the recovery passes, a best-effort DAPI refresh runs under its own
+/// sentinel. It never changes migration state or propagates an error, so node
+/// discovery cannot affect the precedence below or delay access to recovered
+/// funds and identities.
+///
+/// Three independent recovery passes, each under its own sentinel, in this order:
 ///
 /// 1. **App data** (scheduled votes, top-up history) — DET-owned rows the
 ///    wallet drain never touched.
@@ -479,7 +638,19 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
 }
 
 async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+    run_under_guard_with_dapi_refresh(app_context, refresh_dapi_nodes_once(app_context)).await
+}
+
+async fn run_under_guard_with_dapi_refresh<F>(
+    app_context: &Arc<AppContext>,
+    dapi_refresh: F,
+) -> Result<bool, TaskError>
+where
+    F: Future<Output = ()>,
+{
     validate_saved_data_for_migration(app_context)?;
+
+    dapi_refresh.await;
 
     let status = app_context.migration_status();
 
@@ -1240,8 +1411,9 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
 }
 
 /// Record one import pass as complete under `sentinel_key`. The sole writer of
-/// [`MigrationCompletion`]: every pass — wallet drain, app data, identities —
-/// records completion through here, so all sentinels share one codec.
+/// [`MigrationCompletion`]: every pass — DAPI refresh, wallet drain, app data,
+/// identities — records completion through here, so all sentinels share one
+/// codec.
 ///
 /// `network_count` is diagnostic only — logged when the sentinel is read back,
 /// never branched on. The wallet drain uses it to tell a no-op launch (`0`) from
@@ -2428,9 +2600,189 @@ mod tests {
     use super::*;
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CONFIG_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    fn dapi_refresh_is_complete(app_context: &AppContext) -> bool {
+        app_context
+            .app_kv()
+            .get::<MigrationCompletion>(
+                DetScope::Global,
+                &dapi_refresh_sentinel_key_for(app_context.network),
+            )
+            .expect("read DAPI refresh sentinel")
+            .is_some()
+    }
+
+    fn seed_legacy_single_key(app_context: &AppContext) {
+        let path = app_context.db.db_file_path().expect("file-backed database");
+        let conn = Connection::open(path).expect("open legacy database");
+        seed_legacy_row(
+            &conn,
+            &[7u8; 32],
+            &[1u8; 32],
+            &[],
+            &[],
+            "addr",
+            None,
+            false,
+            app_context.network,
+        );
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_fresh_install_skips_discovery_and_preserves_config() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let original_env = std::fs::read(tmp.path().join(".env")).expect("read original config");
+        let original_live_addresses = ctx
+            .config
+            .read()
+            .expect("read original in-memory config")
+            .dapi_addresses
+            .clone();
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://unused.example:443".to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(dapi_refresh_is_complete(&ctx));
+        assert_eq!(
+            std::fs::read(tmp.path().join(".env")).expect("read final config"),
+            original_env,
+        );
+        assert_eq!(
+            ctx.config
+                .read()
+                .expect("read in-memory config")
+                .dapi_addresses
+                .as_ref(),
+            original_live_addresses.as_ref(),
+        );
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_legacy_install_updates_disk_and_live_config() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+        let calls = AtomicUsize::new(0);
+        let calls_ref = &calls;
+        let addresses = "https://one.example:443,https://two.example:443";
+
+        refresh_dapi_nodes_once_with(&ctx, |network| async move {
+            assert_eq!(network, Network::Testnet);
+            calls_ref.fetch_add(1, Ordering::SeqCst);
+            Ok((2, addresses.to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
+        let saved = crate::config::Config::load_from(tmp.path()).expect("reload saved config");
+        assert_eq!(
+            saved
+                .config_for_network(Network::Testnet)
+                .as_ref()
+                .and_then(|config| config.dapi_addresses.as_deref()),
+            Some(addresses),
+        );
+        assert_eq!(
+            ctx.config
+                .read()
+                .expect("read in-memory config")
+                .dapi_addresses
+                .as_deref(),
+            Some(addresses),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dapi_refresh_discovery_failure_retries_without_failing_migration() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_wallet(&ctx, &[0x81u8; 64], "funds", ctx.network);
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let calls = AtomicUsize::new(0);
+
+        let refresh = refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
+        });
+        let did_work = run_under_guard_with_dapi_refresh(&ctx, refresh)
+            .await
+            .expect("DAPI discovery must not fail the migration");
+
+        assert!(did_work, "the independent wallet pass still moved data");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!dapi_refresh_is_complete(&ctx));
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "the next launch retries");
+        assert!(!dapi_refresh_is_complete(&ctx));
+        backend.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_devnet_legacy_install_skips_discovery() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = app_context_for_network(tmp.path(), Network::Devnet);
+        seed_legacy_single_key(&ctx);
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://unused.example:443".to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(dapi_refresh_is_complete(&ctx));
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_existing_sentinel_skips_discovery() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://first.example:443".to_string()))
+        })
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://unused.example:443".to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
     }
 
     #[test]
@@ -4381,8 +4733,10 @@ mod tests {
     /// two `run()` no-op paths, which return before touching the wallet
     /// backend.
     fn fresh_app_context(dir: &std::path::Path) -> Arc<AppContext> {
-        use dash_sdk::dpp::dashcore::Network;
+        app_context_for_network(dir, Network::Testnet)
+    }
 
+    fn app_context_for_network(dir: &std::path::Path, network: Network) -> Arc<AppContext> {
         crate::app_dir::ensure_env_file(dir);
         let db_file = dir.join("data.db");
         let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
@@ -4393,7 +4747,7 @@ mod tests {
         let secret_store = AppContext::open_secret_store(dir).expect("open secret store");
         AppContext::new(
             dir.to_path_buf(),
-            Network::Testnet,
+            network,
             db,
             Default::default(),
             Default::default(),

@@ -310,7 +310,7 @@ impl AppContext {
             .await?;
 
         let wallet_arc = self.wallet_arc(&seed_hash)?;
-        let sdk = self.sdk.load().as_ref().clone();
+        let sdk = backend.sdk().clone();
 
         // Derive the change address, build the outputs, and sign — all inside
         // one held-seed scope so the operation prompts at most once and the

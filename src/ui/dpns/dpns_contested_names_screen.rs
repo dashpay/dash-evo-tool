@@ -1852,8 +1852,10 @@ impl ScreenLike for DPNSScreen {
         if matches!(
             error,
             TaskError::ScheduledVoteRejected { .. }
+                | TaskError::ScheduledVoteAllAddressesExhausted { .. }
                 | TaskError::ScheduledVoteResultUnavailable
                 | TaskError::ScheduledVoteSweepFailed { .. }
+                | TaskError::ScheduledVoteSweepAllAddressesExhausted { .. }
         ) {
             self.scheduled_vote_cast_in_progress = false;
             if let Ok(mut guard) = self.scheduled_votes.lock() {
@@ -2237,5 +2239,17 @@ mod tests {
             source: Box::new(TaskError::ScheduledVoteResultUnavailable),
         };
         assert!(!screen.display_task_error(&sweep_error));
+
+        screen.scheduled_vote_cast_in_progress = true;
+        let exhausted_error = TaskError::ScheduledVoteSweepAllAddressesExhausted {
+            network: Network::Regtest,
+            source: Box::new(TaskError::DapiNoAddresses {
+                source_error: Box::new(dash_sdk::Error::DapiClientError(
+                    dash_sdk::dapi_client::DapiClientError::NoAvailableAddresses,
+                )),
+            }),
+        };
+        assert!(!screen.display_task_error(&exhausted_error));
+        assert!(!screen.scheduled_vote_cast_in_progress);
     }
 }

@@ -2123,7 +2123,9 @@ impl App for AppState {
                 }
                 TaskResult::Error {
                     context,
-                    error: err @ TaskError::ScheduledVoteSweepFailed { network, .. },
+                    error:
+                        err @ (TaskError::ScheduledVoteSweepFailed { network, .. }
+                        | TaskError::ScheduledVoteSweepAllAddressesExhausted { network, .. }),
                 } => {
                     self.scheduled_vote_sweeps_in_progress.remove(&network);
                     self.visible_screen_mut()

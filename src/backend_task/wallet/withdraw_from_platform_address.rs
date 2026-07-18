@@ -26,7 +26,8 @@ impl AppContext {
         // Resolve the shared wallet handle and SDK before the async operation.
         let network = self.network;
         let wallet_arc = self.wallet_arc(&seed_hash)?;
-        let sdk = self.sdk.load().as_ref().clone();
+        let backend = self.wallet_backend()?;
+        let sdk = backend.sdk().clone();
 
         // Deduct fee from the specified input (should be the one with highest balance)
         let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(
@@ -42,7 +43,6 @@ impl AppContext {
         // Sign each withdrawal input through a JIT platform signer that borrows
         // the HD seed only for the duration of the SDK call. The seed zeroizes
         // on return.
-        let backend = self.wallet_backend()?;
         let _result = backend
             .secret_access()
             .with_secret_session(

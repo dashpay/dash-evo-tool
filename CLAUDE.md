@@ -42,7 +42,34 @@ Test locations:
 
 Driving the actual compiled binary through a real display — for flows that need real navigation, real async/network timing, or visual verification beyond what `kittest` (no display) or `backend-e2e` (no UI) can cover. Read `docs/gui-testing/README.md` before running this kind of test — it has the safety rules (isolated data dir, credential handling, fund-movement caps) and the reusable scenario library under `docs/gui-testing/scenarios/`.
 
-Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
+Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.92), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
+
+### Local vs CI — avoid duplicate test runs
+
+CI is the full-suite backstop. Do not reproduce it locally. (This section covers your own machine — an agent running *inside* the Claude Code review GitHub Action should follow "CI: Safe Cargo Wrapper" below instead.)
+
+On every **non-draft** PR that touches Rust code, and on pushes to `v*-dev`, GitHub Actions runs the full non-ignored-test gate:
+
+| Workflow | Runs |
+|---|---|
+| `tests.yml` | `cargo test --all-features --workspace` and `cargo test --doc --all-features --workspace` |
+| `clippy.yml` | `cargo fmt --all -- --check` and `cargo clippy --all-features --all-targets -- -D warnings` |
+
+The workflows are path-filtered independently, each on `**/*.rs` (which includes `build.rs`), `**/Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, and its own workflow file. `tests.yml` additionally watches `tests/backend-e2e/**`, so a documentation-only change under that directory (e.g. `tests/backend-e2e/README.md`) still triggers the test workflow; other documentation-only changes run neither workflow.
+
+Because CI always runs the full sweep, locally you should:
+
+- Run only the **narrowest scope covering your change** — `cargo test <test_name> --all-features`, or `cargo test --test kittest --all-features` for a UI change. Running the whole workspace suite locally only duplicates the run CI is about to do anyway.
+- Always run `cargo fmt --all` before committing (honors the `rust-toolchain.toml` pin). It needs no compile, and `clippy.yml` fails the build on unformatted code.
+- Run `cargo clippy` locally only for the scope you touched, or when you expect lint fallout. This repo has no `[workspace]`, so there's no `-p <crate>` to narrow with — scope by target instead (e.g. `--bin dash-evo-tool`). CI owns the `--all-features --all-targets` sweep.
+- After pushing, watch the PR checks instead of re-running the suite locally.
+
+Two gaps where CI will **not** cover you:
+
+- **Draft PRs run no automatic CI.** Both workflows are gated on `github.event.pull_request.draft != true`, so a draft PR's `pull_request` runs are suppressed. Neither workflow declares a `workflow_dispatch` trigger, so there is no way to run them by hand against a draft branch — mark the PR ready for review (`ready_for_review` triggers the full run) to get CI coverage.
+- **Backend E2E tests are not in CI.** The step is commented out in `tests.yml`, and the tests are `#[ignore]`d. If a change touches backend behaviour that only `tests/backend-e2e/` covers, run those locally; CI will not.
+
+A green CI run is only meaningful if it actually executed your tests. `cargo test <filter>` exits 0 and prints `test result: ok` even when the filter matches nothing — when checking a run, confirm your new test names appear in the log **with a pass status**, not merely present. A `#[ignore]`d test (e.g. `test_drop_zeroes_full_capacity` in `src/model/secret.rs`) can appear in the log as `ignored` without having actually run — the "full non-ignored-test gate" above intentionally excludes these; they stay a manual check.
 
 ### User stories catalog
 

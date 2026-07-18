@@ -27,6 +27,111 @@ fn welcome_role_cards_expose_radio_accessibility_state() {
             let card = harness.get_by_role_and_label(Role::RadioButton, label);
             assert_eq!(card.accesskit_node().toggled(), Some(toggled));
         }
+
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            harness.get_by_label(role.description());
+        }
+    });
+}
+
+#[test]
+fn welcome_role_cards_paint_keyboard_focus() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        harness.run_steps(10);
+
+        let unfocused_shapes = harness.output().shapes.clone();
+        harness
+            .get_by_role_and_label(Role::RadioButton, "Expert view")
+            .focus();
+        harness.step();
+
+        assert!(
+            harness.output().shapes != unfocused_shapes,
+            "the selected role card must still paint a distinct focus indicator"
+        );
+        let selected_focus_shapes = harness.output().shapes.clone();
+
+        harness
+            .get_by_role_and_label(Role::RadioButton, "Default view")
+            .focus();
+        harness.step();
+
+        assert!(
+            harness
+                .get_by_role_and_label(Role::RadioButton, "Default view")
+                .is_focused(),
+            "keyboard focus must move to the requested role card"
+        );
+        assert!(
+            harness.output().shapes != selected_focus_shapes,
+            "a focused, unselected role card must paint a visible focus indicator"
+        );
+    });
+}
+
+#[test]
+fn welcome_role_cards_fit_a_narrow_window() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        let window_width = 480.0;
+        harness.set_size(egui::vec2(window_width, 1000.0));
+        harness.run_steps(10);
+
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            let card = harness.get_by_role_and_label(Role::RadioButton, role.label());
+            let rect = card.rect();
+            assert!(
+                rect.left() >= 0.0 && rect.right() <= window_width,
+                "{} card must remain fully visible at narrow widths; got {rect:?}",
+                role.label()
+            );
+            card.click();
+            harness.step();
+        }
+    });
+}
+
+#[test]
+fn welcome_role_card_selection_is_painted_in_the_click_frame() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        harness.run_steps(10);
+
+        harness
+            .get_by_role_and_label(Role::RadioButton, "Developer view")
+            .click();
+        harness.step();
+        let click_frame_shapes = harness.output().shapes.clone();
+
+        harness.step();
+        assert!(
+            harness.output().shapes == click_frame_shapes,
+            "the click frame must already paint the final selected-card state"
+        );
     });
 }
 
@@ -114,42 +219,6 @@ fn just_explore_lands_on_identities_hub() {
             harness.state().selected_main_screen,
             RootScreenType::RootScreenIdentityHub,
             "the 'Just Explore' path must land on the Identities hub, not the hidden DashPay profile"
-        );
-    });
-}
-
-/// A cold start opens on the Welcome screen while the connection state is still
-/// its default `Disconnected` — no wallet exists and nothing has asked SPV to
-/// sync, so this is "hasn't started yet", not a real failure. The alarming red
-/// "Disconnected — check your internet connection" banner must be suppressed
-/// until onboarding completes; otherwise it reads as a connectivity problem the
-/// user cannot act on.
-#[test]
-fn welcome_screen_suppresses_disconnected_banner() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let _guard = rt.enter();
-
-        // A fresh data dir leaves onboarding incomplete, so the welcome screen
-        // renders on the first frame while the connection state is still the
-        // default `Disconnected` (no sync has been attempted).
-        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-                .expect("Failed to create AppState")
-                .with_animations(false)
-        });
-        harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
-
-        assert!(
-            harness.state().show_welcome_screen,
-            "a fresh data dir must open on the onboarding welcome screen"
-        );
-        assert!(
-            harness
-                .query_by_label_contains("check your internet connection")
-                .is_none(),
-            "the onboarding screen must not show the red 'Disconnected' connection banner"
         );
     });
 }

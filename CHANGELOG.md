@@ -129,10 +129,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   [User Roles](docs/user-roles.md) for details.
 
 - **Welcome screen's experience-level picker is now three cards**: it matches
-  the Create Wallet / Import Wallet / Just Explore cards below it, with an
-  icon and a short description on each, and a highlighted border on the one
-  you're on. Same three levels, same behavior — just easier to compare at a
-  glance.
+  the visual style of the Create Wallet / Import Wallet / Just Explore cards
+  below it. Each role card adds an icon and a short description, and the one
+  you're on gets a highlighted border. Same three levels, same behavior — just
+  easier to compare at a glance.
 
 ### Known Limitations
 
@@ -294,6 +294,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Two settings changes made in quick succession could occasionally cause one
   of them to be silently lost. Saving settings is now a single atomic step,
   so no change is dropped.
+- A burst of unreachable Dash network servers could show a message that
+  understated the outage as a problem reaching one server, even once the app's
+  own sync was otherwise healthy. This happens when every server the app
+  currently knows about becomes briefly unreachable at once — a temporary,
+  self-recovering condition. The app now recognizes it and says "All Dash network
+  servers are temporarily unreachable. Please wait a minute and retry." instead.
 - The onboarding Welcome screen on first launch no longer shows a red
   "Disconnected — check your internet connection" banner before you have done
   anything. On a fresh start there is no wallet yet and no sync has been

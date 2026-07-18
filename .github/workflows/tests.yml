@@ -1,26 +1,28 @@
 name: Tests
 
+# Path filters below fire on any change that can affect a build or test result,
+# and on nothing that cannot. `**/*.rs` covers build.rs and every crate's
+# sources; documentation changes deliberately match nothing.
 on:
   push:
     branches:
-      - main
       - "v*-dev"
-    paths:
-      - "**/*.rs"
+    paths: &code_paths
+      - "**/*.rs" # includes build.rs
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".cargo/config.toml"
+      - "rust-toolchain.toml"
       - "tests/backend-e2e/**"
       - ".github/workflows/tests.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "Cargo.lock"
-      - ".cargo/config.toml"
-      - "tests/backend-e2e/**"
-      - ".github/workflows/tests.yml"
+    paths: *code_paths
+  # Allows a manual run against a branch. Draft PRs are suppressed by the
+  # `draft != true` guard below and otherwise have no way to run CI at all; a
+  # manual run covers them. Note it tests the branch head, not the PR merge
+  # commit, so it does not prove the merged result is green.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -49,11 +51,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
+      # No `toolchain` input: the action installs what rust-toolchain.toml pins,
+      # so this job runs the same compiler the project builds with. Naming a
+      # version here (or setting a rustup override) would take precedence over
+      # that file and silently test a different toolchain than the pinned one.
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
-          override: true
+          # This action defaults RUSTFLAGS to "-D warnings"; the test job has
+          # never denied warnings and Clippy owns that gate, so keep it unset.
+          rustflags: ""
+          # Cargo caching is handled by the actions/cache step above.
+          cache: false
 
       - name: Install system dependencies
         run: |

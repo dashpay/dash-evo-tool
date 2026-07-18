@@ -78,6 +78,15 @@ impl AppContext {
         }
 
         let backend = self.wallet_backend()?;
+        let result = self.run_shielded_task_inner(task, backend.as_ref()).await;
+        super::contextualize_wallet_backend_dapi_result(result, backend.as_ref())
+    }
+
+    async fn run_shielded_task_inner(
+        self: &Arc<Self>,
+        task: ShieldedTask,
+        backend: &crate::wallet_backend::WalletBackend,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             ShieldedTask::ShieldFromAssetLock {
                 seed_hash,

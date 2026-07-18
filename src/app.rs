@@ -38,7 +38,7 @@ use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync};
-use crate::utils::tasks::TaskManager;
+use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
 use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::Identifier;
@@ -88,11 +88,12 @@ const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 enum ShutdownOutcome {
     Complete,
     TaskManagerFailed,
+    BackendTasksTimedOut,
     WalletBackendTimedOut,
 }
 
 fn shutdown_hard_deadline() -> Duration {
-    crate::utils::tasks::SHUTDOWN_TIMEOUT
+    2 * crate::utils::tasks::SHUTDOWN_TIMEOUT
         + WALLET_BACKEND_SHUTDOWN_TIMEOUT
         + SHUTDOWN_DEADLINE_MARGIN
 }
@@ -261,8 +262,13 @@ mod backend_task_join_tests {
         let sender = SenderAsync::new(tx, egui::Context::default());
         let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
 
-        forward_backend_task_join_error(join_handle, sender, None, BackendTaskContext::Unknown)
-            .await;
+        forward_backend_task_join_error(
+            join_handle.await,
+            sender,
+            None,
+            BackendTaskContext::Unknown,
+        )
+        .await;
 
         let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -289,7 +295,7 @@ mod backend_task_join_tests {
         let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
 
         forward_backend_task_join_error(
-            join_handle,
+            join_handle.await,
             sender,
             Some(request_id),
             BackendTaskContext::Unknown,
@@ -576,12 +582,12 @@ impl TaskResult {
 }
 
 async fn forward_backend_task_join_error(
-    join_handle: tokio::task::JoinHandle<()>,
+    join_result: Result<(), tokio::task::JoinError>,
     sender: egui_mpsc::SenderAsync<TaskResult>,
     request_id: Option<Identifier>,
     context: BackendTaskContext,
 ) {
-    if let Err(source) = join_handle.await {
+    if let Err(source) = join_result {
         let stopped = TaskError::BackendTaskFailed {
             source: source.into(),
         };
@@ -1484,25 +1490,27 @@ impl AppState {
         let watcher_context = context.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
-        let join_handle = tokio::task::spawn_blocking(move || {
-            handle.block_on(async move {
-                let result = app_context.run_backend_task(task, sender.clone()).await;
-                if let Err(e) = sender
-                    .send(TaskResult::from_backend_task_result(context, result))
-                    .await
-                {
-                    tracing::error!("Failed to send task result: {}", e);
-                }
-            });
-        });
-        self.subtasks.spawn_sync(
+        self.subtasks.spawn_blocking_sync(
             "backend_task_join_watcher",
-            forward_backend_task_join_error(
-                join_handle,
-                watcher_sender,
-                request_id,
-                watcher_context,
-            ),
+            move || {
+                handle.block_on(async move {
+                    let result = app_context.run_backend_task(task, sender.clone()).await;
+                    if let Err(e) = sender
+                        .send(TaskResult::from_backend_task_result(context, result))
+                        .await
+                    {
+                        tracing::error!("Failed to send task result: {}", e);
+                    }
+                });
+            },
+            move |join_result| {
+                forward_backend_task_join_error(
+                    join_result,
+                    watcher_sender,
+                    request_id,
+                    watcher_context,
+                )
+            },
         );
     }
 
@@ -1517,39 +1525,41 @@ impl AppState {
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
 
-        let join_handle = tokio::task::spawn_blocking(move || {
-            handle.block_on(async move {
-                let results = match mode {
-                    BackendTasksExecutionMode::Sequential => {
-                        app_context
-                            .run_backend_tasks_sequential(tasks, sender.clone())
-                            .await
-                    }
-                    BackendTasksExecutionMode::Concurrent => {
-                        app_context
-                            .run_backend_tasks_concurrent(tasks, sender.clone())
-                            .await
-                    }
-                };
-
-                for (context, result) in contexts.into_iter().zip(results) {
-                    if let Err(e) = sender
-                        .send(TaskResult::from_backend_task_result(context, result))
-                        .await
-                    {
-                        tracing::error!("Failed to send task result: {}", e);
-                    }
-                }
-            });
-        });
-        self.subtasks.spawn_sync(
+        self.subtasks.spawn_blocking_sync(
             "backend_tasks_join_watcher",
-            forward_backend_task_join_error(
-                join_handle,
-                watcher_sender,
-                None,
-                BackendTaskContext::Unknown,
-            ),
+            move || {
+                handle.block_on(async move {
+                    let results = match mode {
+                        BackendTasksExecutionMode::Sequential => {
+                            app_context
+                                .run_backend_tasks_sequential(tasks, sender.clone())
+                                .await
+                        }
+                        BackendTasksExecutionMode::Concurrent => {
+                            app_context
+                                .run_backend_tasks_concurrent(tasks, sender.clone())
+                                .await
+                        }
+                    };
+
+                    for (context, result) in contexts.into_iter().zip(results) {
+                        if let Err(e) = sender
+                            .send(TaskResult::from_backend_task_result(context, result))
+                            .await
+                        {
+                            tracing::error!("Failed to send task result: {}", e);
+                        }
+                    }
+                });
+            },
+            move |join_result| {
+                forward_backend_task_join_error(
+                    join_result,
+                    watcher_sender,
+                    None,
+                    BackendTaskContext::Unknown,
+                )
+            },
         );
     }
 
@@ -1918,12 +1928,12 @@ impl AppState {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         tokio::spawn(async move {
-            let task_shutdown_completed = loop {
+            let task_shutdown_outcome = loop {
                 tokio::select! {
-                    result = &mut task_shutdown => break result.is_ok(),
+                    result = &mut task_shutdown => break result.ok(),
                     task_result = task_result_receiver.recv() => {
                         let Some(task_result) = task_result else {
-                            break task_shutdown.await.is_ok();
+                            break task_shutdown.await.ok();
                         };
                         Self::collect_created_context(&mut contexts, task_result);
                     }
@@ -1940,10 +1950,12 @@ impl AppState {
             }
 
             let wallet_outcome = Self::shutdown_wallet_backends(contexts).await;
-            let outcome = if task_shutdown_completed {
-                wallet_outcome
-            } else {
-                ShutdownOutcome::TaskManagerFailed
+            let outcome = match task_shutdown_outcome {
+                Some(TaskShutdownOutcome::Complete) => wallet_outcome,
+                Some(TaskShutdownOutcome::BackendTasksTimedOut) => {
+                    ShutdownOutcome::BackendTasksTimedOut
+                }
+                None => ShutdownOutcome::TaskManagerFailed,
             };
             let _ = tx.send(outcome);
         });
@@ -1956,14 +1968,14 @@ impl AppState {
 
         let mut contexts = self.initial_shutdown_contexts();
         let mut task_shutdown = self.subtasks.shutdown_async();
-        let task_shutdown_completed = loop {
+        let task_shutdown_outcome = loop {
             while let Ok(task_result) = self.task_result_receiver.try_recv() {
                 Self::collect_created_context(&mut contexts, task_result);
             }
 
             match task_shutdown.try_recv() {
-                Ok(()) => break true,
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break false,
+                Ok(outcome) => break Some(outcome),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break None,
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -1986,10 +1998,11 @@ impl AppState {
         });
 
         match rx.recv_timeout(WALLET_BACKEND_SHUTDOWN_TIMEOUT + SHUTDOWN_DEADLINE_MARGIN) {
-            Ok(ShutdownOutcome::Complete) if task_shutdown_completed => {}
+            Ok(ShutdownOutcome::Complete)
+                if task_shutdown_outcome == Some(TaskShutdownOutcome::Complete) => {}
             Ok(outcome) => tracing::warn!(
                 ?outcome,
-                task_shutdown_completed,
+                ?task_shutdown_outcome,
                 "Blocking shutdown fallback completed with degraded teardown"
             ),
             Err(error) => tracing::warn!(
@@ -2020,6 +2033,9 @@ impl App for AppState {
                             }
                             ShutdownOutcome::TaskManagerFailed => tracing::warn!(
                                 "Task shutdown failed; closing with degraded teardown"
+                            ),
+                            ShutdownOutcome::BackendTasksTimedOut => tracing::warn!(
+                                "Backend task blocking work exceeded its deadline; closing with degraded teardown"
                             ),
                             ShutdownOutcome::WalletBackendTimedOut => tracing::warn!(
                                 "Wallet backend shutdown exceeded its deadline; closing with degraded teardown"
@@ -3069,7 +3085,7 @@ mod shutdown_tests {
     fn viewport_deadline_covers_task_and_wallet_shutdown_budgets() {
         assert!(
             shutdown_hard_deadline()
-                >= crate::utils::tasks::SHUTDOWN_TIMEOUT + WALLET_BACKEND_SHUTDOWN_TIMEOUT
+                >= 2 * crate::utils::tasks::SHUTDOWN_TIMEOUT + WALLET_BACKEND_SHUTDOWN_TIMEOUT
         );
     }
 }

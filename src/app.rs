@@ -371,7 +371,7 @@ mod backend_task_join_tests {
         let join_handle = tokio::task::spawn_blocking(|| panic!("scheduled sweep panic"));
 
         forward_backend_task_join_error(
-            join_handle,
+            join_handle.await,
             sender,
             None,
             BackendTaskContext::ScheduledVoteSweep { network },

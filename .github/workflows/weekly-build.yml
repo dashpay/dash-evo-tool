@@ -1,6 +1,6 @@
 name: "Weekly Draft Pre-release"
 
-# Cuts a DRAFT pre-release every Saturday from v1.0-dev, versioned
+# Cuts a DRAFT pre-release every Tuesday from v1.0-dev, versioned
 # v<core>-weekly.<YYYYMMDD> (core read live from Cargo.toml), skipping when
 # there are no new commits since the last weekly tag or when CI is red.
 # Posts a Slack notification linking to the release page.
@@ -13,7 +13,7 @@ name: "Weekly Draft Pre-release"
 
 on:
   schedule:
-    - cron: "0 2 * * 6" # Every Saturday at 02:00 UTC
+    - cron: "30 3 * * 2" # Every Tuesday at 03:30 UTC
   workflow_dispatch:
     inputs:
       force:

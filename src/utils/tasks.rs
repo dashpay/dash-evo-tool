@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 // `Shared` needs a cloneable output; the mutex-wrapped option lets one observer take `JoinError`.
-type BlockingTaskCompletion = futures::future::Shared<
+type TaskCompletion = futures::future::Shared<
     futures::future::BoxFuture<'static, Arc<Mutex<Option<Result<(), tokio::task::JoinError>>>>>,
 >;
 
@@ -35,15 +35,15 @@ impl Drop for ActiveTaskGuard {
 }
 
 #[derive(Clone)]
-struct TrackedBlockingTask {
+struct TrackedTask {
     name: &'static str,
-    completion: BlockingTaskCompletion,
+    completion: TaskCompletion,
 }
 
-impl std::fmt::Debug for TrackedBlockingTask {
+impl std::fmt::Debug for TrackedTask {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_tuple("TrackedBlockingTask")
+            .debug_tuple("TrackedTask")
             .field(&self.name)
             .finish()
     }
@@ -52,9 +52,9 @@ impl std::fmt::Debug for TrackedBlockingTask {
 /// Terminal state of managed task shutdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskShutdownOutcome {
-    /// Ordinary and blocking tasks reached their bounded shutdown points.
+    /// Ordinary tasks and tracked joins reached their bounded shutdown points.
     Complete,
-    /// Blocking work was still running when its shutdown wait expired.
+    /// Tracked work was still running when its shutdown wait expired.
     BackendTasksTimedOut,
 }
 
@@ -68,14 +68,15 @@ pub struct TaskManager {
 #[derive(Debug)]
 struct TaskState {
     accepting: bool,
+    tracking_joins: bool,
     tasks: tokio::task::JoinSet<&'static str>,
-    blocking_tasks: Vec<TrackedBlockingTask>,
+    tracked_tasks: Vec<TrackedTask>,
 }
 
 #[derive(Debug)]
 struct ShutdownTasks {
     tasks: tokio::task::JoinSet<&'static str>,
-    blocking_tasks: Vec<TrackedBlockingTask>,
+    task_state: Arc<Mutex<TaskState>>,
 }
 
 /// TaskManager tracks spawned subtasks and allows for graceful shutdown of all tasks.
@@ -87,8 +88,9 @@ impl TaskManager {
             cancellation_token,
             task_state: Arc::new(Mutex::new(TaskState {
                 accepting: true,
+                tracking_joins: true,
                 tasks: tokio::task::JoinSet::new(),
-                blocking_tasks: Vec::new(),
+                tracked_tasks: Vec::new(),
             })),
             active_names: Arc::new(Mutex::new(Vec::new())),
         }
@@ -97,8 +99,9 @@ impl TaskManager {
     /// Spawn a named future as a subtask, to be used in synchronous context.
     ///
     /// The `name` label is logged during shutdown to identify slow tasks.
+    /// Returns the original future when the shutdown admission barrier is closed.
     #[inline(always)]
-    pub fn spawn_sync<F>(&self, name: &'static str, future: F)
+    pub fn spawn_sync<F>(&self, name: &'static str, future: F) -> Result<(), F>
     where
         F: std::future::Future<Output = ()> + Send + 'static,
         F::Output: Send + 'static,
@@ -106,7 +109,7 @@ impl TaskManager {
         let mut state = self.task_state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.accepting {
             tracing::debug!(task = name, "Rejected task registration during shutdown");
-            return;
+            return Err(future);
         }
         self.active_names
             .lock()
@@ -118,13 +121,20 @@ impl TaskManager {
             future.await;
             name
         });
+        Ok(())
     }
 
     /// Spawn blocking work and retain its real task handle through shutdown.
     ///
     /// The async join observer remains an ordinary abortable subtask, while a
     /// separate completion handle lets shutdown await non-cancellable blocking work.
-    pub fn spawn_blocking_sync<F, C, Fut>(&self, name: &'static str, task: F, on_join: C)
+    /// Returns the work and callback when shutdown has stopped accepting tasks.
+    pub fn spawn_blocking_sync<F, C, Fut>(
+        &self,
+        name: &'static str,
+        task: F,
+        on_join: C,
+    ) -> Result<(), (F, C)>
     where
         F: FnOnce() + Send + 'static,
         C: FnOnce(Result<(), tokio::task::JoinError>) -> Fut + Send + 'static,
@@ -136,20 +146,64 @@ impl TaskManager {
                 task = name,
                 "Rejected blocking task registration during shutdown"
             );
-            return;
+            return Err((task, on_join));
         }
 
         let join_handle = tokio::task::spawn_blocking(task);
-        let completion = async move { Arc::new(Mutex::new(Some(join_handle.await))) }
-            .boxed()
-            .shared();
-        state
-            .blocking_tasks
-            .retain(|task| task.completion.peek().is_none());
-        state.blocking_tasks.push(TrackedBlockingTask {
+        let completion = task_completion(join_handle);
+        self.register_tracked_completion(&mut state, name, completion, on_join);
+        Ok(())
+    }
+
+    /// Spawn async work whose join must survive ordinary-task shutdown.
+    pub fn spawn_tracked_sync<F, T, C, Fut>(
+        &self,
+        name: &'static str,
+        task: F,
+        on_join: C,
+    ) -> Result<(), (F, C)>
+    where
+        F: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+        C: FnOnce(Result<(), tokio::task::JoinError>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut state = self.task_state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.tracking_joins {
+            tracing::debug!(task = name, "Rejected task join tracking after shutdown");
+            return Err((task, on_join));
+        }
+
+        let completion = task_completion(tokio::spawn(task));
+        self.register_tracked_completion(&mut state, name, completion, on_join);
+        Ok(())
+    }
+
+    fn register_tracked_completion<C, Fut>(
+        &self,
+        state: &mut TaskState,
+        name: &'static str,
+        completion: TaskCompletion,
+        on_join: C,
+    ) where
+        C: FnOnce(Result<(), tokio::task::JoinError>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        state.tracked_tasks.retain(|task| {
+            task.completion.peek().is_none_or(|completion| {
+                completion
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .is_some()
+            })
+        });
+        state.tracked_tasks.push(TrackedTask {
             name,
             completion: completion.clone(),
         });
+        if !state.accepting {
+            return;
+        }
         self.active_names
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -169,7 +223,7 @@ impl TaskManager {
         });
     }
 
-    /// Maximum time used by the ordinary-task and blocking-task shutdown phases.
+    /// Maximum time used by the ordinary-task and tracked-join shutdown phases.
     pub const fn graceful_shutdown_budget() -> Duration {
         SHUTDOWN_TIMEOUT.saturating_add(SHUTDOWN_TIMEOUT)
     }
@@ -177,7 +231,7 @@ impl TaskManager {
     /// Start an asynchronous graceful shutdown of all subtasks.
     ///
     /// Cancels ordinary tasks and returns a receiver that resolves after both
-    /// ordinary and blocking task waits reach a bounded outcome. This does
+    /// ordinary-task and tracked-join waits reach a bounded outcome. This does
     /// **not** block the calling thread, so the UI can keep repainting.
     pub fn shutdown_async(&self) -> tokio::sync::oneshot::Receiver<TaskShutdownOutcome> {
         let tasks = self.begin_shutdown();
@@ -208,20 +262,26 @@ impl TaskManager {
     }
 
     fn begin_shutdown(&self) -> ShutdownTasks {
-        let (tasks, blocking_tasks) = {
+        let tasks = {
             let mut state = self.task_state.lock().unwrap_or_else(|e| e.into_inner());
             state.accepting = false;
-            (
-                std::mem::take(&mut state.tasks),
-                std::mem::take(&mut state.blocking_tasks),
-            )
+            std::mem::take(&mut state.tasks)
         };
         self.cancellation_token.cancel();
         ShutdownTasks {
             tasks,
-            blocking_tasks,
+            task_state: Arc::clone(&self.task_state),
         }
     }
+}
+
+fn task_completion<T>(task: tokio::task::JoinHandle<T>) -> TaskCompletion
+where
+    T: Send + 'static,
+{
+    async move { Arc::new(Mutex::new(Some(task.await.map(|_| ())))) }
+        .boxed()
+        .shared()
 }
 
 async fn shutdown_all_inner(
@@ -232,9 +292,9 @@ async fn shutdown_all_inner(
     blocking_task_timeout: Duration,
 ) -> (usize, TaskShutdownOutcome) {
     let completed = shutdown_inner(tasks.tasks, active_names, label, task_timeout).await;
-    let blocking_tasks_completed =
-        shutdown_blocking_tasks(tasks.blocking_tasks, label, blocking_task_timeout).await;
-    let outcome = if blocking_tasks_completed {
+    let tracked_tasks_completed =
+        shutdown_tracked_tasks(tasks.task_state, label, blocking_task_timeout).await;
+    let outcome = if tracked_tasks_completed {
         TaskShutdownOutcome::Complete
     } else {
         TaskShutdownOutcome::BackendTasksTimedOut
@@ -273,7 +333,8 @@ async fn shutdown_inner(
                     task_num = completed,
                     total,
                     elapsed_ms = start.elapsed().as_millis() as u64,
-                    error = %e,
+                    cancelled = e.is_cancelled(),
+                    panicked = e.is_panic(),
                     "{label}: task joined with error"
                 ),
             }
@@ -310,35 +371,65 @@ async fn shutdown_inner(
     completed
 }
 
-async fn shutdown_blocking_tasks(
-    tasks: Vec<TrackedBlockingTask>,
+async fn shutdown_tracked_tasks(
+    task_state: Arc<Mutex<TaskState>>,
     label: &str,
     shutdown_timeout: Duration,
 ) -> bool {
-    let total = tasks.len();
-    if total == 0 {
-        return true;
-    }
-
-    tracing::trace!(total, "{label}: joining backend task blocking work");
-    let joined = timeout(
-        shutdown_timeout,
-        futures::future::join_all(tasks.into_iter().map(|task| async move {
-            task.completion.await;
-            task.name
-        })),
-    )
+    let mut total = 0;
+    let joined = timeout(shutdown_timeout, async {
+        loop {
+            let tasks = {
+                let mut state = task_state.lock().unwrap_or_else(|error| error.into_inner());
+                if state.tracked_tasks.is_empty() {
+                    state.tracking_joins = false;
+                    break;
+                }
+                std::mem::take(&mut state.tracked_tasks)
+            };
+            total += tasks.len();
+            tracing::trace!(
+                batch = tasks.len(),
+                total,
+                "{label}: joining tracked task work"
+            );
+            let completions = futures::future::join_all(
+                tasks
+                    .into_iter()
+                    .map(|task| async move { (task.name, task.completion.await) }),
+            )
+            .await;
+            for (name, completion) in completions {
+                let result = completion
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                if let Some(Err(error)) = result {
+                    tracing::warn!(
+                        task = name,
+                        cancelled = error.is_cancelled(),
+                        panicked = error.is_panic(),
+                        "Tracked task stopped unexpectedly after its completion observer ended"
+                    );
+                }
+            }
+        }
+    })
     .await;
 
     if joined.is_err() {
+        task_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .tracking_joins = false;
         tracing::warn!(
             total,
             timeout_secs = shutdown_timeout.as_secs(),
-            "Backend task blocking work exceeded shutdown wait; continuing with degraded teardown"
+            "Tracked backend work exceeded shutdown wait; continuing with degraded teardown"
         );
         false
     } else {
-        tracing::trace!(total, "{label}: backend task blocking work joined");
+        tracing::trace!(total, "{label}: tracked task work joined");
         true
     }
 }
@@ -358,29 +449,39 @@ mod tests {
     async fn completed_blocking_entry_is_pruned_on_next_registration() {
         let manager = TaskManager::new();
         let (joined_tx, joined_rx) = tokio::sync::oneshot::channel();
-        manager.spawn_blocking_sync(
-            "completed-backend-task",
-            || {},
-            move |_| async move {
-                let _ = joined_tx.send(());
-            },
+        assert!(
+            manager
+                .spawn_blocking_sync(
+                    "completed-backend-task",
+                    || {},
+                    move |_| async move {
+                        let _ = joined_tx.send(());
+                    },
+                )
+                .is_ok(),
+            "completed task is accepted"
         );
         joined_rx.await.expect("completed task observer ran");
 
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        manager.spawn_blocking_sync(
-            "pending-backend-task",
-            move || {
-                release_rx.recv().expect("wait for task release");
-            },
-            |_| async {},
+        assert!(
+            manager
+                .spawn_blocking_sync(
+                    "pending-backend-task",
+                    move || {
+                        release_rx.recv().expect("wait for task release");
+                    },
+                    |_| async {},
+                )
+                .is_ok(),
+            "pending task is accepted"
         );
 
         let tracked = manager
             .task_state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .blocking_tasks
+            .tracked_tasks
             .len();
         release_tx.send(()).expect("release pending task");
 
@@ -390,10 +491,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn panicking_on_join_callback_is_removed_from_active_names() {
         let manager = TaskManager::new();
-        manager.spawn_blocking_sync(
-            "panicking-on-join",
-            || {},
-            |_| async { panic!("on_join panic for regression coverage") },
+        assert!(
+            manager
+                .spawn_blocking_sync(
+                    "panicking-on-join",
+                    || {},
+                    |_| async { panic!("on_join panic for regression coverage") },
+                )
+                .is_ok(),
+            "panicking callback task is accepted"
         );
 
         let _ = shutdown_all_inner(
@@ -420,15 +526,20 @@ mod tests {
         let manager = TaskManager::new();
         let accepted_task_ran = Arc::new(AtomicBool::new(false));
         let ran = Arc::clone(&accepted_task_ran);
-        manager.spawn_sync("accepted-task", async move {
-            ran.store(true, Ordering::Release);
-        });
+        assert!(
+            manager
+                .spawn_sync("accepted-task", async move {
+                    ran.store(true, Ordering::Release);
+                })
+                .is_ok(),
+            "task is accepted before shutdown"
+        );
 
         let shutdown = manager.shutdown_async();
         let late_task_ran = Arc::new(AtomicBool::new(false));
         let ran = Arc::clone(&late_task_ran);
 
-        manager.spawn_sync("late-task", async move {
+        let late_task = manager.spawn_sync("late-task", async move {
             ran.store(true, Ordering::Release);
         });
 
@@ -436,6 +547,10 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(accepted_task_ran.load(Ordering::Acquire));
         assert!(!late_task_ran.load(Ordering::Acquire));
+        late_task
+            .expect_err("late task is returned to the caller")
+            .await;
+        assert!(late_task_ran.load(Ordering::Acquire));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -443,13 +558,18 @@ mod tests {
         let manager = TaskManager::new();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        manager.spawn_blocking_sync(
-            "backend-task",
-            move || {
-                started_tx.send(()).expect("report task start");
-                release_rx.recv().expect("wait for task release");
-            },
-            |_| async {},
+        assert!(
+            manager
+                .spawn_blocking_sync(
+                    "backend-task",
+                    move || {
+                        started_tx.send(()).expect("report task start");
+                        release_rx.recv().expect("wait for task release");
+                    },
+                    |_| async {},
+                )
+                .is_ok(),
+            "backend task is accepted"
         );
         started_rx.recv().expect("blocking task started");
 
@@ -482,13 +602,18 @@ mod tests {
         let manager = TaskManager::new();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        manager.spawn_blocking_sync(
-            "stuck-backend-task",
-            move || {
-                started_tx.send(()).expect("report task start");
-                release_rx.recv().expect("wait for task release");
-            },
-            |_| async {},
+        assert!(
+            manager
+                .spawn_blocking_sync(
+                    "stuck-backend-task",
+                    move || {
+                        started_tx.send(()).expect("report task start");
+                        release_rx.recv().expect("wait for task release");
+                    },
+                    |_| async {},
+                )
+                .is_ok(),
+            "stuck backend task is accepted"
         );
         started_rx.recv().expect("blocking task started");
 
@@ -504,5 +629,151 @@ mod tests {
         release_tx.send(()).expect("release blocking task");
 
         assert_eq!(outcome, TaskShutdownOutcome::BackendTasksTimedOut);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_is_tracked_before_ordinary_shutdown_aborts_its_caller() {
+        let manager = Arc::new(TaskManager::new());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (_release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let task_manager = Arc::clone(&manager);
+        assert!(
+            manager
+                .spawn_sync("managed-request", async move {
+                    let result = crate::backend_task::await_managed_network_request_with_timeout(
+                        task_manager,
+                        "request-reaper",
+                        Duration::from_secs(1),
+                        async move {
+                            let _ = started_tx.send(());
+                            let _ = release_rx.await;
+                        },
+                        |source| {
+                            crate::backend_task::error::TaskError::TokenBalanceRefreshTimeout {
+                                source,
+                            }
+                        },
+                    )
+                    .await;
+                    let _ = result_tx.send(result);
+                })
+                .is_ok(),
+            "managed request is accepted"
+        );
+        started_rx.await.expect("request started");
+
+        let outcome = shutdown_all_inner(
+            manager.begin_shutdown(),
+            &manager.active_names,
+            "test",
+            Duration::from_millis(10),
+            Duration::from_millis(25),
+        )
+        .await
+        .1;
+
+        assert!(
+            result_rx.await.is_err(),
+            "ordinary shutdown aborts the request caller before its timeout"
+        );
+        assert_eq!(outcome, TaskShutdownOutcome::BackendTasksTimedOut);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accepted_timeout_reaper_cannot_yield_complete_while_request_runs() {
+        let manager = Arc::new(TaskManager::new());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (_release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let result = crate::backend_task::await_managed_network_request_with_timeout(
+            Arc::clone(&manager),
+            "request-reaper",
+            Duration::from_millis(10),
+            async move {
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+            },
+            |source| crate::backend_task::error::TaskError::TokenBalanceRefreshTimeout { source },
+        );
+        let (_, result) = tokio::join!(started_rx, result);
+        assert!(result.is_err());
+
+        let outcome = shutdown_all_inner(
+            manager.begin_shutdown(),
+            &manager.active_names,
+            "test",
+            Duration::from_millis(10),
+            Duration::from_millis(25),
+        )
+        .await
+        .1;
+
+        assert_eq!(outcome, TaskShutdownOutcome::BackendTasksTimedOut);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_consumes_late_blocking_join_error() {
+        let manager = TaskManager::new();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        assert!(
+            manager
+                .spawn_blocking_sync(
+                    "late-panic",
+                    move || {
+                        started_tx.send(()).expect("report task start");
+                        release_rx.recv().expect("wait for task release");
+                        panic!("synthetic panic without secret material");
+                    },
+                    |_| async {},
+                )
+                .is_ok(),
+            "late panic task is accepted"
+        );
+        started_rx.recv().expect("blocking task started");
+        let tasks = manager.begin_shutdown();
+        let completion = tasks
+            .task_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .tracked_tasks[0]
+            .completion
+            .clone();
+
+        shutdown_inner(
+            tasks.tasks,
+            &manager.active_names,
+            "test",
+            Duration::from_millis(10),
+        )
+        .await;
+        release_tx.send(()).expect("release blocking task");
+
+        let ready = tokio::time::timeout(Duration::from_secs(1), completion.clone())
+            .await
+            .expect("late join error becomes ready");
+        assert!(
+            ready
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_ref()
+                .is_some_and(Result::is_err),
+            "late join error remains available for shutdown"
+        );
+        assert!(
+            manager
+                .spawn_tracked_sync("later-tracked-task", async {}, |_| async {})
+                .is_ok(),
+            "tracked registration remains open during the join phase"
+        );
+
+        assert!(shutdown_tracked_tasks(tasks.task_state, "test", Duration::from_secs(1)).await);
+
+        let stored = completion
+            .peek()
+            .expect("blocking completion")
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(stored.is_none(), "shutdown consumes the late join error");
     }
 }

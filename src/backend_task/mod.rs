@@ -88,20 +88,45 @@ pub(crate) async fn await_managed_network_request_with_timeout<T>(
 where
     T: Send + 'static,
 {
-    let mut task = tokio::spawn(request);
-    match tokio::time::timeout(timeout_duration, &mut task).await {
-        Ok(result) => result.map_err(|source| TaskError::BackendTaskFailed {
-            source: source.into(),
-        }),
-        Err(source) => {
-            task_manager.spawn_sync(reaper_name, async move {
-                if let Err(source) = task.await {
-                    let error = crate::backend_task::error::BackendTaskJoinError::from(source);
-                    tracing::error!(?error, "Timed-out background request stopped unexpectedly");
-                }
-            });
-            Err(timeout_error(source))
-        }
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let reply = Arc::new(std::sync::Mutex::new(Some(reply_tx)));
+    let request_reply = Arc::clone(&reply);
+    let join_reply = Arc::clone(&reply);
+    let registration = task_manager.spawn_tracked_sync(
+        reaper_name,
+        async move {
+            let result = request.await;
+            if let Some(reply) = request_reply
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = reply.send(Ok(result));
+            }
+        },
+        move |join_result| async move {
+            if let Err(source) = join_result
+                && let Some(reply) = join_reply
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+            {
+                let _ = reply.send(Err(crate::backend_task::error::BackendTaskJoinError::from(
+                    source,
+                )));
+            }
+        },
+    );
+    if registration.is_err() {
+        return Err(TaskError::TaskManagerShuttingDown);
+    }
+    drop(reply);
+
+    match tokio::time::timeout(timeout_duration, reply_rx).await {
+        Ok(Ok(Ok(result))) => Ok(result),
+        Ok(Ok(Err(source))) => Err(TaskError::BackendTaskFailed { source }),
+        Ok(Err(_)) => Err(TaskError::TaskManagerShuttingDown),
+        Err(source) => Err(timeout_error(source)),
     }
 }
 

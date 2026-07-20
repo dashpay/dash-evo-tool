@@ -1590,7 +1590,7 @@ impl AppState {
         reason: BackendInitReason,
         start_spv: bool,
     ) {
-        subtasks.spawn_sync(reason.task_name(), async move {
+        let _ = subtasks.spawn_sync(reason.task_name(), async move {
             if start_spv {
                 let already_running = app_ctx
                     .wallet_backend()
@@ -1613,7 +1613,7 @@ impl AppState {
         config: crate::mcp::McpConfig,
     ) {
         let cancel = subtasks.cancellation_token.clone();
-        subtasks.spawn_sync("mcp-server", async move {
+        let _ = subtasks.spawn_sync("mcp-server", async move {
             if let Err(error) = crate::mcp::start_http_server(app_context, config, cancel).await {
                 tracing::error!(%error, "MCP server failed");
             }
@@ -1637,7 +1637,7 @@ impl AppState {
         let watcher_context = context.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
-        self.subtasks.spawn_blocking_sync(
+        let _ = self.subtasks.spawn_blocking_sync(
             "backend_task_join_watcher",
             move || {
                 handle.block_on(async move {
@@ -1672,7 +1672,7 @@ impl AppState {
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
 
-        self.subtasks.spawn_blocking_sync(
+        let _ = self.subtasks.spawn_blocking_sync(
             "backend_tasks_join_watcher",
             move || {
                 handle.block_on(async move {
@@ -2125,6 +2125,22 @@ impl AppState {
         Self::shutdown_wallet_backends(contexts).await
     }
 
+    async fn finish_shutdown_after_tasks<F>(
+        task_shutdown_outcome: Option<TaskShutdownOutcome>,
+        wallet_shutdown: F,
+    ) -> ShutdownOutcome
+    where
+        F: std::future::Future<Output = ShutdownOutcome>,
+    {
+        match task_shutdown_outcome {
+            Some(TaskShutdownOutcome::Complete) => wallet_shutdown.await,
+            Some(TaskShutdownOutcome::BackendTasksTimedOut) => {
+                ShutdownOutcome::BackendTasksTimedOut
+            }
+            None => ShutdownOutcome::TaskManagerFailed,
+        }
+    }
+
     fn start_async_shutdown(&mut self) -> tokio::sync::oneshot::Receiver<ShutdownOutcome> {
         let mut contexts = self.initial_shutdown_contexts();
         let mut task_shutdown = self.subtasks.shutdown_async();
@@ -2148,20 +2164,16 @@ impl AppState {
                 }
             };
 
-            let wallet_outcome = Self::finish_wallet_shutdown(
-                contexts,
-                task_result_receiver,
-                #[cfg(feature = "mcp")]
-                mcp_app_context,
+            let outcome = Self::finish_shutdown_after_tasks(
+                task_shutdown_outcome,
+                Self::finish_wallet_shutdown(
+                    contexts,
+                    task_result_receiver,
+                    #[cfg(feature = "mcp")]
+                    mcp_app_context,
+                ),
             )
             .await;
-            let outcome = match task_shutdown_outcome {
-                Some(TaskShutdownOutcome::Complete) => wallet_outcome,
-                Some(TaskShutdownOutcome::BackendTasksTimedOut) => {
-                    ShutdownOutcome::BackendTasksTimedOut
-                }
-                None => ShutdownOutcome::TaskManagerFailed,
-            };
             let _ = tx.send(outcome);
         });
 
@@ -2194,11 +2206,14 @@ impl AppState {
 
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         tokio::spawn(async move {
-            let outcome = Self::finish_wallet_shutdown(
-                contexts,
-                task_result_receiver,
-                #[cfg(feature = "mcp")]
-                mcp_app_context,
+            let outcome = Self::finish_shutdown_after_tasks(
+                task_shutdown_outcome,
+                Self::finish_wallet_shutdown(
+                    contexts,
+                    task_result_receiver,
+                    #[cfg(feature = "mcp")]
+                    mcp_app_context,
+                ),
             )
             .await;
             let _ = tx.send(outcome);
@@ -2849,7 +2864,7 @@ impl App for AppState {
                     // only the winner spawns the async teardown. No banner is
                     // needed for a user-initiated stop.
                     if app_ctx.connection_status().begin_spv_stop() {
-                        self.subtasks.spawn_sync("spv_manual_stop", async move {
+                        let _ = self.subtasks.spawn_sync("spv_manual_stop", async move {
                             app_ctx.stop_spv().await;
                         });
                     }
@@ -3443,13 +3458,18 @@ mod shutdown_tests {
 
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
-        app.subtasks.spawn_blocking_sync(
-            "slow-shutdown-regression-task",
-            move || {
-                started_tx.send(()).expect("report slow task start");
-                release_rx.recv().expect("wait for slow task release");
-            },
-            |_| async {},
+        assert!(
+            app.subtasks
+                .spawn_blocking_sync(
+                    "slow-shutdown-regression-task",
+                    move || {
+                        started_tx.send(()).expect("report slow task start");
+                        release_rx.recv().expect("wait for slow task release");
+                    },
+                    |_| async {},
+                )
+                .is_ok(),
+            "slow shutdown task is accepted"
         );
         started_rx.recv().expect("slow task started");
 
@@ -3527,6 +3547,57 @@ mod shutdown_tests {
             !backend.secret_cached.load(Ordering::Acquire),
             "the final clear still runs when backend shutdown exceeds its timeout"
         );
+    }
+
+    #[tokio::test]
+    async fn backend_task_timeout_skips_wallet_teardown() {
+        let teardown_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&teardown_calls);
+
+        let outcome = AppState::finish_shutdown_after_tasks(
+            Some(TaskShutdownOutcome::BackendTasksTimedOut),
+            async move {
+                calls.fetch_add(1, Ordering::Relaxed);
+                ShutdownOutcome::Complete
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, ShutdownOutcome::BackendTasksTimedOut);
+        assert_eq!(teardown_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn task_manager_failure_skips_wallet_teardown() {
+        let teardown_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&teardown_calls);
+
+        let outcome = AppState::finish_shutdown_after_tasks(None, async move {
+            calls.fetch_add(1, Ordering::Relaxed);
+            ShutdownOutcome::Complete
+        })
+        .await;
+
+        assert_eq!(outcome, ShutdownOutcome::TaskManagerFailed);
+        assert_eq!(teardown_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn complete_task_shutdown_runs_wallet_teardown_once() {
+        let teardown_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&teardown_calls);
+
+        let outcome = AppState::finish_shutdown_after_tasks(
+            Some(TaskShutdownOutcome::Complete),
+            async move {
+                calls.fetch_add(1, Ordering::Relaxed);
+                ShutdownOutcome::Complete
+            },
+        )
+        .await;
+
+        assert_eq!(outcome, ShutdownOutcome::Complete);
+        assert_eq!(teardown_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

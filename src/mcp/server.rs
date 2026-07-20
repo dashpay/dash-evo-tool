@@ -8,6 +8,27 @@ use rmcp::model::*;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, service::RequestContext};
 use std::sync::Arc;
 
+#[cfg(feature = "cli")]
+use crate::utils::tasks::TaskShutdownOutcome;
+
+/// Drain managed backend work before tearing down a standalone wallet backend.
+#[cfg(feature = "cli")]
+pub async fn shutdown_app_context_wallet_backend(ctx: &Arc<AppContext>) {
+    match ctx.subtasks.shutdown_async().await {
+        Ok(TaskShutdownOutcome::Complete) => {
+            if let Ok(backend) = ctx.wallet_backend() {
+                backend.shutdown().await;
+            }
+        }
+        Ok(TaskShutdownOutcome::BackendTasksTimedOut) => {
+            tracing::warn!("Managed backend work timed out; skipping standalone wallet teardown")
+        }
+        Err(_) => {
+            tracing::warn!("Managed task shutdown failed; skipping standalone wallet teardown")
+        }
+    }
+}
+
 /// Abstracts how the MCP service stores and swaps its AppContext.
 /// Both variants support `load` and `store` for network switching.
 #[derive(Clone)]
@@ -209,11 +230,7 @@ impl DashMcpService {
     #[cfg(feature = "cli")]
     pub async fn shutdown_wallet_backend(&self) {
         let Some(ctx) = self.ctx.load() else { return };
-        let Ok(backend) = ctx.wallet_backend() else {
-            return;
-        };
-        // Drain in-flight persister writes.  Does not join coordinator threads.
-        backend.shutdown().await;
+        shutdown_app_context_wallet_backend(&ctx).await;
     }
 
     /// Build the tool router using trait-based tool composition.

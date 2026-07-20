@@ -771,6 +771,9 @@ pub trait ScreenLike {
     }
 
     /// Reset a persistent root screen to the view selected by its navigation entry.
+    /// Called only by `AppState::set_main_screen` on root navigation, not by
+    /// [`refresh_on_arrival`](ScreenLike::refresh_on_arrival) or [`on_leave`](ScreenLike::on_leave),
+    /// so returning from a pushed sub-screen preserves the current sub-view.
     fn reset_to_root_view(&mut self) {}
 
     /// Called by `AppState` when this root screen stops being the selected one.

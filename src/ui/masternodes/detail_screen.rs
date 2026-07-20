@@ -236,6 +236,11 @@ pub enum DetailOutcome {
     Forward(Box<AppAction>),
 }
 
+enum KeyInfoOpenMode {
+    Normal,
+    WithProtectionPrompt,
+}
+
 /// Masternode/evonode detail view state.
 pub struct MasternodeDetailView {
     app_context: Arc<AppContext>,
@@ -702,16 +707,7 @@ impl MasternodeDetailView {
         target: PrivateKeyTarget,
         key: &dash_sdk::platform::IdentityPublicKey,
     ) -> AppAction {
-        let holding = self
-            .identity
-            .private_keys
-            .get_cloned_private_key_data_and_wallet_info(&(target, key.id()));
-        AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-            self.identity.clone(),
-            key.clone(),
-            holding,
-            &self.app_context,
-        )))
+        self.open_key_info_with_mode(target, key, KeyInfoOpenMode::Normal)
     }
 
     /// Open `KeyInfoScreen` directly in the add-protection confirmation flow.
@@ -720,18 +716,30 @@ impl MasternodeDetailView {
         target: PrivateKeyTarget,
         key: &dash_sdk::platform::IdentityPublicKey,
     ) -> AppAction {
+        self.open_key_info_with_mode(target, key, KeyInfoOpenMode::WithProtectionPrompt)
+    }
+
+    fn open_key_info_with_mode(
+        &self,
+        target: PrivateKeyTarget,
+        key: &dash_sdk::platform::IdentityPublicKey,
+        mode: KeyInfoOpenMode,
+    ) -> AppAction {
         let holding = self
             .identity
             .private_keys
             .get_cloned_private_key_data_and_wallet_info(&(target, key.id()));
-        AppAction::AddScreen(Screen::KeyInfoScreen(
-            KeyInfoScreen::new_with_protection_prompt(
-                self.identity.clone(),
-                key.clone(),
-                holding,
-                &self.app_context,
-            ),
-        ))
+        let identity = self.identity.clone();
+        let key = key.clone();
+        let screen = match mode {
+            KeyInfoOpenMode::Normal => {
+                KeyInfoScreen::new(identity, key, holding, &self.app_context)
+            }
+            KeyInfoOpenMode::WithProtectionPrompt => {
+                KeyInfoScreen::new_with_protection_prompt(identity, key, holding, &self.app_context)
+            }
+        };
+        AppAction::AddScreen(Screen::KeyInfoScreen(screen))
     }
 
     /// Render the collapsible DPNS voting section (collapsed by default,

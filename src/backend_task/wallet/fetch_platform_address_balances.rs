@@ -54,7 +54,7 @@ impl AppContext {
             .await?;
 
         // Sync using SDK's privacy-preserving method (handles both full and incremental)
-        let sdk = self.sdk.load().as_ref().clone();
+        let sdk = backend.sdk().clone();
 
         let config = if sdk.network == Network::Regtest {
             Some(AddressSyncConfig {

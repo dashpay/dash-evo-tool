@@ -139,6 +139,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `.env` no longer has any effect on it. See
   [User Roles](docs/user-roles.md) for details.
 
+- **Welcome screen's experience-level picker is now three cards**: it matches
+  the visual style of the Create Wallet / Import Wallet / Just Explore cards
+  below it. Each role card adds an icon and a short description, and the one
+  you're on gets a highlighted border. Same three levels, same behavior — just
+  easier to compare at a glance.
+
 ### Known Limitations
 
 - **Single-key wallets — send and balance refresh not available**: importing a
@@ -190,6 +196,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cannot be populated.
 
 ### Fixed
+
+- **Token balance refresh status**: requesting a refresh while token balances
+  are already updating now shows a brief informational note instead of a red
+  error banner that must be dismissed.
+
+- **Topping up an identity from more than one funding wallet no longer gets
+  stuck loading**: requesting a new deposit address at the same time as
+  refreshing your asset-lock transactions could silently drop the refresh,
+  leaving those wallets stuck showing "Loading" for the rest of the session.
+  Both requests are now sent together.
+
+- **A single damaged transaction record no longer hides an entire wallet**:
+  previously, one unreadable entry in a wallet's transaction history could
+  make the wallet and its balance disappear from every screen until the
+  underlying data was manually repaired. The app now skips the damaged entry
+  and keeps the wallet visible, with the rest of its history intact.
+
+- **Scheduled DPNS vote sweeps no longer get stuck after an unexpected error**:
+  an internal failure while casting due votes could permanently block future
+  vote sweeps for that network until the app was restarted. It now recovers
+  on its own.
+
+- **Send confirmations now show what the recipient actually receives**: when
+  the network fee is deducted from the amount you entered, the confirmation
+  dialog now says so and shows the reduced amount the recipient will get,
+  instead of implying they receive the full entered amount.
+
+- **A missed deposit no longer leaves the funding screen waiting forever**:
+  if the app missed the notification that your deposit arrived (for example
+  because you were on another screen), it now also checks your wallet
+  balance directly, so the funding step advances even if the one-time
+  notification was missed.
+
+- **Deposit-address screens no longer strand you after an address error**: if
+  generating a new receive address failed, the screen used to reset to a bare
+  view with no way to retry. It now keeps the retry button available.
+
+- **A network preference that can't be restored no longer defaults you to
+  Mainnet**: if the app can't confirm your previous network selection during
+  an upgrade, it now asks you to choose a network explicitly instead of
+  silently starting the session on Mainnet — important if you were previously
+  using Testnet.
 
 - **Submitted Platform actions are no longer reported as rejected when only
   confirmation failed**: if a state transition was broadcast but its result
@@ -299,3 +347,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Two settings changes made in quick succession could occasionally cause one
   of them to be silently lost. Saving settings is now a single atomic step,
   so no change is dropped.
+- A burst of unreachable Dash network servers could show a message that
+  understated the outage as a problem reaching one server, even once the app's
+  own sync was otherwise healthy. This happens when every server the app
+  currently knows about becomes briefly unreachable at once — a temporary,
+  self-recovering condition. The app now recognizes it and says "All Dash network
+  servers are temporarily unreachable. Please wait a minute and retry." instead.

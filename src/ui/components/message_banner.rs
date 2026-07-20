@@ -360,6 +360,14 @@ impl MessageBanner {
         self
     }
 
+    /// Attach structured diagnostic details to the current per-instance banner.
+    pub fn set_details(&mut self, details: impl fmt::Debug) -> &mut Self {
+        if let Some(state) = &mut self.state {
+            state.details = Some(format!("{details:?}"));
+        }
+        self
+    }
+
     /// Clears the current message immediately.
     pub fn clear(&mut self) {
         self.state = None;

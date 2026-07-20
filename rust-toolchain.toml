@@ -1,2 +1,7 @@
+# Single source of truth for the toolchain, locally and in CI. The Tests and
+# Clippy workflows install from this file rather than naming a version, so a
+# bump here is what they run — and, because both are triggered by changes to
+# this file, a bump is tested by the toolchain it introduces.
 [toolchain]
 channel = "1.92"
+components = ["clippy", "rustfmt"]

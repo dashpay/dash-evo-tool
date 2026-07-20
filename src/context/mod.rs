@@ -197,6 +197,8 @@ pub struct AppContext {
     /// DET-owned application data that must outlive a single network's
     /// wallet persister. Cheap to clone (`Arc<DetKv>` is `Arc`-backed).
     app_kv: Arc<DetKv>,
+    #[cfg(test)]
+    det_kv_override: Mutex<Option<DetKv>>,
     /// Shared encrypted HD-seed vault at `<data_dir>/secrets/det-secrets.pwsvault`.
     /// Opened once and handed to every per-network `AppContext` and to the
     /// `WalletBackend`, because the file backend takes an exclusive advisory
@@ -505,6 +507,8 @@ impl AppContext {
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
             app_kv,
+            #[cfg(test)]
+            det_kv_override: Mutex::new(None),
             secret_store,
             subtasks,
             token_balance_refresh_in_flight: AtomicBool::new(false),
@@ -606,7 +610,24 @@ impl AppContext {
     /// backend is not yet initialized. Single accessor shared by every
     /// `context/*_db.rs` module.
     pub(crate) fn det_kv(&self) -> Result<DetKv, TaskError> {
+        #[cfg(test)]
+        if let Some(kv) = self
+            .det_kv_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Ok(kv);
+        }
         Ok(self.wallet_backend()?.kv())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_det_kv_override_for_test(&self, kv: DetKv) {
+        *self
+            .det_kv_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(kv);
     }
 
     /// Shared encrypted HD-seed vault. Cheap clone — `Arc<SecretStore>` is

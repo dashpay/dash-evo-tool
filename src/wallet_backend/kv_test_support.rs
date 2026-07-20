@@ -86,6 +86,7 @@ pub(crate) struct FailingKv {
     inner: InMemoryKv,
     fail_reads: AtomicBool,
     puts: AtomicUsize,
+    fail_puts: Mutex<Option<(String, usize)>>,
 }
 
 impl FailingKv {
@@ -99,6 +100,11 @@ impl FailingKv {
     /// How many `put` calls have reached the store.
     pub(crate) fn put_count(&self) -> usize {
         self.puts.load(Ordering::Relaxed)
+    }
+
+    /// Fail the next `count` writes whose key contains `key_fragment`.
+    pub(crate) fn fail_next_puts_containing(&self, key_fragment: &str, count: usize) {
+        *self.fail_puts.lock().unwrap() = Some((key_fragment.to_owned(), count));
     }
 }
 
@@ -114,6 +120,22 @@ impl KvStore for FailingKv {
         // Counted before delegating: an attempted write is what the assertions
         // are about, whether or not the store would have accepted it.
         self.puts.fetch_add(1, Ordering::Relaxed);
+        let should_fail = {
+            let mut failure = self.fail_puts.lock().unwrap();
+            let should_fail = failure
+                .as_ref()
+                .is_some_and(|(fragment, remaining)| *remaining > 0 && key.contains(fragment));
+            if should_fail && let Some((_, remaining)) = failure.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    *failure = None;
+                }
+            }
+            should_fail
+        };
+        if should_fail {
+            return Err(KvError::LockPoisoned);
+        }
         self.inner.put(scope, key, value)
     }
 

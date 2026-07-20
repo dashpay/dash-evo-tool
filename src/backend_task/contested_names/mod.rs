@@ -169,15 +169,20 @@ impl AppContext {
                 replacing_scheduled_key,
                 _,
             ) => {
-                self.execute_dpns_vote_operation(operation, voters, replacing_scheduled_key, sdk)
-                    .await
+                self.execute_dpns_vote_operation_with_recovery(
+                    operation,
+                    voters,
+                    replacing_scheduled_key,
+                    sdk,
+                )
+                .await
             }
             ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id, _) => {
                 self.reconcile_dpns_vote_operation(operation_id, sdk).await
             }
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => {
                 let operation = self.operation_for_scheduled_vote(&scheduled_vote, &voter)?;
-                self.execute_dpns_vote_operation(operation, vec![*voter], None, sdk)
+                self.execute_dpns_vote_operation_with_recovery(operation, vec![*voter], None, sdk)
                     .await
             }
             ContestedResourceTask::CastDueScheduledVotes {
@@ -643,6 +648,40 @@ impl AppContext {
         })
     }
 
+    async fn execute_dpns_vote_operation_with_recovery(
+        self: &Arc<Self>,
+        operation: DpnsVoteOperation,
+        voters: Vec<QualifiedIdentity>,
+        replacing_scheduled_key: Option<DpnsVoteTargetKey>,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let operation_id = operation.id;
+        let result = self
+            .execute_dpns_vote_operation(operation, voters, replacing_scheduled_key, sdk)
+            .await;
+        if let Err(error) = &result {
+            self.recover_failed_dpns_vote_operation(operation_id, error)
+                .await;
+        }
+        result
+    }
+
+    async fn recover_failed_dpns_vote_operation(
+        &self,
+        operation_id: DpnsVoteOperationId,
+        original_error: &TaskError,
+    ) {
+        if let Err(recovery_error) = self.recover_interrupted_dpns_vote_operation(operation_id) {
+            tracing::error!(
+                error = %recovery_error,
+                original_error = %original_error,
+                operation_id = %operation_id,
+                "Failed to persist recovery for an interrupted DPNS vote operation"
+            );
+            *self.dpns_vote_recovery.lock().await = false;
+        }
+    }
+
     async fn reconcile_dpns_vote_operation(
         &self,
         operation_id: DpnsVoteOperationId,
@@ -830,7 +869,7 @@ impl AppContext {
                 let operation_id = operation.id;
                 async move {
                     let result = app_context
-                        .execute_dpns_vote_operation(operation, voters, None, &sdk)
+                        .execute_dpns_vote_operation_with_recovery(operation, voters, None, &sdk)
                         .await
                         .map(|_| ());
                     (operation_id, result)
@@ -848,20 +887,6 @@ impl AppContext {
                     "Failed to execute a due DPNS vote operation; leaving it for recovery"
                 );
                 first_error.get_or_insert(error);
-                if let Err(recovery_error) =
-                    self.recover_interrupted_dpns_vote_operation(operation_id)
-                {
-                    tracing::error!(
-                        error = %recovery_error,
-                        operation_id = %operation_id,
-                        "Failed to recover an interrupted DPNS vote operation"
-                    );
-                    // Let the next contested task retry global recovery after
-                    // storage becomes available again. The targeted attempt is
-                    // preferred because this fallback can see unrelated work.
-                    *self.dpns_vote_recovery.lock().await = false;
-                    first_error.get_or_insert(recovery_error);
-                }
             }
         }
         if let Some(error) = first_error {
@@ -1032,6 +1057,83 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn direct_dispatch_terminal_write_failure_rearms_global_recovery() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(crate::wallet_backend::DetKv::from_store(store.clone())),
+        );
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire wallet backend offline");
+        context
+            .set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(store.clone()));
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([1; 32]),
+                vote_poll_id: Identifier::from([2; 32]),
+            },
+            voter_alias: None,
+            contested_name: "dominguez".to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Now,
+        }]);
+        operation.targets[0].status = DpnsVoteTargetStatus::Submitting;
+        let operation_id = operation.id;
+        let target_key = operation.targets[0].target.key.clone();
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .expect("persist in-flight operation");
+        *context.dpns_vote_recovery.lock().await = true;
+        store.fail_next_puts_containing(&operation_id.to_string(), 2);
+
+        let terminal_error = context
+            .update_dpns_vote_target(
+                operation_id,
+                &target_key,
+                DpnsVoteTargetStatus::Confirmed,
+                None,
+            )
+            .expect_err("terminal operation write must fail");
+        context
+            .recover_failed_dpns_vote_operation(operation_id, &terminal_error)
+            .await;
+
+        assert!(!*context.dpns_vote_recovery.lock().await);
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation_id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Submitting
+        );
+
+        context
+            .ensure_dpns_vote_recovery(&context.sdk())
+            .await
+            .expect("the re-armed recovery pass must succeed");
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation_id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Unconfirmed
+        );
     }
 
     #[test]

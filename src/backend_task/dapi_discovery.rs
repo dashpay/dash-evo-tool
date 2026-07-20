@@ -143,28 +143,23 @@ pub(crate) fn persist_dapi_addresses(
     app_context: &AppContext,
     addresses_csv: String,
 ) -> Result<(), TaskError> {
-    persist_dapi_addresses_inner(app_context, addresses_csv, || {})
+    persist_dapi_addresses_inner(app_context, addresses_csv, || {}, || {})
 }
 
 fn persist_dapi_addresses_inner(
     app_context: &AppContext,
     addresses_csv: String,
     before_save: impl FnOnce(),
+    after_save: impl FnOnce(),
 ) -> Result<(), TaskError> {
     let _persistence_guard = CONFIG_PERSISTENCE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let network = app_context.network();
-    let mut config = Config::load_from(app_context.data_dir())?;
-    let mut network_config = config
-        .config_for_network(network)
-        .clone()
-        .unwrap_or_default();
-    network_config.dapi_addresses = Some(addresses_csv);
-    config.update_config_for_network(network, network_config.clone());
     before_save();
-    config.save(app_context.data_dir())?;
-    *app_context.config.write()? = network_config;
+    Config::save_dapi_addresses(app_context.data_dir(), network, &addresses_csv)?;
+    app_context.config.write()?.dapi_addresses = Some(addresses_csv);
+    after_save();
     Ok(())
 }
 
@@ -173,6 +168,7 @@ pub(crate) fn persist_dapi_addresses_with_hook(
     app_context: &AppContext,
     addresses_csv: String,
     before_save: impl FnOnce(),
+    after_save: impl FnOnce(),
 ) -> Result<(), TaskError> {
-    persist_dapi_addresses_inner(app_context, addresses_csv, before_save)
+    persist_dapi_addresses_inner(app_context, addresses_csv, before_save, after_save)
 }

@@ -144,76 +144,59 @@ impl Config {
     pub fn save(&self, data_dir: &Path) -> Result<(), ConfigError> {
         let env_file_path =
             data_file_path(data_dir, ".env").map_err(|e| ConfigError::SaveError { source: e })?;
-        let existing_contents = match fs::read_to_string(&env_file_path) {
-            Ok(contents) => contents,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-            Err(source) => return Err(ConfigError::SaveError { source }),
-        };
+        let existing_contents = read_env_contents(&env_file_path)?;
         validate_env_contents(&existing_contents)?;
-
-        // Write to a temporary file in the same directory first, then
-        // atomically replace. This prevents corruption if the write fails
-        // partway through. NamedTempFile::persist() closes the handle before
-        // renaming and uses MoveFileEx with MOVEFILE_REPLACE_EXISTING on
-        // Windows for atomic replacement.
-        let parent_dir = env_file_path
-            .parent()
-            .ok_or_else(|| ConfigError::SaveError {
-                source: io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "config file path has no parent directory",
-                ),
-            })?;
-        let mut env_file =
-            NamedTempFile::new_in(parent_dir).map_err(|e| ConfigError::SaveError { source: e })?;
         let modeled_entries = self.modeled_entries();
-        let mut written_keys = HashSet::new();
-        for line in existing_contents.lines() {
-            if let Some(key) = owned_config_key(line) {
-                if let Some((_, value)) = modeled_entries
-                    .iter()
-                    .find(|(candidate, _)| candidate == &key)
-                    && written_keys.insert(key.clone())
-                {
-                    let assignment = line.split_once('=').map_or(key.as_str(), |(left, _)| left);
-                    writeln!(env_file, "{assignment}={value}")
+        atomic_replace_env_file(&env_file_path, |env_file| {
+            let mut written_keys = HashSet::new();
+            for line in existing_contents.lines() {
+                if let Some(key) = owned_config_key(line) {
+                    if let Some((_, value)) = modeled_entries
+                        .iter()
+                        .find(|(candidate, _)| candidate == &key)
+                        && written_keys.insert(key.clone())
+                    {
+                        let assignment =
+                            line.split_once('=').map_or(key.as_str(), |(left, _)| left);
+                        writeln!(env_file, "{assignment}={value}")
+                            .map_err(|source| ConfigError::SaveError { source })?;
+                    }
+                } else {
+                    writeln!(env_file, "{line}")
                         .map_err(|source| ConfigError::SaveError { source })?;
                 }
-            } else {
-                writeln!(env_file, "{line}").map_err(|source| ConfigError::SaveError { source })?;
             }
-        }
-        for (key, value) in modeled_entries {
-            if written_keys.insert(key.clone()) {
-                writeln!(env_file, "{key}={value}")
-                    .map_err(|source| ConfigError::SaveError { source })?;
+            for (key, value) in modeled_entries {
+                if written_keys.insert(key.clone()) {
+                    writeln!(env_file, "{key}={value}")
+                        .map_err(|source| ConfigError::SaveError { source })?;
+                }
             }
-        }
-
-        // Sync all data to disk before renaming to ensure crash-safety
-        env_file
-            .as_file()
-            .sync_all()
-            .map_err(|e| ConfigError::SaveError { source: e })?;
-
-        // Atomically replace the old config with the new one.
-        // persist() closes the file handle and uses platform-safe rename
-        // (MoveFileEx with MOVEFILE_REPLACE_EXISTING on Windows).
-        env_file
-            .persist(&env_file_path)
-            .map_err(|e| ConfigError::SaveError { source: e.error })?;
-
-        // Restrict file permissions on Unix (config contains RPC credentials).
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            if let Err(e) = std::fs::set_permissions(&env_file_path, perms) {
-                tracing::warn!("Could not set config file permissions to 0600: {e}");
-            }
-        }
+            Ok(())
+        })?;
 
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
+        Ok(())
+    }
+
+    /// Persist one network's DAPI addresses without parsing or reserializing other values.
+    pub(crate) fn save_dapi_addresses(
+        data_dir: &Path,
+        network: Network,
+        addresses: &str,
+    ) -> Result<(), ConfigError> {
+        let env_file_path =
+            data_file_path(data_dir, ".env").map_err(|source| ConfigError::SaveError { source })?;
+        let existing_contents = read_env_contents(&env_file_path)?;
+        let key = format!("{}dapi_addresses", dotenv_network_prefix(network));
+        atomic_replace_env_file(&env_file_path, |env_file| {
+            write_single_env_update(env_file, &existing_contents, &key, addresses)
+        })?;
+        tracing::info!(
+            ?network,
+            path = ?env_file_path,
+            "Saved DAPI addresses for one network"
+        );
         Ok(())
     }
 
@@ -258,13 +241,13 @@ impl Config {
 
         let process_entries = std::env::vars().collect::<Vec<_>>();
         let mainnet_config =
-            load_network_config("MAINNET_", "Mainnet", &process_entries, &file_entries)?;
+            load_network_config_or_none("MAINNET_", "Mainnet", &process_entries, &file_entries);
         let testnet_config =
-            load_network_config("TESTNET_", "Testnet", &process_entries, &file_entries)?;
+            load_network_config_or_none("TESTNET_", "Testnet", &process_entries, &file_entries);
         let devnet_config =
-            load_network_config("DEVNET_", "Devnet", &process_entries, &file_entries)?;
+            load_network_config_or_none("DEVNET_", "Devnet", &process_entries, &file_entries);
         let local_config =
-            load_network_config("LOCAL_", "local network", &process_entries, &file_entries)?;
+            load_network_config_or_none("LOCAL_", "local network", &process_entries, &file_entries);
 
         if mainnet_config.is_none()
             && testnet_config.is_none()
@@ -305,6 +288,118 @@ impl Config {
             }
         }
         entries
+    }
+}
+
+fn read_env_contents(env_file_path: &Path) -> Result<String, ConfigError> {
+    match fs::read_to_string(env_file_path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(source) => Err(ConfigError::SaveError { source }),
+    }
+}
+
+fn atomic_replace_env_file(
+    env_file_path: &Path,
+    write_contents: impl FnOnce(&mut NamedTempFile) -> Result<(), ConfigError>,
+) -> Result<(), ConfigError> {
+    let parent_dir = env_file_path
+        .parent()
+        .ok_or_else(|| ConfigError::SaveError {
+            source: io::Error::new(
+                io::ErrorKind::NotFound,
+                "config file path has no parent directory",
+            ),
+        })?;
+    let mut env_file =
+        NamedTempFile::new_in(parent_dir).map_err(|source| ConfigError::SaveError { source })?;
+    write_contents(&mut env_file)?;
+    env_file
+        .as_file()
+        .sync_all()
+        .map_err(|source| ConfigError::SaveError { source })?;
+    env_file
+        .persist(env_file_path)
+        .map_err(|error| ConfigError::SaveError {
+            source: error.error,
+        })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        if let Err(error) = std::fs::set_permissions(env_file_path, permissions) {
+            tracing::warn!(
+                ?error,
+                path = ?env_file_path,
+                "Could not restrict config file permissions to 0600"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn write_single_env_update(
+    env_file: &mut NamedTempFile,
+    existing_contents: &str,
+    target_key: &str,
+    value: &str,
+) -> Result<(), ConfigError> {
+    let mut updated = false;
+    for line in existing_contents.split_inclusive('\n') {
+        let (body, line_ending) = if let Some(body) = line.strip_suffix("\r\n") {
+            (body, "\r\n")
+        } else if let Some(body) = line.strip_suffix('\n') {
+            (body, "\n")
+        } else {
+            (line, "")
+        };
+        if owned_config_key(body).as_deref() == Some(target_key) {
+            if updated {
+                continue;
+            }
+            let assignment = body.split_once('=').map_or(target_key, |(left, _)| left);
+            write!(env_file, "{assignment}={value}{line_ending}")
+                .map_err(|source| ConfigError::SaveError { source })?;
+            updated = true;
+        } else {
+            write!(env_file, "{line}").map_err(|source| ConfigError::SaveError { source })?;
+        }
+    }
+    if !updated {
+        if !existing_contents.is_empty() && !existing_contents.ends_with('\n') {
+            writeln!(env_file).map_err(|source| ConfigError::SaveError { source })?;
+        }
+        writeln!(env_file, "{target_key}={value}")
+            .map_err(|source| ConfigError::SaveError { source })?;
+    }
+    Ok(())
+}
+
+fn dotenv_network_prefix(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "MAINNET_",
+        Network::Testnet => "TESTNET_",
+        Network::Devnet => "DEVNET_",
+        Network::Regtest => "LOCAL_",
+    }
+}
+
+fn load_network_config_or_none(
+    prefix: &'static str,
+    network: &'static str,
+    process_entries: &[(String, String)],
+    file_entries: &[(String, String)],
+) -> Option<NetworkConfig> {
+    match load_network_config(prefix, network, process_entries, file_entries) {
+        Ok(config) => config,
+        Err(_) => {
+            tracing::warn!(
+                network,
+                "Ignoring invalid network settings while loading other networks"
+            );
+            None
+        }
     }
 }
 
@@ -454,12 +549,15 @@ mod tests {
         if std::env::var_os(CHILD_MARKER).is_some() {
             return false;
         }
-        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
-            .arg(test_name)
-            .arg("--exact")
-            .env(CHILD_MARKER, "1")
-            .status()
-            .expect("run isolated config test");
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("test executable"));
+        command.arg(test_name).arg("--exact").env(CHILD_MARKER, "1");
+        for prefix in NETWORK_PREFIXES {
+            for field in NETWORK_CONFIG_FIELDS {
+                command.env_remove(format!("{prefix}{field}"));
+            }
+        }
+        let status = command.status().expect("run isolated config test");
         assert!(status.success(), "isolated config test failed");
         true
     }
@@ -814,6 +912,54 @@ mod tests {
             std::fs::read_to_string(env_path).expect("read unchanged config"),
             original,
         );
+    }
+
+    #[test]
+    fn load_ignores_invalid_network_when_another_network_is_valid() {
+        if run_config_test_in_subprocess(
+            "config::tests::load_ignores_invalid_network_when_another_network_is_valid",
+        ) {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join(".env"),
+            "MAINNET_core_rpc_port=invalid\nTESTNET_core_rpc_port=19998\n",
+        )
+        .expect("write test config");
+
+        let config = Config::load_from(tmp.path()).expect("load the valid network");
+
+        assert!(config.mainnet_config.is_none());
+        assert_eq!(
+            config
+                .testnet_config
+                .as_ref()
+                .and_then(|network| network.core_rpc_port),
+            Some(19998),
+        );
+    }
+
+    #[test]
+    fn load_returns_no_valid_configs_when_all_networks_are_invalid() {
+        if run_config_test_in_subprocess(
+            "config::tests::load_returns_no_valid_configs_when_all_networks_are_invalid",
+        ) {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            tmp.path().join(".env"),
+            "MAINNET_core_rpc_port=invalid\n\
+             TESTNET_core_rpc_port=invalid\n\
+             DEVNET_core_rpc_port=invalid\n\
+             LOCAL_core_rpc_port=invalid\n",
+        )
+        .expect("write test config");
+
+        let error = Config::load_from(tmp.path()).expect_err("all networks are invalid");
+
+        assert!(matches!(error, ConfigError::NoValidConfigs));
     }
 
     // ── envy parsing roundtrip ──────────────────────────────────────

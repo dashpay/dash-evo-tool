@@ -495,6 +495,7 @@ async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
             ?error,
             "Could not reinitialize network clients after automatic DAPI refresh; the saved addresses will be used on the next launch",
         );
+        return;
     }
 
     tracing::info!(
@@ -2729,6 +2730,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn dapi_config_persistence_updates_only_selected_key() {
+        const CHILD_MARKER: &str = "DET_DAPI_PERSISTENCE_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("test executable"),
+            )
+            .arg(
+                "backend_task::migration::finish_unwire::tests::dapi_config_persistence_updates_only_selected_key",
+            )
+            .arg("--exact")
+            .env(CHILD_MARKER, "1")
+            .env_remove("MAINNET_core_rpc_password")
+            .env_remove("TESTNET_wallet_private_key")
+            .status()
+            .expect("run isolated persistence test");
+            assert!(status.success(), "isolated persistence test failed");
+            return;
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let env_path = tmp.path().join(".env");
+        let app_context = app_context_for_network(tmp.path(), Network::Mainnet);
+        let mainnet_password_before = std::env::var_os("MAINNET_core_rpc_password");
+        let testnet_key_before = std::env::var_os("TESTNET_wallet_private_key");
+        std::fs::write(
+            &env_path,
+            "# Preserve operator formatting\n\
+             MAINNET_dapi_addresses=https://mainnet-old.example:443\n\
+             MAINNET_core_rpc_password='[REDACTED]' # unchanged\n\
+             TESTNET_wallet_private_key='[NOT_A_KEY]' # unchanged\n",
+        )
+        .expect("write initial config");
+
+        persist_dapi_addresses_with_hook(
+            &app_context,
+            "https://mainnet-new.example:443".to_string(),
+            || {
+                app_context
+                    .config
+                    .write()
+                    .expect("update live config during persistence")
+                    .core_rpc_password = Some("[LIVE_UPDATE]".to_string());
+            },
+            || {},
+        )
+        .expect("persist selected DAPI addresses");
+
+        let saved = std::fs::read_to_string(env_path).expect("read updated config");
+        assert!(saved.contains("MAINNET_dapi_addresses=https://mainnet-new.example:443\n"));
+        assert!(saved.contains("MAINNET_core_rpc_password='[REDACTED]' # unchanged\n"));
+        assert!(saved.contains("TESTNET_wallet_private_key='[NOT_A_KEY]' # unchanged\n"));
+        assert_eq!(
+            std::env::var_os("MAINNET_core_rpc_password"),
+            mainnet_password_before,
+        );
+        assert_eq!(
+            std::env::var_os("TESTNET_wallet_private_key"),
+            testnet_key_before,
+        );
+        assert_eq!(
+            app_context
+                .config
+                .read()
+                .expect("read live config after persistence")
+                .core_rpc_password
+                .as_deref(),
+            Some("[LIVE_UPDATE]"),
+        );
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum ConfigPersistenceEvent {
         FirstEntered,
@@ -2767,25 +2839,28 @@ mod tests {
         let (event_tx, event_rx) = std::sync::mpsc::channel();
         let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
         let first_context = Arc::clone(&mainnet_context);
-        let first_event_tx = event_tx.clone();
+        let first_before_save_tx = event_tx.clone();
+        let first_after_save_tx = event_tx.clone();
         let first = std::thread::spawn(move || {
             persist_dapi_addresses_with_hook(
                 &first_context,
                 "https://mainnet-new.example:443".to_string(),
                 || {
-                    first_event_tx
+                    first_before_save_tx
                         .send(ConfigPersistenceEvent::FirstEntered)
                         .expect("report first entry");
-                    first_event_tx
+                    first_before_save_tx
                         .send(ConfigPersistenceEvent::FirstPausedBeforeSave)
                         .expect("report first pause");
                     release_first_rx.recv().expect("release first save");
                 },
+                || {
+                    first_after_save_tx
+                        .send(ConfigPersistenceEvent::FirstSaved)
+                        .expect("report first save");
+                },
             )
             .expect("first persistence");
-            first_event_tx
-                .send(ConfigPersistenceEvent::FirstSaved)
-                .expect("report first save");
         });
 
         assert_eq!(
@@ -2798,24 +2873,28 @@ mod tests {
         );
 
         let second_context = Arc::clone(&testnet_context);
-        let second_event_tx = event_tx.clone();
+        let second_attempt_tx = event_tx.clone();
+        let second_before_save_tx = event_tx.clone();
+        let second_after_save_tx = event_tx.clone();
         let second = std::thread::spawn(move || {
-            second_event_tx
+            second_attempt_tx
                 .send(ConfigPersistenceEvent::SecondAttempting)
                 .expect("report second attempt");
             persist_dapi_addresses_with_hook(
                 &second_context,
                 "https://testnet-new.example:443".to_string(),
                 || {
-                    second_event_tx
+                    second_before_save_tx
                         .send(ConfigPersistenceEvent::SecondEntered)
                         .expect("report second entry");
                 },
+                || {
+                    second_after_save_tx
+                        .send(ConfigPersistenceEvent::SecondSaved)
+                        .expect("report second save");
+                },
             )
             .expect("second persistence");
-            second_event_tx
-                .send(ConfigPersistenceEvent::SecondSaved)
-                .expect("report second save");
         });
 
         assert_eq!(
@@ -2915,6 +2994,7 @@ mod tests {
                 std::fs::remove_file(&env_path).expect("remove config file");
                 std::fs::create_dir(&env_path).expect("replace config file with directory");
             },
+            || {},
         )
         .expect_err("persistence must report the save failure");
 
@@ -2922,6 +3002,18 @@ mod tests {
             error,
             TaskError::Config(crate::config::ConfigError::SaveError { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_reinit_failure_withholds_completion_sentinel() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async { Ok((1, String::new())) }).await;
+
+        assert!(!dapi_refresh_is_complete(&ctx));
     }
 
     #[tokio::test]

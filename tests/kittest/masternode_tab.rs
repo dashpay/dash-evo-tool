@@ -3,14 +3,18 @@
 
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use dash_evo_tool::model::qualified_identity::{
+    IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+};
 use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::Identifier;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -132,6 +136,47 @@ fn seed_node_with_voter_key(app_context: &Arc<AppContext>, byte: u8, alias: &str
     app_context
         .insert_local_qualified_identity(&node_qi, &None)
         .expect("seed node-with-voter-key insert");
+}
+
+/// Seed a masternode with one locally held key. Insertion migrates the clear
+/// key into the keyless vault, matching a loaded node with no password.
+fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, alias: &str) {
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let identity = Identity::new_with_id_and_keys(
+        Identifier::from([byte; 32]),
+        BTreeMap::from([(key.id(), key.clone())]),
+        pv,
+    )
+    .expect("masternode identity with key");
+    let private_keys = KeyStorage {
+        private_keys: BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key),
+                PrivateKeyData::Clear([byte; 32]),
+            ),
+        )]),
+    };
+    let node_qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some(alias.to_string()),
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&node_qi, &None)
+        .expect("seed node-with-unprotected-key insert");
 }
 
 /// TC-FR1-01…04 — the Masternodes nav entry is absent below the Power role and
@@ -784,6 +829,51 @@ fn manage_keys_button_opens_key_info_screen() {
         assert!(
             harness.query_by_label("Key Information").is_some(),
             "the pushed KeyInfoScreen must render its 'Key Information' heading"
+        );
+    });
+}
+
+/// Clicking the aggregate protection CTA opens `KeyInfoScreen` with its
+/// confirmation dialog already visible, without a second click in that screen.
+#[test]
+fn add_password_protection_opens_confirmation_dialog() {
+    use dash_evo_tool::ui::Screen;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_unprotected_held_key(&app_context, 0x72, "mn-protect-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-protect-01").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("Add password protection…").is_some(),
+            "an unprotected vault key must offer the aggregate protection action"
+        );
+
+        harness.get_by_label("Add password protection…").click();
+        harness.run_steps(3);
+
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::KeyInfoScreen(_))
+            ),
+            "the aggregate protection action must push KeyInfoScreen"
+        );
+        assert!(
+            harness
+                .query_by_label("Protect this identity's keys with a password?")
+                .is_some(),
+            "the protection confirmation dialog must be visible immediately"
+        );
+        assert!(
+            harness.query_by_label("Yes, add protection").is_some(),
+            "the visible dialog must expose its confirmation action"
         );
     });
 }

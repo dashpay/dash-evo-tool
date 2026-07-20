@@ -659,7 +659,7 @@ impl MasternodeDetailView {
             && let Some((target, key)) = self.first_protectable_key()
             && ui.button("Add password protection…").clicked()
         {
-            action = Some(self.open_key_info(target, &key));
+            action = Some(self.open_key_info_with_protection_prompt(target, &key));
         }
         action
     }
@@ -712,6 +712,26 @@ impl MasternodeDetailView {
             holding,
             &self.app_context,
         )))
+    }
+
+    /// Open `KeyInfoScreen` directly in the add-protection confirmation flow.
+    fn open_key_info_with_protection_prompt(
+        &self,
+        target: PrivateKeyTarget,
+        key: &dash_sdk::platform::IdentityPublicKey,
+    ) -> AppAction {
+        let holding = self
+            .identity
+            .private_keys
+            .get_cloned_private_key_data_and_wallet_info(&(target, key.id()));
+        AppAction::AddScreen(Screen::KeyInfoScreen(
+            KeyInfoScreen::new_with_protection_prompt(
+                self.identity.clone(),
+                key.clone(),
+                holding,
+                &self.app_context,
+            ),
+        ))
     }
 
     /// Render the collapsible DPNS voting section (collapsed by default,

@@ -9,7 +9,7 @@ use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -27,7 +27,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
-    deposit_matches, max_amount_after_fee_reserve, spendable_covers_minimum,
+    max_amount_after_fee_reserve, spendable_covers_minimum, step_after_task_failure,
     wallet_selection_combo,
 };
 use crate::ui::state::TrackedAssetLockCache;
@@ -35,7 +35,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::balances::credits::{Credits, Duffs};
+use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits, Duffs};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -45,6 +45,23 @@ use std::sync::{Arc, RwLock};
 
 const WALLET_SELECTION_TOOLTIP: &str = "This wallet will provide the address for receiving funds \
 and create the asset lock transaction to top up your identity.";
+
+fn pending_backend_tasks_action(
+    mut lock_fetches: Vec<BackendTask>,
+    funding_address_request: Option<BackendTask>,
+) -> AppAction {
+    if let Some(task) = funding_address_request {
+        lock_fetches.push(task);
+    }
+    match lock_fetches.pop() {
+        None => AppAction::None,
+        Some(task) if lock_fetches.is_empty() => AppAction::BackendTask(task),
+        Some(task) => {
+            lock_fetches.push(task);
+            AppAction::BackendTasks(lock_fetches, BackendTasksExecutionMode::Concurrent)
+        }
+    }
+}
 
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
@@ -59,13 +76,14 @@ pub struct TopUpIdentityScreen {
     /// method. Set when the QR view needs an address; drained at the end of
     /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
     pending_funding_address_request: Option<WalletSeedHash>,
-    /// Set when a derived deposit address could not be parsed, so the QR view
-    /// stops auto-retrying and offers a manual retry instead of spinning forever.
+    /// True after the queued receive-address request is dispatched and until
+    /// its correlated success or failure result returns.
+    funding_address_request_in_flight: bool,
+    /// Set when deposit-address generation or parsing fails, so the QR view
+    /// offers a manual retry instead of spinning forever.
     funding_address_request_failed: bool,
-    /// Duffs received so far at `funding_address` (accumulated per deposit
-    /// event), for the "received so far" line — a per-address running total, not
-    /// whole-wallet balance.
-    received_at_funding_address_duffs: u64,
+    /// Spendable duffs currently held at the address shown by the deposit flow.
+    funding_address_balance_duffs: u64,
     /// Set on the transition to `FundsReceived` so the amount field pre-fills
     /// the fee-reserve-capped received balance on the next render.
     prefill_funding_amount: bool,
@@ -99,8 +117,9 @@ impl TopUpIdentityScreen {
             wallet: None,
             funding_address: None,
             pending_funding_address_request: None,
+            funding_address_request_in_flight: false,
             funding_address_request_failed: false,
-            received_at_funding_address_duffs: 0,
+            funding_address_balance_duffs: 0,
             prefill_funding_amount: false,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "".to_string(),
@@ -247,8 +266,9 @@ impl TopUpIdentityScreen {
             self.wallet_open_attempted = false;
             self.funding_address = None;
             self.pending_funding_address_request = None;
+            self.funding_address_request_in_flight = false;
             self.funding_address_request_failed = false;
-            self.received_at_funding_address_duffs = 0;
+            self.funding_address_balance_duffs = 0;
             self.prefill_funding_amount = false;
             self.funding_asset_lock = None;
             self.funding_amount_input = None;
@@ -286,8 +306,9 @@ impl TopUpIdentityScreen {
         self.set_step(step);
         self.funding_address = None;
         self.pending_funding_address_request = None;
+        self.funding_address_request_in_flight = false;
         self.funding_address_request_failed = false;
-        self.received_at_funding_address_duffs = 0;
+        self.funding_address_balance_duffs = 0;
         self.prefill_funding_amount = false;
         self.funding_amount_input = None;
         self.funding_amount_exact = None;
@@ -396,8 +417,9 @@ impl TopUpIdentityScreen {
                     self.set_step(WalletFundedScreenStep::WaitingOnFunds);
                     self.funding_address = None;
                     self.pending_funding_address_request = None;
+                    self.funding_address_request_in_flight = false;
                     self.funding_address_request_failed = false;
-                    self.received_at_funding_address_duffs = 0;
+                    self.funding_address_balance_duffs = 0;
                     self.prefill_funding_amount = false;
                     self.funding_amount_input = None;
                     self.funding_amount_exact = None;
@@ -452,6 +474,21 @@ impl TopUpIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
+                if funding_method == FundingMethod::ReceiveDeposit {
+                    let fee_credits = self.app_context.fee_estimator().estimate_identity_topup();
+                    let available_credits = max_amount_after_fee_reserve(
+                        self.funding_address_balance_duffs,
+                        fee_credits,
+                    );
+                    if amount.saturating_mul(CREDITS_PER_DUFF) > available_credits {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "That deposit cannot cover this amount. Wait for more funds or choose a smaller amount.",
+                            MessageType::Warning,
+                        );
+                        return AppAction::None;
+                    }
+                }
                 let identity_input = IdentityTopUpInfo {
                     qualified_identity: self.identity.clone(),
                     wallet: Arc::clone(selected_wallet), // Clone the Arc reference
@@ -488,16 +525,19 @@ impl TopUpIdentityScreen {
             funding_method,
             FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
         ) {
-            let max_spendable_duffs = self
-                .wallet
-                .as_ref()
-                .and_then(|w| w.read().ok())
-                .map(|w| {
-                    self.app_context
-                        .snapshot_balance(&w.seed_hash())
-                        .spendable()
-                })
-                .unwrap_or(0);
+            let max_spendable_duffs = if funding_method == FundingMethod::ReceiveDeposit {
+                self.funding_address_balance_duffs
+            } else {
+                self.wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok())
+                    .map(|w| {
+                        self.app_context
+                            .snapshot_balance(&w.seed_hash())
+                            .spendable()
+                    })
+                    .unwrap_or(0)
+            };
             let fee_estimator = self.app_context.fee_estimator();
             let estimated_fee = fee_estimator.estimate_identity_topup();
             let max_with_fee_reserved =
@@ -506,8 +546,8 @@ impl TopUpIdentityScreen {
                 Some(max_with_fee_reserved),
                 true,
                 Some(format!(
-                    "~{} reserved for fees",
-                    format_credits_as_dash(estimated_fee)
+                    "The estimated fee reserves about {}.",
+                    format_credits_as_dash(estimated_fee),
                 )),
             )
         } else {
@@ -558,13 +598,20 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            // Reset step so UI is not stuck on waiting messages
-            let step = self.current_step();
-            if step == WalletFundedScreenStep::WaitingForPlatformAcceptance
-                || step == WalletFundedScreenStep::WaitingForAssetLock
-            {
-                self.set_step(WalletFundedScreenStep::ReadyToCreate);
-            }
+            self.set_step(step_after_task_failure(self.current_step()));
+        }
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        let selected_seed_hash = self
+            .wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
+        if self.funding_address_request_in_flight
+            && context.generated_receive_address_wallet() == selected_seed_hash
+        {
+            self.funding_address_request_in_flight = false;
+            self.funding_address_request_failed = true;
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -586,6 +633,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 .map(|w| w.seed_hash() == *seed_hash)
                 .unwrap_or(false);
             if is_ours {
+                self.funding_address_request_in_flight = false;
                 match address.parse::<Address<_>>() {
                     Ok(addr) => {
                         self.funding_address = Some(addr.assume_checked());
@@ -612,29 +660,11 @@ impl ScreenLike for TopUpIdentityScreen {
                 outputs,
             )) = &backend_task_success_result
         {
-            // Accumulate what this deposit added at the shown address, so the
-            // "received so far" line tracks the deposit itself, not whole-wallet
-            // balance.
-            self.received_at_funding_address_duffs = self
-                .received_at_funding_address_duffs
-                .saturating_add(deposit_matches(self.funding_address.as_ref(), outputs));
-
-            let spendable_duffs = self
-                .wallet
-                .as_ref()
-                .and_then(|w| w.read().ok())
-                .map(|w| {
-                    self.app_context
-                        .snapshot_balance(&w.seed_hash())
-                        .spendable()
-                })
-                .unwrap_or(0);
             let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
             let (next, prefill) = deposit_event_outcome(
                 WalletFundedScreenStep::WaitingOnFunds,
                 self.funding_address.as_ref(),
                 outputs,
-                spendable_duffs,
                 minimum_credits,
             );
             // Pre-fill the amount with the fee-reserve-capped balance when the
@@ -897,19 +927,68 @@ impl ScreenLike for TopUpIdentityScreen {
                     .collect()
             })
             .unwrap_or_default();
-        let tasks = self.asset_lock_cache.ensure_requested_many(seed_hashes);
-        if !tasks.is_empty() {
-            action |= AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent);
-        }
+        let lock_fetches = self.asset_lock_cache.ensure_requested_many(seed_hashes);
 
         // Derive the "Receive a new deposit" address off the UI thread; the QR
         // view queues this when it has no address yet.
-        if let Some(seed_hash) = self.pending_funding_address_request.take() {
-            action |= AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress { seed_hash },
-            ));
+        let funding_address_request =
+            self.pending_funding_address_request
+                .take()
+                .map(|seed_hash| {
+                    BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash })
+                });
+        if funding_address_request.is_some() {
+            self.funding_address_request_in_flight = true;
         }
+        action |= pending_backend_tasks_action(lock_fetches, funding_address_request);
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_frame_dispatch_keeps_lock_fetches_and_receive_address_request() {
+        let lock_seed_a = [1u8; 32];
+        let lock_seed_b = [2u8; 32];
+        let receive_seed = [3u8; 32];
+        let action = pending_backend_tasks_action(
+            vec![
+                BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
+                    seed_hash: lock_seed_a,
+                }),
+                BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
+                    seed_hash: lock_seed_b,
+                }),
+            ],
+            Some(BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress {
+                    seed_hash: receive_seed,
+                },
+            )),
+        );
+
+        let AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) = action else {
+            panic!("same-frame tasks must be dispatched as one concurrent batch");
+        };
+        assert_eq!(tasks.len(), 3);
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash })
+                if *seed_hash == lock_seed_a
+        )));
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash })
+                if *seed_hash == lock_seed_b
+        )));
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash })
+                if *seed_hash == receive_seed
+        )));
     }
 }

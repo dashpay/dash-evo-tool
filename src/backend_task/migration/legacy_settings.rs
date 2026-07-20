@@ -28,6 +28,7 @@ use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 /// [`finish_unwire`](super::finish_unwire) sentinel this one is not
 /// per-network. Versioned so a future format change bumps the key.
 const SENTINEL_KEY: &str = "det:migration:legacy_settings:v1";
+const IMPORT_GUARD_KEY: &str = "det:migration:legacy_settings:guard:v1";
 
 /// What the import did on this launch. Returned so the caller can log it and
 /// tests can assert the branch taken.
@@ -44,8 +45,9 @@ pub enum SettingsImport {
     Imported { network: Network },
 }
 
-/// Failure of the settings import. The caller boots with defaults on error
-/// and leaves the sentinel unwritten, so the next launch retries.
+/// Failure of the settings import. The caller boots with current settings or
+/// defaults on error. Once importing begins, the durable guard makes recovery
+/// finish without rereading stale legacy data.
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsImportError {
     /// The legacy database predates the oldest layout this import supports.
@@ -65,6 +67,20 @@ pub enum SettingsImportError {
     LegacyRead {
         #[source]
         source: rusqlite::Error,
+    },
+
+    /// The current settings or a migration marker could not be read.
+    #[error("could not read saved settings")]
+    Read {
+        #[source]
+        source: KvAdapterError,
+    },
+
+    /// The previous settings could not be encoded for guard comparison.
+    #[error("could not prepare saved settings for migration")]
+    Encode {
+        #[source]
+        source: bincode::error::EncodeError,
     },
 
     /// The imported settings, or the sentinel, could not be written to the
@@ -88,13 +104,17 @@ pub enum SettingsImportError {
 ///
 /// Returns [`SettingsImportError`] when the saved data is outside the supported
 /// direct-update range, `data.db` cannot be read, or the k/v store cannot be
-/// written. The sentinel stays unwritten on failure.
+/// written. The durable guard prevents a partial import from overwriting newer
+/// settings on a later launch.
 pub fn import_legacy_settings(
     app_kv: &DetKv,
     db: &Database,
 ) -> Result<SettingsImport, SettingsImportError> {
     if sentinel_present(app_kv)? {
         return Ok(SettingsImport::AlreadyDone);
+    }
+    if let Some(guard) = read_import_guard(app_kv)? {
+        return finish_guarded_import(app_kv, guard);
     }
 
     let version = db
@@ -133,10 +153,15 @@ pub fn import_legacy_settings(
     };
 
     let network = settings.network;
+    let mut guard = prepare_import_guard(app_kv, &settings)?;
+    write_import_guard(app_kv, &guard)?;
     app_kv
         .put(DetScope::Global, AppSettings::KV_KEY, &settings)
         .map_err(|source| SettingsImportError::Write { source })?;
+    guard.settings_written = true;
+    write_import_guard(app_kv, &guard)?;
     write_sentinel(app_kv)?;
+    clear_import_guard_best_effort(app_kv);
 
     tracing::info!(
         target = "migration::legacy_settings",
@@ -156,11 +181,82 @@ struct SettingsImportSentinel {
     sha: String,
 }
 
+/// Durable recovery record written before imported settings are made visible.
+#[derive(Debug, Serialize, Deserialize)]
+struct SettingsImportGuard {
+    settings: AppSettings,
+    previous_settings_bytes: Option<Vec<u8>>,
+    settings_written: bool,
+    version: String,
+}
+
 fn sentinel_present(app_kv: &DetKv) -> Result<bool, SettingsImportError> {
     app_kv
         .get::<SettingsImportSentinel>(DetScope::Global, SENTINEL_KEY)
         .map(|v| v.is_some())
+        .map_err(|source| SettingsImportError::Read { source })
+}
+
+fn read_import_guard(app_kv: &DetKv) -> Result<Option<SettingsImportGuard>, SettingsImportError> {
+    app_kv
+        .get(DetScope::Global, IMPORT_GUARD_KEY)
+        .map_err(|source| SettingsImportError::Read { source })
+}
+
+fn finish_guarded_import(
+    app_kv: &DetKv,
+    mut guard: SettingsImportGuard,
+) -> Result<SettingsImport, SettingsImportError> {
+    let existing = app_kv
+        .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
+        .map_err(|source| SettingsImportError::Read { source })?;
+    let existing_bytes = existing.as_ref().map(encode_settings).transpose()?;
+    let outcome = if !guard.settings_written && existing_bytes == guard.previous_settings_bytes {
+        let network = guard.settings.network;
+        app_kv
+            .put(DetScope::Global, AppSettings::KV_KEY, &guard.settings)
+            .map_err(|source| SettingsImportError::Write { source })?;
+        SettingsImport::Imported { network }
+    } else {
+        SettingsImport::AlreadyDone
+    };
+    guard.settings_written = true;
+    write_import_guard(app_kv, &guard)?;
+    write_sentinel(app_kv)?;
+    clear_import_guard_best_effort(app_kv);
+    Ok(outcome)
+}
+
+fn prepare_import_guard(
+    app_kv: &DetKv,
+    settings: &AppSettings,
+) -> Result<SettingsImportGuard, SettingsImportError> {
+    let previous_settings_bytes = app_kv
+        .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
+        .map_err(|source| SettingsImportError::Read { source })?
+        .as_ref()
+        .map(encode_settings)
+        .transpose()?;
+    Ok(SettingsImportGuard {
+        settings: settings.clone(),
+        previous_settings_bytes,
+        settings_written: false,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+fn write_import_guard(
+    app_kv: &DetKv,
+    guard: &SettingsImportGuard,
+) -> Result<(), SettingsImportError> {
+    app_kv
+        .put(DetScope::Global, IMPORT_GUARD_KEY, guard)
         .map_err(|source| SettingsImportError::Write { source })
+}
+
+fn encode_settings(settings: &AppSettings) -> Result<Vec<u8>, SettingsImportError> {
+    bincode::serde::encode_to_vec(settings, bincode::config::standard())
+        .map_err(|source| SettingsImportError::Encode { source })
 }
 
 fn write_sentinel(app_kv: &DetKv) -> Result<(), SettingsImportError> {
@@ -172,12 +268,77 @@ fn write_sentinel(app_kv: &DetKv) -> Result<(), SettingsImportError> {
         .map_err(|source| SettingsImportError::Write { source })
 }
 
+/// Retire a pending legacy import after the user explicitly confirms a
+/// network and that choice has been persisted.
+pub fn finish_after_explicit_network_selection(app_kv: &DetKv) -> Result<(), SettingsImportError> {
+    write_sentinel(app_kv)?;
+    clear_import_guard_best_effort(app_kv);
+    Ok(())
+}
+
+fn clear_import_guard_best_effort(app_kv: &DetKv) {
+    if let Err(error) = app_kv.delete(DetScope::Global, IMPORT_GUARD_KEY) {
+        tracing::warn!(
+            target = "migration::legacy_settings",
+            error = ?error,
+            "Completed settings import left its recovery guard in storage",
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::settings::{RootScreenType, ThemeMode};
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::Arc;
+
+    #[derive(Default)]
+    struct FailKeyOnceKv {
+        inner: InMemoryKv,
+        fail_key: std::sync::Mutex<Option<&'static str>>,
+    }
+
+    impl FailKeyOnceKv {
+        fn fail_next_put(&self, key: &'static str) {
+            *self.fail_key.lock().unwrap() = Some(key);
+        }
+    }
+
+    impl KvStore for FailKeyOnceKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            self.inner.get(scope, key)
+        }
+
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let should_fail = {
+                let mut fail_key = self.fail_key.lock().unwrap();
+                if fail_key.as_deref() == Some(key) {
+                    fail_key.take();
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_fail {
+                return Err(KvError::LockPoisoned);
+            }
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            self.inner.list_keys(scope, prefix)
+        }
+    }
 
     fn kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -356,6 +517,123 @@ mod tests {
             stored(&app_kv).unwrap().network,
             Network::Mainnet,
             "a re-run must not resurrect the legacy network over the user's choice",
+        );
+    }
+
+    #[test]
+    fn sentinel_failure_does_not_reimport_over_newer_settings_on_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = legacy_db(dir.path());
+        let store = Arc::new(FailKeyOnceKv::default());
+        let app_kv = DetKv::from_store(store.clone());
+        app_kv
+            .put(
+                DetScope::Global,
+                AppSettings::KV_KEY,
+                &AppSettings::default(),
+            )
+            .expect("seed stale default blob");
+        store.fail_next_put(SENTINEL_KEY);
+
+        assert!(matches!(
+            import_legacy_settings(&app_kv, &db),
+            Err(SettingsImportError::Write { .. })
+        ));
+        assert_eq!(stored(&app_kv).unwrap().network, Network::Testnet);
+
+        let chosen = AppSettings::default();
+        app_kv
+            .put(DetScope::Global, AppSettings::KV_KEY, &chosen)
+            .expect("user restores the pre-import settings");
+
+        assert_eq!(
+            import_legacy_settings(&app_kv, &db).expect("next launch"),
+            SettingsImport::AlreadyDone
+        );
+        assert_eq!(
+            stored(&app_kv).unwrap().network,
+            Network::Mainnet,
+            "a retry must not overwrite settings changed after the import",
+        );
+    }
+
+    #[test]
+    fn settings_write_failure_recovers_legacy_settings_on_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = legacy_db(dir.path());
+        let store = Arc::new(FailKeyOnceKv::default());
+        let app_kv = DetKv::from_store(store.clone());
+        app_kv
+            .put(
+                DetScope::Global,
+                AppSettings::KV_KEY,
+                &AppSettings::default(),
+            )
+            .expect("seed stale default blob");
+        store.fail_next_put(AppSettings::KV_KEY);
+
+        assert!(matches!(
+            import_legacy_settings(&app_kv, &db),
+            Err(SettingsImportError::Write { .. })
+        ));
+        assert_eq!(stored(&app_kv).unwrap().network, Network::Mainnet);
+
+        assert_eq!(
+            import_legacy_settings(&app_kv, &db).expect("next launch"),
+            SettingsImport::Imported {
+                network: Network::Testnet
+            }
+        );
+        assert_eq!(
+            stored(&app_kv).unwrap().network,
+            Network::Testnet,
+            "an unchanged stale blob must not suppress recovery",
+        );
+    }
+
+    #[test]
+    fn explicit_choice_retires_import_after_initial_guard_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = legacy_db(dir.path());
+        let store = Arc::new(FailKeyOnceKv::default());
+        let app_kv = DetKv::from_store(store.clone());
+        store.fail_next_put(IMPORT_GUARD_KEY);
+
+        assert!(matches!(
+            import_legacy_settings(&app_kv, &db),
+            Err(SettingsImportError::Write { .. })
+        ));
+
+        let chosen = AppSettings {
+            network: Network::Regtest,
+            ..AppSettings::default()
+        };
+        app_kv
+            .put(DetScope::Global, AppSettings::KV_KEY, &chosen)
+            .expect("persist explicit network choice");
+        finish_after_explicit_network_selection(&app_kv).expect("retire stale legacy import");
+
+        assert_eq!(
+            import_legacy_settings(&app_kv, &db).expect("next launch"),
+            SettingsImport::AlreadyDone,
+        );
+        assert_eq!(stored(&app_kv).unwrap().network, Network::Regtest);
+    }
+
+    #[test]
+    fn successful_import_removes_the_recovery_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = legacy_db(dir.path());
+        let app_kv = kv();
+
+        import_legacy_settings(&app_kv, &db).expect("import");
+
+        assert!(
+            app_kv
+                .get::<SettingsImportGuard>(DetScope::Global, IMPORT_GUARD_KEY)
+                .expect("read guard")
+                .is_none(),
+            "completed imports must not retain duplicate settings data",
         );
     }
 

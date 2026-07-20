@@ -5,6 +5,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
+    should_queue_funding_address, snapshot_deposit_outcome,
 };
 use crate::ui::theme::DashColors;
 use crate::wallet_backend::poison::RwLockRecover;
@@ -25,10 +26,12 @@ impl AddNewIdentityScreen {
     /// flight, or a prior derivation failed. Idempotent, so it is safe to call
     /// every frame from the QR view.
     fn queue_funding_address_request(&mut self) {
-        if self.funding_address.is_some()
-            || self.pending_funding_address_request.is_some()
-            || self.funding_address_request_failed
-        {
+        if !should_queue_funding_address(
+            self.funding_address.is_some(),
+            self.pending_funding_address_request.is_some(),
+            self.funding_address_request_in_flight,
+            self.funding_address_request_failed,
+        ) {
             return;
         }
         if let Some(wallet) = &self.selected_wallet
@@ -88,13 +91,12 @@ impl AddNewIdentityScreen {
         });
 
         ui.add_space(8.0);
-        // Show what has arrived at THIS address specifically (accumulated per
-        // deposit), never whole-wallet balance — leftover change elsewhere must
-        // not read as progress toward this deposit.
-        let received = self.received_at_funding_address_duffs;
+        // Show only funds currently available at this address. Unrelated wallet
+        // funds must never read as progress toward this deposit.
+        let received = self.funding_address_balance_duffs;
         if received > 0 {
             ui.label(format!(
-                "Received {received_amount} at this address so far. Waiting for at least \
+                "This address has {received_amount} available. Waiting for at least \
                  {minimum_amount}.",
                 received_amount = Amount::dash_from_duffs(received),
             ));
@@ -106,12 +108,42 @@ impl AddNewIdentityScreen {
         }
     }
 
+    fn reconcile_funding_deposit(&mut self) {
+        let Some(address) = self.funding_address.as_ref() else {
+            return;
+        };
+        let Some(seed_hash) = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+        else {
+            return;
+        };
+        let address_balance_duffs = self
+            .app_context
+            .snapshot_address_balances(&seed_hash)
+            .get(address)
+            .copied()
+            .unwrap_or(0);
+        self.funding_address_balance_duffs = address_balance_duffs;
+
+        let minimum_credits = self.deposit_minimum_credits();
+        let current_step = *self.step.read_recover();
+        let (next_step, prefill) =
+            snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);
+        if prefill.is_some() {
+            self.prefill_funding_amount = true;
+            *self.step.write_recover() = next_step;
+        }
+    }
+
     /// Render the "Receive a new deposit" funding method: a scannable deposit
     /// address while waiting, then an editable amount and Create button once the
     /// deposit arrives. A "Choose a different funding method" affordance is
     /// present throughout so the user is never trapped.
     pub fn render_ui_by_receive_deposit(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         let mut action = AppAction::None;
+        self.reconcile_funding_deposit();
         let step = *self.step.read_recover();
 
         if step == WalletFundedScreenStep::WaitingOnFunds {

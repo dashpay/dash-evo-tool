@@ -186,6 +186,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Token balance refresh status**: requesting a refresh while token balances
+  are already updating now shows a brief informational note instead of a red
+  error banner that must be dismissed.
+
+- **Topping up an identity from more than one funding wallet no longer gets
+  stuck loading**: requesting a new deposit address at the same time as
+  refreshing your asset-lock transactions could silently drop the refresh,
+  leaving those wallets stuck showing "Loading" for the rest of the session.
+  Both requests are now sent together.
+
+- **A single damaged transaction record no longer hides an entire wallet**:
+  previously, one unreadable entry in a wallet's transaction history could
+  make the wallet and its balance disappear from every screen until the
+  underlying data was manually repaired. The app now skips the damaged entry
+  and keeps the wallet visible, with the rest of its history intact.
+
+- **Scheduled DPNS vote sweeps no longer get stuck after an unexpected error**:
+  an internal failure while casting due votes could permanently block future
+  vote sweeps for that network until the app was restarted. It now recovers
+  on its own.
+
+- **Send confirmations now show what the recipient actually receives**: when
+  the network fee is deducted from the amount you entered, the confirmation
+  dialog now says so and shows the reduced amount the recipient will get,
+  instead of implying they receive the full entered amount.
+
+- **A missed deposit no longer leaves the funding screen waiting forever**:
+  if the app missed the notification that your deposit arrived (for example
+  because you were on another screen), it now also checks your wallet
+  balance directly, so the funding step advances even if the one-time
+  notification was missed.
+
+- **Deposit-address screens no longer strand you after an address error**: if
+  generating a new receive address failed, the screen used to reset to a bare
+  view with no way to retry. It now keeps the retry button available.
+
+- **A network preference that can't be restored no longer defaults you to
+  Mainnet**: if the app can't confirm your previous network selection during
+  an upgrade, it now asks you to choose a network explicitly instead of
+  silently starting the session on Mainnet — important if you were previously
+  using Testnet.
+
 - **Submitted Platform actions are no longer reported as rejected when only
   confirmation failed**: if a state transition was broadcast but its result
   could not be confirmed, the app now tells you to check whether it completed

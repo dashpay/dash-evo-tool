@@ -18,7 +18,7 @@ jobs:
         (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'claudius-review'))
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: write

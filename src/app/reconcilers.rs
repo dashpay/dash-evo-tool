@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use dash_sdk::dpp::dashcore::Network;
 use eframe::egui;
@@ -226,17 +226,12 @@ impl SpvBlockReconciler {
     }
 }
 
-/// Maximum startup interval for hiding pre-sync `Disconnected` during onboarding.
-const ONBOARDING_DISCONNECTED_SUPPRESSION_DURATION: Duration = Duration::from_secs(120);
-
 /// Reconciles the connection-status banner with the overall connection state.
 pub(super) struct ConnectionBanner {
     /// Previous state, to detect transitions. `None` forces re-evaluation.
     previous_state: Option<OverallConnectionState>,
     /// Handle to the current connection banner, if displayed.
     handle: Option<BannerHandle>,
-    /// Start of the bounded onboarding-only `Disconnected` suppression window.
-    onboarding_started: Instant,
 }
 
 impl ConnectionBanner {
@@ -244,7 +239,6 @@ impl ConnectionBanner {
         Self {
             previous_state: None,
             handle: None,
-            onboarding_started: Instant::now(),
         }
     }
 
@@ -294,11 +288,7 @@ impl ConnectionBanner {
         }
 
         // The Welcome screen initially reads Disconnected before sync starts.
-        // Bound suppression so a stuck onboarding flag cannot hide real failures.
-        if onboarding_active
-            && current_state == OverallConnectionState::Disconnected
-            && self.onboarding_started.elapsed() < ONBOARDING_DISCONNECTED_SUPPRESSION_DURATION
-        {
+        if onboarding_active && current_state == OverallConnectionState::Disconnected {
             if let Some(handle) = self.handle.take() {
                 handle.clear();
             }
@@ -904,15 +894,10 @@ mod tests {
         );
     }
 
-    /// Regression test for PR #907: a user who finishes onboarding while still
-    /// disconnected (`auto_start_spv` off, or genuinely offline) must still see
-    /// the real Disconnected banner. The suppression branch used to advance
-    /// `previous_state` to the suppressed value, which made `state_changed`
-    /// false on the very next frame — hitting the fast-path early return before
-    /// the onboarding check was even reached, and permanently hiding the
-    /// banner for the rest of the session.
+    /// Disconnected stays hidden throughout onboarding and appears on the first
+    /// frame after onboarding ends, even when the connection state is unchanged.
     #[test]
-    fn connection_banner_shows_disconnected_after_onboarding_ends_while_still_disconnected() {
+    fn connection_banner_suppresses_disconnected_until_onboarding_ends() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let app_context = test_app_context(tmp.path());
         // ConnectionStatus defaults to Disconnected — no sync has been asked for.
@@ -932,7 +917,10 @@ mod tests {
 
         // Frame 2: onboarding still active, state unchanged — still suppressed.
         assert!(banner.update(&ctx, &app_context, false, true).is_none());
-        assert!(banner.handle.is_none());
+        assert!(
+            banner.handle.is_none(),
+            "Disconnected must stay hidden for every frame while onboarding is active"
+        );
 
         // Frame 3: onboarding ends, connection is still Disconnected — the real
         // banner must now appear even though `current_state` never changed.
@@ -974,21 +962,6 @@ mod tests {
         assert!(
             banner.handle.is_some(),
             "a recurring SPV error must be restored after Disconnected suppression"
-        );
-    }
-
-    #[test]
-    fn connection_banner_reports_disconnected_after_onboarding_suppression_expires() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let app_context = test_app_context(tmp.path());
-        let ctx = egui::Context::default();
-        let mut banner = ConnectionBanner::new();
-        banner.onboarding_started = Instant::now() - ONBOARDING_DISCONNECTED_SUPPRESSION_DURATION;
-
-        assert!(banner.update(&ctx, &app_context, false, true).is_none());
-        assert!(
-            banner.handle.is_some(),
-            "Disconnected must be reported after bounded onboarding suppression expires"
         );
     }
 }

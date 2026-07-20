@@ -15,6 +15,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -875,5 +876,80 @@ fn add_password_protection_opens_confirmation_dialog() {
             harness.query_by_label("Yes, add protection").is_some(),
             "the visible dialog must expose its confirmation action"
         );
+    });
+}
+
+#[test]
+fn left_nav_return_to_masternodes_resets_detail_to_list() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0x72,
+            "mn-nav-reset-01",
+            IdentityType::Masternode,
+        );
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-nav-reset-01").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("‹ All masternodes").is_some());
+
+        harness
+            .get_by_role_and_label(Role::Button, "Wallets")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Masternodes")
+            .click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Open mn-nav-reset-01").is_some(),
+            "returning through the left nav must show the masternode list"
+        );
+        assert!(harness.query_by_label("‹ All masternodes").is_none());
+    });
+}
+
+#[test]
+fn go_to_main_screen_from_key_info_preserves_masternode_detail() {
+    use dash_evo_tool::ui::Screen;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_voter_key(&app_context, 0x73, "mn-nav-back-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-nav-back-01").click();
+        harness.run_steps(3);
+        harness.get_by_label("Voting key ›").click();
+        harness.run_steps(3);
+        assert!(matches!(
+            harness.state().screen_stack.last(),
+            Some(Screen::KeyInfoScreen(_))
+        ));
+
+        harness
+            .query_all_by_role_and_label(Role::Button, "Identities")
+            .min_by(|left, right| left.rect().top().total_cmp(&right.rect().top()))
+            .expect("Key Info breadcrumb")
+            .click();
+        harness.run_steps(3);
+
+        assert!(harness.state().screen_stack.is_empty());
+        assert!(
+            harness.query_by_label("‹ All masternodes").is_some(),
+            "returning from Key Info must preserve the open detail view"
+        );
+        assert!(harness.query_by_label("Open mn-nav-back-01").is_none());
     });
 }

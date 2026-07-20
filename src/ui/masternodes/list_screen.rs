@@ -516,6 +516,10 @@ impl ScreenLike for MasternodesScreen {
         self.reconcile_pending_load();
     }
 
+    fn reset_to_root_view(&mut self) {
+        self.view = MasternodesView::List;
+    }
+
     /// Drop every secret the open view holds — the load form's keys and
     /// encryption password, the detail view's unsubmitted voting key. This screen
     /// is a root screen: it lives for the whole process, so nothing else would

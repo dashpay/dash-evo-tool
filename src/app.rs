@@ -1956,7 +1956,9 @@ impl AppState {
             return;
         }
         self.select_main_screen(root_screen_type);
-        self.active_root_screen_mut().refresh_on_arrival();
+        let active_screen = self.active_root_screen_mut();
+        active_screen.reset_to_root_view();
+        active_screen.refresh_on_arrival();
         self.current_app_context()
             .update_settings(root_screen_type)
             .ok();

@@ -790,7 +790,9 @@ impl KeyInfoScreen {
         }
     }
 
-    /// Build a key-info screen with the add-protection confirmation already open.
+    /// Build a key-info screen with the add-protection confirmation already open
+    /// when vault-backed protection is available, or show a warning when wallet
+    /// setup has not made protection available yet.
     pub fn new_with_protection_prompt(
         identity: QualifiedIdentity,
         key: IdentityPublicKey,
@@ -798,7 +800,18 @@ impl KeyInfoScreen {
         app_context: &Arc<AppContext>,
     ) -> Self {
         let mut screen = Self::new(identity, key, private_key_data, app_context);
-        screen.open_add_confirm();
+        let status = screen.compute_protection_status();
+        if status == IdentityProtectionStatus::NoVaultKeys {
+            screen.protection_stage = ProtectionStage::Idle;
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "Password protection is not available yet. Wait for wallet setup to finish, then try again.",
+                MessageType::Warning,
+            );
+        } else {
+            screen.protection_status = Some(status);
+            screen.open_add_confirm();
+        }
         screen
     }
 
@@ -1111,6 +1124,7 @@ impl KeyInfoScreen {
 
         egui::CollapsingHeader::new("Key Protection")
             .default_open(false)
+            // Keep the header open so an active protection form or dialog remains visible.
             .open((self.protection_stage != ProtectionStage::Idle).then_some(true))
             .show(ui, |ui| {
                 let status_text = match status {

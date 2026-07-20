@@ -5,7 +5,7 @@ mod vote_on_dpns_name;
 
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
@@ -147,6 +147,17 @@ pub(super) fn log_contested_proof_error(e: &dash_sdk::Error, request_type: Reque
 }
 
 impl AppContext {
+    fn record_dpns_vote_diagnostic_with_dapi_context(
+        &self,
+        operation_id: DpnsVoteOperationId,
+        key: DpnsVoteTargetKey,
+        error: TaskError,
+        sdk: &Sdk,
+    ) {
+        let error = error.contextualize_dapi_availability(DapiAddressAvailability::from_sdk(sdk));
+        self.record_dpns_vote_diagnostic(operation_id, key, error);
+    }
+
     pub async fn run_contested_resource_task(
         self: &Arc<Self>,
         task: ContestedResourceTask,
@@ -550,10 +561,11 @@ impl AppContext {
                                     contested_name = %target.contested_name,
                                     "DPNS vote was submitted but remains unconfirmed"
                                 );
-                                app_context.record_dpns_vote_diagnostic(
+                                app_context.record_dpns_vote_diagnostic_with_dapi_context(
                                     operation_id,
                                     target.key.clone(),
                                     error,
+                                    &sdk,
                                 );
                             }
                             Ok(vote_on_dpns_name::DpnsVoteAttempt::Rejected(error)) => {
@@ -563,10 +575,11 @@ impl AppContext {
                                     contested_name = %target.contested_name,
                                     "Platform rejected a DPNS vote"
                                 );
-                                app_context.record_dpns_vote_diagnostic(
+                                app_context.record_dpns_vote_diagnostic_with_dapi_context(
                                     operation_id,
                                     target.key.clone(),
                                     error,
+                                    &sdk,
                                 );
                             }
                             Err(error) => {
@@ -579,10 +592,11 @@ impl AppContext {
                                 if matches!(target.timing, VoteTiming::Scheduled(_)) {
                                     retryable_scheduled_error = Some(error);
                                 } else {
-                                    app_context.record_dpns_vote_diagnostic(
+                                    app_context.record_dpns_vote_diagnostic_with_dapi_context(
                                         operation_id,
                                         target.key.clone(),
                                         error,
+                                        &sdk,
                                     );
                                 }
                             }
@@ -761,10 +775,11 @@ impl AppContext {
                         contested_name = %outcome.target.contested_name,
                         "Could not reconcile an unconfirmed DPNS vote"
                     );
-                    self.record_dpns_vote_diagnostic(
+                    self.record_dpns_vote_diagnostic_with_dapi_context(
                         operation_id,
                         outcome.target.key.clone(),
                         error,
+                        sdk,
                     );
                 }
             }
@@ -932,6 +947,52 @@ fn scheduled_target_should_execute(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    fn dapi_connection_refused_error() -> TaskError {
+        use dash_sdk::Error as SdkError;
+        use dash_sdk::dapi_client::DapiClientError;
+        use dash_sdk::dapi_client::transport::TransportError;
+
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error");
+        TaskError::from(SdkError::DapiClientError(DapiClientError::Transport(
+            TransportError::Grpc(status),
+        )))
+    }
+
+    #[test]
+    fn vote_diagnostic_contextualizes_exhausted_dapi_addresses() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = context.sdk();
+        let addresses = sdk.address_list();
+        let live_addresses = addresses.get_live_addresses();
+        assert!(
+            !live_addresses.is_empty(),
+            "test SDK must have DAPI addresses"
+        );
+        for address in live_addresses {
+            assert!(addresses.ban(&address));
+        }
+
+        let operation_id = DpnsVoteOperationId::from_bytes([3; 16]);
+        let key = DpnsVoteTargetKey {
+            network: Network::Testnet,
+            voter_id: Identifier::from([4; 32]),
+            vote_poll_id: Identifier::from([5; 32]),
+        };
+        context.record_dpns_vote_diagnostic_with_dapi_context(
+            operation_id,
+            key,
+            dapi_connection_refused_error(),
+            &sdk,
+        );
+
+        let diagnostics = context.dpns_vote_operation_diagnostics(operation_id);
+        assert!(matches!(
+            diagnostics.as_slice(),
+            [error] if matches!(error.as_ref(), TaskError::DapiAllAddressesExhausted { .. })
+        ));
+    }
 
     /// VOTE-TC-033: an inner scheduled rejection is never classified as success.
     #[test]

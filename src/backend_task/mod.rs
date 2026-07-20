@@ -786,11 +786,6 @@ pub enum BackendTaskSuccessResult {
 impl BackendTaskSuccessResult {
     fn contains_dapi_reachability_failure(&self) -> bool {
         match self {
-            Self::DPNSVoteResults(results) => results.iter().any(|(_, _, result)| {
-                result
-                    .as_ref()
-                    .is_err_and(|error| error.contains_dapi_reachability_failure())
-            }),
             Self::RefreshedWallet { warning } => warning
                 .as_ref()
                 .is_some_and(|error| error.contains_dapi_reachability_failure()),
@@ -800,17 +795,6 @@ impl BackendTaskSuccessResult {
 
     fn contextualize_dapi_availability(self, availability: DapiAddressAvailability) -> Self {
         match self {
-            Self::DPNSVoteResults(results) => Self::DPNSVoteResults(
-                results
-                    .into_iter()
-                    .map(|(name, choice, result)| {
-                        let result = result.map_err(|error| {
-                            error.contextualize_shared_dapi_availability(availability)
-                        });
-                        (name, choice, result)
-                    })
-                    .collect(),
-            ),
             Self::RefreshedWallet { warning } => Self::RefreshedWallet {
                 warning: warning
                     .map(|error| error.contextualize_shared_dapi_availability(availability)),
@@ -1313,29 +1297,6 @@ mod tests {
 
         assert!(matches!(result, Ok(BackendTaskSuccessResult::None)));
         assert!(!inspected.get());
-    }
-
-    #[test]
-    fn dapi_context_maps_errors_embedded_in_success_results() {
-        let result = contextualize_dapi_result(
-            Ok(BackendTaskSuccessResult::DPNSVoteResults(vec![(
-                "alice".to_owned(),
-                ResourceVoteChoice::Lock,
-                Err(Arc::new(dapi_connection_refused_error())),
-            )])),
-            || DapiAddressAvailability {
-                configured_total: 1,
-                live_count: 0,
-            },
-        );
-
-        let Ok(BackendTaskSuccessResult::DPNSVoteResults(results)) = result else {
-            panic!("expected DPNS vote results");
-        };
-        assert!(matches!(
-            results[0].2,
-            Err(ref error) if matches!(error.as_ref(), TaskError::DapiAllAddressesExhausted { .. })
-        ));
     }
 
     #[test]

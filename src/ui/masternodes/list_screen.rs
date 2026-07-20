@@ -517,7 +517,9 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn reset_to_root_view(&mut self) {
-        self.view = MasternodesView::List;
+        if self.pending_load.is_none() {
+            self.view = MasternodesView::List;
+        }
     }
 
     /// Drop every secret the open view holds — the load form's keys and

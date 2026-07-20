@@ -13,10 +13,11 @@ use dash_evo_tool::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use egui::accesskit::Role;
-use egui_kittest::kittest::Queryable;
+use egui::accesskit::{Role, Toggled};
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -913,6 +914,140 @@ fn left_nav_return_to_masternodes_resets_detail_to_list() {
             "returning through the left nav must show the masternode list"
         );
         assert!(harness.query_by_label("‹ All masternodes").is_none());
+    });
+}
+
+#[test]
+fn active_masternodes_left_nav_resets_detail_to_list() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0x74,
+            "mn-active-nav-reset-01",
+            IdentityType::Masternode,
+        );
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-active-nav-reset-01").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("‹ All masternodes").is_some());
+
+        harness
+            .get_by_role_and_label(Role::Button, "Masternodes")
+            .click();
+        harness.run_steps(3);
+
+        assert!(
+            harness
+                .query_by_label("Open mn-active-nav-reset-01")
+                .is_some(),
+            "clicking the already-active Masternodes nav entry must show the list"
+        );
+        assert!(harness.query_by_label("‹ All masternodes").is_none());
+    });
+}
+
+#[test]
+fn left_nav_return_preserves_pending_masternode_load_form_fields() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let (blocking_release, blocking_wait) = std::sync::mpsc::channel::<()>();
+        let _blocking_task = tokio::task::spawn_blocking(move || blocking_wait.recv());
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Load a masternode").click();
+        harness.set_size(egui::vec2(1280.0, 1200.0));
+        harness.run_steps(3);
+
+        harness.get_by_label("Evonode").click();
+        harness.run_steps(2);
+        assert_eq!(
+            harness.get_by_label("Evonode").accesskit_node().toggled(),
+            Some(Toggled::True),
+            "the non-default node type must be selected before submission"
+        );
+
+        let identity_id = Identifier::from([0x75; 32]);
+        let pro_tx_hash = identity_id.to_string(Encoding::Hex);
+        harness
+            .query_all_by_role(Role::TextInput)
+            .next()
+            .expect("ProTxHash input")
+            .focus();
+        harness.event(egui::Event::Text(pro_tx_hash.clone()));
+        harness.step();
+
+        let alias = "mn-pending-nav-01";
+        harness
+            .query_all_by_role(Role::TextInput)
+            .nth(1)
+            .expect("alias input")
+            .focus();
+        harness.event(egui::Event::Text(alias.to_owned()));
+        harness.step();
+        assert!(
+            harness.query_all_by_value(&pro_tx_hash).count() >= 1,
+            "the ProTxHash must be entered before submission"
+        );
+        assert!(
+            harness.query_all_by_value(alias).count() >= 1,
+            "the alias must be entered before submission"
+        );
+
+        harness.get_by_label("Load masternode").click();
+        harness.step();
+        assert!(
+            app_context
+                .mark_identity_load_submitted(identity_id)
+                .is_none(),
+            "the load must be pending before navigation"
+        );
+
+        harness
+            .get_by_role_and_label(Role::Button, "Wallets")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Masternodes")
+            .click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("ProTxHash").is_some(),
+            "returning while a load is pending must keep the load form open"
+        );
+        assert!(
+            harness.query_all_by_value(&pro_tx_hash).count() >= 1,
+            "the pending load must retain its entered ProTxHash"
+        );
+        assert!(
+            harness.query_all_by_value(alias).count() >= 1,
+            "the pending load must retain its entered alias"
+        );
+        assert_eq!(
+            harness.get_by_label("Evonode").accesskit_node().toggled(),
+            Some(Toggled::True),
+            "the pending load must retain its entered node type"
+        );
+
+        drop(blocking_release);
+        for _ in 0..10 {
+            harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     });
 }
 

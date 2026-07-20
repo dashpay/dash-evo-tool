@@ -238,6 +238,7 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
                 spv_started,
                 ..
             } => {
+                context.install_secret_prompt(ctx.secret_prompt());
                 // S5: drain the OUTGOING context's wallet backend before
                 // replacing it.  The old `ctx` (still in scope above) is the
                 // context that is being evicted; the new `context` is the one
@@ -256,6 +257,44 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
             other => Err(McpToolError::Internal(format!(
                 "Unexpected task result: {other:?}"
             ))),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "mcp"))]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::wallet_backend::SecretPrompt;
+    use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn network_switch_tool_preserves_secret_prompt_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let prompt: Arc<dyn SecretPrompt> = Arc::new(TestPrompt::never());
+        ctx.install_secret_prompt(Arc::clone(&prompt));
+        let shared = Arc::new(arc_swap::ArcSwap::from(ctx));
+        let service = DashMcpService::new_shared(shared);
+
+        NetworkSwitch::invoke(
+            &service,
+            NetworkSwitchParams {
+                network: "mainnet".to_owned(),
+            },
+        )
+        .await
+        .expect("switch network through MCP");
+
+        let switched = service.tool_ctx().await.expect("switched context");
+        assert!(
+            Arc::ptr_eq(&prompt, &switched.secret_prompt()),
+            "the MCP-swapped context must retain the source prompt host identity"
+        );
+        if let Ok(backend) = switched.wallet_backend() {
+            backend.shutdown().await;
         }
     }
 }

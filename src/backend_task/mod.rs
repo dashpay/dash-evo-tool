@@ -1014,6 +1014,7 @@ impl AppContext {
                     )
                 })
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+                new_ctx.install_secret_prompt(self.secret_prompt());
 
                 // Wire the freshly-built context's wallet backend and then start
                 // chain sync. The old code called `start_spv()` on an unwired
@@ -1275,6 +1276,43 @@ mod tests {
         ));
 
         backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_propagates_secret_prompt_before_wallet_backend_wiring() {
+        use crate::context::test_support::test_app_context;
+        use crate::wallet_backend::SecretPrompt;
+        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let prompt: Arc<dyn SecretPrompt> = Arc::new(TestPrompt::never());
+        ctx.install_secret_prompt(Arc::clone(&prompt));
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let result = ctx
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                sender,
+            )
+            .await
+            .expect("switch network");
+
+        let BackendTaskSuccessResult::NetworkContextCreated { context, .. } = result else {
+            panic!("expected a newly created network context");
+        };
+        assert!(
+            Arc::ptr_eq(&prompt, &context.secret_prompt()),
+            "the new context must retain the source prompt host identity"
+        );
+        assert!(
+            context.wallet_backend().is_err(),
+            "the prompt must be present before lazy wallet-backend wiring"
+        );
     }
 
     #[test]

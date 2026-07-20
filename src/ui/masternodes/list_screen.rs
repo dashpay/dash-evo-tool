@@ -517,7 +517,7 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn reset_to_root_view(&mut self) {
-        if self.pending_load.is_none() {
+        if !matches!(self.view, MasternodesView::Load(_)) {
             self.view = MasternodesView::List;
         }
     }
@@ -878,6 +878,12 @@ mod tests {
         assert!(
             screen.pending_load.is_none(),
             "submit must re-enable after a failed load"
+        );
+
+        screen.reset_to_root_view();
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "root navigation must preserve a failed load form for correction"
         );
 
         // Resubmit, then succeed: the form closes and drops back to the list.

@@ -62,6 +62,10 @@ use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
+type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
+type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
+type DpnsVoteDiagnostics = BTreeMap<DpnsVoteDiagnosticKey, DpnsVoteDiagnosticEntry>;
+
 /// A guard that ensures settings cache invalidation happens atomically
 ///
 /// This guard holds a write lock on the cached settings, preventing reads
@@ -227,8 +231,8 @@ pub struct AppContext {
     /// Re-armed only if targeted recovery cannot persist after an executor error.
     pub(crate) dpns_vote_recovery: tokio::sync::Mutex<bool>,
     /// Full in-process diagnostics keyed to sanitized durable outcomes.
-    dpns_vote_diagnostics:
-        Mutex<BTreeMap<(DpnsVoteOperationId, DpnsVoteTargetKey), Arc<TaskError>>>,
+    dpns_vote_diagnostics: Mutex<DpnsVoteDiagnostics>,
+    dpns_vote_diagnostic_sequence: AtomicU64,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -512,6 +516,7 @@ impl AppContext {
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
             dpns_vote_recovery: tokio::sync::Mutex::new(false),
             dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),
+            dpns_vote_diagnostic_sequence: AtomicU64::new(0),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),

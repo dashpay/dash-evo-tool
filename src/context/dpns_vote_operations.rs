@@ -8,12 +8,20 @@ use crate::model::dpns_voting::{
 };
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 const LEGACY_OPERATION_INDEX_KEY: &str = "det:dpns_vote_operations:v1";
 const LEGACY_OPERATION_KEY_PREFIX: &str = "det:dpns_vote_operation:v1:";
 const OPERATION_INDEX_KEY_PREFIX: &str = "det:dpns_vote_operations:v2:";
 const OPERATION_KEY_PREFIX: &str = "det:dpns_vote_operation:v2:";
+const OPERATION_LOCK_INDEX_KEY_PREFIX: &str = "det:dpns_vote_operation_locks:v2:";
+const OPERATION_LOCK_INDEX_DIRTY_KEY_PREFIX: &str = "det:dpns_vote_operation_locks_dirty:v2:";
+const DPNS_VOTE_DIAGNOSTIC_LIMIT: usize = 256;
+
+type DpnsVoteLockIndex = BTreeMap<DpnsVoteTargetKey, DpnsVoteOperationId>;
+type DpnsVoteDiagnosticMap =
+    BTreeMap<(DpnsVoteOperationId, DpnsVoteTargetKey), (u64, Arc<TaskError>)>;
 
 fn network_tag(network: Network) -> &'static str {
     match network {
@@ -30,6 +38,21 @@ fn operation_index_key(network: Network) -> String {
 
 fn operation_key(network: Network, id: DpnsVoteOperationId) -> String {
     format!("{OPERATION_KEY_PREFIX}{}:{id}", network_tag(network))
+}
+
+fn operation_key_prefix(network: Network) -> String {
+    format!("{OPERATION_KEY_PREFIX}{}:", network_tag(network))
+}
+
+fn operation_lock_index_key(network: Network) -> String {
+    format!("{OPERATION_LOCK_INDEX_KEY_PREFIX}{}", network_tag(network))
+}
+
+fn operation_lock_index_dirty_key(network: Network) -> String {
+    format!(
+        "{OPERATION_LOCK_INDEX_DIRTY_KEY_PREFIX}{}",
+        network_tag(network)
+    )
 }
 
 fn legacy_operation_key(id: DpnsVoteOperationId) -> String {
@@ -81,8 +104,10 @@ fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskErr
     }
 
     let mut qualified_ids = load_operation_ids(kv, network)?;
-    let mut changed = false;
-    for bytes in legacy_ids {
+    let mut qualified_changed = false;
+    let mut retained_legacy_ids = Vec::new();
+    for bytes in &legacy_ids {
+        let bytes = *bytes;
         let id = DpnsVoteOperationId::from_bytes(bytes);
         if qualified_ids.contains(&bytes) {
             continue;
@@ -91,15 +116,26 @@ fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskErr
             .get(DetScope::Global, &legacy_operation_key(id))
             .map_err(unreadable_operation_err)?
             .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
-        if !operation_matches_network(&operation, network)? {
-            continue;
+        match operation_matches_network(&operation, network) {
+            Ok(false) => continue,
+            Err(error) => {
+                retained_legacy_ids.push(bytes);
+                return Err(error);
+            }
+            Ok(true) => {}
         }
+        kv.put(
+            DetScope::Global,
+            &operation_lock_index_dirty_key(network),
+            &true,
+        )
+        .map_err(operation_err)?;
         kv.put(DetScope::Global, &operation_key(network, id), &operation)
             .map_err(operation_err)?;
         qualified_ids.push(bytes);
-        changed = true;
+        qualified_changed = true;
     }
-    if changed {
+    if qualified_changed {
         kv.put(
             DetScope::Global,
             &operation_index_key(network),
@@ -107,11 +143,24 @@ fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskErr
         )
         .map_err(operation_err)?;
     }
+    if retained_legacy_ids.len() != legacy_ids.len() {
+        kv.put(
+            DetScope::Global,
+            LEGACY_OPERATION_INDEX_KEY,
+            &retained_legacy_ids,
+        )
+        .map_err(operation_err)?;
+    }
+    if qualified_changed {
+        rebuild_lock_index(kv, network)?;
+    }
     Ok(())
 }
 
-fn load_operations(kv: &DetKv, network: Network) -> Result<Vec<DpnsVoteOperation>, TaskError> {
-    migrate_legacy_operations(kv, network)?;
+fn load_operations_read_only(
+    kv: &DetKv,
+    network: Network,
+) -> Result<Vec<DpnsVoteOperation>, TaskError> {
     let mut operations = Vec::new();
     for bytes in load_operation_ids(kv, network)? {
         let id = DpnsVoteOperationId::from_bytes(bytes);
@@ -126,6 +175,75 @@ fn load_operations(kv: &DetKv, network: Network) -> Result<Vec<DpnsVoteOperation
     Ok(operations)
 }
 
+fn load_operations(kv: &DetKv, network: Network) -> Result<Vec<DpnsVoteOperation>, TaskError> {
+    migrate_legacy_operations(kv, network)?;
+    load_or_rebuild_lock_index(kv, network)?;
+    load_operations_read_only(kv, network)
+}
+
+fn rebuild_lock_index(kv: &DetKv, network: Network) -> Result<DpnsVoteLockIndex, TaskError> {
+    kv.put(
+        DetScope::Global,
+        &operation_lock_index_dirty_key(network),
+        &true,
+    )
+    .map_err(operation_err)?;
+    let mut ids = Vec::new();
+    let mut locks = DpnsVoteLockIndex::new();
+    for key in kv
+        .list(DetScope::Global, Some(&operation_key_prefix(network)))
+        .map_err(unreadable_operation_err)?
+    {
+        let operation: DpnsVoteOperation = kv
+            .get(DetScope::Global, &key)
+            .map_err(unreadable_operation_err)?
+            .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
+        if !operation_matches_network(&operation, network)? {
+            continue;
+        }
+        ids.push(operation.id.to_bytes());
+        for outcome in operation
+            .targets
+            .iter()
+            .filter(|outcome| outcome.status.holds_lock())
+        {
+            if locks
+                .insert(outcome.target.key.clone(), operation.id)
+                .is_some_and(|owner| owner != operation.id)
+            {
+                return Err(TaskError::DpnsVoteTargetBusy);
+            }
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    kv.put(DetScope::Global, &operation_index_key(network), &ids)
+        .map_err(operation_err)?;
+    kv.put(DetScope::Global, &operation_lock_index_key(network), &locks)
+        .map_err(operation_err)?;
+    kv.delete(DetScope::Global, &operation_lock_index_dirty_key(network))
+        .map_err(operation_err)?;
+    Ok(locks)
+}
+
+fn load_or_rebuild_lock_index(
+    kv: &DetKv,
+    network: Network,
+) -> Result<DpnsVoteLockIndex, TaskError> {
+    let dirty = kv
+        .get::<bool>(DetScope::Global, &operation_lock_index_dirty_key(network))
+        .map_err(unreadable_operation_err)?
+        .unwrap_or(false);
+    if !dirty
+        && let Some(index) = kv
+            .get(DetScope::Global, &operation_lock_index_key(network))
+            .map_err(unreadable_operation_err)?
+    {
+        return Ok(index);
+    }
+    rebuild_lock_index(kv, network)
+}
+
 fn persist_operation(
     kv: &DetKv,
     network: Network,
@@ -134,30 +252,51 @@ fn persist_operation(
     if !operation_matches_network(operation, network)? {
         return Err(TaskError::DpnsVoteJournalNetworkMismatch);
     }
-    let conflict = load_operations(kv, network)?.iter().any(|existing| {
-        existing.id != operation.id
-            && existing.targets.iter().any(|existing_outcome| {
-                existing_outcome.status.holds_lock()
-                    && operation.targets.iter().any(|outcome| {
-                        outcome.status.holds_lock()
-                            && outcome.target.key == existing_outcome.target.key
-                    })
-            })
-    });
-    if conflict {
-        return Err(TaskError::DpnsVoteTargetBusy);
+    let mut locks = load_or_rebuild_lock_index(kv, network)?;
+    let previous_locks = locks.clone();
+    locks.retain(|_, owner| *owner != operation.id);
+    for outcome in operation
+        .targets
+        .iter()
+        .filter(|outcome| outcome.status.holds_lock())
+    {
+        if locks
+            .get(&outcome.target.key)
+            .is_some_and(|owner| *owner != operation.id)
+        {
+            return Err(TaskError::DpnsVoteTargetBusy);
+        }
+        locks.insert(outcome.target.key.clone(), operation.id);
     }
 
+    let mut ids = load_operation_ids(kv, network)?;
+    let new_operation = !ids.contains(&operation.id.to_bytes());
+    let locks_changed = locks != previous_locks;
+    if new_operation || locks_changed {
+        kv.put(
+            DetScope::Global,
+            &operation_lock_index_dirty_key(network),
+            &true,
+        )
+        .map_err(operation_err)?;
+    }
     kv.put(
         DetScope::Global,
         &operation_key(network, operation.id),
         operation,
     )
     .map_err(operation_err)?;
-    let mut ids = load_operation_ids(kv, network)?;
-    if !ids.contains(&operation.id.to_bytes()) {
+    if new_operation {
         ids.push(operation.id.to_bytes());
         kv.put(DetScope::Global, &operation_index_key(network), &ids)
+            .map_err(operation_err)?;
+    }
+    if locks_changed {
+        kv.put(DetScope::Global, &operation_lock_index_key(network), &locks)
+            .map_err(operation_err)?;
+    }
+    if new_operation || locks_changed {
+        kv.delete(DetScope::Global, &operation_lock_index_dirty_key(network))
             .map_err(operation_err)?;
     }
     Ok(())
@@ -168,12 +307,50 @@ fn write_existing_operation(
     network: Network,
     operation: &DpnsVoteOperation,
 ) -> Result<(), TaskError> {
+    persist_operation(kv, network, operation)
+}
+
+fn prune_terminal_operations(kv: &DetKv, network: Network) -> Result<usize, TaskError> {
+    let terminal_ids = load_operations(kv, network)?
+        .into_iter()
+        .filter(DpnsVoteOperation::is_complete)
+        .map(|operation| operation.id)
+        .collect::<Vec<_>>();
+    if terminal_ids.is_empty() {
+        return Ok(0);
+    }
     kv.put(
         DetScope::Global,
-        &operation_key(network, operation.id),
-        operation,
+        &operation_lock_index_dirty_key(network),
+        &true,
     )
-    .map_err(operation_err)
+    .map_err(operation_err)?;
+    for id in &terminal_ids {
+        kv.delete(DetScope::Global, &operation_key(network, *id))
+            .map_err(operation_err)?;
+    }
+    rebuild_lock_index(kv, network)?;
+    Ok(terminal_ids.len())
+}
+
+fn insert_diagnostic(
+    diagnostics: &mut DpnsVoteDiagnosticMap,
+    key: (DpnsVoteOperationId, DpnsVoteTargetKey),
+    sequence: u64,
+    error: Arc<TaskError>,
+    limit: usize,
+) {
+    diagnostics.insert(key, (sequence, error));
+    while diagnostics.len() > limit {
+        let Some(oldest) = diagnostics
+            .iter()
+            .min_by_key(|(_, (recorded_at, _))| recorded_at)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        diagnostics.remove(&oldest);
+    }
 }
 
 fn transition_scheduled_target_to_queued(
@@ -593,10 +770,20 @@ impl AppContext {
         key: DpnsVoteTargetKey,
         error: TaskError,
     ) {
-        self.dpns_vote_diagnostics
+        let sequence = self
+            .dpns_vote_diagnostic_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut diagnostics = self
+            .dpns_vote_diagnostics
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert((operation_id, key), Arc::new(error));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        insert_diagnostic(
+            &mut diagnostics,
+            (operation_id, key),
+            sequence,
+            Arc::new(error),
+            DPNS_VOTE_DIAGNOSTIC_LIMIT,
+        );
     }
 
     pub(crate) fn dpns_vote_operation_diagnostics(
@@ -608,8 +795,17 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter(|((id, _), _)| *id == operation_id)
-            .map(|(_, error)| Arc::clone(error))
+            .map(|(_, (_, error))| Arc::clone(error))
             .collect()
+    }
+
+    /// Remove lock-releasing operation history when the user clears completed votes.
+    pub(crate) fn prune_terminal_dpns_vote_operations(&self) -> Result<usize, TaskError> {
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_terminal_operations(&self.det_kv()?, self.network)
     }
 
     /// Release a not-yet-submitting scheduled target after explicit cancellation.
@@ -653,15 +849,21 @@ mod tests {
     struct CountingKv {
         inner: InMemoryKv,
         puts: AtomicUsize,
+        operation_gets: AtomicUsize,
     }
 
     impl CountingKv {
-        fn reset_puts(&self) {
+        fn reset_counts(&self) {
             self.puts.store(0, Ordering::Relaxed);
+            self.operation_gets.store(0, Ordering::Relaxed);
         }
 
         fn put_count(&self) -> usize {
             self.puts.load(Ordering::Relaxed)
+        }
+
+        fn operation_get_count(&self) -> usize {
+            self.operation_gets.load(Ordering::Relaxed)
         }
     }
 
@@ -671,6 +873,9 @@ mod tests {
             scope: &ObjectId,
             key: &str,
         ) -> Result<Option<Vec<u8>>, platform_wallet_storage::KvError> {
+            if key.starts_with(OPERATION_KEY_PREFIX) {
+                self.operation_gets.fetch_add(1, Ordering::Relaxed);
+            }
             self.inner.get(scope, key)
         }
 
@@ -812,7 +1017,7 @@ mod tests {
 
         let mut replacement = operation(DpnsVoteTargetStatus::Scheduled);
         replacement.targets[0].target.timing = VoteTiming::Scheduled(84);
-        store.reset_puts();
+        store.reset_counts();
 
         replace_scheduled_operation(&kv, Network::Testnet, &mut replacement, &key).unwrap();
 
@@ -1006,6 +1211,93 @@ mod tests {
         .unwrap();
 
         assert!(load_operations(&kv, Network::Mainnet).unwrap().is_empty());
+        assert_eq!(
+            kv.get::<Vec<[u8; 16]>>(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
+                .unwrap()
+                .unwrap_or_default(),
+            Vec::<[u8; 16]>::new(),
+            "a terminal row for another network must not be scanned again"
+        );
+    }
+
+    #[test]
+    fn persisted_lock_index_avoids_full_journal_reads_on_transition() {
+        let store = Arc::new(CountingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let mut first = operation(DpnsVoteTargetStatus::Queued);
+        let mut second = operation(DpnsVoteTargetStatus::Queued);
+        second.targets[0].target.key.vote_poll_id = Identifier::from([3; 32]);
+        persist_operation(&kv, Network::Testnet, &first).unwrap();
+        persist_operation(&kv, Network::Testnet, &second).unwrap();
+
+        first.targets[0].status = DpnsVoteTargetStatus::Submitting;
+        store.reset_counts();
+        persist_operation(&kv, Network::Testnet, &first).unwrap();
+
+        assert_eq!(
+            store.operation_get_count(),
+            0,
+            "a status transition must consult the lock index, not every operation record"
+        );
+    }
+
+    #[test]
+    fn pruning_removes_terminal_records_and_preserves_live_locks() {
+        let kv = kv();
+        let terminal = operation(DpnsVoteTargetStatus::Confirmed);
+        let live = operation(DpnsVoteTargetStatus::Unconfirmed);
+        persist_operation(&kv, Network::Testnet, &terminal).unwrap();
+        persist_operation(&kv, Network::Testnet, &live).unwrap();
+
+        assert_eq!(prune_terminal_operations(&kv, Network::Testnet).unwrap(), 1);
+        assert_eq!(
+            load_operations_read_only(&kv, Network::Testnet).unwrap(),
+            vec![live]
+        );
+        assert!(
+            kv.get::<DpnsVoteOperation>(
+                DetScope::Global,
+                &operation_key(Network::Testnet, terminal.id),
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn diagnostics_evict_the_least_recently_recorded_entry() {
+        let mut diagnostics = BTreeMap::new();
+        let first_key = (
+            DpnsVoteOperationId::from_bytes([1; 16]),
+            operation(DpnsVoteTargetStatus::Queued).targets[0]
+                .target
+                .key
+                .clone(),
+        );
+        let second_key = (
+            DpnsVoteOperationId::from_bytes([2; 16]),
+            operation(DpnsVoteTargetStatus::Queued).targets[0]
+                .target
+                .key
+                .clone(),
+        );
+        insert_diagnostic(
+            &mut diagnostics,
+            first_key.clone(),
+            1,
+            Arc::new(TaskError::DpnsVoteTargetBusy),
+            1,
+        );
+        insert_diagnostic(
+            &mut diagnostics,
+            second_key.clone(),
+            2,
+            Arc::new(TaskError::DpnsVoteTargetBusy),
+            1,
+        );
+
+        assert!(!diagnostics.contains_key(&first_key));
+        assert!(diagnostics.contains_key(&second_key));
     }
 
     #[test]

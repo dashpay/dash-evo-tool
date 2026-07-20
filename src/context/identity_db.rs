@@ -1152,6 +1152,7 @@ impl AppContext {
             }
             prune_vote_voter_if_empty(&kv, voter)?;
         }
+        self.prune_terminal_dpns_vote_operations()?;
         Ok(())
     }
 

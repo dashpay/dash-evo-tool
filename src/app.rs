@@ -795,9 +795,6 @@ pub struct AppState {
     /// MCP configuration held until a required boot-time network selection succeeds.
     #[cfg(feature = "mcp")]
     mcp_server_pending_config: Option<crate::mcp::McpConfig>,
-    /// The egui secret prompt host, kept so newly-created (on-demand) network
-    /// contexts can have it installed before their backend is wired.
-    secret_prompt_host: Arc<dyn crate::wallet_backend::SecretPrompt>,
     /// Receives just-in-time passphrase requests enqueued by the egui secret
     /// prompt host. Drained once per frame in [`Self::update`]; the active
     /// request becomes [`Self::active_secret_prompt`].
@@ -1467,7 +1464,6 @@ impl AppState {
             mcp_app_context,
             #[cfg(feature = "mcp")]
             mcp_server_pending_config,
-            secret_prompt_host,
             secret_prompt_receiver,
             active_secret_prompt: None,
             prompt_was_blocking: false,
@@ -2227,11 +2223,6 @@ impl App for AppState {
                             context,
                             ..
                         } => {
-                            // Install the egui prompt host before the new
-                            // context's backend is wired, so its `SecretAccess`
-                            // gets the interactive host rather than the headless
-                            // default.
-                            context.install_secret_prompt(Arc::clone(&self.secret_prompt_host));
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
                             self.network_switch_banner.take_and_clear();

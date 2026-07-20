@@ -1281,13 +1281,25 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_propagates_secret_prompt_before_wallet_backend_wiring() {
         use crate::context::test_support::test_app_context;
-        use crate::wallet_backend::SecretPrompt;
-        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::wallet_backend::secret_prompt::SecretScope;
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::{IdentityKeyView, SecretPrompt};
+        use platform_wallet_storage::secrets::SecretString;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
-        let prompt: Arc<dyn SecretPrompt> = Arc::new(TestPrompt::never());
-        ctx.install_secret_prompt(Arc::clone(&prompt));
+        let identity_id = [0x91; 32];
+        let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        let key_id = 7;
+        let key = [0xa5; 32];
+        let password = "network-switch-password";
+        let secret_store = ctx.secret_store();
+        IdentityKeyView::new(&secret_store, identity_id)
+            .store_protected(&target, key_id, &key, &SecretString::new(password))
+            .expect("store protected identity key");
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(password)]));
+        ctx.install_secret_prompt(Arc::clone(&prompt) as Arc<dyn SecretPrompt>);
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
@@ -1295,7 +1307,7 @@ mod tests {
             .run_backend_task(
                 BackendTask::SwitchNetwork {
                     network: Network::Mainnet,
-                    start_spv: false,
+                    start_spv: true,
                 },
                 sender,
             )
@@ -1305,14 +1317,29 @@ mod tests {
         let BackendTaskSuccessResult::NetworkContextCreated { context, .. } = result else {
             panic!("expected a newly created network context");
         };
+        let backend = context.wallet_backend().expect("switched backend wired");
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target,
+            key_id,
+        };
+        let resolved = backend
+            .secret_access()
+            .with_secret(&scope, |plaintext| {
+                Ok(plaintext.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("resolve protected key through switched backend");
         assert!(
-            Arc::ptr_eq(&prompt, &context.secret_prompt()),
-            "the new context must retain the source prompt host identity"
+            resolved,
+            "the wired backend must resolve through the source interactive prompt"
         );
-        assert!(
-            context.wallet_backend().is_err(),
-            "the prompt must be present before lazy wallet-backend wiring"
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "the switched backend must prompt once"
         );
+        backend.shutdown().await;
     }
 
     #[test]

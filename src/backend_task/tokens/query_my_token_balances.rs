@@ -73,7 +73,7 @@ impl AppContext {
 
         let refresh_guard = self.begin_token_balance_refresh()?;
         let context = Arc::clone(self);
-        await_managed_network_request_with_timeout(
+        let outcome = await_managed_network_request_with_timeout(
             self.subtasks.clone(),
             "token_balance_refresh_reaper",
             NETWORK_REQUEST_TIMEOUT,
@@ -84,12 +84,14 @@ impl AppContext {
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
         .await??;
-        sender
-            .send(TaskResult::Refresh)
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
-
-        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
+        let result = Self::token_balance_sync_result(outcome);
+        if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+            sender
+                .send(TaskResult::Refresh)
+                .await
+                .map_err(|_| TaskError::InternalSendError)?;
+        }
+        Ok(result)
     }
 
     pub async fn query_token_balance(
@@ -108,7 +110,7 @@ impl AppContext {
         let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
         let refresh_guard = self.begin_token_balance_refresh()?;
         let context = Arc::clone(self);
-        await_managed_network_request_with_timeout(
+        let outcome = await_managed_network_request_with_timeout(
             self.subtasks.clone(),
             "token_balance_refresh_reaper",
             NETWORK_REQUEST_TIMEOUT,
@@ -119,12 +121,14 @@ impl AppContext {
             |source| TaskError::TokenBalanceRefreshTimeout { source },
         )
         .await??;
-        sender
-            .send(TaskResult::Refresh)
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
-
-        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
+        let result = Self::token_balance_sync_result(outcome);
+        if matches!(result, BackendTaskSuccessResult::FetchedTokenBalances) {
+            sender
+                .send(TaskResult::Refresh)
+                .await
+                .map_err(|_| TaskError::InternalSendError)?;
+        }
+        Ok(result)
     }
 
     /// Stop tracking one identity-token balance. Un-watches the pair in the
@@ -226,22 +230,22 @@ impl AppContext {
     async fn refresh_upstream_token_balances(
         &self,
         watch_sets: Vec<(Identifier, Vec<Identifier>)>,
-    ) -> Result<(), TaskError> {
+    ) -> Result<TokenBalanceSyncOutcome, TaskError> {
         let backend = self.wallet_backend()?;
         for (identity_id, token_ids) in watch_sets {
             backend
                 .register_identity_tokens(identity_id, token_ids)
                 .await;
         }
-        Self::require_confirmed_token_balance_sync(backend.sync_token_balances_now().await)
+        Ok(backend.sync_token_balances_now().await)
     }
 
-    fn require_confirmed_token_balance_sync(
-        outcome: TokenBalanceSyncOutcome,
-    ) -> Result<(), TaskError> {
+    fn token_balance_sync_result(outcome: TokenBalanceSyncOutcome) -> BackendTaskSuccessResult {
         match outcome {
-            TokenBalanceSyncOutcome::Performed => Ok(()),
-            TokenBalanceSyncOutcome::AlreadyInFlight => Err(TaskError::TokenBalanceRefreshSkipped),
+            TokenBalanceSyncOutcome::Performed => BackendTaskSuccessResult::FetchedTokenBalances,
+            TokenBalanceSyncOutcome::AlreadyInFlight => {
+                BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight
+            }
         }
     }
 }
@@ -437,11 +441,13 @@ mod tests {
         .await
         .expect("the expired lease must allow a retry attempt");
 
-        let result = AppContext::require_confirmed_token_balance_sync(
-            TokenBalanceSyncOutcome::AlreadyInFlight,
-        );
+        let result =
+            AppContext::token_balance_sync_result(TokenBalanceSyncOutcome::AlreadyInFlight);
 
-        assert!(matches!(result, Err(TaskError::TokenBalanceRefreshSkipped)));
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight
+        ));
         drop(retry_guard);
     }
 

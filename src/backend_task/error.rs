@@ -66,6 +66,9 @@ pub enum WalletTransactionHistoryError {
     /// A record was removed between key enumeration and the record lookup.
     #[error("transaction record {txid} disappeared during hydration")]
     RecordMissing { txid: dash_sdk::dpp::dashcore::Txid },
+    /// One or more persisted rows could not be decoded during hydration.
+    #[error("{skipped_rows} transaction history rows could not be loaded")]
+    RowsSkipped { skipped_rows: usize },
 }
 
 /// Redacted diagnostic for a backend task that panicked or was cancelled.
@@ -312,9 +315,19 @@ pub enum TaskError {
     /// Persisted Core transaction rows could not be read through the upstream
     /// wallet persistence API during wallet registration.
     #[error(
-        "Could not load this wallet's transaction history. Restart the application and try again."
+        "Could not load this wallet's transaction history. Your balance is unaffected. Restart the application and try again."
     )]
     WalletTransactionHistoryLoad {
+        #[source]
+        source: WalletTransactionHistoryError,
+    },
+
+    /// Some persisted transaction rows were unreadable, but wallet
+    /// registration and balance hydration completed.
+    #[error(
+        "Some of this wallet's transaction history could not be loaded. Your balance is unaffected. Restart the application and try again."
+    )]
+    WalletTransactionHistoryPartial {
         #[source]
         source: WalletTransactionHistoryError,
     },
@@ -1146,12 +1159,6 @@ pub enum TaskError {
         "Token balances are still refreshing. Try again in a moment. If this continues, restart the app and try again."
     )]
     TokenBalanceRefreshInProgress,
-
-    /// Upstream skipped a token-balance refresh because another pass was still running.
-    #[error(
-        "Token balances are still being refreshed. Wait a moment and refresh the Tokens screen again."
-    )]
-    TokenBalanceRefreshSkipped,
 
     /// Connected server is behind (SdkError::StaleNode).
     #[error("The server you connected to is behind. Please retry.")]

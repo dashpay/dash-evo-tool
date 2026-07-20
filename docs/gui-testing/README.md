@@ -25,12 +25,106 @@ network timing, or a flow `kittest` can't simulate.
 
 ## How to run a scenario
 
-The mechanical launch recipe (X display setup, accessibility tree, gotchas
-like stderr redirection) lives in the global `desktop-gui` Claude Code skill
-(`~/.claude/skills/desktop-gui/SKILL.md`) — read that first, it's not repeated
-here. This directory covers what's specific to *this project*: which
-scenarios exist, what credentials they need, and the safety rules for running
-them against a live network.
+Use a graphical session whose `DISPLAY` already points at the desktop you want
+to observe. Do not assume a display number: local desktops, SSH forwarding,
+CI, and headless X servers all use different values. Verify the selected
+display before launching:
+
+```bash
+: "${DISPLAY:?Set DISPLAY to the desktop used for GUI testing}"
+xdpyinfo >/dev/null
+```
+
+On a minimal Ubuntu host, egui/eframe also needs an X keyboard library and a
+wgpu backend. Install missing packages only after the launch log identifies
+the corresponding failure:
+
+```bash
+sudo apt-get install -y libxkbcommon-x11-0 mesa-vulkan-drivers xdotool
+```
+
+Build in the checkout under test, then ask Cargo for the effective target
+directory. This honors `CARGO_TARGET_DIR` and any `target-dir` configured in
+Cargo's configuration files.
+
+```bash
+cargo build
+TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | \
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+BIN="$TARGET_DIR/debug/dash-evo-tool"
+test -x "$BIN"
+```
+
+Prepare isolated state and launch the binary as a detached process. The app
+redirects some diagnostics into its data directory, so inspect both the launch
+log and `det-stderr.log` / `det.log` after a crash or panic.
+
+```bash
+DATADIR=$(mktemp -d)
+cp .env.example "$DATADIR/.env"
+LOG="$DATADIR/gui-test-launch.log"
+
+pgrep -af dash-evo-tool
+DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
+APP_PID=$!
+
+pgrep -af "$BIN"
+WID=$(xdotool search --pid "$APP_PID" | head -1)
+xdotool getwindowgeometry "$WID"
+xdotool windowsize "$WID" 1260 780
+xdotool windowactivate "$WID"
+```
+
+### Accessibility tree
+
+Dash Evo Tool publishes its AccessKit tree over AT-SPI2 when accessibility is
+enabled. A headless Ubuntu session needs the accessibility bus and Python
+bindings:
+
+```bash
+sudo apt-get install -y at-spi2-core python3-pyatspi
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+
+dbus-send --session --print-reply \
+  --dest=org.a11y.Bus /org/a11y/bus org.a11y.Bus.GetAddress
+gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+  --method org.freedesktop.DBus.Properties.Set \
+  org.a11y.Status ScreenReaderEnabled '<true>'
+gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+  --method org.freedesktop.DBus.Properties.Set \
+  org.a11y.Status IsEnabled '<true>'
+```
+
+Add `DASH_EVO_TOOL_ACCESSIBILITY=1` to the launch command, focus the window
+with `xdotool windowactivate "$WID"`, and inspect the tree with any AT-SPI
+client. This self-contained Python example prints roles and labels:
+
+```bash
+python3 - <<'PY'
+import pyatspi
+
+
+def walk(node, depth=0):
+    print(f"{'  ' * depth}{node.getRoleName()}: {node.name}")
+    for child in node:
+        walk(child, depth + 1)
+
+
+for app in pyatspi.Registry.getDesktop(0):
+    if app.name == "dash-evo-tool":
+        walk(app)
+PY
+```
+
+An empty application list normally means the AT-SPI status flags are still
+disabled or the app window is not focused. The tree can lag during screen
+transitions and omits purely decorative visuals, so use it for semantic labels
+and structure while using screenshots for pixels, colors, and final visual
+confirmation. Capture durable screenshots with `scrot -o <path>.png`.
+
+The complete recipe is versioned here because an installed `desktop-gui`
+automation skill is not available to every contributor. When present, that
+skill may still provide convenient screenshot and input tooling.
 
 ## Non-negotiable safety rules
 
@@ -138,8 +232,8 @@ one scenario silently invalidating another:
 ## Known UI/environment quirks
 
 - **Default window is small (800×600) and clips controls** (sidebar items,
-  settings sections below the fold). Resize immediately after launch — see the
-  `desktop-gui` skill's launch recipe. Some settings sections are collapsible
+  settings sections below the fold). Resize immediately after launch with the
+  `xdotool windowsize` command above. Some settings sections are collapsible
   *and* below the fold even after resizing: expect to expand a section, then
   scroll, before a control becomes visible — don't conclude a control doesn't
   exist from the first screenshot after expanding.
@@ -151,12 +245,11 @@ one scenario silently invalidating another:
   and dismiss it immediately. If a dialog flashes shut the instant it opens,
   suspect this pattern before assuming a mis-click — take a screenshot a frame
   later and retry with the click and the opening action clearly separated.
-- **The shared `/data/target` build output is not campaign-exclusive.** If
-  other worktrees/sessions on the same box can rebuild concurrently, the
-  binary under test can be silently overwritten mid-campaign by an unrelated
-  build. For any run spanning hours, build to a private path and hash-verify
-  (`sha256sum`) before each relaunch rather than trusting the shared path
-  throughout.
+- **A shared Cargo target directory is not campaign-exclusive.** If other
+  worktrees/sessions on the same box can rebuild concurrently, the binary under
+  test can be silently overwritten mid-campaign by an unrelated build. For any
+  run spanning hours, set `CARGO_TARGET_DIR` to a private path before building
+  and hash-verify (`sha256sum`) before each relaunch.
 
 ## Scenario index
 

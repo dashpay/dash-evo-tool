@@ -24,7 +24,12 @@ cp .env.example "$DATADIR/.env"
 # Confirm no conflicting instance is already using this display/data dir
 pgrep -af dash-evo-tool
 
-DISPLAY=:99 DASH_EVO_DATA_DIR="$DATADIR" nohup /data/target/debug/dash-evo-tool >/tmp/<scenario-slug>.log 2>&1 &
+TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | \
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+BIN="$TARGET_DIR/debug/dash-evo-tool"
+test -x "$BIN"
+LOG="$DATADIR/<scenario-slug>.log"
+DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 ```
 
 ## Procedure

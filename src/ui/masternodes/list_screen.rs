@@ -38,6 +38,7 @@ use crate::ui::masternodes::card::{MasternodeCard, card_heading};
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::masternodes::voting_center::{DpnsVotingCenter, VotingCenterOutcome};
+use crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot;
 use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -96,6 +97,7 @@ pub struct MasternodesScreen {
     /// Cached card data for the active network, refreshed on arrival, on
     /// `refresh`, and on the Refresh button.
     nodes: Vec<NodeCardData>,
+    vote_operations: DpnsVoteOperationSnapshot,
     /// The active sub-view (list / load / detail).
     view: MasternodesView,
     /// The load this screen dispatched and has not yet seen finish, identified by
@@ -140,6 +142,7 @@ impl MasternodesScreen {
         let mut screen = Self {
             app_context: app_context.clone(),
             nodes: Vec::new(),
+            vote_operations: DpnsVoteOperationSnapshot::default(),
             view: MasternodesView::List,
             pending_load: None,
             pending_schedule_cancellation: None,
@@ -153,6 +156,7 @@ impl MasternodesScreen {
     /// rather than surfacing a technical error — the empty state is a safe,
     /// meaningful fallback.
     fn reload(&mut self) {
+        self.refresh_vote_operations();
         let identities = self
             .app_context
             .load_local_masternode_identities()
@@ -186,6 +190,20 @@ impl MasternodesScreen {
         self.nodes.sort_by_key(|node| {
             card_heading(node.alias.as_deref(), &node.node_id_short).to_lowercase()
         });
+    }
+
+    fn refresh_vote_operations(&mut self) {
+        if let Err(error) = self.vote_operations.refresh(&self.app_context) {
+            tracing::warn!(
+                ?error,
+                "Could not refresh the masternode vote-operation cache"
+            );
+        }
+        match &mut self.view {
+            MasternodesView::Detail(detail) => detail.refresh_vote_operations(),
+            MasternodesView::Voting(center) => center.refresh_vote_operations(),
+            MasternodesView::List | MasternodesView::Load(_) | MasternodesView::Scheduled => {}
+        }
     }
 
     /// Settle the submitted load against the phase its own task reported, and
@@ -359,9 +377,7 @@ impl MasternodesScreen {
 
     /// Shared target-correlated progress, visible regardless of the active node.
     fn render_voting_activity(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let Ok(mut operations) = self.app_context.dpns_vote_operations() else {
-            return AppAction::None;
-        };
+        let mut operations = self.vote_operations.operations().to_vec();
         operations.sort_by_key(|operation| operation.created_at);
         let operations = operations
             .into_iter()
@@ -575,14 +591,12 @@ impl MasternodesScreen {
         ui.label(
             "Upcoming and unresolved targets use the same operation locks as immediate votes.",
         );
-        let scheduled_targets = match self.app_context.dpns_vote_operations() {
-            Ok(operations) => scheduled_journal_targets(operations),
-            Err(error) => {
-                ui.label("Scheduled votes are unavailable. Refresh this page to try again.");
-                tracing::warn!(?error, "Could not load journaled DPNS schedules");
-                return action;
-            }
-        };
+        if !self.vote_operations.is_loaded() {
+            ui.label("Scheduled votes are unavailable. Refresh this page to try again.");
+            return action;
+        }
+        let scheduled_targets =
+            scheduled_journal_targets(self.vote_operations.operations().to_vec());
         if scheduled_targets.is_empty() {
             ui.label("No scheduled votes.");
             return action;
@@ -943,6 +957,7 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn display_task_error(&mut self, _error: &crate::backend_task::error::TaskError) -> bool {
+        self.refresh_vote_operations();
         // A failing load reports `Failed` before its error reaches the UI, so
         // settling here re-enables the still-open form's submit button (the Load
         // view is untouched, so every entered field survives for correction).

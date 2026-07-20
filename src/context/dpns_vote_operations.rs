@@ -548,6 +548,15 @@ impl AppContext {
             .dpns_vote_operation_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        load_operations_read_only(&self.det_kv()?, self.network)
+    }
+
+    /// Migrate legacy journals and scheduled-vote mirrors before backend recovery.
+    pub(crate) fn migrate_dpns_vote_operations(&self) -> Result<(), TaskError> {
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         let mut operations = load_operations(&kv, self.network)?;
         for legacy in self.get_scheduled_votes()? {
@@ -577,7 +586,7 @@ impl AppContext {
             persist_operation(&kv, self.network, &operation)?;
             operations.push(operation);
         }
-        Ok(operations)
+        Ok(())
     }
 
     /// Load one operation by its stable ID.
@@ -589,9 +598,8 @@ impl AppContext {
             .dpns_vote_operation_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let kv = self.det_kv()?;
-        migrate_legacy_operations(&kv, self.network)?;
-        let operation = kv
+        let operation = self
+            .det_kv()?
             .get(DetScope::Global, &operation_key(self.network, id))
             .map_err(unreadable_operation_err)?;
         match operation {
@@ -1239,6 +1247,44 @@ mod tests {
             0,
             "a status transition must consult the lock index, not every operation record"
         );
+    }
+
+    #[tokio::test]
+    async fn operation_getter_does_not_migrate_legacy_scheduled_votes() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(CountingKv::default());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(DetKv::from_store(store.clone())),
+        );
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(8);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("wire wallet backend offline");
+        context
+            .insert_scheduled_votes(&[crate::backend_task::contested_names::ScheduledDPNSVote {
+                contested_name: "dominguez".to_owned(),
+                voter_id: Identifier::from([1; 32]),
+                choice: ResourceVoteChoice::Lock,
+                unix_timestamp: 42,
+                executed_successfully: false,
+            }])
+            .unwrap();
+        store.reset_counts();
+
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+        assert_eq!(
+            store.put_count(),
+            0,
+            "a named getter must not migrate or write legacy rows"
+        );
+
+        context.migrate_dpns_vote_operations().unwrap();
+        assert_eq!(context.dpns_vote_operations().unwrap().len(), 1);
     }
 
     #[test]

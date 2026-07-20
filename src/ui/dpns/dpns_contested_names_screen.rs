@@ -31,6 +31,7 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
+use crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -125,6 +126,7 @@ pub struct DPNSScreen {
     pub selected_votes: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
     pending_backend_task: Option<BackendTask>,
+    vote_operations: DpnsVoteOperationSnapshot,
 
     /// Sorting
     sort_column: SortColumn,
@@ -182,6 +184,14 @@ impl DPNSScreen {
             .load_local_voting_identities()
             .unwrap_or_default();
         let user_identities = app_context.load_local_user_identities().unwrap_or_default();
+        let vote_operations =
+            DpnsVoteOperationSnapshot::load(app_context).unwrap_or_else(|error| {
+                tracing::warn!(
+                    ?error,
+                    "Could not cache DPNS vote operations for the DPNS screen"
+                );
+                DpnsVoteOperationSnapshot::default()
+            });
 
         // Initialize vote handling pop-up state to hidden
         let identity_count = voting_identities.len();
@@ -202,6 +212,7 @@ impl DPNSScreen {
             owned_filter_term: String::new(),
             scheduled_vote_cast_in_progress: false,
             pending_backend_task: None,
+            vote_operations,
             dpns_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
             refresh_banner: None,
@@ -1060,14 +1071,12 @@ impl DPNSScreen {
                             .dpns_vote_poll_id(&vote.0.contested_name)
                             .ok()
                             .and_then(|vote_poll_id| {
-                                self.app_context
-                                    .dpns_vote_target_status(&DpnsVoteTargetKey {
+                                self.vote_operations
+                                    .target_status(&DpnsVoteTargetKey {
                                         network: self.app_context.network(),
                                         voter_id: vote.0.voter_id,
                                         vote_poll_id,
                                     })
-                                    .ok()
-                                    .flatten()
                             });
                         body.row(25.0, |mut row| {
                             // Contested name
@@ -1709,13 +1718,7 @@ impl DPNSScreen {
                     voter_id,
                     vote_poll_id,
                 };
-                if self
-                    .app_context
-                    .dpns_vote_target_status(&target_key)
-                    .ok()
-                    .flatten()
-                    .is_some()
-                {
+                if self.vote_operations.target_status(&target_key).is_some() {
                     self.bulk_vote_handling_status = VoteHandlingStatus::Failed(format!(
                         "This node's vote for {} is already in progress. Check its result before submitting again.",
                         selected_vote.contested_name
@@ -1876,6 +1879,9 @@ impl DPNSScreen {
 impl ScreenLike for DPNSScreen {
     fn refresh(&mut self) {
         self.scheduled_vote_cast_in_progress = false;
+        if let Err(error) = self.vote_operations.refresh(&self.app_context) {
+            tracing::warn!(?error, "Could not refresh cached DPNS vote operations");
+        }
         let mut contested_names = self.contested_names.lock_recover();
         let mut dpns_names = self.local_dpns_names.lock_recover();
         let mut scheduled_votes = self.scheduled_votes.lock_recover();
@@ -1944,6 +1950,12 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if let Err(refresh_error) = self.vote_operations.refresh(&self.app_context) {
+            tracing::warn!(
+                ?refresh_error,
+                "Could not refresh DPNS voting state after a task error"
+            );
+        }
         let handled = scheduled_vote_sweep_is_quiet(error);
         if matches!(error, TaskError::ScheduledVoteSweepFailed { .. }) {
             self.scheduled_vote_cast_in_progress = false;
@@ -1966,6 +1978,9 @@ impl ScreenLike for DPNSScreen {
                 self.refresh();
             }
             BackendTaskSuccessResult::ScheduledVotesInProgress(votes) => {
+                if let Err(error) = self.vote_operations.refresh(&self.app_context) {
+                    tracing::warn!(?error, "Could not refresh scheduled-vote operation state");
+                }
                 // The periodic sweep is about to cast these votes; reflect that
                 // in the list so the user sees them move before results land.
                 self.scheduled_vote_cast_in_progress = true;

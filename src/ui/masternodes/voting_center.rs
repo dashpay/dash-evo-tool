@@ -22,6 +22,7 @@ use crate::model::dpns_voting::{
 };
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot;
 use crate::ui::state::dpns_vote_workspace::{
     ComposerKeyAction, DpnsVoteComposerStep, DpnsVoteWorkspace, DraftVoteTiming,
 };
@@ -37,6 +38,7 @@ pub struct DpnsVotingCenter {
     app_context: Arc<AppContext>,
     voters: Vec<QualifiedIdentity>,
     contests: Vec<ContestedName>,
+    vote_operations: DpnsVoteOperationSnapshot,
     workspace: DpnsVoteWorkspace,
     submitted_operation: Option<DpnsVoteOperationId>,
     vote_state_refresh_dispatched: bool,
@@ -59,11 +61,18 @@ struct ReviewExclusion {
 }
 
 impl DpnsVotingCenter {
+    pub(crate) fn refresh_vote_operations(&mut self) {
+        if let Err(error) = self.vote_operations.refresh(&self.app_context) {
+            tracing::warn!(?error, "Could not refresh voting-center operation state");
+        }
+    }
+
     pub(crate) fn display_backend_task_result(
         &mut self,
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
+        self.refresh_vote_operations();
         if matches!(result, BackendTaskSuccessResult::RefreshedDpnsContests) {
             self.vote_state_refresh_dispatched = false;
             match self.app_context.ongoing_contested_names() {
@@ -78,6 +87,7 @@ impl DpnsVotingCenter {
     }
 
     pub(crate) fn display_backend_task_error(&mut self, context: &BackendTaskContext) {
+        self.refresh_vote_operations();
         let Some(operation_id) = self.submitted_operation else {
             return;
         };
@@ -85,11 +95,7 @@ impl DpnsVotingCenter {
             operation_id,
             self.app_context.network(),
             context,
-            self.app_context
-                .dpns_vote_operation(operation_id)
-                .ok()
-                .flatten()
-                .is_some(),
+            self.vote_operations.operation(operation_id).is_some(),
         ) {
             self.submitted_operation = None;
             self.workspace.step = DpnsVoteComposerStep::Review;
@@ -110,6 +116,14 @@ impl DpnsVotingCenter {
             workspace.prefilter_node(voter_id);
         }
         let contests = app_context.ongoing_contested_names().unwrap_or_default();
+        let vote_operations =
+            DpnsVoteOperationSnapshot::load(app_context).unwrap_or_else(|error| {
+                tracing::warn!(
+                    ?error,
+                    "Could not cache DPNS vote operations for the voting center"
+                );
+                DpnsVoteOperationSnapshot::default()
+            });
         if !preselected_contests.is_empty() {
             for name in preselected_contests {
                 if contests
@@ -127,6 +141,7 @@ impl DpnsVotingCenter {
             app_context: Arc::clone(app_context),
             voters,
             contests,
+            vote_operations,
             workspace,
             submitted_operation: None,
             vote_state_refresh_dispatched: false,
@@ -549,8 +564,8 @@ impl DpnsVotingCenter {
             return VotingCenterOutcome::None;
         };
         ui.heading("Voting operation");
-        match self.app_context.dpns_vote_operation(operation_id) {
-            Ok(Some(operation)) => {
+        match self.vote_operations.operation(operation_id).cloned() {
+            Some(operation) => {
                 for outcome in &operation.targets {
                     ui.group(|ui| {
                         let voter = outcome
@@ -660,14 +675,14 @@ impl DpnsVotingCenter {
                     return VotingCenterOutcome::BackToNodes;
                 }
             }
-            Ok(None) => {
+            None if self.vote_operations.is_loaded() => {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label("Queuing votes…");
                 });
             }
-            Err(error) => {
-                ui.label(error.to_string());
+            None => {
+                ui.label("This operation could not be loaded. Refresh and try again.");
             }
         }
         VotingCenterOutcome::None
@@ -757,11 +772,7 @@ impl DpnsVotingCenter {
                     self.app_context
                         .dpns_current_vote_state(voter_id, vote_poll_id)
                         .unwrap_or(DpnsCurrentVoteState::Unavailable),
-                    self.app_context
-                        .dpns_vote_target_status(&key)
-                        .ok()
-                        .flatten()
-                        .is_some(),
+                    self.vote_operations.target_status(&key).is_some(),
                 )
             })
             .collect()
@@ -806,18 +817,17 @@ impl DpnsVotingCenter {
                     voter_id,
                     vote_poll_id,
                 };
-                let existing_status = match self.app_context.dpns_vote_target_status(&key) {
-                    Ok(status) => status,
-                    Err(_) => {
-                        exclusions.push(ReviewExclusion {
-                            voter: self.voter_label(voter_id),
-                            contest: name.clone(),
-                            requested_choice: *requested_choice,
-                            reason: "DET could not check whether this target is already in use.",
-                            no_op: false,
-                        });
-                        continue;
-                    }
+                let existing_status = if self.vote_operations.is_loaded() {
+                    self.vote_operations.target_status(&key)
+                } else {
+                    exclusions.push(ReviewExclusion {
+                        voter: self.voter_label(voter_id),
+                        contest: name.clone(),
+                        requested_choice: *requested_choice,
+                        reason: "DET could not check whether this target is already in use.",
+                        no_op: false,
+                    });
+                    continue;
                 };
                 let replacing_schedule = is_explicit_schedule_replacement(
                     self.editing_scheduled_key.as_ref(),

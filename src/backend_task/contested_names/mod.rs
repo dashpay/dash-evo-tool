@@ -236,6 +236,7 @@ impl AppContext {
         if *recovered {
             return Ok(());
         }
+        self.migrate_dpns_vote_operations()?;
         self.recover_interrupted_dpns_vote_operations()?;
         let queued = self
             .dpns_vote_operations()?

@@ -40,6 +40,7 @@ use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
 use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY, key_status_tokens};
+use crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
@@ -256,6 +257,7 @@ pub struct MasternodeDetailView {
     /// refresh). Active/open only — scheduled/past history lives on the DPNS
     /// Scheduled Votes screen (§10.7).
     open_contests: Vec<ContestedName>,
+    vote_operations: DpnsVoteOperationSnapshot,
     /// Per-contest pending vote choice, keyed by normalized contested name.
     vote_selections: BTreeMap<String, ResourceVoteChoice>,
     /// One-shot automatic proved-state refresh for a newly opened detail view.
@@ -283,6 +285,12 @@ impl MasternodeDetailView {
 }
 
 impl MasternodeDetailView {
+    pub(crate) fn refresh_vote_operations(&mut self) {
+        if let Err(error) = self.vote_operations.refresh(&self.app_context) {
+            tracing::warn!(?error, "Could not refresh node-detail voting state");
+        }
+    }
+
     pub fn new(app_context: &Arc<AppContext>, identity: QualifiedIdentity) -> Self {
         let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
         let node_id_short = shorten_id(&node_id_hex_full);
@@ -295,6 +303,14 @@ impl MasternodeDetailView {
             .masternode_contest_summary(voter_id)
             .unwrap_or_default();
         let open_contests = Self::load_open_contests(app_context, voter_id);
+        let vote_operations =
+            DpnsVoteOperationSnapshot::load(app_context).unwrap_or_else(|error| {
+                tracing::warn!(
+                    ?error,
+                    "Could not cache DPNS operations for the node detail view"
+                );
+                DpnsVoteOperationSnapshot::default()
+            });
         Self {
             app_context: app_context.clone(),
             identity,
@@ -303,6 +319,7 @@ impl MasternodeDetailView {
             key_presence,
             contest_summary,
             open_contests,
+            vote_operations,
             vote_selections: BTreeMap::new(),
             vote_state_refresh_dispatched: false,
             open_voting_center_requested: None,
@@ -875,12 +892,7 @@ impl MasternodeDetailView {
                     name: contest.normalized_contested_name.clone(),
                     end_time: contest.end_time,
                     current_vote,
-                    locked: self
-                        .app_context
-                        .dpns_vote_target_status(&key)
-                        .ok()
-                        .flatten()
-                        .is_some(),
+                    locked: self.vote_operations.target_status(&key).is_some(),
                     candidates,
                 })
             })

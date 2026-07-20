@@ -197,6 +197,7 @@ struct DpnsVoteFeedbackCounts {
     unconfirmed: usize,
     rejected: usize,
     failed_before_submission: usize,
+    cancelled: usize,
     not_applied: usize,
     in_progress: usize,
 }
@@ -212,6 +213,7 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
             DpnsVoteTargetStatus::FailedBeforeSubmission => {
                 counts.failed_before_submission += 1;
             }
+            DpnsVoteTargetStatus::Cancelled => counts.cancelled += 1,
             DpnsVoteTargetStatus::NotApplied => counts.not_applied += 1,
             DpnsVoteTargetStatus::Queued
             | DpnsVoteTargetStatus::Submitting
@@ -219,12 +221,13 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
         }
     }
     let message = format!(
-        "Voting results: {} confirmed, {} scheduled, {} unconfirmed, {} rejected, {} failed before submission, {} not applied, and {} still in progress. Open Voting activity to review each target.",
+        "Voting results: {} confirmed, {} scheduled, {} unconfirmed, {} rejected, {} failed before submission, {} cancelled, {} not applied, and {} still in progress. Open Voting activity to review each target.",
         counts.confirmed,
         counts.scheduled,
         counts.unconfirmed,
         counts.rejected,
         counts.failed_before_submission,
+        counts.cancelled,
         counts.not_applied,
         counts.in_progress,
     );
@@ -2813,6 +2816,7 @@ mod migration_banner_tests {
             DpnsVoteTargetStatus::Unconfirmed,
             DpnsVoteTargetStatus::Rejected,
             DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Cancelled,
             DpnsVoteTargetStatus::NotApplied,
         ]);
 
@@ -2826,6 +2830,7 @@ mod migration_banner_tests {
             "1 unconfirmed",
             "1 rejected",
             "1 failed before submission",
+            "1 cancelled",
             "1 not applied",
             "Open Voting activity",
         ] {

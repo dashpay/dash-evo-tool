@@ -1,5 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dpns_voting::{DpnsVoteOperationId, DpnsVoteTargetKey};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::consensus::ConsensusError;
@@ -35,6 +36,7 @@ pub(super) enum DpnsVoteAttempt {
     Confirmed,
     Unconfirmed(TaskError),
     Rejected(TaskError),
+    FailedBeforeSubmission(TaskError),
 }
 
 /// Build `[Value::from("dash"), Value::Text(normalized_label.to_owned())]` for a DPNS vote poll.
@@ -81,9 +83,30 @@ fn classify_post_broadcast_error(error: dash_sdk::Error) -> DpnsVoteAttempt {
     }
 }
 
+fn classify_broadcast_error(error: dash_sdk::Error) -> DpnsVoteAttempt {
+    match &error {
+        dash_sdk::Error::StateTransitionBroadcastError(broadcast_error) => {
+            let rejected = broadcast_error.cause.is_some();
+            let error = TaskError::from(error);
+            if rejected {
+                DpnsVoteAttempt::Rejected(error)
+            } else {
+                DpnsVoteAttempt::Unconfirmed(error)
+            }
+        }
+        _ => DpnsVoteAttempt::FailedBeforeSubmission(TaskError::from(error)),
+    }
+}
+
+fn classify_broadcast_journal_result(result: Result<(), TaskError>) -> Result<(), DpnsVoteAttempt> {
+    result.map_err(DpnsVoteAttempt::Unconfirmed)
+}
+
 impl AppContext {
     pub(super) async fn submit_dpns_vote(
         self: &Arc<Self>,
+        operation_id: DpnsVoteOperationId,
+        key: &DpnsVoteTargetKey,
         name: &str,
         vote_choice: ResourceVoteChoice,
         qualified_identity: &QualifiedIdentity,
@@ -175,7 +198,12 @@ impl AppContext {
         ensure_valid_vote_transition_structure(&state_transition, sdk)?;
         state_transition.broadcast_request_for_state_transition()?;
         if let Err(error) = state_transition.broadcast(sdk, Some(settings)).await {
-            return Ok(classify_post_broadcast_error(error));
+            return Ok(classify_broadcast_error(error));
+        }
+        if let Err(attempt) =
+            classify_broadcast_journal_result(self.mark_dpns_vote_broadcast(operation_id, key))
+        {
+            return Ok(attempt);
         }
 
         match Vote::wait_for_response(sdk, state_transition, Some(settings)).await {
@@ -230,6 +258,25 @@ mod tests {
     fn non_broadcast_wait_error_is_unconfirmed() {
         let attempt =
             classify_post_broadcast_error(dash_sdk::Error::Generic("wait failed".to_owned()));
+
+        assert!(matches!(attempt, DpnsVoteAttempt::Unconfirmed(_)));
+    }
+
+    #[test]
+    fn broadcast_transport_error_fails_before_submission() {
+        let attempt =
+            classify_broadcast_error(dash_sdk::Error::Generic("connection refused".to_owned()));
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+    }
+
+    #[test]
+    fn journal_failure_after_broadcast_is_unconfirmed() {
+        let attempt = classify_broadcast_journal_result(Err(TaskError::DpnsVoteTargetBusy))
+            .expect_err("a failed journal mark must stop the confirmation wait");
 
         assert!(matches!(attempt, DpnsVoteAttempt::Unconfirmed(_)));
     }

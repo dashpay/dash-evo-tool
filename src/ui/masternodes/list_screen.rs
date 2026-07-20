@@ -421,6 +421,7 @@ impl MasternodesScreen {
                     DpnsVoteTargetStatus::Unconfirmed => "Checking result",
                     DpnsVoteTargetStatus::Rejected => "Rejected",
                     DpnsVoteTargetStatus::FailedBeforeSubmission => "Failed before submission",
+                    DpnsVoteTargetStatus::Cancelled => "Cancelled",
                     DpnsVoteTargetStatus::NotApplied => "Not applied",
                 };
                 ui.horizontal_wrapped(|ui| {
@@ -631,7 +632,8 @@ impl MasternodesScreen {
                     DpnsVoteTargetStatus::FailedBeforeSubmission => {
                         "Status: Failed before submission"
                     }
-                    DpnsVoteTargetStatus::NotApplied => "Status: Cancelled",
+                    DpnsVoteTargetStatus::Cancelled => "Status: Cancelled",
+                    DpnsVoteTargetStatus::NotApplied => "Status: Not applied",
                 });
                 let editable = status == DpnsVoteTargetStatus::Scheduled;
                 let disabled_reason =

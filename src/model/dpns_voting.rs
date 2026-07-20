@@ -74,6 +74,7 @@ mod tests {
             DpnsVoteTargetStatus::Confirmed,
             DpnsVoteTargetStatus::Rejected,
             DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Cancelled,
             DpnsVoteTargetStatus::NotApplied,
         ] {
             assert!(!status.holds_lock(), "{status:?} must release its lock");
@@ -223,7 +224,10 @@ pub enum DpnsVoteTargetStatus {
     Unconfirmed,
     Rejected,
     FailedBeforeSubmission,
+    /// Reconciliation proved that a submitted vote was not applied.
     NotApplied,
+    /// The user cancelled a scheduled vote before it was submitted.
+    Cancelled,
 }
 
 impl DpnsVoteTargetStatus {

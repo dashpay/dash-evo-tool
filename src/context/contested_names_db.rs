@@ -676,7 +676,7 @@ mod tests {
                 timing: VoteTiming::Scheduled(42),
             },
         ]);
-        operation.targets[0].status = DpnsVoteTargetStatus::NotApplied;
+        operation.targets[0].status = DpnsVoteTargetStatus::Cancelled;
 
         assert_eq!(
             scheduled_vote_journal_summary(&[operation], voter_id),

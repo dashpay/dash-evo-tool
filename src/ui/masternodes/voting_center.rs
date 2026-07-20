@@ -622,6 +622,7 @@ impl DpnsVotingCenter {
                         outcome.status,
                         DpnsVoteTargetStatus::Rejected
                             | DpnsVoteTargetStatus::FailedBeforeSubmission
+                            | DpnsVoteTargetStatus::Cancelled
                             | DpnsVoteTargetStatus::NotApplied
                     )
                 }) && ComponentStyles::add_secondary_button(ui, "Review again", dark_mode)
@@ -635,6 +636,7 @@ impl DpnsVotingCenter {
                                 outcome.status,
                                 DpnsVoteTargetStatus::Rejected
                                     | DpnsVoteTargetStatus::FailedBeforeSubmission
+                                    | DpnsVoteTargetStatus::Cancelled
                                     | DpnsVoteTargetStatus::NotApplied
                             )
                         })
@@ -650,6 +652,7 @@ impl DpnsVotingCenter {
                             outcome.status,
                             DpnsVoteTargetStatus::Rejected
                                 | DpnsVoteTargetStatus::FailedBeforeSubmission
+                                | DpnsVoteTargetStatus::Cancelled
                                 | DpnsVoteTargetStatus::NotApplied
                         ) {
                             self.workspace
@@ -1175,6 +1178,7 @@ fn status_label(status: DpnsVoteTargetStatus) -> &'static str {
         DpnsVoteTargetStatus::Unconfirmed => "Checking result",
         DpnsVoteTargetStatus::Rejected => "Rejected",
         DpnsVoteTargetStatus::FailedBeforeSubmission => "Failed before submission",
+        DpnsVoteTargetStatus::Cancelled => "Cancelled",
         DpnsVoteTargetStatus::NotApplied => "Not applied",
     }
 }
@@ -1195,8 +1199,11 @@ fn status_explanation(status: DpnsVoteTargetStatus) -> &'static str {
         DpnsVoteTargetStatus::FailedBeforeSubmission => {
             "This vote was not submitted. Review it before trying again."
         }
+        DpnsVoteTargetStatus::Cancelled => {
+            "This scheduled vote was cancelled before it was submitted."
+        }
         DpnsVoteTargetStatus::NotApplied => {
-            "DET proved that this vote was not applied. It is safe to review it again."
+            "This vote was not applied. You can safely review it and try again."
         }
     }
 }

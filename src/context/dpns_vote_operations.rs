@@ -4,7 +4,8 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, unavailable_preflight_outcome,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, failed_before_broadcast_outcome,
+    unavailable_preflight_outcome,
 };
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
@@ -454,7 +455,8 @@ fn cancel_scheduled_target(
     if outcome.status != DpnsVoteTargetStatus::Scheduled {
         return Ok(false);
     }
-    outcome.status = DpnsVoteTargetStatus::NotApplied;
+    outcome.status = DpnsVoteTargetStatus::Cancelled;
+    outcome.failure = None;
     write_existing_operation(kv, network, &operation)?;
     Ok(true)
 }
@@ -465,7 +467,8 @@ fn cancel_all_scheduled_targets(kv: &DetKv, network: Network) -> Result<usize, T
         let mut changed = false;
         for outcome in &mut operation.targets {
             if outcome.status == DpnsVoteTargetStatus::Scheduled {
-                outcome.status = DpnsVoteTargetStatus::NotApplied;
+                outcome.status = DpnsVoteTargetStatus::Cancelled;
+                outcome.failure = None;
                 changed = true;
                 cancelled += 1;
             }
@@ -477,19 +480,50 @@ fn cancel_all_scheduled_targets(kv: &DetKv, network: Network) -> Result<usize, T
     Ok(cancelled)
 }
 
-fn mark_interrupted_targets_unconfirmed(operation: &mut DpnsVoteOperation) -> bool {
+fn recover_interrupted_target_statuses(operation: &mut DpnsVoteOperation) -> bool {
     let mut changed = false;
     for outcome in &mut operation.targets {
-        if matches!(
-            outcome.status,
-            DpnsVoteTargetStatus::Submitting | DpnsVoteTargetStatus::Confirming
-        ) {
-            outcome.status = DpnsVoteTargetStatus::Unconfirmed;
-            outcome.failure = Some(DpnsVoteFailure::ResultUnconfirmed);
-            changed = true;
+        match outcome.status {
+            DpnsVoteTargetStatus::Submitting => {
+                (outcome.status, outcome.failure) =
+                    failed_before_broadcast_outcome(outcome.target.timing);
+                changed = true;
+            }
+            DpnsVoteTargetStatus::Confirming => {
+                outcome.status = DpnsVoteTargetStatus::Unconfirmed;
+                outcome.failure = Some(DpnsVoteFailure::ResultUnconfirmed);
+                changed = true;
+            }
+            _ => {}
         }
     }
     changed
+}
+
+fn mark_target_broadcast(
+    kv: &DetKv,
+    network: Network,
+    operation_id: DpnsVoteOperationId,
+    key: &DpnsVoteTargetKey,
+) -> Result<(), TaskError> {
+    let Some(mut operation): Option<DpnsVoteOperation> = kv
+        .get(DetScope::Global, &operation_key(network, operation_id))
+        .map_err(unreadable_operation_err)?
+    else {
+        return Ok(());
+    };
+    let Some(outcome) = operation
+        .targets
+        .iter_mut()
+        .find(|outcome| outcome.target.key == *key)
+    else {
+        return Ok(());
+    };
+    if outcome.status == DpnsVoteTargetStatus::Submitting {
+        outcome.status = DpnsVoteTargetStatus::Confirming;
+        write_existing_operation(kv, network, &operation)?;
+    }
+    Ok(())
 }
 
 impl AppContext {
@@ -686,6 +720,19 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Record that a target was broadcast before waiting for its result.
+    pub(crate) fn mark_dpns_vote_broadcast(
+        &self,
+        operation_id: DpnsVoteOperationId,
+        key: &DpnsVoteTargetKey,
+    ) -> Result<(), TaskError> {
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        mark_target_broadcast(&self.det_kv()?, self.network, operation_id, key)
+    }
+
     /// Apply fresh proved state only while the target is still queued.
     ///
     /// Returning `false` means another executor already advanced the target;
@@ -735,7 +782,7 @@ impl AppContext {
         Ok(still_queued)
     }
 
-    /// Convert crash-interrupted transitions into conservative reconciliation.
+    /// Recover interrupted targets according to their durable broadcast phase.
     pub(crate) fn recover_interrupted_dpns_vote_operations(&self) -> Result<(), TaskError> {
         let _guard = self
             .dpns_vote_operation_guard
@@ -743,7 +790,7 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         for mut operation in load_operations(&kv, self.network)? {
-            if mark_interrupted_targets_unconfirmed(&mut operation) {
+            if recover_interrupted_target_statuses(&mut operation) {
                 persist_operation(&kv, self.network, &operation)?;
             }
         }
@@ -766,7 +813,7 @@ impl AppContext {
         else {
             return Ok(());
         };
-        if mark_interrupted_targets_unconfirmed(&mut operation) {
+        if recover_interrupted_target_statuses(&mut operation) {
             persist_operation(&kv, self.network, &operation)?;
         }
         Ok(())
@@ -826,8 +873,11 @@ impl AppContext {
             .dpns_vote_operation_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cancel_scheduled_target(&self.det_kv()?, self.network, operation_id, key)?;
-        Ok(())
+        if cancel_scheduled_target(&self.det_kv()?, self.network, operation_id, key)? {
+            Ok(())
+        } else {
+            Err(TaskError::DpnsScheduledVoteAlreadyStarted)
+        }
     }
 
     /// Release every not-yet-submitting scheduled target on this network.
@@ -1095,6 +1145,22 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_records_cancelled_without_claiming_a_proved_outcome() {
+        let kv = kv();
+        let mut scheduled = operation(DpnsVoteTargetStatus::Scheduled);
+        scheduled.targets[0].target.timing = VoteTiming::Scheduled(42);
+        scheduled.targets[0].failure = Some(DpnsVoteFailure::SubmissionFailed);
+        let key = scheduled.targets[0].target.key.clone();
+        persist_operation(&kv, Network::Testnet, &scheduled).unwrap();
+
+        assert!(cancel_scheduled_target(&kv, Network::Testnet, scheduled.id, &key).unwrap());
+        let cancelled = load_operations(&kv, Network::Testnet).unwrap().remove(0);
+        assert_eq!(cancelled.targets[0].status, DpnsVoteTargetStatus::Cancelled);
+        assert_eq!(cancelled.targets[0].failure, None);
+        assert!(!cancelled.targets[0].status.holds_lock());
+    }
+
+    #[test]
     fn cancel_all_preserves_targets_that_are_already_queued() {
         let kv = kv();
         let mut scheduled = operation(DpnsVoteTargetStatus::Scheduled);
@@ -1109,6 +1175,10 @@ mod tests {
             1
         );
         let operations = load_operations(&kv, Network::Testnet).unwrap();
+        assert!(operations.iter().any(|operation| {
+            operation.targets[0].target.key == scheduled.targets[0].target.key
+                && operation.targets[0].status == DpnsVoteTargetStatus::Cancelled
+        }));
         assert!(operations.iter().any(|operation| {
             operation.targets[0].target.key == queued.targets[0].target.key
                 && operation.targets[0].status == DpnsVoteTargetStatus::Queued
@@ -1347,9 +1417,37 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_submission_recovers_to_unconfirmed() {
+    fn interrupted_immediate_submission_recovers_before_submission() {
         let mut operation = operation(DpnsVoteTargetStatus::Submitting);
-        assert!(mark_interrupted_targets_unconfirmed(&mut operation));
+        assert!(recover_interrupted_target_statuses(&mut operation));
+        assert_eq!(
+            operation.targets[0].status,
+            DpnsVoteTargetStatus::FailedBeforeSubmission
+        );
+        assert_eq!(
+            operation.targets[0].failure,
+            Some(DpnsVoteFailure::SubmissionFailed)
+        );
+    }
+
+    #[test]
+    fn interrupted_scheduled_submission_is_restored_for_retry() {
+        let mut operation = operation(DpnsVoteTargetStatus::Submitting);
+        operation.targets[0].target.timing = VoteTiming::Scheduled(42);
+
+        assert!(recover_interrupted_target_statuses(&mut operation));
+        assert_eq!(operation.targets[0].status, DpnsVoteTargetStatus::Scheduled);
+        assert_eq!(
+            operation.targets[0].failure,
+            Some(DpnsVoteFailure::SubmissionFailed)
+        );
+    }
+
+    #[test]
+    fn interrupted_confirmation_recovers_to_unconfirmed() {
+        let mut operation = operation(DpnsVoteTargetStatus::Confirming);
+
+        assert!(recover_interrupted_target_statuses(&mut operation));
         assert_eq!(
             operation.targets[0].status,
             DpnsVoteTargetStatus::Unconfirmed
@@ -1357,6 +1455,21 @@ mod tests {
         assert_eq!(
             operation.targets[0].failure,
             Some(DpnsVoteFailure::ResultUnconfirmed)
+        );
+    }
+
+    #[test]
+    fn successful_broadcast_crosses_the_durable_phase_boundary() {
+        let kv = kv();
+        let submitting = operation(DpnsVoteTargetStatus::Submitting);
+        let key = submitting.targets[0].target.key.clone();
+        persist_operation(&kv, Network::Testnet, &submitting).unwrap();
+
+        mark_target_broadcast(&kv, Network::Testnet, submitting.id, &key).unwrap();
+
+        assert_eq!(
+            load_operations(&kv, Network::Testnet).unwrap()[0].targets[0].status,
+            DpnsVoteTargetStatus::Confirming
         );
     }
 }

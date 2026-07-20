@@ -23,7 +23,9 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::context::AppContext;
-use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
+use crate::model::contested_name::{
+    ContestedName, MasternodeContestSummary, MasternodeVoteStateSummary,
+};
 use crate::model::dpns_voting::{DpnsCurrentVoteState, DpnsVoteTargetKey};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{
@@ -54,10 +56,19 @@ const MISSING_VOTER_MESSAGE: &str =
 /// §7 copy: shown when the node has a voter identity but no open contests.
 const NO_OPEN_CONTESTS_MESSAGE: &str =
     "There are no open name contests for this node to vote on right now.";
+const CONTESTS_UNAVAILABLE_MESSAGE: &str =
+    "Name contest information is unavailable. Refresh and try again.";
 
 /// The collapsible DPNS section header, with the open-contest count (TC-DPNS-02).
-fn dpns_section_header(open_contest_count: usize) -> String {
-    format!("DPNS name contests to vote on ({open_contest_count})")
+fn dpns_section_header(summary: MasternodeContestSummary) -> String {
+    if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
+        CONTESTS_UNAVAILABLE_MESSAGE.to_owned()
+    } else {
+        format!(
+            "DPNS name contests to vote on ({})",
+            summary.open_contest_count
+        )
+    }
 }
 
 /// Framing shown once above the per-contest vote controls, so a masternode
@@ -299,10 +310,10 @@ impl MasternodeDetailView {
             .associated_voter_identity
             .as_ref()
             .map(|_| identity.identity.id());
-        let contest_summary = app_context
+        let mut contest_summary = app_context
             .masternode_contest_summary(voter_id)
-            .unwrap_or_default();
-        let open_contests = Self::load_open_contests(app_context, voter_id);
+            .unwrap_or_else(|_| MasternodeContestSummary::unavailable());
+        let open_contests = Self::load_open_contests(app_context, voter_id, &mut contest_summary);
         let vote_operations =
             DpnsVoteOperationSnapshot::load(app_context).unwrap_or_else(|error| {
                 tracing::warn!(
@@ -328,21 +339,25 @@ impl MasternodeDetailView {
         }
     }
 
-    /// Load the contests this node can still vote on. Empty when the node has no
-    /// voting key (no voter id) or the read fails.
+    /// Load the contests this node can still vote on.
     fn load_open_contests(
         app_context: &Arc<AppContext>,
         voter_id: Option<dash_sdk::platform::Identifier>,
+        contest_summary: &mut MasternodeContestSummary,
     ) -> Vec<ContestedName> {
         let Some(voter_id) = voter_id else {
             return Vec::new();
         };
-        app_context
-            .ongoing_contested_names()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|contest| contest.is_open_for_voter(&voter_id))
-            .collect()
+        match app_context.ongoing_contested_names() {
+            Ok(contests) => contests
+                .into_iter()
+                .filter(|contest| contest.is_open_for_voter(&voter_id))
+                .collect(),
+            Err(_) => {
+                *contest_summary = MasternodeContestSummary::unavailable();
+                Vec::new()
+            }
+        }
     }
 
     /// Refresh the DPNS contest summary + open-contest list from the store.
@@ -352,11 +367,13 @@ impl MasternodeDetailView {
             .associated_voter_identity
             .as_ref()
             .map(|_| self.identity.identity.id());
-        self.contest_summary = self
+        let mut contest_summary = self
             .app_context
             .masternode_contest_summary(voter_id)
-            .unwrap_or_default();
-        self.open_contests = Self::load_open_contests(&self.app_context, voter_id);
+            .unwrap_or_else(|_| MasternodeContestSummary::unavailable());
+        self.open_contests =
+            Self::load_open_contests(&self.app_context, voter_id, &mut contest_summary);
+        self.contest_summary = contest_summary;
     }
 
     /// Build the network re-fetch dispatched by the detail Refresh button:
@@ -764,11 +781,16 @@ impl MasternodeDetailView {
         }
 
         let mut action = None;
-        let header = dpns_section_header(self.contest_summary.open_contest_count);
+        let header = dpns_section_header(self.contest_summary);
         egui::CollapsingHeader::new(header)
             .default_open(false)
             .show(ui, |ui| {
-                if self.open_contests.is_empty() {
+                if self.contest_summary.vote_state == MasternodeVoteStateSummary::Unavailable {
+                    ui.label(
+                        RichText::new(CONTESTS_UNAVAILABLE_MESSAGE)
+                            .color(DashColors::warning_color(dark_mode)),
+                    );
+                } else if self.open_contests.is_empty() {
                     ui.label(
                         RichText::new(NO_OPEN_CONTESTS_MESSAGE)
                             .color(DashColors::text_secondary(dark_mode)),
@@ -1259,8 +1281,17 @@ mod tests {
 
     #[test]
     fn tc_dpns_02_header_shows_open_contest_count() {
-        assert_eq!(dpns_section_header(3), "DPNS name contests to vote on (3)");
-        assert_eq!(dpns_section_header(0), "DPNS name contests to vote on (0)");
+        let mut summary = MasternodeContestSummary::default();
+        summary.open_contest_count = 3;
+        assert_eq!(
+            dpns_section_header(summary),
+            "DPNS name contests to vote on (3)"
+        );
+
+        assert_eq!(
+            dpns_section_header(MasternodeContestSummary::unavailable()),
+            "Name contest information is unavailable. Refresh and try again."
+        );
     }
 
     #[test]

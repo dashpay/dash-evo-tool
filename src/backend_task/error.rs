@@ -743,6 +743,12 @@ pub enum TaskError {
     )]
     DpnsVoteTargetBusy,
 
+    /// A cancellation lost the race to execution after the target was claimed.
+    #[error(
+        "This scheduled vote has already started and can no longer be cancelled. Check its result once it finishes."
+    )]
+    DpnsScheduledVoteAlreadyStarted,
+
     /// Current proved state is required to suppress duplicate/no-op votes safely.
     #[error(
         "This node's current vote could not be checked. Refresh vote state before submitting."

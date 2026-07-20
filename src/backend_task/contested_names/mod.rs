@@ -84,7 +84,9 @@ fn classify_vote_attempt(
             DpnsVoteTargetStatus::Rejected,
             Some(DpnsVoteFailure::PlatformRejected),
         ),
-        Err(_) => failed_before_broadcast_outcome(timing),
+        Ok(vote_on_dpns_name::DpnsVoteAttempt::FailedBeforeSubmission(_)) | Err(_) => {
+            failed_before_broadcast_outcome(timing)
+        }
     }
 }
 
@@ -346,6 +348,7 @@ impl AppContext {
                     }
                     DpnsVoteTargetStatus::Rejected
                     | DpnsVoteTargetStatus::FailedBeforeSubmission
+                    | DpnsVoteTargetStatus::Cancelled
                     | DpnsVoteTargetStatus::NotApplied => {
                         // An explicit Cast now action is a deliberate retry and
                         // may create a new operation below.
@@ -539,6 +542,8 @@ impl AppContext {
                         }
                         let attempt = app_context
                             .submit_dpns_vote(
+                                operation_id,
+                                &target.key,
                                 &target.contested_name,
                                 target.requested_choice,
                                 &voter,
@@ -581,6 +586,26 @@ impl AppContext {
                                     error,
                                     &sdk,
                                 );
+                            }
+                            Ok(vote_on_dpns_name::DpnsVoteAttempt::FailedBeforeSubmission(
+                                error,
+                            )) => {
+                                tracing::warn!(
+                                    ?error,
+                                    voter_id = %target.key.voter_id,
+                                    contested_name = %target.contested_name,
+                                    "DPNS vote failed before it reached the network"
+                                );
+                                if matches!(target.timing, VoteTiming::Scheduled(_)) {
+                                    retryable_scheduled_error = Some(error);
+                                } else {
+                                    app_context.record_dpns_vote_diagnostic_with_dapi_context(
+                                        operation_id,
+                                        target.key.clone(),
+                                        error,
+                                        &sdk,
+                                    );
+                                }
                             }
                             Err(error) => {
                                 tracing::warn!(
@@ -1193,7 +1218,7 @@ mod tests {
                 .unwrap()
                 .targets[0]
                 .status,
-            DpnsVoteTargetStatus::Unconfirmed
+            DpnsVoteTargetStatus::FailedBeforeSubmission
         );
     }
 

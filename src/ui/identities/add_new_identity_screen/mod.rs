@@ -12,7 +12,7 @@ use crate::backend_task::identity::{
     RegisterIdentityFundingMethod, default_identity_key_specs,
 };
 use crate::backend_task::wallet::WalletTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::secret::Secret;
@@ -27,8 +27,8 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
-    deposit_matches, funding_method_after_switch, max_amount_after_fee_reserve,
-    spendable_covers_minimum, wallet_selection_combo,
+    funding_method_after_switch, max_amount_after_fee_reserve, spendable_covers_minimum,
+    step_after_task_failure, wallet_selection_combo,
 };
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
@@ -36,6 +36,7 @@ use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -80,13 +81,14 @@ pub struct AddNewIdentityScreen {
     /// method. Set when the QR view needs an address; drained at the end of
     /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
     pending_funding_address_request: Option<WalletSeedHash>,
-    /// Set when a derived deposit address could not be parsed, so the QR view
-    /// stops auto-retrying and offers a manual retry instead of spinning forever.
+    /// True after the queued receive-address request is dispatched and until
+    /// its correlated success or failure result returns.
+    funding_address_request_in_flight: bool,
+    /// Set when deposit-address generation or parsing fails, so the QR view
+    /// offers a manual retry instead of spinning forever.
     funding_address_request_failed: bool,
-    /// Duffs received so far at `funding_address` (accumulated per deposit
-    /// event), for the "received so far" line — a per-address running total, not
-    /// whole-wallet balance.
-    received_at_funding_address_duffs: u64,
+    /// Spendable duffs currently held at the address shown by the deposit flow.
+    funding_address_balance_duffs: u64,
     /// Set on the transition to `FundsReceived` so the amount field pre-fills
     /// the fee-reserve-capped received balance on the next render.
     prefill_funding_amount: bool,
@@ -181,8 +183,9 @@ impl AddNewIdentityScreen {
             selected_wallet: None, // updated later
             funding_address: None,
             pending_funding_address_request: None,
+            funding_address_request_in_flight: false,
             funding_address_request_failed: false,
-            received_at_funding_address_duffs: 0,
+            funding_address_balance_duffs: 0,
             prefill_funding_amount: false,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             user_chose_funding_method: false,
@@ -445,8 +448,9 @@ impl AddNewIdentityScreen {
             // wallet; `update_wallet` re-derives the funding method/step.
             self.funding_address = None;
             self.pending_funding_address_request = None;
+            self.funding_address_request_in_flight = false;
             self.funding_address_request_failed = false;
-            self.received_at_funding_address_duffs = 0;
+            self.funding_address_balance_duffs = 0;
             self.prefill_funding_amount = false;
             self.funding_asset_lock = None;
             self.copied_to_clipboard = None;
@@ -656,8 +660,9 @@ impl AddNewIdentityScreen {
                     }
                     self.funding_address = None;
                     self.pending_funding_address_request = None;
+                    self.funding_address_request_in_flight = false;
                     self.funding_address_request_failed = false;
-                    self.received_at_funding_address_duffs = 0;
+                    self.funding_address_balance_duffs = 0;
                     self.prefill_funding_amount = false;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
@@ -679,8 +684,9 @@ impl AddNewIdentityScreen {
         self.user_chose_funding_method = false;
         self.funding_address = None;
         self.pending_funding_address_request = None;
+        self.funding_address_request_in_flight = false;
         self.funding_address_request_failed = false;
-        self.received_at_funding_address_duffs = 0;
+        self.funding_address_balance_duffs = 0;
         self.prefill_funding_amount = false;
         self.funding_amount = None;
         self.funding_amount_input = None;
@@ -1048,6 +1054,25 @@ impl AddNewIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
+                if funding_method == FundingMethod::ReceiveDeposit {
+                    let key_count = self.identity_keys.others.len() + 1;
+                    let fee_credits = self
+                        .app_context
+                        .fee_estimator()
+                        .estimate_identity_create(key_count);
+                    let available_credits = max_amount_after_fee_reserve(
+                        self.funding_address_balance_duffs,
+                        fee_credits,
+                    );
+                    if amount.saturating_mul(CREDITS_PER_DUFF) > available_credits {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "That deposit cannot cover this amount. Wait for more funds or choose a smaller amount.",
+                            MessageType::Warning,
+                        );
+                        return AppAction::None;
+                    }
+                }
 
                 let wallet_seed_hash = hex::encode(selected_wallet.read_recover().seed_hash());
                 tracing::debug!(wallet_seed_hash, "funding with wallet balance");
@@ -1130,16 +1155,19 @@ impl AddNewIdentityScreen {
             funding_method,
             FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
         ) {
-            let spendable_duffs = self
-                .selected_wallet
-                .as_ref()
-                .and_then(|wallet| wallet.read().ok())
-                .map(|wallet| {
-                    self.app_context
-                        .snapshot_balance(&wallet.seed_hash())
-                        .spendable()
-                })
-                .unwrap_or(0);
+            let spendable_duffs = if funding_method == FundingMethod::ReceiveDeposit {
+                self.funding_address_balance_duffs
+            } else {
+                self.selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok())
+                    .map(|wallet| {
+                        self.app_context
+                            .snapshot_balance(&wallet.seed_hash())
+                            .spendable()
+                    })
+                    .unwrap_or(0)
+            };
             let key_count = self.identity_keys.others.len() + 1; // +1 for master key
             let estimated_fee = self
                 .app_context
@@ -1151,8 +1179,8 @@ impl AddNewIdentityScreen {
                 Some(max_with_fee_reserved),
                 true,
                 Some(format!(
-                    "~{} reserved for fees",
-                    format_credits_as_dash(estimated_fee)
+                    "The estimated fee reserves about {}.",
+                    format_credits_as_dash(estimated_fee),
                 )),
             )
         } else {
@@ -1300,10 +1328,21 @@ impl AddNewIdentityScreen {
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            // Reset step so we stop showing "Waiting for Platform acknowledgement".
-            // The error itself is displayed by the global MessageBanner.
             let mut step = self.step.write_recover();
-            *step = WalletFundedScreenStep::ReadyToCreate;
+            *step = step_after_task_failure(*step);
+        }
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        let selected_seed_hash = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
+        if self.funding_address_request_in_flight
+            && context.generated_receive_address_wallet() == selected_seed_hash
+        {
+            self.funding_address_request_in_flight = false;
+            self.funding_address_request_failed = true;
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -1339,6 +1378,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     .map(|w| w.seed_hash() == *seed_hash)
                     .unwrap_or(false);
                 if is_ours {
+                    self.funding_address_request_in_flight = false;
                     match address.parse::<Address<_>>() {
                         Ok(addr) => {
                             self.funding_address = Some(addr.assume_checked());
@@ -1380,23 +1420,6 @@ impl ScreenLike for AddNewIdentityScreen {
                     CoreItem::ReceivedAvailableUTXOTransaction(_, outputs),
                 ) = &backend_task_success_result
                 {
-                    // Accumulate what this deposit added at the shown address, so
-                    // the "received so far" line tracks the deposit itself, not
-                    // whole-wallet balance.
-                    self.received_at_funding_address_duffs = self
-                        .received_at_funding_address_duffs
-                        .saturating_add(deposit_matches(self.funding_address.as_ref(), outputs));
-
-                    let spendable_duffs = self
-                        .selected_wallet
-                        .as_ref()
-                        .and_then(|w| w.read().ok())
-                        .map(|w| {
-                            self.app_context
-                                .snapshot_balance(&w.seed_hash())
-                                .spendable()
-                        })
-                        .unwrap_or(0);
                     let key_count = self.identity_keys.others.len() + 1; // +1 for master key
                     let minimum_credits = self
                         .app_context
@@ -1406,7 +1429,6 @@ impl ScreenLike for AddNewIdentityScreen {
                         current_step,
                         self.funding_address.as_ref(),
                         outputs,
-                        spendable_duffs,
                         minimum_credits,
                     );
                     // Pre-fill the amount with the fee-reserve-capped balance when
@@ -1733,15 +1755,17 @@ impl ScreenLike for AddNewIdentityScreen {
         // Derive the "Receive a new deposit" address off the UI thread; the QR
         // view queues this when it has no address yet.
         if let Some(seed_hash) = self.pending_funding_address_request.take() {
+            self.funding_address_request_in_flight = true;
             pending_tasks.push(BackendTask::WalletTask(
                 WalletTask::GenerateReceiveAddress { seed_hash },
             ));
         }
 
-        match pending_tasks.len() {
-            0 => {}
-            1 => action |= AppAction::BackendTask(pending_tasks.pop().expect("len == 1")),
-            _ => {
+        match pending_tasks.pop() {
+            None => {}
+            Some(task) if pending_tasks.is_empty() => action |= AppAction::BackendTask(task),
+            Some(task) => {
+                pending_tasks.push(task);
                 action |=
                     AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
             }

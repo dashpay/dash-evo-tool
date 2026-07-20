@@ -44,6 +44,7 @@ use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
 
+use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{TransactionStatus, WalletSeedHash, WalletTransaction};
 
@@ -105,6 +106,52 @@ pub struct WalletSnapshot {
     /// bookkeeping has not indexed yet, so no funded address is dropped from the
     /// per-category tab totals.
     pub address_paths: BTreeMap<Address, DerivationPath>,
+    /// Whether persisted transaction history was fully restored at startup.
+    pub transaction_history_status: TransactionHistoryStatus,
+}
+
+/// Startup restoration state for the display-only transaction history.
+#[derive(Debug, Clone, Default)]
+pub enum TransactionHistoryStatus {
+    #[default]
+    Complete,
+    Partial {
+        skipped_rows: usize,
+        error: Arc<TaskError>,
+    },
+    Unavailable {
+        error: Arc<TaskError>,
+    },
+}
+
+impl PartialEq for TransactionHistoryStatus {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Complete, Self::Complete) => true,
+            (
+                Self::Partial {
+                    skipped_rows: left, ..
+                },
+                Self::Partial {
+                    skipped_rows: right,
+                    ..
+                },
+            ) => left == right,
+            (Self::Unavailable { .. }, Self::Unavailable { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for TransactionHistoryStatus {}
+
+impl TransactionHistoryStatus {
+    pub fn error(&self) -> Option<&Arc<TaskError>> {
+        match self {
+            Self::Complete => None,
+            Self::Partial { error, .. } | Self::Unavailable { error } => Some(error),
+        }
+    }
 }
 
 /// Chain-derived parts of a published snapshot — everything except the
@@ -354,6 +401,7 @@ pub(super) struct SnapshotStore {
     /// `Txid`. A `BTreeMap` per wallet so re-seen records (mempool → block →
     /// chainlock) upsert in place and iteration is deterministic.
     tx_log: Mutex<HashMap<WalletId, BTreeMap<Txid, WalletTransaction>>>,
+    transaction_history_status: Mutex<HashMap<WalletId, TransactionHistoryStatus>>,
     /// Per-wallet registration: upstream `WalletId` → (DET `WalletSeedHash`,
     /// cheap shared `PlatformWallet` handle). The handle gives lock-free
     /// balance (`balance()`) and non-blocking UTXO (`try_state()`) reads, so
@@ -377,6 +425,7 @@ impl SnapshotStore {
         Self {
             snapshots: ArcSwap::from_pointee(HashMap::new()),
             tx_log: Mutex::new(HashMap::new()),
+            transaction_history_status: Mutex::new(HashMap::new()),
             registered: Mutex::new(HashMap::new()),
         }
     }
@@ -410,6 +459,9 @@ impl SnapshotStore {
         }
         if let Ok(mut log) = self.tx_log.lock() {
             log.remove(wallet_id);
+        }
+        if let Ok(mut statuses) = self.transaction_history_status.lock() {
+            statuses.remove(wallet_id);
         }
     }
 
@@ -471,6 +523,16 @@ impl SnapshotStore {
             per_wallet
                 .entry(record.txid)
                 .or_insert_with(|| map_transaction_record(record));
+        }
+    }
+
+    pub(super) fn set_transaction_history_status(
+        &self,
+        wallet_id: WalletId,
+        status: TransactionHistoryStatus,
+    ) {
+        if let Ok(mut statuses) = self.transaction_history_status.lock() {
+            statuses.insert(wallet_id, status);
         }
     }
 
@@ -624,6 +686,12 @@ impl SnapshotStore {
             address_balances: state.address_balances,
             monitored_receive_addresses: state.monitored_receive_addresses,
             address_paths: state.address_paths,
+            transaction_history_status: self
+                .transaction_history_status
+                .lock()
+                .ok()
+                .and_then(|statuses| statuses.get(wallet_id).cloned())
+                .unwrap_or_default(),
         });
 
         self.snapshots.rcu(|current| {
@@ -1001,6 +1069,29 @@ mod tests {
         assert!(store.snapshot(&seed(9)).transactions.is_empty());
     }
 
+    #[test]
+    fn unavailable_history_status_is_published_with_the_wallet_snapshot() {
+        let store = SnapshotStore::new();
+        store.set_transaction_history_status(
+            wid(8),
+            TransactionHistoryStatus::Unavailable {
+                error: Arc::new(TaskError::WalletTransactionHistoryPartial {
+                    source:
+                        crate::backend_task::error::WalletTransactionHistoryError::RowsSkipped {
+                            skipped_rows: 1,
+                        },
+                }),
+            },
+        );
+
+        publish_tx_only(&store, seed(8), wid(8));
+
+        assert!(matches!(
+            store.snapshot(&seed(8)).transaction_history_status,
+            TransactionHistoryStatus::Unavailable { .. }
+        ));
+    }
+
     /// A published snapshot whose header total equals the sum of its
     /// per-address breakdown — the consistency invariant the wallets screen
     /// relies on (`core_balance_duffs` reads `.balance.total`; the Core tab sums
@@ -1030,6 +1121,7 @@ mod tests {
             address_balances,
             monitored_receive_addresses: vec!["yWatched".to_string()],
             address_paths,
+            transaction_history_status: TransactionHistoryStatus::Complete,
         }
     }
 

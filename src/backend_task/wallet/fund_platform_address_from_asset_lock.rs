@@ -155,7 +155,7 @@ impl AppContext {
 
         let (wallet, sdk) = {
             let wallet = self.wallet_arc(&seed_hash)?.read()?.clone();
-            let sdk = self.sdk.load().as_ref().clone();
+            let sdk = backend.sdk().clone();
             (wallet, sdk)
         };
 

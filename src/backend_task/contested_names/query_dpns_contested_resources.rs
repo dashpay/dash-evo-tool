@@ -1,6 +1,6 @@
 use crate::app::TaskResult;
-use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{DapiAddressAvailability, TaskError};
+use crate::backend_task::{BackendTaskSuccessResult, contextualize_dapi_task_result};
 use crate::context::AppContext;
 use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
@@ -132,7 +132,10 @@ impl AppContext {
                     }
                 };
 
-                match self_ref.query_dpns_ending_times(sdk, sender.clone()).await {
+                match self_ref
+                    .query_dpns_ending_times(sdk.clone(), sender.clone())
+                    .await
+                {
                     Ok(_) => {
                         if let Err(e) = sender.send(TaskResult::Refresh).await {
                             tracing::warn!(
@@ -143,8 +146,11 @@ impl AppContext {
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
-                        if let Err(send_err) = sender.send(TaskResult::unattributed_error(e)).await
-                        {
+                        let result = contextualize_dapi_task_result(
+                            TaskResult::unattributed_error(e),
+                            DapiAddressAvailability::from_sdk(&sdk),
+                        );
+                        if let Err(send_err) = sender.send(result).await {
                             tracing::warn!(
                                 "Failed to send error for dpns end times query: {}",
                                 send_err
@@ -191,8 +197,11 @@ impl AppContext {
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
-                        if let Err(send_err) = sender.send(TaskResult::unattributed_error(e)).await
-                        {
+                        let result = contextualize_dapi_task_result(
+                            TaskResult::unattributed_error(e),
+                            DapiAddressAvailability::from_sdk(&sdk),
+                        );
+                        if let Err(send_err) = sender.send(result).await {
                             tracing::warn!(
                                 "Failed to send error for vote contenders query for {}: {}",
                                 name,

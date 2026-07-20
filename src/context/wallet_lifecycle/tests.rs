@@ -251,8 +251,9 @@ async fn stop_spv_is_idempotent_without_a_wired_backend() {
 /// Restart-in-place reconnect: a same-network Disconnect → Connect keeps the
 /// SAME `WalletBackend` (and its `Arc<SqlitePersister>`) wired, so the
 /// persister DB is never closed/reopened and `AlreadyOpen` is impossible by
-/// construction — no release barrier needed. Drives the real production
-/// path: `stop_spv()` (in-place) then `ensure_wallet_backend_and_start_spv()`.
+/// construction — the retry below only absorbs a storage-lock timing window,
+/// not a release barrier. Drives the real production path: `stop_spv()`
+/// (in-place) then `ensure_wallet_backend_and_start_spv()`.
 ///
 /// Validated offline (passes now): the backend pointer is identical across
 /// disconnect→connect (reuse, not rebuild); `is_started()` is cleared by
@@ -307,9 +308,25 @@ async fn reconnect_restart_in_place_reuses_backend() {
     // Reconnect: `ensure_wallet_backend` fast-paths on the populated slot
     // (no `WalletBackend::new`, no `SqlitePersister::open`), so the SAME
     // instance restarts — structurally immune to `AlreadyOpen`.
-    ctx.ensure_wallet_backend_and_start_spv(sender)
-        .await
-        .expect("reconnect should restart the SAME backend in place");
+    // dash-spv's storage flock can remain observable briefly after stop returns.
+    // This test-only retry is bounded so genuine restart regressions still fail.
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        match ctx
+            .ensure_wallet_backend_and_start_spv(sender.clone())
+            .await
+        {
+            Ok(()) => break,
+            Err(_) if attempt < 6 => {
+                let backoff_ms = 25u64 * (1u64 << (attempt - 1));
+                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            }
+            Err(e) => panic!(
+                "reconnect should restart the SAME backend in place after {attempt} attempts: {e}"
+            ),
+        }
+    }
     let second = ctx
         .wallet_backend()
         .expect("backend still wired after reconnect");
@@ -3571,10 +3588,10 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
     backend2.shutdown().await;
 }
 
-/// Persisted Core transactions must populate DET's display snapshot during a
-/// seedless cold boot, before any live wallet event can replay them.
+/// A corrupt persisted Core transaction must not hide the wallet or prevent
+/// valid history from populating its first seedless cold-boot snapshot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_boot_hydrates_persisted_transaction_history_without_live_events() {
+async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corrupt() {
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Transaction};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
@@ -3669,17 +3686,49 @@ async fn cold_boot_hydrates_persisted_transaction_history_without_live_events() 
         .expect("flush transaction record");
     drop(persister);
 
+    let connection = rusqlite::Connection::open(&persister_path)
+        .expect("open upstream persister for corruption fixture");
+    connection
+        .execute(
+            "INSERT INTO core_transactions \
+                (wallet_id, txid, height, block_hash, block_time, finalized, record_blob) \
+             SELECT wallet_id, X'A1', height, block_hash, block_time, finalized, record_blob \
+             FROM core_transactions WHERE wallet_id = ?1 LIMIT 1",
+            [wallet_id.as_slice()],
+        )
+        .expect("insert invalid-width transaction id");
+    drop(connection);
+
     let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
     ctx.ensure_wallet_backend(sender)
         .await
-        .expect("wire cold-boot backend");
+        .expect("corrupt history must not prevent cold-boot registration");
     let backend = ctx.wallet_backend().expect("cold-boot backend");
     let history = backend.transaction_history(&seed_hash);
 
-    assert_eq!(history.len(), 1, "persisted history must load at cold boot");
+    assert!(
+        backend.is_wallet_registered(&seed_hash),
+        "the wallet must remain registered when one history row is corrupt"
+    );
+    assert!(
+        backend.has_snapshot(&seed_hash),
+        "the wallet must remain visible when one history row is corrupt"
+    );
+    assert_eq!(
+        history.len(),
+        1,
+        "the corrupt row must be skipped without dropping valid history"
+    );
     assert_eq!(history[0].txid, expected_txid);
     assert_eq!(history[0].timestamp, u64::from(timestamp));
     assert_eq!(history[0].net_amount, 250_000);
+    assert!(matches!(
+        backend.transaction_history_status(&seed_hash),
+        crate::wallet_backend::TransactionHistoryStatus::Partial {
+            skipped_rows: 1,
+            ..
+        }
+    ));
 
     backend.shutdown().await;
 }

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::str::FromStr;
@@ -9,6 +11,20 @@ use serde::Deserialize;
 use tempfile::NamedTempFile;
 
 pub(crate) static CONFIG_PERSISTENCE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+pub(crate) static CONFIG_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+const NETWORK_PREFIXES: [&str; 4] = ["MAINNET_", "TESTNET_", "DEVNET_", "LOCAL_"];
+const NETWORK_CONFIG_FIELDS: [&str; 8] = [
+    "dapi_addresses",
+    "core_host",
+    "core_rpc_port",
+    "core_rpc_user",
+    "core_rpc_password",
+    "core_zmq_endpoint",
+    "devnet_name",
+    "wallet_private_key",
+];
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -21,8 +37,28 @@ pub struct Config {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     /// Failed to load configuration from disk or environment.
-    #[error("{0}")]
-    LoadError(String),
+    #[error("Could not load settings. Check that the application folder is readable and retry.")]
+    LoadError {
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The existing `.env` file could not be parsed safely.
+    #[error("The saved settings contain an invalid entry. Correct the settings file and retry.")]
+    InvalidEnvFile {
+        #[source]
+        source: dotenvy::Error,
+    },
+
+    /// A network-specific value could not be parsed into its modeled type.
+    #[error(
+        "The saved {network} settings contain an invalid value. Correct the settings file and retry."
+    )]
+    InvalidNetworkConfig {
+        network: &'static str,
+        #[source]
+        source: envy::Error,
+    },
 
     /// Failed to save configuration to disk.
     #[error("Could not save settings. Check that the application folder is writable and retry.")]
@@ -103,11 +139,17 @@ impl Config {
     /// Write the current configuration back to the `.env` file so that
     /// subsequent calls to `Config::load()` will reflect changes.
     ///
-    /// Uses atomic write (write to temp file, then rename) to prevent
-    /// config corruption if a write fails partway through.
+    /// Preserves lines not modeled by `Config` and replaces the modeled fields.
+    /// Uses a temporary file and atomic rename to prevent partial writes.
     pub fn save(&self, data_dir: &Path) -> Result<(), ConfigError> {
         let env_file_path =
             data_file_path(data_dir, ".env").map_err(|e| ConfigError::SaveError { source: e })?;
+        let existing_contents = match fs::read_to_string(&env_file_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(source) => return Err(ConfigError::SaveError { source }),
+        };
+        validate_env_contents(&existing_contents)?;
 
         // Write to a temporary file in the same directory first, then
         // atomically replace. This prevents corruption if the write fails
@@ -124,87 +166,28 @@ impl Config {
             })?;
         let mut env_file =
             NamedTempFile::new_in(parent_dir).map_err(|e| ConfigError::SaveError { source: e })?;
-
-        // Helper function to write a single network config to the `.env` file
-        let mut write_network_config = |prefix: &str, config: &NetworkConfig| {
-            // Each line becomes e.g.  MAINNET_dapi_addresses=...
-            // For "local" (regtest), you'll see LOCAL_dapi_addresses=...
-            //
-            // Use the environment variable scheme you prefer. Make sure it
-            // matches what `load()` expects (i.e. `envy::prefixed("MAINNET_")`,
-            // etc.).
-
-            if let Some(ref addrs) = config.dapi_addresses
-                && !addrs.is_empty()
-            {
-                writeln!(env_file, "{}dapi_addresses={}", prefix, addrs)
-                    .map_err(|e| ConfigError::SaveError { source: e })?;
+        let modeled_entries = self.modeled_entries();
+        let mut written_keys = HashSet::new();
+        for line in existing_contents.lines() {
+            if let Some(key) = owned_config_key(line) {
+                if let Some((_, value)) = modeled_entries
+                    .iter()
+                    .find(|(candidate, _)| candidate == &key)
+                    && written_keys.insert(key.clone())
+                {
+                    let assignment = line.split_once('=').map_or(key.as_str(), |(left, _)| left);
+                    writeln!(env_file, "{assignment}={value}")
+                        .map_err(|source| ConfigError::SaveError { source })?;
+                }
+            } else {
+                writeln!(env_file, "{line}").map_err(|source| ConfigError::SaveError { source })?;
             }
-            if let Some(ref host) = config.core_host {
-                writeln!(env_file, "{}core_host={}", prefix, host)
-                    .map_err(|e| ConfigError::SaveError { source: e })?;
-            }
-            if let Some(port) = config.core_rpc_port {
-                writeln!(env_file, "{}core_rpc_port={}", prefix, port)
-                    .map_err(|e| ConfigError::SaveError { source: e })?;
-            }
-            if let Some(ref user) = config.core_rpc_user {
-                writeln!(env_file, "{}core_rpc_user={}", prefix, user)
-                    .map_err(|e| ConfigError::SaveError { source: e })?;
-            }
-            if let Some(ref password) = config.core_rpc_password {
-                writeln!(env_file, "{}core_rpc_password={}", prefix, password)
-                    .map_err(|e| ConfigError::SaveError { source: e })?;
-            }
-            if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
-                writeln!(
-                    env_file,
-                    "{}core_zmq_endpoint={}",
-                    prefix, core_zmq_endpoint
-                )
-                .map_err(|e| ConfigError::SaveError { source: e })?;
-            }
-
-            if let Some(devnet_name) = &config.devnet_name {
-                // Only write devnet name if it exists
-                writeln!(env_file, "{}devnet_name={}", prefix, devnet_name)
-                    .map_err(|e| ConfigError::SaveError { source: e })?;
-            }
-            if let Some(wallet_private_key) = &config.wallet_private_key {
-                writeln!(
-                    env_file,
-                    "{}wallet_private_key={}",
-                    prefix, wallet_private_key
-                )
-                .map_err(|e| ConfigError::SaveError { source: e })?;
-            }
-
-            // Add a blank line after each config block
-            writeln!(env_file).map_err(|e| ConfigError::SaveError { source: e })?;
-
-            Ok(())
-        };
-
-        // Mainnet
-        if let Some(ref mainnet_config) = self.mainnet_config {
-            // `envy::prefixed("MAINNET_")` expects these lines to start with "MAINNET_"
-            write_network_config("MAINNET_", mainnet_config)?;
         }
-
-        // Testnet
-        if let Some(ref testnet_config) = self.testnet_config {
-            write_network_config("TESTNET_", testnet_config)?;
-        }
-
-        // Devnet
-        if let Some(ref devnet_config) = self.devnet_config {
-            write_network_config("DEVNET_", devnet_config)?;
-        }
-
-        // Local (Regtest)
-        if let Some(ref local_config) = self.local_config {
-            // `envy::prefixed("LOCAL_")` expects "LOCAL_..."
-            write_network_config("LOCAL_", local_config)?;
+        for (key, value) in modeled_entries {
+            if written_keys.insert(key.clone()) {
+                writeln!(env_file, "{key}={value}")
+                    .map_err(|source| ConfigError::SaveError { source })?;
+            }
         }
 
         // Sync all data to disk before renaming to ensure crash-safety
@@ -245,38 +228,43 @@ impl Config {
     /// located in the given data directory.
     pub fn load_from(data_dir: &Path) -> Result<Self, ConfigError> {
         let env_file_path =
-            data_file_path(data_dir, ".env").map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            data_file_path(data_dir, ".env").map_err(|source| ConfigError::LoadError { source })?;
         Self::load_from_env_path(env_file_path)
     }
 
     fn load_from_env_path(env_file_path: std::path::PathBuf) -> Result<Self, ConfigError> {
-        if let Err(err) = dotenvy::from_path_override(env_file_path) {
-            tracing::warn!(
-                ?err,
-                "Failed to load .env file. Continuing with environment variables."
-            );
-        } else {
-            tracing::info!("Successfully loaded .env file");
+        let file_entries = match fs::read_to_string(&env_file_path) {
+            Ok(contents) => dotenvy::Iter::new(
+                contents
+                    .strip_prefix('\u{feff}')
+                    .unwrap_or(&contents)
+                    .as_bytes(),
+            )
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| ConfigError::InvalidEnvFile { source })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(source) => return Err(ConfigError::LoadError { source }),
+        };
+        match dotenvy::from_path_override(&env_file_path) {
+            Ok(()) => tracing::info!("Successfully loaded .env file"),
+            Err(error) if error.not_found() => {
+                tracing::warn!(
+                    ?error,
+                    "No .env file was found. Continuing with environment variables."
+                );
+            }
+            Err(source) => return Err(ConfigError::InvalidEnvFile { source }),
         }
 
-        // Load each network config. Missing configs are normal — not every
-        // user configures all networks. Only fail if nothing is configured at all.
-        let mainnet_config = envy::prefixed("MAINNET_")
-            .from_env::<NetworkConfig>()
-            .inspect_err(|e| tracing::debug!("Failed to parse mainnet config: {e}"))
-            .ok();
-        let testnet_config = envy::prefixed("TESTNET_")
-            .from_env::<NetworkConfig>()
-            .inspect_err(|e| tracing::debug!("Failed to parse testnet config: {e}"))
-            .ok();
-        let devnet_config = envy::prefixed("DEVNET_")
-            .from_env::<NetworkConfig>()
-            .inspect_err(|e| tracing::debug!("Failed to parse devnet config: {e}"))
-            .ok();
-        let local_config = envy::prefixed("LOCAL_")
-            .from_env::<NetworkConfig>()
-            .inspect_err(|e| tracing::debug!("Failed to parse local config: {e}"))
-            .ok();
+        let process_entries = std::env::vars().collect::<Vec<_>>();
+        let mainnet_config =
+            load_network_config("MAINNET_", "Mainnet", &process_entries, &file_entries)?;
+        let testnet_config =
+            load_network_config("TESTNET_", "Testnet", &process_entries, &file_entries)?;
+        let devnet_config =
+            load_network_config("DEVNET_", "Devnet", &process_entries, &file_entries)?;
+        let local_config =
+            load_network_config("LOCAL_", "local network", &process_entries, &file_entries)?;
 
         if mainnet_config.is_none()
             && testnet_config.is_none()
@@ -303,6 +291,134 @@ impl Config {
             Network::Regtest => self.local_config = Some(new_config),
         }
     }
+
+    fn modeled_entries(&self) -> Vec<(String, String)> {
+        let mut entries = Vec::new();
+        for (prefix, config) in [
+            ("MAINNET_", self.mainnet_config.as_ref()),
+            ("TESTNET_", self.testnet_config.as_ref()),
+            ("DEVNET_", self.devnet_config.as_ref()),
+            ("LOCAL_", self.local_config.as_ref()),
+        ] {
+            if let Some(config) = config {
+                append_network_entries(&mut entries, prefix, config);
+            }
+        }
+        entries
+    }
+}
+
+fn load_network_config(
+    prefix: &'static str,
+    network: &'static str,
+    process_entries: &[(String, String)],
+    file_entries: &[(String, String)],
+) -> Result<Option<NetworkConfig>, ConfigError> {
+    let mut entries = std::collections::HashMap::new();
+    for (key, value) in process_entries.iter().chain(file_entries) {
+        if let Some(field) = key.strip_prefix(prefix) {
+            entries.insert(
+                format!("{prefix}{}", field.to_ascii_lowercase()),
+                value.clone(),
+            );
+        }
+    }
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    envy::prefixed(prefix)
+        .from_iter::<_, NetworkConfig>(entries)
+        .map(Some)
+        .map_err(|source| ConfigError::InvalidNetworkConfig { network, source })
+}
+
+fn validate_env_contents(contents: &str) -> Result<(), ConfigError> {
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+    let entries = dotenvy::Iter::new(contents.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| ConfigError::InvalidEnvFile { source })?;
+    for (prefix, network) in [
+        ("MAINNET_", "Mainnet"),
+        ("TESTNET_", "Testnet"),
+        ("DEVNET_", "Devnet"),
+        ("LOCAL_", "local network"),
+    ] {
+        if entries.iter().any(|(key, _)| key.starts_with(prefix)) {
+            envy::prefixed(prefix)
+                .from_iter::<_, NetworkConfig>(entries.iter().cloned())
+                .map_err(|source| ConfigError::InvalidNetworkConfig { network, source })?;
+        }
+    }
+    Ok(())
+}
+
+fn append_network_entries(
+    entries: &mut Vec<(String, String)>,
+    prefix: &str,
+    config: &NetworkConfig,
+) {
+    let mut push = |field: &str, value: String| {
+        entries.push((format!("{prefix}{field}"), value));
+    };
+    if let Some(addresses) = &config.dapi_addresses
+        && !addresses.is_empty()
+    {
+        push("dapi_addresses", addresses.clone());
+    }
+    if let Some(host) = &config.core_host {
+        push("core_host", host.clone());
+    }
+    if let Some(port) = config.core_rpc_port {
+        push("core_rpc_port", port.to_string());
+    }
+    if let Some(user) = &config.core_rpc_user {
+        push("core_rpc_user", user.clone());
+    }
+    if let Some(password) = &config.core_rpc_password {
+        push("core_rpc_password", password.clone());
+    }
+    if let Some(endpoint) = &config.core_zmq_endpoint {
+        push("core_zmq_endpoint", endpoint.clone());
+    }
+    if let Some(name) = &config.devnet_name {
+        push("devnet_name", name.clone());
+    }
+    if let Some(key) = &config.wallet_private_key {
+        push("wallet_private_key", key.clone());
+    }
+}
+
+fn owned_config_key(line: &str) -> Option<String> {
+    let line = line.strip_prefix('\u{feff}').unwrap_or(line).trim_start();
+    let (mut key, mut rest) = take_env_key(line)?;
+    rest = rest.trim_start();
+    if key == "export" && !rest.starts_with('=') {
+        (key, rest) = take_env_key(rest)?;
+        rest = rest.trim_start();
+    }
+    if !rest.starts_with('=') {
+        return None;
+    }
+    NETWORK_PREFIXES.iter().find_map(|prefix| {
+        let field = key.strip_prefix(prefix)?;
+        NETWORK_CONFIG_FIELDS
+            .iter()
+            .find(|owned| field.eq_ignore_ascii_case(owned))
+            .map(|owned| format!("{prefix}{owned}"))
+    })
+}
+
+fn take_env_key(input: &str) -> Option<(&str, &str)> {
+    let first = *input.as_bytes().first()?;
+    if !first.is_ascii_alphabetic() && first != b'_' {
+        return None;
+    }
+    let end = input
+        .as_bytes()
+        .iter()
+        .position(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_' && *byte != b'.')
+        .unwrap_or(input.len());
+    Some((&input[..end], &input[end..]))
 }
 
 impl NetworkConfig {
@@ -332,6 +448,21 @@ impl NetworkConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_config_test_in_subprocess(test_name: &str) -> bool {
+        const CHILD_MARKER: &str = "DET_CONFIG_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_some() {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .arg(test_name)
+            .arg("--exact")
+            .env(CHILD_MARKER, "1")
+            .status()
+            .expect("run isolated config test");
+        assert!(status.success(), "isolated config test failed");
+        true
+    }
 
     /// Helper to create a minimal valid NetworkConfig for testing
     fn make_network_config(dapi_addresses: &str, port: u16) -> NetworkConfig {
@@ -557,6 +688,132 @@ mod tests {
         assert!(output.contains("MAINNET_core_rpc_user=dashrpc"));
         assert!(output.contains("MAINNET_core_rpc_password=password"));
         assert!(output.contains("MAINNET_core_zmq_endpoint=tcp://127.0.0.1:23708"));
+    }
+
+    #[test]
+    fn save_preserves_unmodeled_env_keys() {
+        if run_config_test_in_subprocess("config::tests::save_preserves_unmodeled_env_keys") {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let env_path = tmp.path().join(".env");
+        std::fs::write(
+            &env_path,
+            "# Operator settings\nMCP_API_KEY=some-fake-test-value\nMAINNET_dapi_addresses=https://old.example:443\nRUST_LOG=info\n",
+        )
+        .expect("write test config");
+
+        let mut config = Config::load_from(tmp.path()).expect("load test config");
+        config
+            .mainnet_config
+            .as_mut()
+            .expect("mainnet config")
+            .dapi_addresses = Some("https://new.example:443".to_string());
+        config.save(tmp.path()).expect("save test config");
+
+        let saved = std::fs::read_to_string(env_path).expect("read saved config");
+        assert!(saved.contains("# Operator settings\n"));
+        assert!(saved.contains("MCP_API_KEY=some-fake-test-value\n"));
+        assert!(saved.contains("RUST_LOG=info\n"));
+        assert!(saved.contains("MAINNET_dapi_addresses=https://new.example:443\n"));
+        assert!(!saved.contains("MAINNET_dapi_addresses=https://old.example:443\n"));
+    }
+
+    #[test]
+    fn save_replaces_modeled_keys_case_insensitively() {
+        if run_config_test_in_subprocess(
+            "config::tests::save_replaces_modeled_keys_case_insensitively",
+        ) {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let env_path = tmp.path().join(".env");
+        std::fs::write(
+            &env_path,
+            "\u{feff}export\tMAINNET_DAPI_ADDRESSES=https://old.example:443\nmainnet_dapi_addresses=keep-this-line\n",
+        )
+        .expect("write test config");
+
+        let mut config = Config::load_from(tmp.path()).expect("load test config");
+        config
+            .mainnet_config
+            .as_mut()
+            .expect("mainnet config")
+            .dapi_addresses = Some("https://new.example:443".to_string());
+        config.save(tmp.path()).expect("save test config");
+
+        let saved = std::fs::read_to_string(&env_path).expect("read saved config");
+        assert!(!saved.contains("MAINNET_DAPI_ADDRESSES=https://old.example:443\n"));
+        assert!(saved.contains("mainnet_dapi_addresses=keep-this-line\n"));
+        let reloaded = Config::load_from(tmp.path()).expect("reload test config");
+        assert_eq!(
+            reloaded
+                .mainnet_config
+                .as_ref()
+                .and_then(|network| network.dapi_addresses.as_deref()),
+            Some("https://new.example:443"),
+        );
+    }
+
+    #[test]
+    fn save_preserves_unmodeled_line_order() {
+        if run_config_test_in_subprocess("config::tests::save_preserves_unmodeled_line_order") {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let env_path = tmp.path().join(".env");
+        std::fs::write(
+            &env_path,
+            "MAINNET_core_host=127.0.0.1\nEXTRA_HOST=${MAINNET_core_host}\nMAINNET_dapi_addresses=https://old.example:443\n",
+        )
+        .expect("write test config");
+
+        let mut config = Config::load_from(tmp.path()).expect("load test config");
+        config
+            .mainnet_config
+            .as_mut()
+            .expect("mainnet config")
+            .dapi_addresses = Some("https://new.example:443".to_string());
+        config.save(tmp.path()).expect("save test config");
+
+        let saved = std::fs::read_to_string(env_path).expect("read saved config");
+        let host_position = saved.find("MAINNET_core_host=").expect("modeled host");
+        let extra_position = saved.find("EXTRA_HOST=").expect("unmodeled reference");
+        let dapi_position = saved
+            .find("MAINNET_dapi_addresses=")
+            .expect("modeled addresses");
+        assert!(host_position < extra_position);
+        assert!(extra_position < dapi_position);
+    }
+
+    #[test]
+    fn save_rejects_invalid_modeled_values_without_rewriting() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let env_path = tmp.path().join(".env");
+        let original = "MAINNET_dapi_addresses=https://mainnet.example:443\nTESTNET_core_rpc_port=not-a-number\nTESTNET_core_rpc_password=fake-test-password\n";
+        std::fs::write(&env_path, original).expect("write test config");
+        let config = Config {
+            mainnet_config: Some(make_network_config("https://mainnet-new.example:443", 9998)),
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+        };
+
+        let error = config
+            .save(tmp.path())
+            .expect_err("invalid modeled value must fail closed");
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidNetworkConfig {
+                network: "Testnet",
+                ..
+            }
+        ));
+        assert_eq!(
+            std::fs::read_to_string(env_path).expect("read unchanged config"),
+            original,
+        );
     }
 
     // ── envy parsing roundtrip ──────────────────────────────────────

@@ -27,6 +27,10 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::backend_task::error::TaskError;
+use crate::config::{CONFIG_PERSISTENCE_LOCK, Config};
+use crate::context::AppContext;
+
 /// Errors from DAPI address resolution and discovery.
 #[derive(Debug, thiserror::Error)]
 pub enum DapiDiscoveryError {
@@ -132,4 +136,43 @@ pub async fn discover_and_format(
     let count = urls.len();
     let csv = urls.join(",");
     Ok((count, csv))
+}
+
+/// Persist DAPI addresses and publish them to the active network configuration.
+pub(crate) fn persist_dapi_addresses(
+    app_context: &AppContext,
+    addresses_csv: String,
+) -> Result<(), TaskError> {
+    persist_dapi_addresses_inner(app_context, addresses_csv, || {})
+}
+
+fn persist_dapi_addresses_inner(
+    app_context: &AppContext,
+    addresses_csv: String,
+    before_save: impl FnOnce(),
+) -> Result<(), TaskError> {
+    let _persistence_guard = CONFIG_PERSISTENCE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let network = app_context.network();
+    let mut config = Config::load_from(app_context.data_dir())?;
+    let mut network_config = config
+        .config_for_network(network)
+        .clone()
+        .unwrap_or_default();
+    network_config.dapi_addresses = Some(addresses_csv);
+    config.update_config_for_network(network, network_config.clone());
+    before_save();
+    config.save(app_context.data_dir())?;
+    *app_context.config.write()? = network_config;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn persist_dapi_addresses_with_hook(
+    app_context: &AppContext,
+    addresses_csv: String,
+    before_save: impl FnOnce(),
+) -> Result<(), TaskError> {
+    persist_dapi_addresses_inner(app_context, addresses_csv, before_save)
 }

@@ -16,8 +16,8 @@ use dash_sdk::platform::Identifier;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::backend_task::dapi_discovery::persist_dapi_addresses;
 use crate::backend_task::error::TaskError;
-use crate::config::{CONFIG_PERSISTENCE_LOCK, Config};
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -478,50 +478,14 @@ async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
         }
     };
 
-    {
-        let _persistence_guard = CONFIG_PERSISTENCE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut config = match Config::load_from(&app_context.data_dir) {
-            Ok(config) => config,
-            Err(error) => {
-                tracing::warn!(
-                    target = "migration::finish_unwire",
-                    ?network,
-                    ?error,
-                    "Could not load the network configuration after automatic DAPI discovery; the refresh will retry on the next launch",
-                );
-                return;
-            }
-        };
-        let mut network_config = config
-            .config_for_network(network)
-            .clone()
-            .unwrap_or_default();
-        network_config.dapi_addresses = Some(addresses_csv);
-        config.update_config_for_network(network, network_config.clone());
-        if let Err(error) = config.save(&app_context.data_dir) {
-            tracing::warn!(
-                target = "migration::finish_unwire",
-                ?network,
-                ?error,
-                "Could not save automatically discovered DAPI nodes; the refresh will retry on the next launch",
-            );
-            return;
-        }
-
-        match app_context.config.write() {
-            Ok(mut live_config) => *live_config = network_config,
-            Err(error) => {
-                tracing::warn!(
-                    target = "migration::finish_unwire",
-                    ?network,
-                    ?error,
-                    "Could not update the live network configuration with discovered DAPI nodes; the refresh will retry on the next launch",
-                );
-                return;
-            }
-        }
+    if let Err(error) = persist_dapi_addresses(app_context, addresses_csv) {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?network,
+            ?error,
+            "Could not persist automatically discovered DAPI nodes; the refresh will retry on the next launch",
+        );
+        return;
     }
 
     if let Err(error) = Arc::clone(app_context).reinit_core_client_and_sdk() {
@@ -567,10 +531,10 @@ fn write_dapi_refresh_completion(
 /// decide whether to surface a "storage update complete" banner — a no-op
 /// launch must not show one.
 ///
-/// A best-effort DAPI refresh starts concurrently under its own sentinel. It
-/// never changes migration state or propagates an error, so node discovery
-/// cannot affect the precedence below or delay access to recovered funds and
-/// identities.
+/// A best-effort DAPI refresh is queued before the migration passes. After the
+/// run publishes terminal status and releases its guard, refresh acquires and
+/// holds that guard until it finishes. Operations that claim the same guard,
+/// including local identity deletion, remain unavailable during that interval.
 ///
 /// Three independent recovery passes, each under its own sentinel, in this order:
 ///
@@ -668,8 +632,8 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     }
 }
 
-/// Owns `migration_run` for the full detached refresh after the launching pass releases it.
-/// The launching pass never awaits this handle, so waiting for its guard cannot deadlock.
+/// Waits for the launching pass, then holds `migration_run` through refresh.
+/// Operations that claim this guard stay gated until the detached work completes.
 fn spawn_dapi_refresh<F>(app_context: &Arc<AppContext>, refresh: F) -> tokio::task::JoinHandle<()>
 where
     F: Future<Output = ()> + Send + 'static,
@@ -681,6 +645,7 @@ where
     })
 }
 
+/// Queues refresh before migration so its waiter acquires the guard at completion.
 async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let ctx = Arc::clone(app_context);
     std::mem::drop(spawn_dapi_refresh(app_context, async move {
@@ -2646,12 +2611,11 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::NetworkConfig;
+    use crate::backend_task::dapi_discovery::persist_dapi_addresses_with_hook;
+    use crate::config::{CONFIG_ENV_LOCK, Config, NetworkConfig};
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static CONFIG_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -2793,30 +2757,32 @@ mod tests {
         }
         .save(tmp.path())
         .expect("write initial config");
+        let mainnet_context = app_context_for_network(tmp.path(), Network::Mainnet);
+        let testnet_context = app_context_for_network_with_shared_storage(
+            tmp.path(),
+            Network::Testnet,
+            &mainnet_context,
+        );
 
         let (event_tx, event_rx) = std::sync::mpsc::channel();
         let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
-        let first_data_dir = tmp.path().to_path_buf();
+        let first_context = Arc::clone(&mainnet_context);
         let first_event_tx = event_tx.clone();
         let first = std::thread::spawn(move || {
-            let _persistence_guard = CONFIG_PERSISTENCE_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            first_event_tx
-                .send(ConfigPersistenceEvent::FirstEntered)
-                .expect("report first entry");
-            let mut config = Config::load_from(&first_data_dir).expect("first load");
-            let mut network_config = config
-                .config_for_network(Network::Mainnet)
-                .clone()
-                .expect("mainnet config");
-            network_config.dapi_addresses = Some("https://mainnet-new.example:443".to_string());
-            config.update_config_for_network(Network::Mainnet, network_config);
-            first_event_tx
-                .send(ConfigPersistenceEvent::FirstPausedBeforeSave)
-                .expect("report first pause");
-            release_first_rx.recv().expect("release first save");
-            config.save(&first_data_dir).expect("first save");
+            persist_dapi_addresses_with_hook(
+                &first_context,
+                "https://mainnet-new.example:443".to_string(),
+                || {
+                    first_event_tx
+                        .send(ConfigPersistenceEvent::FirstEntered)
+                        .expect("report first entry");
+                    first_event_tx
+                        .send(ConfigPersistenceEvent::FirstPausedBeforeSave)
+                        .expect("report first pause");
+                    release_first_rx.recv().expect("release first save");
+                },
+            )
+            .expect("first persistence");
             first_event_tx
                 .send(ConfigPersistenceEvent::FirstSaved)
                 .expect("report first save");
@@ -2831,26 +2797,22 @@ mod tests {
             ConfigPersistenceEvent::FirstPausedBeforeSave,
         );
 
-        let second_data_dir = tmp.path().to_path_buf();
+        let second_context = Arc::clone(&testnet_context);
         let second_event_tx = event_tx.clone();
         let second = std::thread::spawn(move || {
             second_event_tx
                 .send(ConfigPersistenceEvent::SecondAttempting)
                 .expect("report second attempt");
-            let _persistence_guard = CONFIG_PERSISTENCE_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            second_event_tx
-                .send(ConfigPersistenceEvent::SecondEntered)
-                .expect("report second entry");
-            let mut config = Config::load_from(&second_data_dir).expect("second load");
-            let mut network_config = config
-                .config_for_network(Network::Testnet)
-                .clone()
-                .expect("testnet config");
-            network_config.dapi_addresses = Some("https://testnet-new.example:443".to_string());
-            config.update_config_for_network(Network::Testnet, network_config);
-            config.save(&second_data_dir).expect("second save");
+            persist_dapi_addresses_with_hook(
+                &second_context,
+                "https://testnet-new.example:443".to_string(),
+                || {
+                    second_event_tx
+                        .send(ConfigPersistenceEvent::SecondEntered)
+                        .expect("report second entry");
+                },
+            )
+            .expect("second persistence");
             second_event_tx
                 .send(ConfigPersistenceEvent::SecondSaved)
                 .expect("report second save");
@@ -2908,6 +2870,58 @@ mod tests {
                 .and_then(|config| config.dapi_addresses.as_deref()),
             Some("https://testnet-new.example:443"),
         );
+        assert_eq!(
+            mainnet_context
+                .config
+                .read()
+                .expect("read mainnet live config")
+                .dapi_addresses
+                .as_deref(),
+            Some("https://mainnet-new.example:443"),
+        );
+        assert_eq!(
+            testnet_context
+                .config
+                .read()
+                .expect("read testnet live config")
+                .dapi_addresses
+                .as_deref(),
+            Some("https://testnet-new.example:443"),
+        );
+    }
+
+    #[tokio::test]
+    async fn dapi_config_persistence_reports_save_failure() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: Some("https://mainnet-old.example:443".to_string()),
+                ..Default::default()
+            }),
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+        }
+        .save(tmp.path())
+        .expect("write initial config");
+        let app_context = app_context_for_network(tmp.path(), Network::Mainnet);
+        let env_path = tmp.path().join(".env");
+
+        let error = persist_dapi_addresses_with_hook(
+            &app_context,
+            "https://mainnet-new.example:443".to_string(),
+            || {
+                std::fs::remove_file(&env_path).expect("remove config file");
+                std::fs::create_dir(&env_path).expect("replace config file with directory");
+            },
+        )
+        .expect_err("persistence must report the save failure");
+
+        assert!(matches!(
+            error,
+            TaskError::Config(crate::config::ConfigError::SaveError { .. })
+        ));
     }
 
     #[tokio::test]
@@ -5043,6 +5057,25 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("AppContext")
+    }
+
+    fn app_context_for_network_with_shared_storage(
+        dir: &std::path::Path,
+        network: Network,
+        shared: &AppContext,
+    ) -> Arc<AppContext> {
+        AppContext::new(
+            dir.to_path_buf(),
+            network,
+            Arc::clone(&shared.db),
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            shared.app_kv(),
+            shared.secret_store(),
             crate::model::user_role::UserRoleCell::default(),
         )
         .expect("AppContext")

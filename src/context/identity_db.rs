@@ -11,7 +11,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
 /// Identity blob slot, scoped to [`DetScope::Identity`]. One entry per
@@ -1140,19 +1140,21 @@ impl AppContext {
     pub fn clear_executed_scheduled_votes(&self) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let voters = load_scheduled_vote_voters(&kv)?;
+        let mut removed_scheduled_votes = BTreeSet::new();
         for voter in &voters {
             let scope = DetScope::Identity(voter);
             for key in scheduled_vote_keys(&kv, voter)? {
                 match kv.get::<StoredScheduledVote>(scope, &key) {
                     Ok(Some(stored)) if stored.executed_successfully => {
                         kv.delete(scope, &key).map_err(scheduled_vote_err)?;
+                        removed_scheduled_votes.insert((stored.voter_id, stored.contested_name));
                     }
                     _ => {}
                 }
             }
             prune_vote_voter_if_empty(&kv, voter)?;
         }
-        self.prune_terminal_dpns_vote_operations()?;
+        self.prune_terminal_dpns_vote_operations(&removed_scheduled_votes)?;
         Ok(())
     }
 
@@ -1539,6 +1541,92 @@ mod tests {
         let mut voters = load_scheduled_vote_voters(&kv).unwrap();
         voters.sort_unstable();
         assert_eq!(voters, vec![v1, v2]);
+    }
+
+    #[test]
+    fn clearing_executed_votes_preserves_failed_and_cancelled_journal_records() {
+        use crate::model::dpns_voting::{
+            DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+        };
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from(id(1));
+        let cases = [
+            ("confirmed", DpnsVoteTargetStatus::Confirmed, true),
+            (
+                "failed",
+                DpnsVoteTargetStatus::FailedBeforeSubmission,
+                false,
+            ),
+            ("cancelled", DpnsVoteTargetStatus::Cancelled, false),
+        ];
+        let scheduled_votes = cases
+            .iter()
+            .enumerate()
+            .map(
+                |(index, (name, _, executed_successfully))| ScheduledDPNSVote {
+                    contested_name: (*name).to_owned(),
+                    voter_id: voter,
+                    choice: ResourceVoteChoice::Lock,
+                    unix_timestamp: 42 + index as u64,
+                    executed_successfully: *executed_successfully,
+                },
+            )
+            .collect::<Vec<_>>();
+        context.insert_scheduled_votes(&scheduled_votes).unwrap();
+        for (index, (name, status, _)) in cases.iter().enumerate() {
+            let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+                key: DpnsVoteTargetKey {
+                    network: Network::Testnet,
+                    voter_id: voter,
+                    vote_poll_id: Identifier::from([index as u8 + 1; 32]),
+                },
+                voter_alias: None,
+                contested_name: (*name).to_owned(),
+                requested_choice: ResourceVoteChoice::Lock,
+                current_choice: None,
+                timing: VoteTiming::Scheduled(42 + index as u64),
+            }]);
+            operation.targets[0].status = *status;
+            context
+                .insert_dpns_vote_operation(&mut operation, None)
+                .unwrap();
+        }
+
+        context.clear_executed_scheduled_votes().unwrap();
+
+        let mut remaining_legacy_names = context
+            .get_scheduled_votes()
+            .unwrap()
+            .into_iter()
+            .map(|vote| vote.contested_name)
+            .collect::<Vec<_>>();
+        remaining_legacy_names.sort();
+        assert_eq!(remaining_legacy_names, vec!["cancelled", "failed"]);
+        let remaining_operations = context.dpns_vote_operations().unwrap();
+        assert_eq!(remaining_operations.len(), 2);
+        assert!(remaining_operations.iter().any(|operation| {
+            operation.targets[0].target.contested_name == "failed"
+                && operation.targets[0].status == DpnsVoteTargetStatus::FailedBeforeSubmission
+        }));
+        assert!(remaining_operations.iter().any(|operation| {
+            operation.targets[0].target.contested_name == "cancelled"
+                && operation.targets[0].status == DpnsVoteTargetStatus::Cancelled
+        }));
+
+        context.migrate_dpns_vote_operations().unwrap();
+        assert!(
+            context
+                .dpns_vote_operations()
+                .unwrap()
+                .iter()
+                .all(|operation| {
+                    operation.targets[0].status != DpnsVoteTargetStatus::Scheduled
+                })
+        );
     }
 
     #[test]

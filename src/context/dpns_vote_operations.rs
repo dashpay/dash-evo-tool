@@ -9,7 +9,7 @@ use crate::model::dpns_voting::{
 };
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const LEGACY_OPERATION_INDEX_KEY: &str = "det:dpns_vote_operations:v1";
@@ -311,10 +311,24 @@ fn write_existing_operation(
     persist_operation(kv, network, operation)
 }
 
-fn prune_terminal_operations(kv: &DetKv, network: Network) -> Result<usize, TaskError> {
+fn prune_terminal_operations(
+    kv: &DetKv,
+    network: Network,
+    removed_scheduled_votes: &BTreeSet<([u8; 32], String)>,
+) -> Result<usize, TaskError> {
     let terminal_ids = load_operations(kv, network)?
         .into_iter()
-        .filter(DpnsVoteOperation::is_complete)
+        .filter(|operation| {
+            operation.is_complete()
+                && !operation.targets.is_empty()
+                && operation.targets.iter().all(|outcome| {
+                    matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+                        && removed_scheduled_votes.contains(&(
+                            outcome.target.key.voter_id.to_buffer(),
+                            outcome.target.contested_name.clone(),
+                        ))
+                })
+        })
         .map(|operation| operation.id)
         .collect::<Vec<_>>();
     if terminal_ids.is_empty() {
@@ -582,7 +596,18 @@ impl AppContext {
             .dpns_vote_operation_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        load_operations_read_only(&self.det_kv()?, self.network)
+        let kv = self.det_kv()?;
+        if kv
+            .get::<bool>(
+                DetScope::Global,
+                &operation_lock_index_dirty_key(self.network),
+            )
+            .map_err(unreadable_operation_err)?
+            .unwrap_or(false)
+        {
+            rebuild_lock_index(&kv, self.network)?;
+        }
+        load_operations_read_only(&kv, self.network)
     }
 
     /// Migrate legacy journals and scheduled-vote mirrors before backend recovery.
@@ -855,12 +880,15 @@ impl AppContext {
     }
 
     /// Remove lock-releasing operation history when the user clears completed votes.
-    pub(crate) fn prune_terminal_dpns_vote_operations(&self) -> Result<usize, TaskError> {
+    pub(crate) fn prune_terminal_dpns_vote_operations(
+        &self,
+        removed_scheduled_votes: &BTreeSet<([u8; 32], String)>,
+    ) -> Result<usize, TaskError> {
         let _guard = self
             .dpns_vote_operation_guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        prune_terminal_operations(&self.det_kv()?, self.network)
+        prune_terminal_operations(&self.det_kv()?, self.network, removed_scheduled_votes)
     }
 
     /// Release a not-yet-submitting scheduled target after explicit cancellation.
@@ -1319,6 +1347,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn operation_getter_repairs_a_dirty_record_and_lock_index() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(InMemoryKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(DetKv::from_store(store)),
+        );
+        context.set_det_kv_override_for_test(kv.clone());
+        let operation = operation(DpnsVoteTargetStatus::Unconfirmed);
+        persist_operation(&kv, Network::Testnet, &operation).unwrap();
+        kv.put(
+            DetScope::Global,
+            &operation_index_key(Network::Testnet),
+            &vec![
+                operation.id.to_bytes(),
+                DpnsVoteOperationId::from_bytes([9; 16]).to_bytes(),
+            ],
+        )
+        .unwrap();
+        kv.put(
+            DetScope::Global,
+            &operation_lock_index_dirty_key(Network::Testnet),
+            &true,
+        )
+        .unwrap();
+
+        assert_eq!(context.dpns_vote_operations().unwrap(), vec![operation]);
+        assert!(
+            kv.get::<bool>(
+                DetScope::Global,
+                &operation_lock_index_dirty_key(Network::Testnet),
+            )
+            .unwrap()
+            .is_none(),
+            "a successful rebuild must clear the dirty marker"
+        );
+    }
+
     #[tokio::test]
     async fn operation_getter_does_not_migrate_legacy_scheduled_votes() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -1360,12 +1428,20 @@ mod tests {
     #[test]
     fn pruning_removes_terminal_records_and_preserves_live_locks() {
         let kv = kv();
-        let terminal = operation(DpnsVoteTargetStatus::Confirmed);
+        let mut terminal = operation(DpnsVoteTargetStatus::Confirmed);
+        terminal.targets[0].target.timing = VoteTiming::Scheduled(42);
         let live = operation(DpnsVoteTargetStatus::Unconfirmed);
+        let removed_scheduled_votes = BTreeSet::from([(
+            terminal.targets[0].target.key.voter_id.to_buffer(),
+            terminal.targets[0].target.contested_name.clone(),
+        )]);
         persist_operation(&kv, Network::Testnet, &terminal).unwrap();
         persist_operation(&kv, Network::Testnet, &live).unwrap();
 
-        assert_eq!(prune_terminal_operations(&kv, Network::Testnet).unwrap(), 1);
+        assert_eq!(
+            prune_terminal_operations(&kv, Network::Testnet, &removed_scheduled_votes).unwrap(),
+            1
+        );
         assert_eq!(
             load_operations_read_only(&kv, Network::Testnet).unwrap(),
             vec![live]

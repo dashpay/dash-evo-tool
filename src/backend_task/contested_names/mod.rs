@@ -315,14 +315,13 @@ impl AppContext {
         scheduled_vote: &ScheduledDPNSVote,
         voter: &QualifiedIdentity,
     ) -> Result<DpnsVoteOperation, TaskError> {
-        if let Some(mut operation) = self.dpns_vote_operations()?.into_iter().find(|operation| {
+        if let Some(operation) = self.dpns_vote_operations()?.into_iter().find(|operation| {
             operation.targets.iter().any(|outcome| {
                 outcome.target.key.voter_id == scheduled_vote.voter_id
                     && outcome.target.contested_name == scheduled_vote.contested_name
             })
         }) {
-            let mut target_queued = false;
-            for outcome in &mut operation.targets {
+            for outcome in &operation.targets {
                 if outcome.target.key.voter_id != scheduled_vote.voter_id
                     || outcome.target.contested_name != scheduled_vote.contested_name
                 {
@@ -330,8 +329,14 @@ impl AppContext {
                 }
                 match outcome.status {
                     DpnsVoteTargetStatus::Scheduled => {
-                        outcome.status = DpnsVoteTargetStatus::Queued;
-                        target_queued = true;
+                        if !self
+                            .queue_scheduled_dpns_vote_target(operation.id, &outcome.target.key)?
+                        {
+                            return Err(TaskError::DpnsVoteTargetBusy);
+                        }
+                        return self
+                            .dpns_vote_operation(operation.id)?
+                            .ok_or(TaskError::DpnsVoteOperationRecordMissing);
                     }
                     DpnsVoteTargetStatus::Unconfirmed
                     | DpnsVoteTargetStatus::Queued
@@ -354,9 +359,6 @@ impl AppContext {
                         // may create a new operation below.
                     }
                 }
-            }
-            if target_queued {
-                return Ok(operation);
             }
         }
 
@@ -971,7 +973,11 @@ fn scheduled_target_should_execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
     use std::cell::RefCell;
+    use std::collections::BTreeMap;
 
     fn dapi_connection_refused_error() -> TaskError {
         use dash_sdk::Error as SdkError;
@@ -982,6 +988,73 @@ mod tests {
         TaskError::from(SdkError::DapiClientError(DapiClientError::Transport(
             TransportError::Grpc(status),
         )))
+    }
+
+    fn qualified_identity(byte: u8) -> QualifiedIdentity {
+        let identity = Identity::create_basic_identity(
+            Identifier::from([byte; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[test]
+    fn cast_now_durably_queues_an_existing_scheduled_operation() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        context.set_det_kv_override_for_test(kv);
+        let voter = qualified_identity(1);
+        let scheduled_vote = ScheduledDPNSVote {
+            contested_name: "dominguez".to_owned(),
+            voter_id: Identifier::from([1; 32]),
+            choice: ResourceVoteChoice::Lock,
+            unix_timestamp: 42,
+            executed_successfully: false,
+        };
+        let target = context
+            .dpns_vote_target(
+                &voter,
+                &scheduled_vote.contested_name,
+                scheduled_vote.choice,
+                VoteTiming::Scheduled(scheduled_vote.unix_timestamp),
+                false,
+            )
+            .expect("scheduled target");
+        let mut operation = DpnsVoteOperation::new(vec![target]);
+        let operation_id = operation.id;
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .expect("persist scheduled operation");
+
+        let returned = context
+            .operation_for_scheduled_vote(&scheduled_vote, &voter)
+            .expect("queue scheduled operation");
+        let persisted = context
+            .dpns_vote_operation(operation_id)
+            .expect("load operation")
+            .expect("persisted operation");
+
+        assert_eq!(returned.targets[0].status, DpnsVoteTargetStatus::Queued);
+        assert_eq!(persisted.targets[0].status, DpnsVoteTargetStatus::Queued);
     }
 
     #[test]

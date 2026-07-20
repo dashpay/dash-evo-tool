@@ -220,28 +220,84 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
             | DpnsVoteTargetStatus::Confirming => counts.in_progress += 1,
         }
     }
-    let message = format!(
-        "Voting results: {} confirmed, {} scheduled, {} unconfirmed, {} rejected, {} failed before submission, {} cancelled, {} not applied, and {} still in progress. Open Voting activity to review each target.",
-        counts.confirmed,
-        counts.scheduled,
-        counts.unconfirmed,
-        counts.rejected,
-        counts.failed_before_submission,
-        counts.cancelled,
-        counts.not_applied,
-        counts.in_progress,
-    );
-    let needs_attention =
-        counts.unconfirmed + counts.rejected + counts.failed_before_submission + counts.not_applied
-            > 0;
-    let message_type = if needs_attention {
-        MessageType::Warning
-    } else if counts.in_progress > 0 {
-        MessageType::Info
+    if operation.targets.is_empty() {
+        return (
+            "This node already has that vote. Nothing was submitted.".to_owned(),
+            MessageType::Info,
+            false,
+        );
+    }
+    let target_count = operation.targets.len();
+    if counts.confirmed == target_count {
+        let message = if target_count == 1 {
+            "Vote cast successfully.".to_owned()
+        } else {
+            format!("{target_count} votes were cast successfully.")
+        };
+        return (message, MessageType::Success, false);
+    }
+    if counts.scheduled == target_count {
+        return (
+            format!("{target_count} votes were scheduled."),
+            MessageType::Success,
+            false,
+        );
+    }
+    if counts.unconfirmed == target_count {
+        return (
+            "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.".to_owned(),
+            MessageType::Warning,
+            true,
+        );
+    }
+    if counts.rejected == target_count {
+        return (
+            "The vote was rejected. Review the vote and try again.".to_owned(),
+            MessageType::Error,
+            false,
+        );
+    }
+    if counts.failed_before_submission == target_count {
+        return (
+            "This vote was not submitted. Check your connection and try again.".to_owned(),
+            MessageType::Error,
+            false,
+        );
+    }
+    if counts.not_applied == target_count {
+        return (
+            "The submitted vote was not applied. Review the vote and try again.".to_owned(),
+            MessageType::Error,
+            false,
+        );
+    }
+    if counts.cancelled == target_count {
+        return (
+            "The scheduled vote was cancelled. Nothing was submitted.".to_owned(),
+            MessageType::Info,
+            false,
+        );
+    }
+    if counts.in_progress == target_count {
+        return (
+            "Voting is still in progress. Wait for the result before submitting again.".to_owned(),
+            MessageType::Info,
+            false,
+        );
+    }
+
+    let remaining = target_count.saturating_sub(counts.confirmed);
+    let confirmed = counts.confirmed;
+    let message = if counts.unconfirmed > 0 {
+        format!(
+            "{confirmed} of {target_count} votes were confirmed. Review the remaining {remaining}. The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.",
+        )
     } else {
-        MessageType::Success
+        format!(
+            "{confirmed} of {target_count} votes were confirmed. Review the remaining {remaining}.",
+        )
     };
-    (message, message_type, counts.unconfirmed > 0)
+    (message, MessageType::Warning, counts.unconfirmed > 0)
 }
 
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
@@ -2346,6 +2402,7 @@ impl App for AppState {
                             ) {
                                 self.scheduled_vote_recovery_last_attempt.remove(&network);
                             }
+                            self.visible_screen_mut().refresh();
                         }
                         BackendTaskSuccessResult::NetworkContextCreated {
                             network,
@@ -2809,7 +2866,102 @@ mod migration_banner_tests {
     }
 
     #[test]
-    fn mixed_vote_feedback_counts_every_terminal_category_and_guides_to_details() {
+    fn vote_feedback_uses_copy_for_each_complete_outcome() {
+        let cases = [
+            (
+                vec![DpnsVoteTargetStatus::Confirmed],
+                0,
+                "Vote cast successfully.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Confirmed,
+                    DpnsVoteTargetStatus::Confirmed,
+                ],
+                0,
+                "2 votes were cast successfully.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Confirmed,
+                    DpnsVoteTargetStatus::Confirmed,
+                ],
+                1,
+                "2 votes were cast successfully.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Scheduled,
+                    DpnsVoteTargetStatus::Scheduled,
+                ],
+                0,
+                "2 votes were scheduled.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Scheduled,
+                    DpnsVoteTargetStatus::Scheduled,
+                ],
+                1,
+                "2 votes were scheduled.",
+                MessageType::Success,
+                false,
+            ),
+            (
+                vec![DpnsVoteTargetStatus::Unconfirmed],
+                0,
+                "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.",
+                MessageType::Warning,
+                true,
+            ),
+            (
+                vec![DpnsVoteTargetStatus::Rejected],
+                0,
+                "The vote was rejected. Review the vote and try again.",
+                MessageType::Error,
+                false,
+            ),
+            (
+                vec![DpnsVoteTargetStatus::FailedBeforeSubmission],
+                0,
+                "This vote was not submitted. Check your connection and try again.",
+                MessageType::Error,
+                false,
+            ),
+            (
+                Vec::new(),
+                1,
+                "This node already has that vote. Nothing was submitted.",
+                MessageType::Info,
+                false,
+            ),
+        ];
+
+        for (statuses, no_op_count, expected_message, expected_type, expected_visibility) in cases {
+            let mut operation = feedback_operation(&statuses);
+            operation.no_op_count = no_op_count;
+
+            assert_eq!(
+                dpns_vote_feedback(&operation),
+                (
+                    expected_message.to_owned(),
+                    expected_type,
+                    expected_visibility
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_vote_feedback_reports_partial_result_and_unconfirmed_guidance() {
         let operation = feedback_operation(&[
             DpnsVoteTargetStatus::Confirmed,
             DpnsVoteTargetStatus::Scheduled,
@@ -2824,21 +2976,10 @@ mod migration_banner_tests {
 
         assert_eq!(message_type, MessageType::Warning);
         assert!(keep_visible);
-        for phrase in [
-            "1 confirmed",
-            "1 scheduled",
-            "1 unconfirmed",
-            "1 rejected",
-            "1 failed before submission",
-            "1 cancelled",
-            "1 not applied",
-            "Open Voting activity",
-        ] {
-            assert!(
-                message.contains(phrase),
-                "missing `{phrase}` in `{message}`"
-            );
-        }
+        assert_eq!(
+            message,
+            "1 of 7 votes were confirmed. Review the remaining 6. The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again."
+        );
     }
 
     /// A frame owns one migration snapshot even if the task publishes mid-frame.

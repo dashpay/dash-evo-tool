@@ -35,3 +35,4 @@ jobs:
           claude_code_oauth_token: ${{ env.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
           memcan_url: ${{ vars.MEMCAN_URL }}
           memcan_api_key: ${{ secrets.MEMCAN_API_KEY }}
+          claude_extra_args: "--permission-mode auto"

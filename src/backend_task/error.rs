@@ -1222,6 +1222,13 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// Proof verification ran before SPV had synchronized quorum keys.
+    #[error("The network is still syncing. Please wait a moment and try again.")]
+    MasternodeListNotReady {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet / platform-address operation errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -2736,6 +2743,12 @@ impl From<dashcore_rpc::Error> for TaskError {
 
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
+        if sdk_error_is_masternode_list_not_ready(&error) {
+            return TaskError::MasternodeListNotReady {
+                source_error: Box::new(error),
+            };
+        }
+
         // Check DapiClientError for domain errors carried as gRPC Internal status.
         // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
         // metadata, but some platform errors arrive as plain Internal with descriptive
@@ -3034,6 +3047,16 @@ impl From<SdkError> for TaskError {
             },
         }
     }
+}
+
+fn sdk_error_is_masternode_list_not_ready(error: &SdkError) -> bool {
+    // Matches the `SpvProvider::get_quorum_public_key` payload from `context_provider`.
+    matches!(
+        error,
+        SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config(detail)
+        )) if detail == crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL
+    )
 }
 
 fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
@@ -3610,6 +3633,24 @@ mod tests {
             matches!(err, TaskError::SdkError { .. }),
             "Expected SdkError, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn quorum_startup_error_maps_to_transient_task_error() {
+        // Recheck this upstream-format contract on every dash-sdk bump.
+        let sdk_detail = "masternode list not yet synced (quorums unavailable)";
+        assert_eq!(
+            crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL,
+            sdk_detail
+        );
+        let sdk_error = SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config(sdk_detail.to_string()),
+        ));
+
+        assert!(matches!(
+            TaskError::from(sdk_error),
+            TaskError::MasternodeListNotReady { .. }
+        ));
     }
 
     #[test]

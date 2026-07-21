@@ -37,7 +37,7 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Typography};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use crate::ui::{RootScreenType, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -89,12 +89,6 @@ const ALIAS_SAVED: &str = "Name saved on this device.";
 const ALIAS_SAVE_FAILED: &str =
     "This name could not be saved on your device. Try again in a moment.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
-const TIP_BADGE_USER: &str = "A regular identity used for payments, DPNS, and DashPay.";
-const TIP_BADGE_MASTERNODE: &str =
-    "An identity tied to a Dash masternode. It can vote on name contests.";
-const TIP_BADGE_EVONODE: &str =
-    "An identity tied to a Dash evonode. It can vote and validate Platform transactions.";
-
 // Marker strings for controls without a matching backend task. Surfaced in
 // disabled_tooltip and as a prefix on the row so users know it is a coming
 // feature, not a stuck UI.
@@ -415,17 +409,7 @@ impl SettingsTab {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
-        // Identity-type badge + tooltip — design-spec §B.8 rule 1 moves this
-        // into Advanced, but we also surface a compact badge here so the
-        // user knows which identity they are editing. Rendered as a read-only
-        // accent pill (not an input-looking button) so it reads as a label,
-        // matching the identity-type pill on the Home hero card.
-        let (badge_label, badge_tip) = identity_type_badge(identity.identity_type);
-        let accent = HeroIdentityKind::from(identity.identity_type).badge_accent();
-        pill::accent_pill(ui, badge_label, accent, Some(badge_tip));
-        ui.add_space(8.0);
-
-        section_heading(ui, "Username", dark_mode);
+        username_section_header(ui, identity.identity_type, dark_mode);
 
         // A DPNS name requested but not yet awarded — surfaced only when the
         // identity owns no name yet. Best-effort read; a failure omits it.
@@ -1019,6 +1003,22 @@ fn section_heading(ui: &mut Ui, text: &str, dark_mode: bool) {
     ui.add_space(4.0);
 }
 
+fn username_section_header(ui: &mut Ui, identity_type: IdentityType, dark_mode: bool) {
+    let kind = HeroIdentityKind::from(identity_type);
+    ui.horizontal(|ui| {
+        section_heading(ui, "Username", dark_mode);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            pill::accent_pill(
+                ui,
+                kind.badge_label(),
+                kind.badge_accent(),
+                Some(kind.badge_tooltip()),
+            );
+        });
+    });
+    ui.add_space(Spacing::XS);
+}
+
 fn sub_heading(ui: &mut Ui, text: &str, dark_mode: bool) {
     ui.label(
         RichText::new(text)
@@ -1043,14 +1043,6 @@ fn string_if_set(s: &str) -> Option<String> {
         None
     } else {
         Some(t.to_string())
-    }
-}
-
-fn identity_type_badge(kind: IdentityType) -> (&'static str, &'static str) {
-    match kind {
-        IdentityType::User => ("User identity", TIP_BADGE_USER),
-        IdentityType::Masternode => ("Masternode identity", TIP_BADGE_MASTERNODE),
-        IdentityType::Evonode => ("Evonode identity", TIP_BADGE_EVONODE),
     }
 }
 
@@ -1229,16 +1221,25 @@ mod tests {
     }
 
     #[test]
-    fn identity_type_badge_covers_all_variants() {
-        for ty in [
-            IdentityType::User,
-            IdentityType::Masternode,
-            IdentityType::Evonode,
-        ] {
-            let (label, tip) = identity_type_badge(ty);
-            assert!(!label.is_empty());
-            assert!(!tip.is_empty());
-        }
+    fn username_heading_and_identity_badge_share_a_row() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(400.0, 100.0))
+            .build_ui(|ui| {
+                let dark_mode = ui.ctx().global_style().visuals.dark_mode;
+                username_section_header(ui, IdentityType::User, dark_mode);
+            });
+        harness.run();
+
+        let heading = harness.get_by_label("Username").rect().center();
+        let badge = harness.get_by_label("User identity").rect().center();
+        assert!(
+            (heading.y - badge.y).abs() <= 1.0,
+            "the badge and heading must share a visual baseline",
+        );
+        assert!(badge.x > heading.x, "the badge must sit to the right");
     }
 
     /// IT-SETTINGS-01 (section-heading slice) — verifies the three required

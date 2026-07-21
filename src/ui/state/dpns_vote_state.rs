@@ -45,6 +45,29 @@ impl DpnsVoteStateSnapshot {
         Ok(())
     }
 
+    pub(crate) fn reload(&mut self, app_context: &AppContext) -> Result<(), TaskError> {
+        let mut polls_by_voter = BTreeMap::<Identifier, Vec<Identifier>>::new();
+        for &(voter_id, vote_poll_id) in self.states.keys() {
+            polls_by_voter
+                .entry(voter_id)
+                .or_default()
+                .push(vote_poll_id);
+        }
+
+        let mut states = BTreeMap::new();
+        for (voter_id, vote_poll_ids) in polls_by_voter {
+            states.extend(
+                app_context
+                    .dpns_current_vote_states(voter_id, vote_poll_ids)?
+                    .into_iter()
+                    .map(|(poll_id, state)| ((voter_id, poll_id), state)),
+            );
+        }
+        self.states = states;
+        self.loaded = true;
+        Ok(())
+    }
+
     pub fn state(&self, voter_id: Identifier, vote_poll_id: Identifier) -> DpnsCurrentVoteState {
         if !self.loaded {
             return DpnsCurrentVoteState::Unavailable;

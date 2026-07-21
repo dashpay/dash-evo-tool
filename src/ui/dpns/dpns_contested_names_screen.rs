@@ -2248,6 +2248,12 @@ impl ScreenLike for DPNSScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::DpnsVoteOperationUpdated { operation_id, .. } => {
+                if let Err(error) = self.vote_state.reload(&self.app_context) {
+                    tracing::warn!(
+                        ?error,
+                        "Could not reload proved DPNS vote state after an operation update"
+                    );
+                }
                 let owns_result = self.pending_vote_operation == Some(operation_id)
                     || (self.pending_vote_operation.is_none() && self.vote_overlay.is_some());
                 if owns_result {
@@ -2578,6 +2584,44 @@ mod tests {
 
         assert!(
             !crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
+        );
+    }
+
+    #[test]
+    fn successful_vote_change_reloads_the_new_proved_choice() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        let ctx = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        ctx.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let old_choice = ResourceVoteChoice::TowardsIdentity(Identifier::from([3; 32]));
+        ctx.cache_confirmed_dpns_vote(voter, poll, old_choice)
+            .expect("seed old proved choice");
+
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        screen.vote_state = DpnsVoteStateSnapshot::load(&ctx, &[voter], &[poll])
+            .expect("load initial proved choice");
+        assert_eq!(
+            screen.vote_state.state(voter, poll),
+            DpnsCurrentVoteState::Available(Some(old_choice))
+        );
+
+        ctx.cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+            .expect("cache confirmed vote change");
+        screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: ctx.network(),
+            operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
+        });
+
+        assert_eq!(
+            screen.vote_state.state(voter, poll),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
         );
     }
 

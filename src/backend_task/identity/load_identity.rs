@@ -1071,6 +1071,71 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
+    /// Issue #889: a bare, keyless `User` record from the generic load screen
+    /// must not permanently block a `RejectIfExists` load of the same identifier
+    /// under the correct Masternode type.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reject_if_exists_does_not_dead_end_on_bare_user_typed_pro_tx_hash() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        let (mut qi, _) = masternode_shaped_qi();
+        qi.identity_type = IdentityType::User;
+        qi.private_keys = KeyStorage::default();
+        qi.associated_voter_identity = None;
+        qi.associated_operator_identity = None;
+        qi.associated_owner_key_id = None;
+        qi.associated_wallets = BTreeMap::new();
+        let identity_id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert bare User-typed identity");
+
+        let input = IdentityInputToLoad {
+            identity_id_input: identity_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::RejectIfExists,
+            load_token: None,
+        };
+
+        let sdk = ctx.sdk();
+        let result = ctx.load_identity(&sdk, input).await;
+        assert!(
+            result.is_ok(),
+            "bare User-typed record must not block correct masternode load: {result:?}"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
     /// Merge×Tier-2 (success path) — merging a new key into a password-protected
     /// (Tier-2) node seals the new key Tier-2 *before* the at-rest insert, so
     /// the fail-closed guard (`encode_identity_blob_vault_first`) never rejects

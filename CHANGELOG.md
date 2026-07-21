@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Unload an identity from this device**: Identity Hub → Settings now has a
+  working "Unload this identity from this device" action. It removes every
+  piece of locally stored data for that identity (keys, cached profile,
+  DashPay data) while leaving your other identities untouched. The identity
+  itself is unaffected on the network and can be loaded again at any time.
+
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.
   Failed attempts retry on later launches until fresh addresses are saved and
@@ -49,6 +55,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Shielded availability notice**: now distinguishes when the connected network
   does not support shielded sending from when the current interface mode does
   not unlock it.
+
+- **Loading a masternode or evonode identity that was already loaded as a
+  regular identity no longer gets stuck**: the load screen now recognizes a
+  matching identity that hasn't finished loading and completes it correctly
+  instead of endlessly reporting it as already present.
 
 ### Changed
 

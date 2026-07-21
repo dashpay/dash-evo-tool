@@ -540,9 +540,11 @@ impl IdentityHeroCard {
     /// signal it is not yet final) followed by a shared `Pending` pill whose
     /// tooltip carries the estimated ready time.
     fn paint_pending_username_line(&self, ui: &mut Ui, dark_mode: bool, pending: &PendingUsername) {
+        let name =
+            crate::model::contested_name::sanitize_pending_username_for_display(&pending.name);
         ui.horizontal(|ui| {
             ui.label(
-                RichText::new(format!("@{}", pending.name))
+                RichText::new(format!("@{name}"))
                     .size(16.0)
                     .italics()
                     .color(DashColors::text_secondary(dark_mode)),

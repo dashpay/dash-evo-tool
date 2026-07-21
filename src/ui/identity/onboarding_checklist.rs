@@ -393,7 +393,10 @@ impl OnboardingChecklist {
                     } else if self.pick_username_is_pending(step, complete) {
                         // Requested but not yet awarded — reflect the pending
                         // request instead of nagging the user to pick a name.
-                        let name = self.pending_username.as_deref().unwrap_or_default();
+                        let name =
+                            crate::model::contested_name::sanitize_pending_username_for_display(
+                                self.pending_username.as_deref().unwrap_or_default(),
+                            );
                         format!("Your username {name}.dash is being confirmed on the network.")
                     } else {
                         step.subtext_pending().to_string()

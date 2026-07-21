@@ -51,9 +51,13 @@ use std::sync::Arc;
 
 const TIP_CHANGE_PHOTO: &str = "Upload a square image. Other apps will see this avatar.";
 /// Progress banner shown while an `UpdateProfile` save is in flight.
-const PROFILE_SAVING: &str = "Saving your social profile…";
+pub(crate) const PROFILE_SAVING: &str = "Saving your social profile…";
 /// Confirmation banner shown after a social profile save succeeds.
 pub const PROFILE_SAVED: &str = "Your social profile is saved.";
+
+pub(crate) fn clear_profile_saving_banner(ctx: &egui::Context) {
+    MessageBanner::clear_global_message(ctx, PROFILE_SAVING);
+}
 /// Guidance under the Avatar URL field — supported formats and recommended size.
 const AVATAR_URL_HINT: &str = "Link to a public square image (JPEG, PNG, WebP, or GIF); 256×256 pixels or larger is recommended.";
 const TIP_SAVE_NO_CHANGES: &str = "There are no changes to save.";
@@ -349,8 +353,7 @@ impl SettingsTab {
                 ));
                 // Progress feedback: the save round-trips to Platform and can
                 // take minutes. Keep the banner up (no auto-dismiss) until the
-                // task finishes — the success banner (hub) or the error banner
-                // (AppState) replaces it then.
+                // task finishes. Its attributed result clears this banner.
                 MessageBanner::set_global(ui.ctx(), PROFILE_SAVING, MessageType::Info)
                     .disable_auto_dismiss();
                 action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
@@ -468,8 +471,11 @@ impl SettingsTab {
             // Requested but not yet awarded — show the requested name with a
             // "Pending" pill instead of the register CTA.
             ui.horizontal(|ui| {
+                let name = crate::model::contested_name::sanitize_pending_username_for_display(
+                    &pending.name,
+                );
                 ui.label(
-                    RichText::new(format!("@{}", pending.name))
+                    RichText::new(format!("@{name}"))
                         .monospace()
                         .color(DashColors::text_secondary(dark_mode)),
                 );

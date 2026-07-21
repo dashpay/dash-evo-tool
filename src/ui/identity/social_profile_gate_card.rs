@@ -4,7 +4,7 @@
 //! The card has:
 //! - A heading (`Set up a social profile first.`),
 //! - A body paragraph that interpolates the user's `@handle` when known, and
-//! - A primary button (`Setup display profile`).
+//! - A primary button (`Set up your social profile`).
 //!
 //! Follows the project's lazy-init component pattern
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
@@ -17,7 +17,7 @@ use eframe::egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
 /// Copy constants, kept as `pub const` so tests and sibling callsites share a
 /// single source of truth and any future i18n extraction touches one line.
 pub const HEADING: &str = "Set up a social profile first.";
-pub const PRIMARY_LABEL: &str = "Setup display profile";
+pub const PRIMARY_LABEL: &str = "Set up your social profile";
 
 /// Body text when the caller knows the identity's DPNS handle. The `{handle}`
 /// placeholder is i18n-ready (named, no positional assumptions).
@@ -43,7 +43,7 @@ pub(crate) fn interpolate_handle(template: &str, handle: &str) -> String {
 /// and future actions extend it without a signature break.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GateCardAction {
-    /// The primary CTA ("Setup display profile") was clicked.
+    /// The primary CTA ("Set up your social profile") was clicked.
     PrimaryClicked,
 }
 
@@ -181,7 +181,7 @@ mod tests {
     use super::*;
 
     /// UT-GATE-01 — No-social-profile gate card: interpolates `{handle}`
-    /// correctly and the primary button label is `Setup display profile`.
+    /// correctly and the primary button label is `Set up your social profile`.
     #[test]
     fn ut_gate_01_interpolates_handle_and_primary_label() {
         let card = SocialProfileGateCard::new(Some("alex.dash"));
@@ -194,7 +194,7 @@ mod tests {
             !body.contains("{handle}"),
             "body must not contain the raw placeholder after interpolation"
         );
-        assert_eq!(PRIMARY_LABEL, "Setup display profile");
+        assert_eq!(PRIMARY_LABEL, "Set up your social profile");
     }
 
     #[test]

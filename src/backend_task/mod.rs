@@ -295,6 +295,8 @@ pub enum BackendTaskContext {
     FetchDocumentsPage(Box<DocumentQuery>),
     /// A refresh of all tracked token balances.
     TokenBalanceRefresh,
+    /// A DashPay social-profile update.
+    DashPayProfileUpdate,
     /// A perpetual-reward estimate for one identity-token pair.
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
@@ -330,6 +332,10 @@ impl BackendTaskContext {
 
     pub(crate) fn is_fetch_documents_page(&self) -> bool {
         matches!(self.operation(), Self::FetchDocumentsPage(_))
+    }
+
+    pub(crate) fn is_dashpay_profile_update(&self) -> bool {
+        matches!(self.operation(), Self::DashPayProfileUpdate)
     }
 
     pub(crate) fn dispatched_document_fetch(&self) -> bool {
@@ -378,6 +384,11 @@ impl From<&BackendTask> for BackendTaskContext {
                 }),
                 _ => Self::Other,
             },
+            BackendTask::DashPayTask(task)
+                if matches!(task.as_ref(), DashPayTask::UpdateProfile { .. }) =>
+            {
+                Self::DashPayProfileUpdate
+            }
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {

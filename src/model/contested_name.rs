@@ -3,7 +3,11 @@ use bincode::{Decode, Encode};
 use dash_sdk::dpp::identity::{KeyID, TimestampMillis};
 use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight, Identifier};
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap};
+
+/// Maximum number of Unicode scalar values rendered for a pending DPNS label.
+pub const MAX_PENDING_USERNAME_DISPLAY_CHARS: usize = 63;
 
 #[derive(Debug, Encode, Decode, Clone, PartialEq)]
 pub enum ContestState {
@@ -77,26 +81,90 @@ pub struct PendingUsername {
     pub decided_at: Option<TimestampMillis>,
 }
 
-/// The first pending DPNS username `identity_id` has across `contests`, if any.
+/// The highest-priority pending DPNS username `identity_id` has across `contests`.
 ///
 /// Pure and side-effect-free: the caller supplies the contest set (typically the
-/// ongoing-contest cache). Stops at the first match.
+/// ongoing-contest cache). The earliest known decision time wins; unknown times
+/// follow known times, and the name provides a stable tie-breaker.
 pub fn pending_username_in<'a, I>(contests: I, identity_id: &Identifier) -> Option<PendingUsername>
 where
     I: IntoIterator<Item = &'a ContestedName>,
 {
     contests
         .into_iter()
-        .find_map(|c| c.pending_username_for(identity_id))
+        .filter_map(|contest| contest.pending_username_for(identity_id))
+        .min_by(pending_username_priority)
 }
 
-/// Approximate, human-friendly time remaining until `decided_at_ms`, measured
-/// from `now_ms` (both Unix milliseconds).
+/// Build the deterministic pending-username snapshot for every contender.
+pub fn pending_usernames_in<'a, I>(contests: I) -> HashMap<Identifier, PendingUsername>
+where
+    I: IntoIterator<Item = &'a ContestedName>,
+{
+    let mut pending_by_identity = HashMap::<Identifier, PendingUsername>::new();
+    for contest in contests {
+        if matches!(contest.state, ContestState::WonBy(_) | ContestState::Locked) {
+            continue;
+        }
+        let Some(contestants) = contest.contestants.as_ref() else {
+            continue;
+        };
+        for contestant in contestants {
+            let candidate = PendingUsername {
+                name: contestant.name.clone(),
+                decided_at: contest.end_time,
+            };
+            pending_by_identity
+                .entry(contestant.id)
+                .and_modify(|current| {
+                    if pending_username_priority(&candidate, current).is_lt() {
+                        current.clone_from(&candidate);
+                    }
+                })
+                .or_insert(candidate);
+        }
+    }
+    pending_by_identity
+}
+
+fn pending_username_priority(left: &PendingUsername, right: &PendingUsername) -> Ordering {
+    (
+        left.decided_at.is_none(),
+        left.decided_at.unwrap_or(u64::MAX),
+        &left.name,
+    )
+        .cmp(&(
+            right.decided_at.is_none(),
+            right.decided_at.unwrap_or(u64::MAX),
+            &right.name,
+        ))
+}
+
+/// Return a bounded pending-name label safe to interpolate into UI text.
+pub fn sanitize_pending_username_for_display(name: &str) -> String {
+    name.chars()
+        .filter(|character| !character.is_control() && !is_bidi_control(*character))
+        .take(MAX_PENDING_USERNAME_DISPLAY_CHARS)
+        .collect()
+}
+
+fn is_bidi_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// Build a complete pending-name tooltip for `decided_at_ms`, measured from
+/// `now_ms` (both Unix milliseconds).
 ///
 /// Returns `None` when the deadline is already reached or past — the caller
-/// should then omit the ETA rather than show a stale or zero value. The phrase
-/// is intentionally coarse ("about 3 hours", "less than an hour") because the
-/// decision time is itself an estimate.
+/// should then use its no-ETA fallback. The estimate is intentionally coarse
+/// because the decision time is itself an estimate.
 pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Option<String> {
     let remaining_ms = decided_at_ms.checked_sub(now_ms)?;
     if remaining_ms == 0 {
@@ -106,15 +174,24 @@ pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Op
     const DAY: u64 = 86_400;
     let secs = remaining_ms / 1_000;
     Some(if secs < HOUR {
-        "less than an hour".to_string()
+        "This username is being confirmed on the network. It should be ready in less than an hour."
+            .to_string()
     } else if secs < 2 * HOUR {
-        "about 1 hour".to_string()
+        "This username is being confirmed on the network. It should be ready in about 1 hour."
+            .to_string()
     } else if secs < DAY {
-        format!("about {} hours", secs / HOUR)
+        let hours = secs / HOUR;
+        format!(
+            "This username is being confirmed on the network. It should be ready in about {hours} hours."
+        )
     } else if secs < 2 * DAY {
-        "about 1 day".to_string()
+        "This username is being confirmed on the network. It should be ready in about 1 day."
+            .to_string()
     } else {
-        format!("about {} days", secs / DAY)
+        let days = secs / DAY;
+        format!(
+            "This username is being confirmed on the network. It should be ready in about {days} days."
+        )
     })
 }
 
@@ -291,6 +368,48 @@ mod tests {
     }
 
     #[test]
+    fn pending_username_in_prioritizes_earliest_known_decision_deterministically() {
+        let me = Identifier::from([5u8; 32]);
+        let mut later = contest_with(ContestState::Ongoing, vec![contestant([5u8; 32], "later")]);
+        later.end_time = Some(20_000);
+        let mut earlier = contest_with(
+            ContestState::Ongoing,
+            vec![contestant([5u8; 32], "earlier")],
+        );
+        earlier.end_time = Some(10_000);
+        let mut unknown = contest_with(
+            ContestState::Ongoing,
+            vec![contestant([5u8; 32], "unknown")],
+        );
+        unknown.end_time = None;
+
+        for contests in [
+            vec![later.clone(), unknown.clone(), earlier.clone()],
+            vec![unknown.clone(), earlier.clone(), later.clone()],
+            vec![earlier.clone(), later.clone(), unknown.clone()],
+        ] {
+            assert_eq!(
+                pending_username_in(&contests, &me).map(|pending| pending.name),
+                Some("earlier".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn pending_username_in_uses_name_as_a_stable_deadline_tiebreaker() {
+        let me = Identifier::from([5u8; 32]);
+        let alpha = contest_with(ContestState::Ongoing, vec![contestant([5u8; 32], "alpha")]);
+        let zulu = contest_with(ContestState::Ongoing, vec![contestant([5u8; 32], "zulu")]);
+
+        for contests in [vec![zulu.clone(), alpha.clone()], vec![alpha, zulu]] {
+            assert_eq!(
+                pending_username_in(&contests, &me).map(|pending| pending.name),
+                Some("alpha".to_string())
+            );
+        }
+    }
+
+    #[test]
     fn pending_username_in_returns_none_without_matches() {
         let contests = vec![contest_with(
             ContestState::Ongoing,
@@ -309,23 +428,33 @@ mod tests {
         let ms = |secs: u64| now + secs * 1_000;
         assert_eq!(
             approximate_time_until(ms(30 * 60), now).as_deref(),
-            Some("less than an hour")
+            Some(
+                "This username is being confirmed on the network. It should be ready in less than an hour."
+            )
         );
         assert_eq!(
             approximate_time_until(ms(90 * 60), now).as_deref(),
-            Some("about 1 hour")
+            Some(
+                "This username is being confirmed on the network. It should be ready in about 1 hour."
+            )
         );
         assert_eq!(
             approximate_time_until(ms(3 * 3_600), now).as_deref(),
-            Some("about 3 hours")
+            Some(
+                "This username is being confirmed on the network. It should be ready in about 3 hours."
+            )
         );
         assert_eq!(
             approximate_time_until(ms(36 * 3_600), now).as_deref(),
-            Some("about 1 day")
+            Some(
+                "This username is being confirmed on the network. It should be ready in about 1 day."
+            )
         );
         assert_eq!(
             approximate_time_until(ms(3 * 86_400), now).as_deref(),
-            Some("about 3 days")
+            Some(
+                "This username is being confirmed on the network. It should be ready in about 3 days."
+            )
         );
     }
 
@@ -334,5 +463,24 @@ mod tests {
         let now = 1_000_000_000_000u64;
         assert!(approximate_time_until(now, now).is_none());
         assert!(approximate_time_until(now - 1, now).is_none());
+    }
+
+    #[test]
+    fn pending_username_display_sanitizer_strips_controls_and_bidi_markers() {
+        assert_eq!(
+            sanitize_pending_username_for_display("al\u{0000}i\u{061c}c\u{200f}e\u{202e}\u{2066}"),
+            "alice"
+        );
+    }
+
+    #[test]
+    fn pending_username_display_sanitizer_clamps_unicode_scalar_count() {
+        let unsafe_name = "é".repeat(MAX_PENDING_USERNAME_DISPLAY_CHARS + 10);
+        let sanitized = sanitize_pending_username_for_display(&unsafe_name);
+        assert_eq!(
+            sanitized.chars().count(),
+            MAX_PENDING_USERNAME_DISPLAY_CHARS
+        );
+        assert!(sanitized.chars().all(|character| character == 'é'));
     }
 }

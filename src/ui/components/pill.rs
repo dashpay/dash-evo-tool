@@ -69,18 +69,13 @@ pub fn pending_username_tooltip(pending: &PendingUsername) -> String {
         .elapsed()
         .unwrap_or_default()
         .as_millis() as u64;
-    match pending
+    pending
         .decided_at
         .and_then(|decided_at| approximate_time_until(decided_at, now_ms))
-    {
-        Some(remaining) => format!(
-            "This username is being confirmed on the network. It should be ready in {remaining}."
-        ),
-        None => {
+        .unwrap_or_else(|| {
             "This username is being confirmed on the network. This can take some time to finish."
                 .to_string()
-        }
-    }
+        })
 }
 
 #[cfg(test)]

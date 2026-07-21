@@ -528,25 +528,12 @@ impl ScreenLike for IdentityHubScreen {
             // Settings tab so the Save button re-enables only after the next
             // edit. Guard by identity ID to reject stale results.
             BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) => {
-                let matches = self
-                    .settings_tab
-                    .selected_identity()
-                    .is_some_and(|qi| qi.identity.id() == saved_id);
-                if matches {
-                    // Commit the edit baseline and push the saved fields into the
-                    // shared cache so the hero, Contacts gate, and this tab on
-                    // re-entry all reflect the save instead of the pre-save
-                    // profile. Then confirm to the user — app.rs deliberately
-                    // shows no generic success banner for this result.
-                    if let Some(fields) = self.settings_tab.on_profile_saved() {
-                        self.profile_cache.record_saved(*saved_id, fields);
-                    }
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        crate::ui::identity::settings::PROFILE_SAVED,
-                        MessageType::Success,
-                    );
-                }
+                handle_profile_updated(
+                    &mut self.settings_tab,
+                    &mut self.profile_cache,
+                    self.app_context.egui_ctx(),
+                    *saved_id,
+                );
             }
             // Populate the Received/Sent request caches so the Contacts tab
             // can render real RequestCard rows instead of hardcoded empties.
@@ -790,6 +777,25 @@ fn applies_to_selected_identity(
     selected.as_ref() == Some(result_identity)
 }
 
+fn handle_profile_updated(
+    settings: &mut SettingsTab,
+    profiles: &mut super::profile_cache::ProfileCache,
+    ctx: &egui::Context,
+    saved_id: Identifier,
+) {
+    let matches = settings
+        .selected_identity()
+        .is_some_and(|identity| identity.identity.id() == saved_id);
+    if matches && let Some(fields) = settings.on_profile_saved() {
+        profiles.record_saved(saved_id, fields);
+        MessageBanner::set_global(
+            ctx,
+            crate::ui::identity::settings::PROFILE_SAVED,
+            MessageType::Success,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -843,6 +849,20 @@ mod tests {
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    #[test]
+    fn stale_profile_success_does_not_show_confirmation() {
+        let ctx = egui::Context::default();
+        let mut settings = SettingsTab::new();
+        let mut profiles = crate::ui::identity::profile_cache::ProfileCache::default();
+
+        handle_profile_updated(&mut settings, &mut profiles, &ctx, id(1));
+
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "a stale result has no pending save to confirm"
+        );
     }
 
     async fn wired_test_context() -> (tempfile::TempDir, Arc<AppContext>) {

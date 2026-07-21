@@ -9,7 +9,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{
-    ContestState, Contestant, ContestedName, PendingUsername, pending_username_in,
+    ContestState, Contestant, ContestedName, PendingUsername, pending_usernames_in,
 };
 use crate::wallet_backend::{DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
@@ -194,8 +194,19 @@ impl AppContext {
         Ok(out)
     }
 
+    /// Rebuild the frame-safe pending-name snapshot from the contest store.
+    pub(crate) fn refresh_pending_dpns_usernames(&self) -> Result<(), TaskError> {
+        let contests = self.ongoing_contested_names()?;
+        let pending = pending_usernames_in(&contests);
+        *self
+            .pending_dpns_usernames
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = pending;
+        Ok(())
+    }
+
     /// The DPNS username `identity_id` has requested but not yet been awarded,
-    /// if any — read from the ongoing-contest cache.
+    /// if any — read from the frame-safe snapshot.
     ///
     /// Read-only; returns `Ok(None)` when nothing is pending. Lets the UI tell
     /// "requested but still being decided" apart from "no username requested".
@@ -203,27 +214,45 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> std::result::Result<Option<PendingUsername>, TaskError> {
-        let contests = self.ongoing_contested_names()?;
-        Ok(pending_username_in(&contests, identity_id))
+        let now_ms = std::time::UNIX_EPOCH
+            .elapsed()
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Ok(self
+            .pending_dpns_usernames
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(identity_id)
+            .filter(|pending| pending.decided_at.is_none_or(|end| end > now_ms))
+            .cloned())
     }
 
     /// Map each of `identity_ids` to its pending DPNS username request, if any.
     ///
-    /// Reads the ongoing-contest cache once and matches every identity against
-    /// it, so a list screen can look up many identities with a single cache
-    /// read. Identities with nothing pending are omitted. Read-only.
+    /// Reads only the frame-safe snapshot. Identities with nothing pending are
+    /// omitted.
     pub fn pending_dpns_usernames(
         &self,
         identity_ids: &[Identifier],
     ) -> std::result::Result<HashMap<Identifier, PendingUsername>, TaskError> {
-        let contests = self.ongoing_contested_names()?;
-        let mut out = HashMap::new();
-        for id in identity_ids {
-            if let Some(pending) = pending_username_in(&contests, id) {
-                out.insert(*id, pending);
-            }
-        }
-        Ok(out)
+        let now_ms = std::time::UNIX_EPOCH
+            .elapsed()
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let pending = self
+            .pending_dpns_usernames
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(identity_ids
+            .iter()
+            .filter_map(|id| {
+                pending
+                    .get(id)
+                    .filter(|name| name.decided_at.is_none_or(|end| end > now_ms))
+                    .cloned()
+                    .map(|name| (*id, name))
+            })
+            .collect())
     }
 
     /// Summarise a masternode/evonode node's DPNS voting position for its card.
@@ -438,6 +467,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::contested_name::pending_username_in;
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use std::sync::Arc;

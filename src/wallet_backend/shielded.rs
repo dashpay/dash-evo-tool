@@ -12,8 +12,27 @@ use crate::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 
 use super::{
-    DetPlatformSigner, DetSigner, PlatformPathIndex, WalletBackend, map_shielded_op_error,
+    DetPlatformSigner, DetSigner, PlatformPathIndex, SecretPlaintext, WalletBackend,
+    map_shielded_op_error,
 };
+
+/// Borrow the 64-byte HD seed from a resolved secret session for a shielded
+/// spend. Upstream re-derives the Orchard spend keyset from this seed on every
+/// `shielded_*_to` call.
+///
+/// A resolved secret that is not an HD seed — a single-key or identity-key
+/// secret sitting at an HD scope, i.e. a misconfigured wallet — cannot yield a
+/// shielded spend key, so it maps to [`TaskError::WalletLocked`]. This is the
+/// ONLY `WalletLocked` source in the shielded transfer / unshield / withdraw
+/// paths, and it is a defensive type guard — NOT the locked-protected-wallet
+/// path. An actually-locked protected wallet is *prompted* by
+/// `with_secret_session`; a dismissed or headless prompt surfaces as
+/// [`TaskError::SecretPromptCancelled`] / [`TaskError::SecretPromptUnavailable`].
+fn hd_seed_for_shielded_spend<'a>(
+    plaintext: &'a SecretPlaintext<'_>,
+) -> Result<&'a [u8; 64], TaskError> {
+    plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)
+}
 
 impl WalletBackend {
     /// Resolve the network-scoped shielded coordinator.
@@ -201,8 +220,12 @@ impl WalletBackend {
     /// [`SecretAccess`](super::SecretAccess) chokepoint: upstream re-derives the
     /// Orchard spend keyset (ASK included) from it for this call only and drops
     /// it on return, so the spend authority is never left resident. An
-    /// unprotected wallet resolves prompt-free; a protected one needs its seed
-    /// already promoted to the session cache, else [`TaskError::WalletLocked`].
+    /// unprotected wallet resolves prompt-free; a protected one is prompted for
+    /// its passphrase unless already cached, and a dismissed or headless prompt
+    /// surfaces as [`TaskError::SecretPromptCancelled`] /
+    /// [`TaskError::SecretPromptUnavailable`]. [`TaskError::WalletLocked`] is
+    /// returned only if the HD scope resolves to a non-HD-seed secret (a
+    /// misconfigured wallet) — see `hd_seed_for_shielded_spend`.
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
@@ -214,15 +237,18 @@ impl WalletBackend {
         amount: u64,
         memo: [u8; 36],
     ) -> Result<(), TaskError> {
+        // coordinator / wallet / prover need no seed, so resolve them before the
+        // secret session to trim its front edge and fail fast (ShieldedNotConfigured
+        // / WalletNotLoaded) without prompting for a passphrase.
         let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
                 let plaintext = session.plaintext();
-                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
+                let seed = hd_seed_for_shielded_spend(&plaintext)?;
                 wallet
                     .shielded_transfer_to(
                         &coordinator,
@@ -245,7 +271,7 @@ impl WalletBackend {
     /// The HD seed is resolved just-in-time through the
     /// [`SecretAccess`](super::SecretAccess) chokepoint (see
     /// [`shielded_transfer`](Self::shielded_transfer) for the spend-authority
-    /// lifetime and locked-wallet behaviour).
+    /// lifetime and the prompt / failure-mode behaviour).
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
@@ -257,14 +283,14 @@ impl WalletBackend {
         amount: u64,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
                 let plaintext = session.plaintext();
-                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
+                let seed = hd_seed_for_shielded_spend(&plaintext)?;
                 wallet
                     .shielded_unshield_to(
                         &coordinator,
@@ -285,7 +311,7 @@ impl WalletBackend {
     /// The HD seed is resolved just-in-time through the
     /// [`SecretAccess`](super::SecretAccess) chokepoint (see
     /// [`shielded_transfer`](Self::shielded_transfer) for the spend-authority
-    /// lifetime and locked-wallet behaviour).
+    /// lifetime and the prompt / failure-mode behaviour).
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
@@ -298,14 +324,14 @@ impl WalletBackend {
         core_fee_per_byte: u32,
     ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
                 let plaintext = session.plaintext();
-                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
+                let seed = hd_seed_for_shielded_spend(&plaintext)?;
                 wallet
                     .shielded_withdraw_to(
                         &coordinator,
@@ -366,5 +392,36 @@ impl WalletBackend {
     /// was never configured (empty coordinator → empty pass).
     pub async fn sync_shielded_now(&self, force: bool) {
         self.inner.pwm.shielded_sync_arc().sync_now(force).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeroize::Zeroizing;
+
+    /// An HD-seed secret resolves to its 64 raw bytes — the common shielded-spend
+    /// path.
+    #[test]
+    fn hd_seed_for_shielded_spend_accepts_hd_seed() {
+        let seed = Zeroizing::new([0x11u8; 64]);
+        let plaintext = SecretPlaintext::HdSeed(&seed);
+        let got = hd_seed_for_shielded_spend(&plaintext).expect("an HD seed must resolve");
+        assert_eq!(got, &[0x11u8; 64]);
+    }
+
+    /// A non-HD-seed secret at an HD scope (a single-key secret — a misconfigured
+    /// wallet) cannot yield a shielded spend key, so it maps to `WalletLocked`.
+    /// This pins the ONLY `WalletLocked` source in the shielded
+    /// transfer / unshield / withdraw paths, and guards against it being confused
+    /// with the locked-protected-wallet prompt path (which yields
+    /// `SecretPromptCancelled` / `SecretPromptUnavailable` instead).
+    #[test]
+    fn hd_seed_for_shielded_spend_rejects_non_hd_secret_as_wallet_locked() {
+        let key = Zeroizing::new([0x22u8; 32]);
+        let plaintext = SecretPlaintext::SingleKey(&key);
+        let err = hd_seed_for_shielded_spend(&plaintext)
+            .expect_err("a non-HD-seed secret must not yield a shielded spend key");
+        assert!(matches!(err, TaskError::WalletLocked), "got {err:?}");
     }
 }

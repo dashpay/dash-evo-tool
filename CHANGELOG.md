@@ -63,7 +63,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   match: each now resolves the HD seed through the secret-seam chokepoint for the
   single spend and drops it on return. The update also adds persistence and
   rehydration for provider (masternode / evonode) platform-node key pools and for
-  DashPay invitations.
+  DashPay invitations. Transitively, the pinned dashpay git dependencies advance
+  with it: `rust-dashcore` (`be6e776` → `0091c4a`, which lands the reserve-on-
+  hand-out receive-address APIs), `grovedb` (`v5.0.0` → `v5.0.1`), and the
+  `orchard` shielded-crypto fork (`dashified-0.14.0` → `dashified-0.14.1`); no
+  crates.io dependencies change.
 
 - **Shielded transactions are available on supported networks**: sending,
   receiving, shielding, and unshielding are enabled when the connected network's

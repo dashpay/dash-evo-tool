@@ -1,9 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::core::CoreTask;
+use crate::backend_task::dapi_discovery::persist_dapi_addresses;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
-use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
@@ -1473,33 +1473,29 @@ impl ScreenLike for NetworkChooserScreen {
         {
             self.discovery_in_progress = false;
 
-            // Update config with new addresses
-            let data_dir = &self.current_app_context().data_dir;
-            if let Ok(mut config) = Config::load_from(data_dir) {
-                let mut network_cfg = config
-                    .config_for_network(network)
-                    .clone()
-                    .unwrap_or_default();
-                network_cfg.dapi_addresses = Some(addresses_csv);
-                config.update_config_for_network(network, network_cfg.clone());
+            let persistence_result = self
+                .context_for_network(network)
+                .cloned()
+                .ok_or(TaskError::DapiConfigContextUnavailable { network })
+                .and_then(|app_context| persist_dapi_addresses(&app_context, addresses_csv));
 
-                if let Err(e) = config.save(data_dir) {
-                    tracing::error!("Failed to save config after DAPI discovery: {e}");
-                }
-
-                // Update in-memory config and schedule async SDK reinit
-                if let Some(app_context) = self.context_for_network(network) {
-                    if let Ok(mut cfg_lock) = app_context.config.write() {
-                        *cfg_lock = network_cfg;
-                    }
+            match persistence_result {
+                Ok(()) => {
                     self.pending_reinit_after_discovery = true;
+                    MessageBanner::set_global(
+                        self.current_app_context().egui_ctx(),
+                        format!("Updated to {count} node addresses."),
+                        MessageType::Success,
+                    );
                 }
-
-                MessageBanner::set_global(
-                    self.current_app_context().egui_ctx(),
-                    format!("Updated to {count} node addresses."),
-                    MessageType::Success,
-                );
+                Err(error) => {
+                    MessageBanner::set_global(
+                        self.current_app_context().egui_ctx(),
+                        error.to_string(),
+                        MessageType::Error,
+                    )
+                    .with_details(error);
+                }
             }
         }
     }

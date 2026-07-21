@@ -918,9 +918,6 @@ pub struct AppState {
     /// MCP configuration held until a required boot-time network selection succeeds.
     #[cfg(feature = "mcp")]
     mcp_server_pending_config: Option<crate::mcp::McpConfig>,
-    /// The egui secret prompt host, kept so newly-created (on-demand) network
-    /// contexts can have it installed before their backend is wired.
-    secret_prompt_host: Arc<dyn crate::wallet_backend::SecretPrompt>,
     /// Receives just-in-time passphrase requests enqueued by the egui secret
     /// prompt host. Drained once per frame in [`Self::update`]; the active
     /// request becomes [`Self::active_secret_prompt`].
@@ -1590,7 +1587,6 @@ impl AppState {
             mcp_app_context,
             #[cfg(feature = "mcp")]
             mcp_server_pending_config,
-            secret_prompt_host,
             secret_prompt_receiver,
             active_secret_prompt: None,
             prompt_was_blocking: false,
@@ -2099,7 +2095,9 @@ impl AppState {
             return;
         }
         self.select_main_screen(root_screen_type);
-        self.active_root_screen_mut().refresh_on_arrival();
+        let active_screen = self.active_root_screen_mut();
+        active_screen.reset_to_root_view();
+        active_screen.refresh_on_arrival();
         self.current_app_context()
             .update_settings(root_screen_type)
             .ok();
@@ -2409,11 +2407,6 @@ impl App for AppState {
                             context,
                             ..
                         } => {
-                            // Install the egui prompt host before the new
-                            // context's backend is wired, so its `SecretAccess`
-                            // gets the interactive host rather than the headless
-                            // default.
-                            context.install_secret_prompt(Arc::clone(&self.secret_prompt_host));
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
                             self.network_switch_banner.take_and_clear();
@@ -2673,10 +2666,12 @@ impl App for AppState {
         // runs before the connection banner, which suppresses its redundant
         // Connecting/Syncing text while the overlay is up.
         let spv_overlaying = self.spv_block.is_overlaying();
-        if let Some(task) = self
-            .connection_banner
-            .update(ctx, &active_context, spv_overlaying)
-        {
+        if let Some(task) = self.connection_banner.update(
+            ctx,
+            &active_context,
+            spv_overlaying,
+            self.show_welcome_screen,
+        ) {
             self.handle_backend_task(task);
         }
         if !self.network_selection_required

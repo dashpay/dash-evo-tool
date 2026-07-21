@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
+  installation now triggers a best-effort Mainnet or Testnet node refresh.
+  Failed attempts retry on later launches until fresh addresses are saved and
+  the app reconnects, so upgrading users do not need to find the manual action.
+
 - **Search tags in the "Send to" field**: type `type:core`, `type:platform`,
   `type:shielded`, or `wallet:<name>` to narrow the address suggestions
   instead of scrolling through everything; plain words still search like
@@ -39,7 +44,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   interactive there, and adding it to the remaining screens, is tracked as a
   follow-up.
 
+### Fixed
+
+- **Shielded availability notice**: now distinguishes when the connected network
+  does not support shielded sending from when the current interface mode does
+  not unlock it.
+
 ### Changed
+
+- **Shielded transactions are available on supported networks**: sending,
+  receiving, shielding, and unshielding are enabled when the connected network's
+  protocol version supports them, including mainnet. These operations were
+  previously gated off everywhere pending upstream activation.
 
 - **The first launch after an upgrade asks for each password-protected wallet's
   password**: the app moves your wallets into a new storage format on that first
@@ -342,3 +358,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   currently knows about becomes briefly unreachable at once — a temporary,
   self-recovering condition. The app now recognizes it and says "All Dash network
   servers are temporarily unreachable. Please wait a minute and retry." instead.
+- The onboarding Welcome screen on first launch no longer shows a red
+  "Disconnected — check your internet connection" banner before you have done
+  anything. On a fresh start there is no wallet yet and no sync has been
+  attempted, so that message was misleading; it now stays hidden until you
+  finish onboarding, and real connection problems are still reported afterwards.

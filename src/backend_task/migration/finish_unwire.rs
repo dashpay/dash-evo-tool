@@ -7,6 +7,7 @@
 //! launches **on the same network**.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
@@ -15,6 +16,7 @@ use dash_sdk::platform::Identifier;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use crate::backend_task::dapi_discovery::persist_dapi_addresses;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
@@ -41,6 +43,15 @@ pub fn sentinel_key_for(network: Network) -> String {
         "{SENTINEL_KEY_PREFIX}:{}:{SENTINEL_KEY_VERSION}",
         network_prefix(network)
     )
+}
+
+/// Per-network completion key for automatic DAPI refresh during an upgrade.
+///
+/// This pass cannot share the wallet-drain sentinel: a prior launch may finish
+/// moving wallets while node discovery is temporarily unavailable. Keeping a
+/// separate key lets discovery retry without rerunning or gating fund recovery.
+pub fn dapi_refresh_sentinel_key_for(network: Network) -> String {
+    format!("det:migration:dapi_refresh:{}:v1", network_prefix(network))
 }
 
 /// Tables sniffed during detection. Any non-empty row count flips the
@@ -373,6 +384,145 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
     validate_legacy_database_version(version)
 }
 
+#[cfg(not(test))]
+async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
+    refresh_dapi_nodes_once_with(app_context, |network| async move {
+        crate::backend_task::dapi_discovery::discover_and_format(network, None).await
+    })
+    .await;
+}
+
+#[cfg(test)]
+async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
+    refresh_dapi_nodes_once_with(app_context, |_| async {
+        Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
+    })
+    .await;
+}
+
+/// Runs one best-effort refresh with an injected discovery operation.
+///
+/// Run-triggered passes still hold their per-context `migration_run`, while migration and manual refresh
+/// share a process-wide guard across whole-file config persistence, including different network contexts.
+async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
+where
+    D: FnOnce(Network) -> F,
+    F: Future<
+        Output = Result<(usize, String), crate::backend_task::dapi_discovery::DapiDiscoveryError>,
+    >,
+{
+    refresh_dapi_nodes_once_with_legacy_check(app_context, discover, detect_legacy_rows).await;
+}
+
+async fn refresh_dapi_nodes_once_with_legacy_check<D, F, L>(
+    app_context: &Arc<AppContext>,
+    discover: D,
+    detect_legacy: L,
+) where
+    D: FnOnce(Network) -> F,
+    F: Future<
+        Output = Result<(usize, String), crate::backend_task::dapi_discovery::DapiDiscoveryError>,
+    >,
+    L: FnOnce(&AppContext) -> Result<bool, MigrationError>,
+{
+    let network = app_context.network;
+    let app_kv = app_context.app_kv();
+    let sentinel_key = dapi_refresh_sentinel_key_for(network);
+
+    match app_kv.get::<MigrationCompletion>(DetScope::Global, &sentinel_key) {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Could not read the automatic DAPI refresh sentinel; node discovery will retry on the next launch",
+            );
+            return;
+        }
+    }
+
+    if !matches!(network, Network::Mainnet | Network::Testnet) {
+        write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
+        return;
+    }
+
+    match detect_legacy(app_context) {
+        Ok(true) => {}
+        Ok(false) => {
+            write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 0);
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Could not inspect the previous version's data for automatic DAPI refresh; node discovery will retry on the next launch",
+            );
+            return;
+        }
+    }
+
+    let (count, addresses_csv) = match discover(network).await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                ?network,
+                ?error,
+                "Automatic DAPI node discovery failed during migration; it will retry on the next launch",
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = persist_dapi_addresses(app_context, addresses_csv) {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?network,
+            ?error,
+            "Could not persist automatically discovered DAPI nodes; the refresh will retry on the next launch",
+        );
+        return;
+    }
+
+    if let Err(error) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?network,
+            ?error,
+            "Could not reinitialize network clients after automatic DAPI refresh; the saved addresses will be used on the next launch",
+        );
+        return;
+    }
+
+    tracing::info!(
+        target = "migration::finish_unwire",
+        ?network,
+        count,
+        "Automatically refreshed DAPI nodes during migration",
+    );
+    write_dapi_refresh_completion(&app_kv, &sentinel_key, network, 1);
+}
+
+fn write_dapi_refresh_completion(
+    app_kv: &crate::wallet_backend::DetKv,
+    sentinel_key: &str,
+    network: Network,
+    network_count: u32,
+) {
+    if let Err(error) = write_completion_sentinel(app_kv, sentinel_key, network_count) {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            ?network,
+            ?error,
+            "Could not write the automatic DAPI refresh sentinel; the pass may retry on the next launch",
+        );
+    }
+}
+
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
 /// the sentinels are already present.
 ///
@@ -382,7 +532,12 @@ fn validate_saved_data_for_migration(app_context: &AppContext) -> Result<(), Mig
 /// decide whether to surface a "storage update complete" banner — a no-op
 /// launch must not show one.
 ///
-/// Three independent passes, each under its own sentinel, in this order:
+/// A best-effort DAPI refresh is queued before the migration passes. After the
+/// run publishes terminal status and releases its guard, refresh acquires and
+/// holds that guard until it finishes. Operations that claim the same guard,
+/// including local identity deletion, remain unavailable during that interval.
+///
+/// Three independent recovery passes, each under its own sentinel, in this order:
 ///
 /// 1. **App data** (scheduled votes, top-up history) — DET-owned rows the
 ///    wallet drain never touched.
@@ -478,8 +633,38 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     }
 }
 
+/// Waits for the launching pass, then holds `migration_run` through refresh.
+/// Operations that claim this guard stay gated until the detached work completes.
+fn spawn_dapi_refresh<F>(app_context: &Arc<AppContext>, refresh: F) -> tokio::task::JoinHandle<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let ctx = Arc::clone(app_context);
+    tokio::spawn(async move {
+        let _refresh_guard = ctx.migration_run.lock().await;
+        refresh.await;
+    })
+}
+
+/// Queues refresh before migration so its waiter acquires the guard at completion.
 async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+    let ctx = Arc::clone(app_context);
+    std::mem::drop(spawn_dapi_refresh(app_context, async move {
+        refresh_dapi_nodes_once(&ctx).await;
+    }));
+    run_under_guard_with_dapi_refresh(app_context, std::future::ready(())).await
+}
+
+async fn run_under_guard_with_dapi_refresh<F>(
+    app_context: &Arc<AppContext>,
+    dapi_refresh: F,
+) -> Result<bool, TaskError>
+where
+    F: Future<Output = ()>,
+{
     validate_saved_data_for_migration(app_context)?;
+
+    dapi_refresh.await;
 
     let status = app_context.migration_status();
 
@@ -1240,8 +1425,9 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
 }
 
 /// Record one import pass as complete under `sentinel_key`. The sole writer of
-/// [`MigrationCompletion`]: every pass — wallet drain, app data, identities —
-/// records completion through here, so all sentinels share one codec.
+/// [`MigrationCompletion`]: every pass — DAPI refresh, wallet drain, app data,
+/// identities — records completion through here, so all sentinels share one
+/// codec.
 ///
 /// `network_count` is diagnostic only — logged when the sentinel is read back,
 /// never branched on. The wallet drain uses it to tell a no-op launch (`0`) from
@@ -2426,11 +2612,572 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::dapi_discovery::persist_dapi_addresses_with_hook;
+    use crate::config::{CONFIG_ENV_LOCK, Config, NetworkConfig};
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    fn dapi_refresh_is_complete(app_context: &AppContext) -> bool {
+        app_context
+            .app_kv()
+            .get::<MigrationCompletion>(
+                DetScope::Global,
+                &dapi_refresh_sentinel_key_for(app_context.network),
+            )
+            .expect("read DAPI refresh sentinel")
+            .is_some()
+    }
+
+    async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
+        // `run` deliberately detaches this work; yield so it queues for the guard,
+        // then acquire the same guard after the refresh releases it.
+        tokio::task::yield_now().await;
+        let guard = app_context.migration_run.lock().await;
+        drop(guard);
+    }
+
+    fn seed_legacy_single_key(app_context: &AppContext) {
+        let path = app_context.db.db_file_path().expect("file-backed database");
+        let conn = Connection::open(path).expect("open legacy database");
+        seed_legacy_row(
+            &conn,
+            &[7u8; 32],
+            &[1u8; 32],
+            &[],
+            &[],
+            "addr",
+            None,
+            false,
+            app_context.network,
+        );
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_fresh_install_skips_discovery_and_preserves_config() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let original_env = std::fs::read(tmp.path().join(".env")).expect("read original config");
+        let original_live_addresses = ctx
+            .config
+            .read()
+            .expect("read original in-memory config")
+            .dapi_addresses
+            .clone();
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://unused.example:443".to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(dapi_refresh_is_complete(&ctx));
+        assert_eq!(
+            std::fs::read(tmp.path().join(".env")).expect("read final config"),
+            original_env,
+        );
+        assert_eq!(
+            ctx.config
+                .read()
+                .expect("read in-memory config")
+                .dapi_addresses
+                .as_ref(),
+            original_live_addresses.as_ref(),
+        );
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_legacy_install_updates_disk_and_live_config() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+        let calls = AtomicUsize::new(0);
+        let calls_ref = &calls;
+        let addresses = "https://one.example:443,https://two.example:443";
+
+        refresh_dapi_nodes_once_with(&ctx, |network| async move {
+            assert_eq!(network, Network::Testnet);
+            calls_ref.fetch_add(1, Ordering::SeqCst);
+            Ok((2, addresses.to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
+        let saved = crate::config::Config::load_from(tmp.path()).expect("reload saved config");
+        assert_eq!(
+            saved
+                .config_for_network(Network::Testnet)
+                .as_ref()
+                .and_then(|config| config.dapi_addresses.as_deref()),
+            Some(addresses),
+        );
+        assert_eq!(
+            ctx.config
+                .read()
+                .expect("read in-memory config")
+                .dapi_addresses
+                .as_deref(),
+            Some(addresses),
+        );
+    }
+
+    #[test]
+    fn dapi_config_persistence_updates_only_selected_key() {
+        const CHILD_MARKER: &str = "DET_DAPI_PERSISTENCE_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("test executable"),
+            )
+            .arg(
+                "backend_task::migration::finish_unwire::tests::dapi_config_persistence_updates_only_selected_key",
+            )
+            .arg("--exact")
+            .env(CHILD_MARKER, "1")
+            .env_remove("MAINNET_core_rpc_password")
+            .env_remove("TESTNET_wallet_private_key")
+            .status()
+            .expect("run isolated persistence test");
+            assert!(status.success(), "isolated persistence test failed");
+            return;
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let env_path = tmp.path().join(".env");
+        let app_context = app_context_for_network(tmp.path(), Network::Mainnet);
+        let mainnet_password_before = std::env::var_os("MAINNET_core_rpc_password");
+        let testnet_key_before = std::env::var_os("TESTNET_wallet_private_key");
+        std::fs::write(
+            &env_path,
+            "# Preserve operator formatting\n\
+             MAINNET_dapi_addresses=https://mainnet-old.example:443\n\
+             MAINNET_core_rpc_password='[REDACTED]' # unchanged\n\
+             TESTNET_wallet_private_key='[NOT_A_KEY]' # unchanged\n",
+        )
+        .expect("write initial config");
+
+        persist_dapi_addresses_with_hook(
+            &app_context,
+            "https://mainnet-new.example:443".to_string(),
+            || {
+                app_context
+                    .config
+                    .write()
+                    .expect("update live config during persistence")
+                    .core_rpc_password = Some("[LIVE_UPDATE]".to_string());
+            },
+            || {},
+        )
+        .expect("persist selected DAPI addresses");
+
+        let saved = std::fs::read_to_string(env_path).expect("read updated config");
+        assert!(saved.contains("MAINNET_dapi_addresses=https://mainnet-new.example:443\n"));
+        assert!(saved.contains("MAINNET_core_rpc_password='[REDACTED]' # unchanged\n"));
+        assert!(saved.contains("TESTNET_wallet_private_key='[NOT_A_KEY]' # unchanged\n"));
+        assert_eq!(
+            std::env::var_os("MAINNET_core_rpc_password"),
+            mainnet_password_before,
+        );
+        assert_eq!(
+            std::env::var_os("TESTNET_wallet_private_key"),
+            testnet_key_before,
+        );
+        assert_eq!(
+            app_context
+                .config
+                .read()
+                .expect("read live config after persistence")
+                .core_rpc_password
+                .as_deref(),
+            Some("[LIVE_UPDATE]"),
+        );
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ConfigPersistenceEvent {
+        FirstEntered,
+        FirstPausedBeforeSave,
+        SecondAttempting,
+        SecondEntered,
+        SecondSaved,
+        FirstSaved,
+    }
+
+    #[tokio::test]
+    async fn dapi_config_persistence_serializes_across_networks() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: Some("https://mainnet-old.example:443".to_string()),
+                ..Default::default()
+            }),
+            testnet_config: Some(NetworkConfig {
+                dapi_addresses: Some("https://testnet-old.example:443".to_string()),
+                ..Default::default()
+            }),
+            devnet_config: None,
+            local_config: None,
+        }
+        .save(tmp.path())
+        .expect("write initial config");
+        let mainnet_context = app_context_for_network(tmp.path(), Network::Mainnet);
+        let testnet_context = app_context_for_network_with_shared_storage(
+            tmp.path(),
+            Network::Testnet,
+            &mainnet_context,
+        );
+
+        let (event_tx, event_rx) = std::sync::mpsc::channel();
+        let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+        let first_context = Arc::clone(&mainnet_context);
+        let first_before_save_tx = event_tx.clone();
+        let first_after_save_tx = event_tx.clone();
+        let first = std::thread::spawn(move || {
+            persist_dapi_addresses_with_hook(
+                &first_context,
+                "https://mainnet-new.example:443".to_string(),
+                || {
+                    first_before_save_tx
+                        .send(ConfigPersistenceEvent::FirstEntered)
+                        .expect("report first entry");
+                    first_before_save_tx
+                        .send(ConfigPersistenceEvent::FirstPausedBeforeSave)
+                        .expect("report first pause");
+                    release_first_rx.recv().expect("release first save");
+                },
+                || {
+                    first_after_save_tx
+                        .send(ConfigPersistenceEvent::FirstSaved)
+                        .expect("report first save");
+                },
+            )
+            .expect("first persistence");
+        });
+
+        assert_eq!(
+            event_rx.recv().expect("first entry event"),
+            ConfigPersistenceEvent::FirstEntered,
+        );
+        assert_eq!(
+            event_rx.recv().expect("first pause event"),
+            ConfigPersistenceEvent::FirstPausedBeforeSave,
+        );
+
+        let second_context = Arc::clone(&testnet_context);
+        let second_attempt_tx = event_tx.clone();
+        let second_before_save_tx = event_tx.clone();
+        let second_after_save_tx = event_tx.clone();
+        let second = std::thread::spawn(move || {
+            second_attempt_tx
+                .send(ConfigPersistenceEvent::SecondAttempting)
+                .expect("report second attempt");
+            persist_dapi_addresses_with_hook(
+                &second_context,
+                "https://testnet-new.example:443".to_string(),
+                || {
+                    second_before_save_tx
+                        .send(ConfigPersistenceEvent::SecondEntered)
+                        .expect("report second entry");
+                },
+                || {
+                    second_after_save_tx
+                        .send(ConfigPersistenceEvent::SecondSaved)
+                        .expect("report second save");
+                },
+            )
+            .expect("second persistence");
+        });
+
+        assert_eq!(
+            event_rx.recv().expect("second attempt event"),
+            ConfigPersistenceEvent::SecondAttempting,
+        );
+        let premature_entry = event_rx.recv_timeout(std::time::Duration::from_millis(250));
+        let premature_save = if premature_entry.is_ok() {
+            Some(
+                event_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("second save before first release"),
+            )
+        } else {
+            None
+        };
+
+        release_first_tx.send(()).expect("release first");
+        first.join().expect("join first persistence section");
+        second.join().expect("join second persistence section");
+
+        assert_eq!(
+            premature_entry,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+            "the second persistence section entered before the first released",
+        );
+        assert!(
+            premature_save.is_none(),
+            "the second persistence section saved before the first released: {premature_save:?}",
+        );
+        assert_eq!(
+            event_rx.try_iter().collect::<Vec<_>>(),
+            [
+                ConfigPersistenceEvent::FirstSaved,
+                ConfigPersistenceEvent::SecondEntered,
+                ConfigPersistenceEvent::SecondSaved,
+            ],
+        );
+
+        let saved = Config::load_from(tmp.path()).expect("load final config");
+        assert_eq!(
+            saved
+                .config_for_network(Network::Mainnet)
+                .as_ref()
+                .and_then(|config| config.dapi_addresses.as_deref()),
+            Some("https://mainnet-new.example:443"),
+        );
+        assert_eq!(
+            saved
+                .config_for_network(Network::Testnet)
+                .as_ref()
+                .and_then(|config| config.dapi_addresses.as_deref()),
+            Some("https://testnet-new.example:443"),
+        );
+        assert_eq!(
+            mainnet_context
+                .config
+                .read()
+                .expect("read mainnet live config")
+                .dapi_addresses
+                .as_deref(),
+            Some("https://mainnet-new.example:443"),
+        );
+        assert_eq!(
+            testnet_context
+                .config
+                .read()
+                .expect("read testnet live config")
+                .dapi_addresses
+                .as_deref(),
+            Some("https://testnet-new.example:443"),
+        );
+    }
+
+    #[tokio::test]
+    async fn dapi_config_persistence_reports_save_failure() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        Config {
+            mainnet_config: Some(NetworkConfig {
+                dapi_addresses: Some("https://mainnet-old.example:443".to_string()),
+                ..Default::default()
+            }),
+            testnet_config: None,
+            devnet_config: None,
+            local_config: None,
+        }
+        .save(tmp.path())
+        .expect("write initial config");
+        let app_context = app_context_for_network(tmp.path(), Network::Mainnet);
+        let env_path = tmp.path().join(".env");
+
+        let error = persist_dapi_addresses_with_hook(
+            &app_context,
+            "https://mainnet-new.example:443".to_string(),
+            || {
+                std::fs::remove_file(&env_path).expect("remove config file");
+                std::fs::create_dir(&env_path).expect("replace config file with directory");
+            },
+            || {},
+        )
+        .expect_err("persistence must report the save failure");
+
+        assert!(matches!(
+            error,
+            TaskError::Config(crate::config::ConfigError::SaveError { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_reinit_failure_withholds_completion_sentinel() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async { Ok((1, String::new())) }).await;
+
+        assert!(!dapi_refresh_is_complete(&ctx));
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_legacy_detection_failure_retries_then_completes() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with_legacy_check(
+            &ctx,
+            |_| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((1, "https://unused.example:443".to_string()))
+            },
+            |_| {
+                Err(MigrationError::LegacyDbRead {
+                    table: "wallet",
+                    source: rusqlite::Error::InvalidQuery,
+                })
+            },
+        )
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!dapi_refresh_is_complete(&ctx));
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://retry.example:443".to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dapi_refresh_discovery_failure_retries_without_failing_migration() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_wallet(&ctx, &[0x81u8; 64], "funds", ctx.network);
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let calls = AtomicUsize::new(0);
+
+        let refresh = refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
+        });
+        let did_work = run_under_guard_with_dapi_refresh(&ctx, refresh)
+            .await
+            .expect("DAPI discovery must not fail the migration");
+
+        assert!(did_work, "the independent wallet pass still moved data");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!dapi_refresh_is_complete(&ctx));
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "the next launch retries");
+        assert!(!dapi_refresh_is_complete(&ctx));
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dapi_refresh_launches_are_serialized() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(tokio::sync::Notify::new());
+        let release_first = Arc::new(tokio::sync::Notify::new());
+
+        let first_attempts = Arc::clone(&attempts);
+        let first_started_task = Arc::clone(&first_started);
+        let release_first_task = Arc::clone(&release_first);
+        let first = spawn_dapi_refresh(&ctx, async move {
+            first_attempts.fetch_add(1, Ordering::SeqCst);
+            first_started_task.notify_one();
+            release_first_task.notified().await;
+        });
+        first_started.notified().await;
+
+        let second_attempts = Arc::clone(&attempts);
+        let second_started = Arc::new(tokio::sync::Notify::new());
+        let second_started_task = Arc::clone(&second_started);
+        let second = spawn_dapi_refresh(&ctx, async move {
+            second_attempts.fetch_add(1, Ordering::SeqCst);
+            second_started_task.notify_one();
+        });
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                second_started.notified(),
+            )
+            .await
+            .is_err(),
+            "a second refresh must wait for the first refresh's migration guard",
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        release_first.notify_one();
+        first.await.expect("join first refresh");
+        second.await.expect("join second refresh");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_devnet_detection_failure_completes_without_discovery() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = app_context_for_network(tmp.path(), Network::Devnet);
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with_legacy_check(
+            &ctx,
+            |_| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((1, "https://unused.example:443".to_string()))
+            },
+            |_| {
+                Err(MigrationError::LegacyDbRead {
+                    table: "wallet",
+                    source: rusqlite::Error::InvalidQuery,
+                })
+            },
+        )
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(dapi_refresh_is_complete(&ctx));
+    }
+
+    #[tokio::test]
+    async fn dapi_refresh_existing_sentinel_skips_discovery() {
+        let _env_guard = CONFIG_ENV_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_single_key(&ctx);
+        let calls = AtomicUsize::new(0);
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://first.example:443".to_string()))
+        })
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
+
+        refresh_dapi_nodes_once_with(&ctx, |_| async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok((1, "https://unused.example:443".to_string()))
+        })
+        .await;
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(dapi_refresh_is_complete(&ctx));
     }
 
     #[test]
@@ -4381,8 +5128,10 @@ mod tests {
     /// two `run()` no-op paths, which return before touching the wallet
     /// backend.
     fn fresh_app_context(dir: &std::path::Path) -> Arc<AppContext> {
-        use dash_sdk::dpp::dashcore::Network;
+        app_context_for_network(dir, Network::Testnet)
+    }
 
+    fn app_context_for_network(dir: &std::path::Path, network: Network) -> Arc<AppContext> {
         crate::app_dir::ensure_env_file(dir);
         let db_file = dir.join("data.db");
         let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
@@ -4393,13 +5142,32 @@ mod tests {
         let secret_store = AppContext::open_secret_store(dir).expect("open secret store");
         AppContext::new(
             dir.to_path_buf(),
-            Network::Testnet,
+            network,
             db,
             Default::default(),
             Default::default(),
             egui::Context::default(),
             app_kv,
             secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("AppContext")
+    }
+
+    fn app_context_for_network_with_shared_storage(
+        dir: &std::path::Path,
+        network: Network,
+        shared: &AppContext,
+    ) -> Arc<AppContext> {
+        AppContext::new(
+            dir.to_path_buf(),
+            network,
+            Arc::clone(&shared.db),
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            shared.app_kv(),
+            shared.secret_store(),
             crate::model::user_role::UserRoleCell::default(),
         )
         .expect("AppContext")
@@ -5297,6 +6065,7 @@ mod tests {
             run(&ctx).await.expect("first run"),
             "the first launch moves legacy data",
         );
+        wait_for_dapi_refresh(&ctx).await;
         assert!(backend.is_wallet_registered(&seed_hash));
         assert_eq!(ctx.get_scheduled_votes().expect("read votes").len(), 1);
         let sentinel_after_first = read_sentinel(&ctx.app_kv(), network)
@@ -5750,6 +6519,7 @@ mod tests {
         let backend = ctx.wallet_backend().expect("backend wired");
 
         run(&ctx).await.expect("first launch");
+        wait_for_dapi_refresh(&ctx).await;
 
         let deleted_id = Identifier::from(deleted);
         assert!(

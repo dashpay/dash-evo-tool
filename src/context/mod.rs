@@ -216,10 +216,9 @@ pub struct AppContext {
     /// frame from the UI. Always present and idle on fresh installs;
     /// driven by [`MigrationTask::FinishUnwire`](crate::backend_task::migration::MigrationTask).
     pub(crate) migration_status: Arc<MigrationStatus>,
-    /// Serializes complete storage-update runs. This prevents a GUI dispatch
-    /// and a shared MCP request from creating two password waiters for the same
-    /// wallet; a follower waits here and returns the leader's terminal result
-    /// without rerunning the update.
+    /// Serializes complete storage-update runs, including the detached automatic
+    /// DAPI refresh that continues after migration publishes terminal status.
+    /// This also prevents duplicate password waiters for the same wallet.
     pub(crate) migration_run: tokio::sync::Mutex<()>,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
@@ -1285,9 +1284,13 @@ impl AppContext {
     /// [`NullSecretPrompt`], which surfaces `SecretPromptUnavailable` for any
     /// passphrase-protected scope.
     pub fn install_secret_prompt(&self, prompt: Arc<dyn SecretPrompt>) {
-        if let Ok(mut guard) = self.secret_prompt.0.lock() {
-            *guard = prompt;
-        }
+        let mut guard = self
+            .secret_prompt
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = prompt;
+        self.secret_prompt.0.clear_poison();
     }
 
     /// The currently-installed secret-prompt host. Falls back to the headless
@@ -1649,6 +1652,27 @@ pub(crate) const fn default_platform_version(_network: &Network) -> &'static Pla
 mod tests {
     use super::*;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+
+    #[test]
+    fn install_secret_prompt_recovers_poisoned_slot() {
+        use crate::context::test_support::test_app_context;
+        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ctx.secret_prompt.0.lock().expect("prompt slot lock");
+            panic!("poison prompt slot");
+        }));
+        assert!(poisoned.is_err(), "the prompt slot must be poisoned");
+
+        let prompt: Arc<dyn SecretPrompt> = Arc::new(TestPrompt::never());
+        ctx.install_secret_prompt(Arc::clone(&prompt));
+        assert!(
+            Arc::ptr_eq(&prompt, &ctx.secret_prompt()),
+            "install_secret_prompt must replace the host after lock poisoning"
+        );
+    }
 
     #[test]
     fn wallet_name_with_spaces_is_url_encoded() {

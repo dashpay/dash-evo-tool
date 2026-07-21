@@ -252,12 +252,15 @@ impl ConnectionBanner {
 
     /// Update the banner for the current connection state. `spv_overlaying`
     /// suppresses the redundant Connecting/Syncing copy while the SPV block is
-    /// up. Returns a [`BackendTask`] to dispatch on the first `Synced`.
+    /// up; `onboarding_active` suppresses the initial `Disconnected` banner while
+    /// the Welcome screen is showing (pre-sync, not a real failure). Returns a
+    /// [`BackendTask`] to dispatch on the first `Synced`.
     pub(super) fn update(
         &mut self,
         ctx: &egui::Context,
         app_context: &Arc<AppContext>,
         spv_overlaying: bool,
+        onboarding_active: bool,
     ) -> Option<BackendTask> {
         let connection_status = app_context.connection_status();
         let current_state = connection_status.overall_state();
@@ -281,6 +284,17 @@ impl ConnectionBanner {
                 handle.clear();
             }
             self.previous_state = Some(current_state);
+            return None;
+        }
+
+        // The Welcome screen initially reads Disconnected before sync starts.
+        if onboarding_active && current_state == OverallConnectionState::Disconnected {
+            if let Some(handle) = self.handle.take() {
+                handle.clear();
+            }
+            // Invalidate rather than cache either state so suppression exit and
+            // recurring pre-suppression states both force reconciliation.
+            self.previous_state = None;
             return None;
         }
 
@@ -877,6 +891,77 @@ mod tests {
             Some(BackendTask::MigrationTask(
                 MigrationTask::AcknowledgeUnreadableAppData
             )),
+        );
+    }
+
+    /// Disconnected stays hidden throughout onboarding and appears on the first
+    /// frame after onboarding ends, even when the connection state is unchanged.
+    #[test]
+    fn connection_banner_suppresses_disconnected_until_onboarding_ends() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        // ConnectionStatus defaults to Disconnected — no sync has been asked for.
+        assert_eq!(
+            app_context.connection_status().overall_state(),
+            OverallConnectionState::Disconnected
+        );
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+
+        // Frame 1: onboarding active, Disconnected — suppressed.
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "the Disconnected banner must stay hidden while onboarding is active"
+        );
+
+        // Frame 2: onboarding still active, state unchanged — still suppressed.
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "Disconnected must stay hidden for every frame while onboarding is active"
+        );
+
+        // Frame 3: onboarding ends, connection is still Disconnected — the real
+        // banner must now appear even though `current_state` never changed.
+        assert!(banner.update(&ctx, &app_context, false, false).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "a genuine Disconnected state must be reported once onboarding ends, \
+             even if the connection state itself never changed"
+        );
+    }
+
+    #[test]
+    fn connection_banner_restores_recurring_error_after_onboarding_suppression() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let connection_status = app_context.connection_status();
+        let ctx = egui::Context::default();
+        let mut banner = ConnectionBanner::new();
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "the first SPV error must be reported"
+        );
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Idle);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_none(),
+            "Disconnected must be suppressed while onboarding is active"
+        );
+
+        connection_status.set_spv_status(crate::model::spv_status::SpvStatus::Error);
+        connection_status.refresh_state();
+        assert!(banner.update(&ctx, &app_context, false, true).is_none());
+        assert!(
+            banner.handle.is_some(),
+            "a recurring SPV error must be restored after Disconnected suppression"
         );
     }
 }

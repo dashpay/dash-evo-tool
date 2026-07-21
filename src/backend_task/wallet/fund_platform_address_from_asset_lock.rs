@@ -94,7 +94,13 @@ impl AppContext {
         backend
             .fund_platform_address(
                 &seed_hash,
-                AssetLockFunding::FromExistingAssetLock { out_point },
+                // Generic platform-address funding resume, not the DashPay
+                // invitation-voucher reclaim flow, so it must never consume a
+                // bearer-voucher (invitation-typed) lock.
+                AssetLockFunding::FromExistingAssetLock {
+                    out_point,
+                    consume_invitation_voucher: false,
+                },
                 0,
                 outputs,
                 fee_strategy,

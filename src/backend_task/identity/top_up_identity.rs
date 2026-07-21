@@ -75,6 +75,10 @@ impl AppContext {
                 } => {
                     let funding = platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock {
                         out_point,
+                        // Generic identity top-up resume, not the DashPay
+                        // invitation-voucher reclaim flow, so it must never
+                        // consume a bearer-voucher (invitation-typed) lock.
+                        consume_invitation_voucher: false,
                     };
                     (funding, identity_index, top_up_index, None)
                 }

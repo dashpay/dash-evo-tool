@@ -2787,6 +2787,8 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AddressNotFound(_)
         | P::KeyDerivation(_)
         | P::Persistence(_)
+        | P::PersisterStore(_)
+        | P::PersisterRestore(_)
         | P::SeedMismatch { .. }
         | P::WalletLocked
         | P::SpvAlreadyRunning
@@ -2974,6 +2976,8 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedNoRecordedAnchor(_)
         | P::ShieldedNotBound
         | P::PersisterLoad(_)
+        | P::PersisterStore(_)
+        | P::PersisterRestore(_)
         | P::Persistence(_)
         | P::SeedMismatch { .. }
         // Address nonce desync is a precondition/state fault unrelated to

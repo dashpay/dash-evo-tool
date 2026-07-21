@@ -52,6 +52,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
+  the `dashpay/platform` dependency is bumped to the PR #3968 tip
+  (`d18020f` → `f376d32`), which lands an embeddable SQLite persistence backend with
+  *seedless rehydration*. The wallet manager now restores watch-only wallet state
+  (accounts, balances, identities, platform addresses) from the on-disk store
+  without the HD seed, re-deriving spend authority just-in-time from the seed only
+  when an operation actually signs — so private key material is never left resident
+  between operations. DET's shielded send / unshield / withdraw were updated to
+  match: each now resolves the HD seed through the secret-seam chokepoint for the
+  single spend and drops it on return. The update also adds persistence and
+  rehydration for provider (masternode / evonode) platform-node key pools and for
+  DashPay invitations.
+
 - **Shielded transactions are available on supported networks**: sending,
   receiving, shielding, and unshielding are enabled when the connected network's
   protocol version supports them, including mainnet. These operations were

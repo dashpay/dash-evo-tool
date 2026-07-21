@@ -79,6 +79,10 @@ impl AppContext {
                 let funding =
                     platform_wallet::wallet::asset_lock::AssetLockFunding::FromExistingAssetLock {
                         out_point,
+                        // Generic identity-registration resume, not the DashPay
+                        // invitation-voucher reclaim flow, so it must never
+                        // consume a bearer-voucher (invitation-typed) lock.
+                        consume_invitation_voucher: false,
                     };
                 self.register_identity_via_wallet_backend(
                     funding,

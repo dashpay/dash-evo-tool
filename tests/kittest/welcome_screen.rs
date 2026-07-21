@@ -222,3 +222,39 @@ fn just_explore_lands_on_identities_hub() {
         );
     });
 }
+
+/// A cold start opens on the Welcome screen while the connection state is still
+/// its default `Disconnected` — no wallet exists and nothing has asked SPV to
+/// sync, so this is "hasn't started yet", not a real failure. The alarming red
+/// "Disconnected — check your internet connection" banner must be suppressed
+/// until onboarding completes; otherwise it reads as a connectivity problem the
+/// user cannot act on.
+#[test]
+fn welcome_screen_suppresses_disconnected_banner() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        // A fresh data dir leaves onboarding incomplete, so the welcome screen
+        // renders on the first frame while the connection state is still the
+        // default `Disconnected` (no sync has been attempted).
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        harness.run_steps(10);
+
+        assert!(
+            harness.state().show_welcome_screen,
+            "a fresh data dir must open on the onboarding welcome screen"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("check your internet connection")
+                .is_none(),
+            "the onboarding screen must not show the red 'Disconnected' connection banner"
+        );
+    });
+}

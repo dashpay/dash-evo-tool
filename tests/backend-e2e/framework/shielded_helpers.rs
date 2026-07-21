@@ -12,13 +12,13 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 
 /// Check whether the connected platform supports shielded operations
-/// via the `FeatureGate::Shielded` protocol version check.
+/// through the protocol-version and interface-role checks.
 ///
 /// Returns `true` if shielded state transitions are available. Call this
 /// early in shielded tests to skip proactively instead of waiting for an
 /// error from the backend task.
 pub fn is_shielded_available(app_context: &AppContext) -> bool {
-    FeatureGate::Shielded.is_available(app_context)
+    FeatureGate::ShieldedOperations.is_available(app_context)
 }
 
 /// Check `E2E_SKIP_SHIELDED` env var and skip the calling test if set.

@@ -373,7 +373,7 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 - Select Core Wallet source and enter a shielded address as destination.
 - System creates an asset lock, waits for proof, and shields the credits.
 - Progress banner shows multi-step operation status.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-008: Top up identity from Send screen [Implemented]
 **Persona:** Priya, Jordan
@@ -391,7 +391,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 - Select Platform Addresses as source and enter a shielded address as destination.
 - System auto-selects the highest-balance Platform address.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-010: Withdraw from shielded pool to Core address [Implemented]
 **Persona:** Jordan
@@ -399,7 +399,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
 - Select Shielded Pool as source and enter a Core address as destination.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
 **Persona:** Priya, Jordan
@@ -443,6 +443,7 @@ As a developer, I want to move credits out of the shielded pool to one of my Pla
 - Select Shielded Pool as source and enter a Platform address as destination.
 - Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
 - The shielded balance decreases and the Platform address balance increases after the operation completes.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-016: Send privately within the shielded pool [Implemented]
 **Persona:** Jordan
@@ -452,6 +453,7 @@ As a developer, I want to transfer credits privately from my shielded pool to an
 - Select Shielded Pool as source and enter a shielded address as destination.
 - Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ---
 
@@ -1261,6 +1263,9 @@ As a user, I want to fetch a fresh list of Platform (DAPI) node addresses from D
 - "Refresh DAPI endpoints" action available on Mainnet and Testnet.
 - Confirmation prompt before replacing an existing configured address set.
 - New addresses are persisted to config and the SDK reinitialized without an app restart.
+- A pre-1.0 migration triggers a silent, best-effort Mainnet or Testnet address
+  refresh; failures retry on later launches until addresses are saved, while
+  the manual action keeps its existing success message.
 
 ### NET-017: View live connection status (indicator and Platform endpoints) [Implemented]
 **Persona:** Alex, Priya, Jordan

@@ -1905,12 +1905,19 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Shielded pool errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// A fund-moving shielded operation was requested while the shielded
-    /// operations feature gate was closed.
+    /// A fund-moving shielded operation was requested on a network that does
+    /// not support shielded state transitions.
     #[error(
-        "Shielding, sending, or withdrawing shielded funds is not available right now. Use a regular payment instead, or try again after a future update."
+        "Shielded operations are not available on this network yet. Use a regular payment instead, or try again after a future network update."
     )]
-    ShieldedOperationsUnavailable,
+    ShieldedOperationsNetworkUnavailable,
+
+    /// A fund-moving shielded operation was requested from an interface mode
+    /// that does not unlock experimental features.
+    #[error(
+        "Shielded operations need Expert view or higher. Switch your interface mode in Settings to use them."
+    )]
+    ShieldedOperationsRoleUnavailable,
 
     /// No unspent shielded notes are available.
     #[error("You have no shielded funds available. Please shield some credits first.")]
@@ -2129,13 +2136,17 @@ pub enum TaskError {
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
     NetworkContextCreationFailed { network: Network },
 
+    /// A DAPI refresh completed after its network context was removed.
+    #[error(
+        "The node addresses could not be applied because the selected network changed. Select the network and retry."
+    )]
+    DapiConfigContextUnavailable { network: Network },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Migration errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// Surfaced when wallet/identity/DashPay storage is being upgraded
-    /// from the legacy `data.db` and a task tried to touch it before
-    /// the migration finished. The user can retry once the migration
-    /// banner clears.
+    /// Surfaced while the legacy-data upgrade or its best-effort DAPI refresh
+    /// still owns the migration guard. The user can retry after a short wait.
     #[error("The storage update is still running. Please wait a moment and try again.")]
     WalletStorageNotReady,
 

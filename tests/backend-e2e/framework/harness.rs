@@ -21,9 +21,11 @@ use dash_evo_tool::app_dir::ensure_env_file;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::backend_task::platform_info::PlatformInfoTaskRequestType;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
 use dash_evo_tool::database::test_helpers::create_database_at_path;
+use dash_evo_tool::model::user_role::{UserRole, UserRoleCell};
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
 use dash_evo_tool::utils::tasks::TaskManager;
@@ -262,7 +264,7 @@ impl BackendTestContext {
             egui_ctx,
             app_kv,
             secret_store,
-            dash_evo_tool::model::user_role::UserRoleCell::default(),
+            UserRoleCell::new(UserRole::Power),
         )
         .expect("Failed to create AppContext for testnet");
 
@@ -451,6 +453,13 @@ impl BackendTestContext {
             .await
             .expect("SPV did not reach Running state within 600s");
         tracing::info!("SPV fully synced — mempool bloom filter active");
+
+        run_task(
+            &app_context,
+            BackendTask::PlatformInfo(PlatformInfoTaskRequestType::CurrentEpochInfo),
+        )
+        .await
+        .expect("Failed to fetch current epoch information");
 
         // Now check framework wallet balance — SPV has synced, so balances
         // should be available immediately (no need for a long timeout).

@@ -10,7 +10,6 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -900,9 +899,9 @@ impl AppContext {
         // lock/await/secret), so it is safe to call before backend init. The
         // in-handler gate in `run_shielded_task` stays as the authoritative check.
         if let BackendTask::ShieldedTask(_) = &task
-            && !FeatureGate::ShieldedOperations.is_available(self)
+            && let Some(error) = shielded::shielded_operations_unavailable_error(self)
         {
-            return Err(TaskError::ShieldedOperationsUnavailable);
+            return Err(error);
         }
 
         let _contact_request_claim = match dashpay_request_id(&task) {
@@ -1045,6 +1044,7 @@ impl AppContext {
                     )
                 })
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+                new_ctx.install_secret_prompt(self.secret_prompt());
 
                 let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
                     Ok(()) => {
@@ -1252,6 +1252,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::feature_gate::FeatureGate;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_registers_wired_backend_before_cancellation_teardown() {
@@ -1421,6 +1422,70 @@ mod tests {
             Err(TaskError::DapiAllAddressesExhausted { .. })
         ));
 
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_propagates_secret_prompt_before_wallet_backend_wiring() {
+        use crate::context::test_support::test_app_context;
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::wallet_backend::secret_prompt::SecretScope;
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::{IdentityKeyView, SecretPrompt};
+        use platform_wallet_storage::secrets::SecretString;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let identity_id = [0x91; 32];
+        let target = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        let key_id = 7;
+        let key = [0xa5; 32];
+        let password = "network-switch-password";
+        let secret_store = ctx.secret_store();
+        IdentityKeyView::new(&secret_store, identity_id)
+            .store_protected(&target, key_id, &key, &SecretString::new(password))
+            .expect("store protected identity key");
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(password)]));
+        ctx.install_secret_prompt(Arc::clone(&prompt) as Arc<dyn SecretPrompt>);
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let result = ctx
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: true,
+                },
+                sender,
+            )
+            .await
+            .expect("switch network");
+
+        let BackendTaskSuccessResult::NetworkContextCreated { context, .. } = result else {
+            panic!("expected a newly created network context");
+        };
+        let backend = context.wallet_backend().expect("switched backend wired");
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target,
+            key_id,
+        };
+        let resolved = backend
+            .secret_access()
+            .with_secret(&scope, |plaintext| {
+                Ok(plaintext.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("resolve protected key through switched backend");
+        assert!(
+            resolved,
+            "the wired backend must resolve through the source interactive prompt"
+        );
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "the switched backend must prompt once"
+        );
         backend.shutdown().await;
     }
 
@@ -1709,11 +1774,9 @@ mod tests {
         }
     }
 
-    /// The shielded pre-check runs before the migration gate, so an *unavailable*
-    /// shielded write is refused with `ShieldedOperationsUnavailable` even while a
-    /// storage update collects wallet passwords — the accurate, actionable message
-    /// ("shielded is not available") rather than the misleading "wait for the
-    /// update", since waiting will never make shielded available.
+    /// The shielded pre-check runs before the migration gate, so a role-gated
+    /// shielded write reports the interface mode needed to unlock it even while a
+    /// storage update collects wallet passwords.
     ///
     /// The migration gate for shielded still applies once shielded operations
     /// ship (the pre-check passes, then the gate short-circuits); its
@@ -1726,9 +1789,11 @@ mod tests {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
+        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
+        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
@@ -1749,8 +1814,8 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(result, Err(TaskError::ShieldedOperationsUnavailable)),
-            "the shielded pre-check must refuse an unavailable write before the migration gate, got {result:?}",
+            matches!(result, Err(TaskError::ShieldedOperationsRoleUnavailable)),
+            "the shielded pre-check must report the role gate before the migration gate, got {result:?}",
         );
 
         if let Ok(backend) = ctx.wallet_backend() {

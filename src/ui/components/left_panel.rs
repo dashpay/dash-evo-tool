@@ -81,6 +81,27 @@ fn nav_button_specs() -> &'static [(
     ]
 }
 
+/// One-line hover tooltip for a nav destination, stating where the item leads so
+/// its purpose — and that it is clickable — is discoverable. Each string is a
+/// single i18n translation unit. Every entry in [`nav_button_specs`] must map to
+/// a non-empty tooltip (guarded by a test).
+fn nav_tooltip(screen: RootScreenType) -> &'static str {
+    match screen {
+        RootScreenType::RootScreenIdentityHub => {
+            "Open the Identities hub to view and manage your identities."
+        }
+        RootScreenType::RootScreenMasternodes => "View and manage your masternodes and evonodes.",
+        RootScreenType::RootScreenDocumentQuery => "Browse data contracts and their documents.",
+        RootScreenType::RootScreenMyTokenBalances => "View your token balances and manage tokens.",
+        RootScreenType::RootScreenWalletsBalances => "Manage your wallets and their balances.",
+        RootScreenType::RootScreenToolsPlatformInfoScreen => {
+            "Open the developer and diagnostic tools."
+        }
+        RootScreenType::RootScreenNetworkChooser => "Change the network and application settings.",
+        _ => "",
+    }
+}
+
 pub fn add_left_panel(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -184,6 +205,7 @@ pub fn add_left_panel(
                                                 };
 
                                                 let button_color = DashColors::icon_tint(is_selected, dark_mode);
+                                                let tooltip = nav_tooltip(*screen_type);
 
                                                 if let Some(ref texture) = texture {
                                                     let button = egui::Button::image(
@@ -191,18 +213,14 @@ pub fn add_left_panel(
                                                     )
                                                     .frame(false);
 
-                                                    let added = ui.add(button);
+                                                    // The icon and its label are two widgets, so
+                                                    // the label is made clickable too — hovering or
+                                                    // clicking the text behaves like the icon, and
+                                                    // both show the pointer cursor + tooltip.
+                                                    let added = ui.add(button).clickable_tooltip(tooltip);
                                                     // Provide an accessible name for the image-only button
                                                     added.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
-                                                    if added.clicked() {
-                                                        action = AppAction::SetMainScreenThenGoToMainScreen(
-                                                            *screen_type,
-                                                        );
-                                                    } else if added.hovered() {
-                                                        ui.ctx().set_cursor_icon(
-                                                            egui::CursorIcon::PointingHand,
-                                                        );
-                                                    }
+
                                                     // Put the label beneath the icon
                                                     let color = if is_selected {
                                                         DashColors::DASH_BLUE
@@ -211,13 +229,25 @@ pub fn add_left_panel(
                                                     };
                                                     let label_text =
                                                         RichText::new(*label).color(color).size(13.0);
-                                                    ui.label(label_text);
+                                                    let label_response = ui
+                                                        .add(
+                                                            egui::Label::new(label_text)
+                                                                .sense(egui::Sense::click()),
+                                                        )
+                                                        .clickable_tooltip(tooltip);
+
+                                                    if added.clicked() || label_response.clicked() {
+                                                        action = AppAction::SetMainScreenThenGoToMainScreen(
+                                                            *screen_type,
+                                                        );
+                                                    }
                                                 } else {
                                                     // Fallback button if texture not available
                                                     if is_selected {
                                                         let response = GradientButton::new(*label, app_context)
                                                             .min_width(60.0)
-                                                            .show(ui);
+                                                            .show(ui)
+                                                            .clickable_tooltip(tooltip);
                                                         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
@@ -234,7 +264,7 @@ pub fn add_left_panel(
                                                             ))
                                                             .min_size(egui::vec2(60.0, 60.0));
 
-                                                        let response = ui.add(button);
+                                                        let response = ui.add(button).clickable_tooltip(tooltip);
                                                         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
@@ -376,6 +406,19 @@ mod tests {
             1,
             "exactly one nav entry is labeled Identities"
         );
+    }
+
+    /// Every nav entry maps to a non-empty hover tooltip, so no nav item can
+    /// ship without one (the pointer cursor is applied via the same
+    /// `clickable_tooltip` call, so a present tooltip guards both).
+    #[test]
+    fn every_nav_entry_has_a_tooltip() {
+        for (label, screen, ..) in nav_button_specs() {
+            assert!(
+                !nav_tooltip(*screen).is_empty(),
+                "nav entry '{label}' ({screen:?}) must have a hover tooltip"
+            );
+        }
     }
 
     /// Every fallback route (unregistered persisted screen, live de-gating of a

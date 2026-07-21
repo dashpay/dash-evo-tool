@@ -7,6 +7,7 @@ use dash_sdk::platform::Identifier;
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::wallet_backend::poison::RwLockRecover;
 
 fn retain_other_identities(identities: &mut HashMap<u32, Identity>, identity_id: &Identifier) {
     identities.retain(|_, identity| identity.id() != *identity_id);
@@ -19,9 +20,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         self.delete_local_qualified_identity(&identity_id)?;
 
-        let wallets = self.wallets.read()?;
+        let wallets = self.wallets.read_recover();
         for wallet in wallets.values() {
-            retain_other_identities(&mut wallet.write()?.identities, &identity_id);
+            retain_other_identities(&mut wallet.write_recover().identities, &identity_id);
         }
         drop(wallets);
 

@@ -978,9 +978,15 @@ impl AppContext {
             }
             Err(error) => return Err(error),
         }
+        // Drop the identity from the index BEFORE the irreversible vault-key
+        // clear: a fault in either of the next two steps must never leave a
+        // "zombie" identity that is still visible but already missing its
+        // keys. `clear_identity_vault_keys` must still run before
+        // `purge_identity_scope`, since it reads the identity blob that
+        // `purge_identity_scope` deletes.
+        index_remove_identity(&kv, &id)?;
         self.clear_identity_vault_keys(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
-        index_remove_identity(&kv, &id)?;
         load_guard.loaded();
         Ok(())
     }
@@ -1906,7 +1912,7 @@ mod tests {
         backend
             .identity_meta()
             .set(
-                Network::Testnet,
+                ctx.network(),
                 &target_buf,
                 &IdentityMeta {
                     password_hint: Some("target hint".into()),
@@ -2015,7 +2021,7 @@ mod tests {
         assert!(
             backend
                 .identity_meta()
-                .get(Network::Testnet, &target_buf)
+                .get(ctx.network(), &target_buf)
                 .is_none(),
             "target identity metadata must be removed"
         );
@@ -2068,6 +2074,68 @@ mod tests {
         );
 
         drop(load_guard);
+        backend.shutdown().await;
+    }
+
+    /// A failure partway through deletion must never leave a "zombie" identity:
+    /// still indexed (so still visible in the UI) with its vault keys already
+    /// gone. `index_remove_identity` must run before the irreversible vault-key
+    /// clear, so a fault anywhere from that point on still leaves the identity
+    /// hidden rather than visibly broken.
+    ///
+    /// The fault is a corrupted stored blob (bad `qi_bytes`) written directly
+    /// after a real insert — a real, naturally-occurring failure of
+    /// `clear_identity_vault_keys`'s `decode_stored_identity` call, not a
+    /// simulated one — driving the actual `delete_local_qualified_identity`
+    /// entry point end to end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn code_001_a_deletion_fault_after_index_removal_leaves_no_visible_zombie() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let target_id = Identifier::from([0x91; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0x92; 32], [0x93; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+        assert!(
+            ctx.local_identity_ids()
+                .expect("read index")
+                .contains(&target_id),
+            "the identity must be indexed before deletion"
+        );
+
+        // Corrupt the stored blob in place: the index and wallet association
+        // are untouched, but `clear_identity_vault_keys`'s decode will fail.
+        let id_buf = target_id.to_buffer();
+        let kv = ctx.det_kv().expect("det kv");
+        kv.put(DetScope::Identity(&id_buf), IDENTITY_KEY, &stored("User"))
+            .expect("corrupt the stored blob");
+
+        let result = ctx.delete_local_qualified_identity(&target_id);
+        assert!(
+            result.is_err(),
+            "the corrupted blob must surface as an error"
+        );
+
+        assert!(
+            !ctx.local_identity_ids()
+                .expect("read index")
+                .contains(&target_id),
+            "the identity must already be hidden from the index even though a \
+             later cleanup step failed — never a visible entry with its keys \
+             already gone"
+        );
+
         backend.shutdown().await;
     }
 

@@ -41,6 +41,81 @@ impl ContestedName {
     pub fn is_open_for_voter(&self, voter_id: &Identifier) -> bool {
         self.state.state_is_votable() && !self.my_votes.keys().any(|(id, _, _)| id == voter_id)
     }
+
+    /// The pending DPNS username this contest represents for `identity_id`, if
+    /// the identity is a still-undecided contender in it.
+    ///
+    /// Returns `None` when the contest is already decided (`WonBy` or `Locked`)
+    /// or the identity is not among its contenders — an awarded or lost name is
+    /// no longer "pending". Used to tell "requested but not yet awarded" apart
+    /// from "no username requested".
+    pub fn pending_username_for(&self, identity_id: &Identifier) -> Option<PendingUsername> {
+        if matches!(self.state, ContestState::WonBy(_) | ContestState::Locked) {
+            return None;
+        }
+        let mine = self
+            .contestants
+            .as_ref()?
+            .iter()
+            .find(|c| c.id == *identity_id)?;
+        Some(PendingUsername {
+            name: mine.name.clone(),
+            decided_at: self.end_time,
+        })
+    }
+}
+
+/// A DPNS username an identity has requested but has not yet been awarded — the
+/// name contest is still open. Surfaced in the UI as a "Pending" indicator so a
+/// requested-but-unawarded name is not mistaken for "no username requested".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUsername {
+    /// The requested name label (without the `.dash` suffix), as submitted.
+    pub name: String,
+    /// When the request is expected to be decided, in Unix milliseconds.
+    /// `None` when the timing is not yet known.
+    pub decided_at: Option<TimestampMillis>,
+}
+
+/// The first pending DPNS username `identity_id` has across `contests`, if any.
+///
+/// Pure and side-effect-free: the caller supplies the contest set (typically the
+/// ongoing-contest cache). Stops at the first match.
+pub fn pending_username_in<'a, I>(contests: I, identity_id: &Identifier) -> Option<PendingUsername>
+where
+    I: IntoIterator<Item = &'a ContestedName>,
+{
+    contests
+        .into_iter()
+        .find_map(|c| c.pending_username_for(identity_id))
+}
+
+/// Approximate, human-friendly time remaining until `decided_at_ms`, measured
+/// from `now_ms` (both Unix milliseconds).
+///
+/// Returns `None` when the deadline is already reached or past — the caller
+/// should then omit the ETA rather than show a stale or zero value. The phrase
+/// is intentionally coarse ("about 3 hours", "less than an hour") because the
+/// decision time is itself an estimate.
+pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Option<String> {
+    let remaining_ms = decided_at_ms.checked_sub(now_ms)?;
+    if remaining_ms == 0 {
+        return None;
+    }
+    const HOUR: u64 = 3_600;
+    const DAY: u64 = 86_400;
+    let secs = remaining_ms / 1_000;
+    Some(if secs < HOUR {
+        "less than an hour".to_string()
+    } else if secs < 2 * HOUR {
+        "about 1 hour".to_string()
+    } else if secs < DAY {
+        format!("about {} hours", secs / HOUR)
+    } else if secs < 2 * DAY {
+        "about 1 day".to_string()
+    } else {
+        format!("about {} days", secs / DAY)
+    })
 }
 
 /// Per-node DPNS voting summary shown on the Masternodes card grid.
@@ -89,6 +164,27 @@ mod tests {
         }
     }
 
+    fn contestant(id: [u8; 32], name: &str) -> Contestant {
+        Contestant {
+            id: Identifier::from(id),
+            name: name.to_string(),
+            info: String::new(),
+            votes: 0,
+            created_at: None,
+            created_at_block_height: None,
+            created_at_core_block_height: None,
+            document_id: Identifier::from([0u8; 32]),
+        }
+    }
+
+    fn contest_with(state: ContestState, contestants: Vec<Contestant>) -> ContestedName {
+        ContestedName {
+            contestants: Some(contestants),
+            end_time: Some(9_999),
+            ..contest(state)
+        }
+    }
+
     #[test]
     fn open_for_voter_when_votable_and_not_yet_voted() {
         let voter = Identifier::from([7u8; 32]);
@@ -127,5 +223,116 @@ mod tests {
             ResourceVoteChoice::Abstain,
         );
         assert!(c.is_open_for_voter(&voter));
+    }
+
+    // ----------------------------------------------------------------
+    // Pending username detection: requested-but-unawarded vs owned/none.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn pending_username_reported_when_contender_and_undecided() {
+        let me = [5u8; 32];
+        for state in [
+            ContestState::Ongoing,
+            ContestState::Joinable,
+            ContestState::Unknown,
+        ] {
+            let c = contest_with(state.clone(), vec![contestant(me, "det1")]);
+            let pending = c
+                .pending_username_for(&Identifier::from(me))
+                .expect("an undecided contender has a pending username");
+            assert_eq!(pending.name, "det1");
+            assert_eq!(pending.decided_at, Some(9_999));
+        }
+    }
+
+    #[test]
+    fn no_pending_username_when_contest_is_decided() {
+        let me = [5u8; 32];
+        // Won by me, won by another, and locked are all "decided" — the name is
+        // no longer pending regardless of who ends up owning it.
+        for state in [
+            ContestState::WonBy(Identifier::from(me)),
+            ContestState::WonBy(Identifier::from([9u8; 32])),
+            ContestState::Locked,
+        ] {
+            let c = contest_with(state, vec![contestant(me, "det1")]);
+            assert!(c.pending_username_for(&Identifier::from(me)).is_none());
+        }
+    }
+
+    #[test]
+    fn no_pending_username_when_identity_is_not_a_contender() {
+        let c = contest_with(ContestState::Ongoing, vec![contestant([5u8; 32], "det1")]);
+        assert!(
+            c.pending_username_for(&Identifier::from([6u8; 32]))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn no_pending_username_when_contest_has_no_contenders() {
+        let c = contest(ContestState::Ongoing); // contestants: None
+        assert!(
+            c.pending_username_for(&Identifier::from([5u8; 32]))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_username_in_scans_multiple_contests() {
+        let me = Identifier::from([5u8; 32]);
+        let contests = vec![
+            contest_with(ContestState::Locked, vec![contestant([5u8; 32], "taken")]),
+            contest_with(ContestState::Ongoing, vec![contestant([5u8; 32], "det1")]),
+        ];
+        let pending = pending_username_in(&contests, &me).expect("second contest is pending");
+        assert_eq!(pending.name, "det1");
+    }
+
+    #[test]
+    fn pending_username_in_returns_none_without_matches() {
+        let contests = vec![contest_with(
+            ContestState::Ongoing,
+            vec![contestant([1u8; 32], "other")],
+        )];
+        assert!(pending_username_in(&contests, &Identifier::from([5u8; 32])).is_none());
+    }
+
+    // ----------------------------------------------------------------
+    // ETA humanization.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn approximate_time_until_buckets_durations() {
+        let now = 1_000_000_000_000u64;
+        let ms = |secs: u64| now + secs * 1_000;
+        assert_eq!(
+            approximate_time_until(ms(30 * 60), now).as_deref(),
+            Some("less than an hour")
+        );
+        assert_eq!(
+            approximate_time_until(ms(90 * 60), now).as_deref(),
+            Some("about 1 hour")
+        );
+        assert_eq!(
+            approximate_time_until(ms(3 * 3_600), now).as_deref(),
+            Some("about 3 hours")
+        );
+        assert_eq!(
+            approximate_time_until(ms(36 * 3_600), now).as_deref(),
+            Some("about 1 day")
+        );
+        assert_eq!(
+            approximate_time_until(ms(3 * 86_400), now).as_deref(),
+            Some("about 3 days")
+        );
+    }
+
+    #[test]
+    fn approximate_time_until_is_none_when_deadline_passed_or_now() {
+        let now = 1_000_000_000_000u64;
+        assert!(approximate_time_until(now, now).is_none());
+        assert!(approximate_time_until(now - 1, now).is_none());
     }
 }

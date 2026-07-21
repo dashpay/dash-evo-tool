@@ -8,7 +8,9 @@
 
 use super::AppContext;
 use crate::backend_task::error::TaskError;
-use crate::model::contested_name::{ContestState, Contestant, ContestedName};
+use crate::model::contested_name::{
+    ContestState, Contestant, ContestedName, PendingUsername, pending_username_in,
+};
 use crate::wallet_backend::{DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
@@ -187,6 +189,38 @@ impl AppContext {
                     error = ?e,
                     "Skipping unreadable contested-name entry",
                 ),
+            }
+        }
+        Ok(out)
+    }
+
+    /// The DPNS username `identity_id` has requested but not yet been awarded,
+    /// if any — read from the ongoing-contest cache.
+    ///
+    /// Read-only; returns `Ok(None)` when nothing is pending. Lets the UI tell
+    /// "requested but still being decided" apart from "no username requested".
+    pub fn pending_dpns_username_for(
+        &self,
+        identity_id: &Identifier,
+    ) -> std::result::Result<Option<PendingUsername>, TaskError> {
+        let contests = self.ongoing_contested_names()?;
+        Ok(pending_username_in(&contests, identity_id))
+    }
+
+    /// Map each of `identity_ids` to its pending DPNS username request, if any.
+    ///
+    /// Reads the ongoing-contest cache once and matches every identity against
+    /// it, so a list screen can look up many identities with a single cache
+    /// read. Identities with nothing pending are omitted. Read-only.
+    pub fn pending_dpns_usernames(
+        &self,
+        identity_ids: &[Identifier],
+    ) -> std::result::Result<HashMap<Identifier, PendingUsername>, TaskError> {
+        let contests = self.ongoing_contested_names()?;
+        let mut out = HashMap::new();
+        for id in identity_ids {
+            if let Some(pending) = pending_username_in(&contests, id) {
+                out.insert(*id, pending);
             }
         }
         Ok(out)
@@ -539,5 +573,40 @@ mod tests {
     #[test]
     fn contest_key_is_prefixed_with_normalized_name() {
         assert_eq!(contested_name_key("dash"), "det:contested_name:dash");
+    }
+
+    // ----------------------------------------------------------------
+    // Bridge: a stored contest decodes into a detectable pending username.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn stored_undecided_contest_yields_pending_username() {
+        // A contestant with a timestamp and no winner resolves to an active
+        // (Ongoing) state, so the identity has a pending username request.
+        let stored = StoredContestedName {
+            normalized_contested_name: "det1".to_string(),
+            end_time: Some(9_999),
+            contestants: vec![contestant(5, Some(100))],
+            ..Default::default()
+        };
+        let cn = stored.to_contested_name(Network::Testnet);
+        let me = Identifier::from([5u8; 32]);
+        let pending = pending_username_in(std::slice::from_ref(&cn), &me)
+            .expect("undecided contender must surface a pending username");
+        assert_eq!(pending.name, "name-5");
+        assert_eq!(pending.decided_at, Some(9_999));
+    }
+
+    #[test]
+    fn stored_awarded_contest_yields_no_pending_username() {
+        let stored = StoredContestedName {
+            normalized_contested_name: "det1".to_string(),
+            awarded_to: Some([5u8; 32]),
+            contestants: vec![contestant(5, Some(100))],
+            ..Default::default()
+        };
+        let cn = stored.to_contested_name(Network::Testnet);
+        let me = Identifier::from([5u8; 32]);
+        assert!(pending_username_in(std::slice::from_ref(&cn), &me).is_none());
     }
 }

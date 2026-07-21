@@ -721,6 +721,16 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 - A single unreadable vote row costs only itself: the readable votes in the same batch still import.
 - The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
 
+### DPN-010: See a pending username registration [Implemented]
+**Persona:** Alex
+
+As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to "pick a username" for a name I have already chosen.
+
+- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identities list and the Identity Home hero card.
+- The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
+- The onboarding checklist reflects the pending state instead of nagging to pick a name.
+- The pill's tooltip states the name is being confirmed and, when the decision time is known, gives an estimated ready time.
+
 ---
 
 ## DashPay (DPY)

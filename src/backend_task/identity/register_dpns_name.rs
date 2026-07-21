@@ -161,6 +161,8 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
+            // Not rebranded: preorder's only unique index, `saltedDomainHash`, is unrelated to
+            // usernames, so conflicts keep the generic `PlatformEntryConflict` message.
             .await?;
 
         let _ = domain_document
@@ -268,24 +270,12 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::DuplicateUniqueIndexError;
+    use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
     use dash_sdk::dpp::consensus::state::state_error::StateError;
-    use dash_sdk::dpp::consensus::{
-        ConsensusError, ConsensusError::StateError as ConsensusStateError,
-    };
-    use dash_sdk::platform::Identifier;
 
     fn duplicate_unique_index_conflict(properties: Vec<&str>) -> TaskError {
-        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-            Identifier::random(),
-            properties.into_iter().map(str::to_string).collect(),
-        ));
-        let source_error = Box::new(dash_sdk::Error::StateTransitionBroadcastError(
-            dash_sdk::error::StateTransitionBroadcastError {
-                code: 40105,
-                message: "duplicate unique index".to_string(),
-                cause: Some(consensus),
-            },
+        let source_error = Box::new(crate::test_support::duplicate_unique_index_broadcast_error(
+            properties,
         ));
 
         TaskError::PlatformEntryConflict { source_error }

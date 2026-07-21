@@ -1174,6 +1174,24 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A DPNS username conflicts with an existing domain document.
+    #[error(
+        "This username is already taken. Please choose a different username and try again."
+    )]
+    DpnsUsernameAlreadyTaken {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A document's unique values conflict with an existing entry.
+    #[error(
+        "This request conflicts with an existing entry. Please use different values and try again."
+    )]
+    PlatformEntryConflict {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Platform accepted the request, but its result could not be confirmed.
     #[error(
         "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
@@ -2912,6 +2930,26 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::StateError(StateError::DuplicateUniqueIndexError(e)) => {
+                        let properties = e.duplicating_properties();
+                        let is_dpns_username = properties.len() == 2
+                            && properties
+                                .iter()
+                                .any(|property| property == "normalizedParentDomainName")
+                            && properties
+                                .iter()
+                                .any(|property| property == "normalizedLabel");
+
+                        if is_dpns_username {
+                            Some(Box::new(|source_error| {
+                                TaskError::DpnsUsernameAlreadyTaken { source_error }
+                            }))
+                        } else {
+                            Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
+                                source_error,
+                            }))
+                        }
+                    }
                     _ => None,
                 }
             });
@@ -3054,6 +3092,7 @@ mod tests {
         InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
     };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
+    use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::DuplicateUniqueIndexError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
@@ -3092,6 +3131,20 @@ mod tests {
             TaskError::DapiAllAddressesExhausted { source } => dapi_sdk_source_ptr(source),
             other => panic!("expected a DAPI reachability error, got {other:?}"),
         }
+    }
+
+    fn assert_duplicate_unique_index_broadcast_source(source_error: &SdkError) {
+        assert!(matches!(
+            source_error,
+            SdkError::StateTransitionBroadcastError(broadcast_error)
+                if broadcast_error.code == 40105
+                    && matches!(
+                        broadcast_error.cause.as_ref(),
+                        Some(ConsensusError::StateError(
+                            StateError::DuplicateUniqueIndexError(_)
+                        ))
+                    )
+        ));
     }
 
     #[test]
@@ -3516,6 +3569,63 @@ mod tests {
             err,
             TaskError::DuplicateIdentityPublicKeyId { .. }
         ));
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_unique_index_dpns_username_is_actionable() {
+        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
+            Identifier::random(),
+            vec![
+                "normalizedParentDomainName".to_string(),
+                "normalizedLabel".to_string(),
+            ],
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40105,
+            message: "duplicate unique index".to_string(),
+            cause: Some(consensus),
+        };
+        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+        assert_eq!(
+            err.to_string(),
+            "This username is already taken. Please choose a different username and try again."
+        );
+        match &err {
+            TaskError::DpnsUsernameAlreadyTaken { source_error } => {
+                assert_duplicate_unique_index_broadcast_source(source_error);
+            }
+            other => panic!("expected DpnsUsernameAlreadyTaken, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_unique_index_other_document_is_actionable() {
+        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
+            Identifier::random(),
+            vec![
+                "normalizedParentDomainName".to_string(),
+                "normalizedLabel".to_string(),
+                "serialNumber".to_string(),
+            ],
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40105,
+            message: "duplicate unique index".to_string(),
+            cause: Some(consensus),
+        };
+        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+        assert_eq!(
+            err.to_string(),
+            "This request conflicts with an existing entry. Please use different values and try again."
+        );
+        match &err {
+            TaskError::PlatformEntryConflict { source_error } => {
+                assert_duplicate_unique_index_broadcast_source(source_error);
+            }
+            other => panic!("expected PlatformEntryConflict, got {other:?}"),
+        }
     }
 
     #[test]

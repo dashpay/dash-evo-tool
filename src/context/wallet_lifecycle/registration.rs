@@ -192,7 +192,8 @@ impl AppContext {
         };
         let seed = zeroize::Zeroizing::new(*seed);
         let birth_height = registration_birth_height(origin);
-        self.subtasks
+        let _ = self
+            .subtasks
             .spawn_sync("wallet_upstream_registration", async move {
                 if let Err(error) = backend
                     .register_wallet_from_seed(&seed_hash, &seed, birth_height)

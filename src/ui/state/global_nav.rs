@@ -9,6 +9,7 @@
 //! selection and never writes `AppContext::selected_identity_id` — the switcher
 //! maps it to a distinct `SelectPageObject` effect, not `SelectIdentity`.
 
+use crate::model::wallet_association::WalletAssociation;
 use crate::ui::RootScreenType;
 use dash_sdk::platform::Identifier;
 
@@ -116,6 +117,12 @@ pub struct PageNavSpec {
     segment1_target: RootScreenType,
     wallet_pill: Option<PillConsumption>,
     identity_pill: Option<(IdentityPillScope, PillConsumption)>,
+    /// A fixed, read-only wallet association for the object in view (e.g. the
+    /// masternode on the Masternodes page), with its page-owned tooltip. When
+    /// set, the switcher renders this in the wallet segment instead of the
+    /// app-scoped [`wallet_pill`](Self::wallet_pill): a wallet-less object shows
+    /// the "not in a wallet" indicator rather than an arbitrary loaded wallet.
+    object_wallet: Option<(WalletAssociation, String)>,
 }
 
 impl PageNavSpec {
@@ -128,6 +135,7 @@ impl PageNavSpec {
             segment1_target,
             wallet_pill: None,
             identity_pill: None,
+            object_wallet: None,
         }
     }
 
@@ -169,6 +177,19 @@ impl PageNavSpec {
         self
     }
 
+    /// Show a fixed, read-only wallet association for the object in view instead
+    /// of the app-scoped wallet pill. `tooltip` is the page-owned copy shown on
+    /// hover. Overrides any [`with_wallet_pill`](Self::with_wallet_pill) in the
+    /// wallet segment.
+    pub fn with_object_wallet(
+        mut self,
+        association: WalletAssociation,
+        tooltip: impl Into<String>,
+    ) -> Self {
+        self.object_wallet = Some((association, tooltip.into()));
+        self
+    }
+
     /// The page-aware segment-1 label (e.g. `Masternodes`).
     pub fn segment1_label(&self) -> &str {
         &self.segment1_label
@@ -182,6 +203,12 @@ impl PageNavSpec {
     /// The wallet-pill participation, or `None` if the page shows no wallet pill.
     pub fn wallet_pill(&self) -> Option<&PillConsumption> {
         self.wallet_pill.as_ref()
+    }
+
+    /// The fixed, read-only wallet association for the object in view (with its
+    /// page-owned tooltip), or `None` when the wallet segment is app-scoped.
+    pub fn object_wallet(&self) -> Option<&(WalletAssociation, String)> {
+        self.object_wallet.as_ref()
     }
 
     /// The third-pill scope + participation, or `None` if the page shows no

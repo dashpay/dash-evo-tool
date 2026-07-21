@@ -189,6 +189,16 @@ impl TaskManager {
         C: FnOnce(Result<(), tokio::task::JoinError>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
+        let callback_completion = task_completion(tokio::spawn(async move {
+            let result = completion
+                .await
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            if let Some(result) = result {
+                on_join(result).await;
+            }
+        }));
         state.tracked_tasks.retain(|task| {
             task.completion.peek().is_none_or(|completion| {
                 completion
@@ -199,7 +209,7 @@ impl TaskManager {
         });
         state.tracked_tasks.push(TrackedTask {
             name,
-            completion: completion.clone(),
+            completion: callback_completion.clone(),
         });
         if !state.accepting {
             return;
@@ -211,13 +221,18 @@ impl TaskManager {
         let active_names = Arc::clone(&self.active_names);
         state.tasks.spawn(async move {
             let _active_task = ActiveTaskGuard::new(active_names, name);
-            let result = completion
+            let result = callback_completion
                 .await
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .take();
-            if let Some(result) = result {
-                on_join(result).await;
+            if let Some(Err(error)) = result {
+                tracing::warn!(
+                    task = name,
+                    cancelled = error.is_cancelled(),
+                    panicked = error.is_panic(),
+                    "Tracked task completion callback stopped unexpectedly"
+                );
             }
             name
         });
@@ -409,7 +424,7 @@ async fn shutdown_tracked_tasks(
                         task = name,
                         cancelled = error.is_cancelled(),
                         panicked = error.is_panic(),
-                        "Tracked task stopped unexpectedly after its completion observer ended"
+                        "Tracked task completion callback stopped unexpectedly"
                     );
                 }
             }
@@ -461,7 +476,19 @@ mod tests {
                 .is_ok(),
             "completed task is accepted"
         );
-        joined_rx.await.expect("completed task observer ran");
+        joined_rx.await.expect("completed task callback ran");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !manager
+                .active_names
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completed task observer ran");
 
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
         assert!(
@@ -716,6 +743,8 @@ mod tests {
         let manager = TaskManager::new();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        let join_error_observed = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&join_error_observed);
         assert!(
             manager
                 .spawn_blocking_sync(
@@ -725,7 +754,9 @@ mod tests {
                         release_rx.recv().expect("wait for task release");
                         panic!("synthetic panic without secret material");
                     },
-                    |_| async {},
+                    move |result| async move {
+                        observed.store(result.is_err(), Ordering::Release);
+                    },
                 )
                 .is_ok(),
             "late panic task is accepted"
@@ -749,17 +780,6 @@ mod tests {
         .await;
         release_tx.send(()).expect("release blocking task");
 
-        let ready = tokio::time::timeout(Duration::from_secs(1), completion.clone())
-            .await
-            .expect("late join error becomes ready");
-        assert!(
-            ready
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .as_ref()
-                .is_some_and(Result::is_err),
-            "late join error remains available for shutdown"
-        );
         assert!(
             manager
                 .spawn_tracked_sync("later-tracked-task", async {}, |_| async {})
@@ -768,12 +788,57 @@ mod tests {
         );
 
         assert!(shutdown_tracked_tasks(tasks.task_state, "test", Duration::from_secs(1)).await);
+        assert!(
+            join_error_observed.load(Ordering::Acquire),
+            "the tracked callback consumes the late join error"
+        );
 
         let stored = completion
             .peek()
             .expect("blocking completion")
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        assert!(stored.is_none(), "shutdown consumes the late join error");
+        assert!(
+            stored.is_none(),
+            "shutdown consumes the callback completion"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_finishes_join_callback_consumed_before_ordinary_abort() {
+        let manager = TaskManager::new();
+        let (callback_started_tx, callback_started_rx) = tokio::sync::oneshot::channel();
+        let (release_callback_tx, release_callback_rx) = tokio::sync::oneshot::channel();
+        let callback_finished = Arc::new(AtomicBool::new(false));
+        let finished = Arc::clone(&callback_finished);
+        assert!(
+            manager
+                .spawn_tracked_sync(
+                    "callback-in-progress",
+                    async { panic!("synthetic panic without secret material") },
+                    move |result| async move {
+                        assert!(result.is_err(), "task panic reaches its join callback");
+                        let _ = callback_started_tx.send(());
+                        let _ = release_callback_rx.await;
+                        finished.store(true, Ordering::Release);
+                    },
+                )
+                .is_ok(),
+            "tracked task is accepted"
+        );
+
+        callback_started_rx.await.expect("join callback started");
+        let tasks = manager.begin_shutdown();
+        shutdown_inner(tasks.tasks, &manager.active_names, "test", Duration::ZERO).await;
+        let _ = release_callback_tx.send(());
+
+        assert!(
+            shutdown_tracked_tasks(tasks.task_state, "test", Duration::from_secs(1)).await,
+            "tracked callback finishes within its shutdown phase"
+        );
+        assert!(
+            callback_finished.load(Ordering::Acquire),
+            "tracked shutdown finishes a callback after ordinary observers are aborted"
+        );
     }
 }

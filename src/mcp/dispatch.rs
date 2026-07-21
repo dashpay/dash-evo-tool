@@ -67,13 +67,28 @@ pub(crate) async fn dispatch_task(
     app_context: &Arc<AppContext>,
     task: BackendTask,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    dispatch_task_with(app_context, task, std::future::ready).await
+}
+
+/// Run a backend task and keep its lifecycle tail inside the shutdown barrier.
+pub(crate) async fn dispatch_task_with<T, F, Fut>(
+    app_context: &Arc<AppContext>,
+    task: BackendTask,
+    lifecycle_tail: F,
+) -> Result<T, TaskError>
+where
+    T: Send + 'static,
+    F: FnOnce(BackendTaskSuccessResult) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = T>,
+{
     let app_context = app_context.clone();
     let handle = tokio::runtime::Handle::current();
     run_blocking_dispatch(app_context.subtasks.clone(), move || {
         handle.block_on(async move {
             let (tx, _) = tokio::sync::mpsc::channel::<TaskResult>(32);
             let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
-            app_context.run_backend_task(task, sender).await
+            let result = app_context.run_backend_task(task, sender).await?;
+            Ok(lifecycle_tail(result).await)
         })
     })
     .await?
@@ -143,5 +158,48 @@ mod tests {
 
         assert!(matches!(result, Err(TaskError::TaskManagerShuttingDown)));
         assert!(!ran.load(Ordering::Acquire));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_waits_for_post_dispatch_lifecycle_tail() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(temp_dir.path());
+        let task_manager = Arc::clone(&app_context.subtasks);
+        let dispatch_context = Arc::clone(&app_context);
+        let (tail_started_tx, tail_started_rx) = tokio::sync::oneshot::channel();
+        let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel();
+        let dispatch = tokio::spawn(async move {
+            dispatch_task_with(
+                &dispatch_context,
+                BackendTask::None,
+                move |result| async move {
+                    let _ = tail_started_tx.send(());
+                    let _ = release_tail_rx.await;
+                    result
+                },
+            )
+            .await
+        });
+        tail_started_rx.await.expect("lifecycle tail started");
+
+        let mut shutdown = task_manager.shutdown_async();
+        let shutdown_stayed_pending =
+            tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+                .await
+                .is_err();
+
+        release_tail_tx.send(()).expect("release lifecycle tail");
+        assert!(matches!(
+            dispatch.await.expect("dispatch task").expect("dispatch"),
+            BackendTaskSuccessResult::None
+        ));
+        assert!(
+            shutdown_stayed_pending,
+            "shutdown must remain pending until post-dispatch lifecycle work finishes"
+        );
+        assert_eq!(
+            shutdown.await.expect("shutdown outcome"),
+            TaskShutdownOutcome::Complete
+        );
     }
 }

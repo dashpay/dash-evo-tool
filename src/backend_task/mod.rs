@@ -654,7 +654,10 @@ pub enum BackendTaskSuccessResult {
     AddedKeyToIdentity(FeeResult),
     TransferredCredits(FeeResult),
     WithdrewFromIdentity(FeeResult),
-    RegisteredDpnsName(FeeResult),
+    RegisteredDpnsName {
+        outcome: crate::model::dpns::DpnsRegistrationOutcome,
+        fee_result: FeeResult,
+    },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
     /// This identity's keys were sealed under a password (opt-in).

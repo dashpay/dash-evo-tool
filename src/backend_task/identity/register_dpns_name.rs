@@ -2,10 +2,13 @@ use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
-use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
+use crate::{
+    context::AppContext,
+    model::{dpns::classify_dpns_registration_outcome, qualified_identity::DPNSNameInfo},
+};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
-    Sdk,
+    Error as SdkError, Sdk,
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
@@ -122,6 +125,12 @@ impl AppContext {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
         });
+        let outcome = classify_dpns_registration_outcome(
+            &domain_document_type,
+            &domain_document,
+            sdk.version(),
+        )
+        .map_err(|error| SdkError::Protocol(*error))?;
 
         let public_key = qualified_identity
             .document_signing_key(&preorder_document_type)
@@ -238,6 +247,9 @@ impl AppContext {
         self.update_local_qualified_identity(&qualified_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
-        Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))
+        Ok(BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        })
     }
 }

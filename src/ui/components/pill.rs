@@ -73,7 +73,7 @@ pub fn pending_username_tooltip(pending: &PendingUsername) -> String {
         .decided_at
         .and_then(|decided_at| approximate_time_until(decided_at, now_ms))
         .unwrap_or_else(|| {
-            "This username is being confirmed on the network. This can take some time to finish."
+            "Dash masternodes vote on who receives this username. Check back later for updates."
                 .to_string()
         })
 }
@@ -99,6 +99,7 @@ mod tests {
             tip.contains("about 3 hours"),
             "tooltip should carry the ETA: {tip}"
         );
+        assert!(tip.contains("Dash masternodes vote"));
         assert!(tip.ends_with('.'), "tooltip must be a complete sentence");
     }
 
@@ -110,8 +111,12 @@ mod tests {
                 decided_at,
             };
             let tip = pending_username_tooltip(&pending);
-            assert!(!tip.contains("ready in"), "no ETA phrase expected: {tip}");
-            assert!(tip.contains("being confirmed"));
+            assert!(
+                !tip.contains("expected in"),
+                "no ETA phrase expected: {tip}"
+            );
+            assert!(tip.contains("Dash masternodes vote"));
+            assert!(tip.ends_with('.'), "tooltip must be a complete sentence");
         }
     }
 

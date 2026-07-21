@@ -657,6 +657,7 @@ As a user, I want to register a human-readable username on DPNS so that others c
 - Choose identity, enter desired name.
 - Cost estimate displayed before confirmation.
 - While registration runs, a full-window blocking overlay (UX-001) is shown so the same name cannot be submitted twice; it lowers automatically on success or error.
+- Completion feedback distinguishes a username registered for immediate use from a request submitted for community voting.
 
 ### DPN-002: View owned usernames [Implemented]
 **Persona:** Alex, Priya
@@ -728,8 +729,8 @@ As a user who has requested a username that is not yet awarded, I want to see th
 
 - A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identities list and the Identity Home hero card.
 - The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
-- The onboarding checklist reflects the pending state instead of nagging to pick a name.
-- The pill's tooltip states the name is being confirmed and, when the decision time is known, gives an estimated ready time.
+- The onboarding checklist counts the submitted request as completing "Pick a username" while clearly stating that Dash masternodes are voting.
+- The pill's tooltip explains that Dash masternodes decide who receives the username and, when the decision time is known, gives an estimated decision time.
 
 ---
 

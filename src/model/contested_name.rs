@@ -174,23 +174,23 @@ pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Op
     const DAY: u64 = 86_400;
     let secs = remaining_ms / 1_000;
     Some(if secs < HOUR {
-        "This username is being confirmed on the network. It should be ready in less than an hour."
+        "Dash masternodes vote on who receives this username. A decision is expected in less than an hour."
             .to_string()
     } else if secs < 2 * HOUR {
-        "This username is being confirmed on the network. It should be ready in about 1 hour."
+        "Dash masternodes vote on who receives this username. A decision is expected in about 1 hour."
             .to_string()
     } else if secs < DAY {
         let hours = secs / HOUR;
         format!(
-            "This username is being confirmed on the network. It should be ready in about {hours} hours."
+            "Dash masternodes vote on who receives this username. A decision is expected in about {hours} hours."
         )
     } else if secs < 2 * DAY {
-        "This username is being confirmed on the network. It should be ready in about 1 day."
+        "Dash masternodes vote on who receives this username. A decision is expected in about 1 day."
             .to_string()
     } else {
         let days = secs / DAY;
         format!(
-            "This username is being confirmed on the network. It should be ready in about {days} days."
+            "Dash masternodes vote on who receives this username. A decision is expected in about {days} days."
         )
     })
 }
@@ -429,31 +429,31 @@ mod tests {
         assert_eq!(
             approximate_time_until(ms(30 * 60), now).as_deref(),
             Some(
-                "This username is being confirmed on the network. It should be ready in less than an hour."
+                "Dash masternodes vote on who receives this username. A decision is expected in less than an hour."
             )
         );
         assert_eq!(
             approximate_time_until(ms(90 * 60), now).as_deref(),
             Some(
-                "This username is being confirmed on the network. It should be ready in about 1 hour."
+                "Dash masternodes vote on who receives this username. A decision is expected in about 1 hour."
             )
         );
         assert_eq!(
             approximate_time_until(ms(3 * 3_600), now).as_deref(),
             Some(
-                "This username is being confirmed on the network. It should be ready in about 3 hours."
+                "Dash masternodes vote on who receives this username. A decision is expected in about 3 hours."
             )
         );
         assert_eq!(
             approximate_time_until(ms(36 * 3_600), now).as_deref(),
             Some(
-                "This username is being confirmed on the network. It should be ready in about 1 day."
+                "Dash masternodes vote on who receives this username. A decision is expected in about 1 day."
             )
         );
         assert_eq!(
             approximate_time_until(ms(3 * 86_400), now).as_deref(),
             Some(
-                "This username is being confirmed on the network. It should be ready in about 3 days."
+                "Dash masternodes vote on who receives this username. A decision is expected in about 3 days."
             )
         );
     }

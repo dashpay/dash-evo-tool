@@ -516,6 +516,12 @@ impl ScreenLike for MasternodesScreen {
         self.reconcile_pending_load();
     }
 
+    fn reset_to_root_view(&mut self) {
+        if !matches!(self.view, MasternodesView::Load(_)) {
+            self.view = MasternodesView::List;
+        }
+    }
+
     /// Drop every secret the open view holds — the load form's keys and
     /// encryption password, the detail view's unsubmitted voting key. This screen
     /// is a root screen: it lives for the whole process, so nothing else would
@@ -872,6 +878,12 @@ mod tests {
         assert!(
             screen.pending_load.is_none(),
             "submit must re-enable after a failed load"
+        );
+
+        screen.reset_to_root_view();
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "root navigation must preserve a failed load form for correction"
         );
 
         // Resubmit, then succeed: the form closes and drops back to the list.

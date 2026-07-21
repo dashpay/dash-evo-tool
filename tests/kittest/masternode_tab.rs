@@ -3,15 +3,21 @@
 
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
-use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use dash_evo_tool::model::qualified_identity::{
+    IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+};
 use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::platform::Identifier;
-use egui_kittest::kittest::Queryable;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use egui::accesskit::{Role, Toggled};
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -132,6 +138,47 @@ fn seed_node_with_voter_key(app_context: &Arc<AppContext>, byte: u8, alias: &str
     app_context
         .insert_local_qualified_identity(&node_qi, &None)
         .expect("seed node-with-voter-key insert");
+}
+
+/// Seed a masternode with one locally held key. Insertion migrates the clear
+/// key into the keyless vault, matching a loaded node with no password.
+fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, alias: &str) {
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let identity = Identity::new_with_id_and_keys(
+        Identifier::from([byte; 32]),
+        BTreeMap::from([(key.id(), key.clone())]),
+        pv,
+    )
+    .expect("masternode identity with key");
+    let private_keys = KeyStorage {
+        private_keys: BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key),
+                PrivateKeyData::Clear([byte; 32]),
+            ),
+        )]),
+    };
+    let node_qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some(alias.to_string()),
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&node_qi, &None)
+        .expect("seed node-with-unprotected-key insert");
 }
 
 /// TC-FR1-01…04 — the Masternodes nav entry is absent below the Power role and
@@ -785,5 +832,259 @@ fn manage_keys_button_opens_key_info_screen() {
             harness.query_by_label("Key Information").is_some(),
             "the pushed KeyInfoScreen must render its 'Key Information' heading"
         );
+    });
+}
+
+/// Clicking the aggregate protection CTA opens `KeyInfoScreen` with its
+/// confirmation dialog already visible, without a second click in that screen.
+#[test]
+fn add_password_protection_opens_confirmation_dialog() {
+    use dash_evo_tool::ui::Screen;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_unprotected_held_key(&app_context, 0x72, "mn-protect-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-protect-01").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("Add password protection…").is_some(),
+            "an unprotected vault key must offer the aggregate protection action"
+        );
+
+        harness.get_by_label("Add password protection…").click();
+        harness.run_steps(3);
+
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::KeyInfoScreen(_))
+            ),
+            "the aggregate protection action must push KeyInfoScreen"
+        );
+        assert!(
+            harness
+                .query_by_label("Protect this identity's keys with a password?")
+                .is_some(),
+            "the protection confirmation dialog must be visible immediately"
+        );
+        assert!(
+            harness.query_by_label("Yes, add protection").is_some(),
+            "the visible dialog must expose its confirmation action"
+        );
+    });
+}
+
+#[test]
+fn left_nav_return_to_masternodes_resets_detail_to_list() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0x72,
+            "mn-nav-reset-01",
+            IdentityType::Masternode,
+        );
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-nav-reset-01").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("‹ All masternodes").is_some());
+
+        harness
+            .get_by_role_and_label(Role::Button, "Wallets")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Masternodes")
+            .click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Open mn-nav-reset-01").is_some(),
+            "returning through the left nav must show the masternode list"
+        );
+        assert!(harness.query_by_label("‹ All masternodes").is_none());
+    });
+}
+
+#[test]
+fn active_masternodes_left_nav_resets_detail_to_list() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0x74,
+            "mn-active-nav-reset-01",
+            IdentityType::Masternode,
+        );
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-active-nav-reset-01").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("‹ All masternodes").is_some());
+
+        harness
+            .get_by_role_and_label(Role::Button, "Masternodes")
+            .click();
+        harness.run_steps(3);
+
+        assert!(
+            harness
+                .query_by_label("Open mn-active-nav-reset-01")
+                .is_some(),
+            "clicking the already-active Masternodes nav entry must show the list"
+        );
+        assert!(harness.query_by_label("‹ All masternodes").is_none());
+    });
+}
+
+#[test]
+fn left_nav_return_preserves_pending_masternode_load_form_fields() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+        let (blocking_release, blocking_wait) = std::sync::mpsc::channel::<()>();
+        let _blocking_task = tokio::task::spawn_blocking(move || blocking_wait.recv());
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Load a masternode").click();
+        harness.set_size(egui::vec2(1280.0, 1200.0));
+        harness.run_steps(3);
+
+        harness.get_by_label("Evonode").click();
+        harness.run_steps(2);
+        assert_eq!(
+            harness.get_by_label("Evonode").accesskit_node().toggled(),
+            Some(Toggled::True),
+            "the non-default node type must be selected before submission"
+        );
+
+        let identity_id = Identifier::from([0x75; 32]);
+        let pro_tx_hash = identity_id.to_string(Encoding::Hex);
+        harness
+            .query_all_by_role(Role::TextInput)
+            .next()
+            .expect("ProTxHash input")
+            .focus();
+        harness.event(egui::Event::Text(pro_tx_hash.clone()));
+        harness.step();
+
+        let alias = "mn-pending-nav-01";
+        harness
+            .query_all_by_role(Role::TextInput)
+            .nth(1)
+            .expect("alias input")
+            .focus();
+        harness.event(egui::Event::Text(alias.to_owned()));
+        harness.step();
+        assert!(
+            harness.query_all_by_value(&pro_tx_hash).count() >= 1,
+            "the ProTxHash must be entered before submission"
+        );
+        assert!(
+            harness.query_all_by_value(alias).count() >= 1,
+            "the alias must be entered before submission"
+        );
+
+        harness.get_by_label("Load masternode").click();
+        harness.step();
+        assert!(
+            app_context
+                .mark_identity_load_submitted(identity_id)
+                .is_none(),
+            "the load must be pending before navigation"
+        );
+
+        harness
+            .get_by_role_and_label(Role::Button, "Wallets")
+            .click();
+        harness.run_steps(3);
+        harness
+            .get_by_role_and_label(Role::Button, "Masternodes")
+            .click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("ProTxHash").is_some(),
+            "returning while a load is pending must keep the load form open"
+        );
+        assert!(
+            harness.query_all_by_value(&pro_tx_hash).count() >= 1,
+            "the pending load must retain its entered ProTxHash"
+        );
+        assert!(
+            harness.query_all_by_value(alias).count() >= 1,
+            "the pending load must retain its entered alias"
+        );
+        assert_eq!(
+            harness.get_by_label("Evonode").accesskit_node().toggled(),
+            Some(Toggled::True),
+            "the pending load must retain its entered node type"
+        );
+
+        drop(blocking_release);
+        for _ in 0..10 {
+            harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+}
+
+#[test]
+fn go_to_main_screen_from_key_info_preserves_masternode_detail() {
+    use dash_evo_tool::ui::Screen;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_voter_key(&app_context, 0x73, "mn-nav-back-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-nav-back-01").click();
+        harness.run_steps(3);
+        harness.get_by_label("Voting key ›").click();
+        harness.run_steps(3);
+        assert!(matches!(
+            harness.state().screen_stack.last(),
+            Some(Screen::KeyInfoScreen(_))
+        ));
+
+        harness
+            .query_all_by_role_and_label(Role::Button, "Identities")
+            .min_by(|left, right| left.rect().top().total_cmp(&right.rect().top()))
+            .expect("Key Info breadcrumb")
+            .click();
+        harness.run_steps(3);
+
+        assert!(harness.state().screen_stack.is_empty());
+        assert!(
+            harness.query_by_label("‹ All masternodes").is_some(),
+            "returning from Key Info must preserve the open detail view"
+        );
+        assert!(harness.query_by_label("Open mn-nav-back-01").is_none());
     });
 }

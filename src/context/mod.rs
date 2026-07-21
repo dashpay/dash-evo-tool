@@ -1145,9 +1145,13 @@ impl AppContext {
     /// [`NullSecretPrompt`], which surfaces `SecretPromptUnavailable` for any
     /// passphrase-protected scope.
     pub fn install_secret_prompt(&self, prompt: Arc<dyn SecretPrompt>) {
-        if let Ok(mut guard) = self.secret_prompt.0.lock() {
-            *guard = prompt;
-        }
+        let mut guard = self
+            .secret_prompt
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = prompt;
+        self.secret_prompt.0.clear_poison();
     }
 
     /// The currently-installed secret-prompt host. Falls back to the headless
@@ -1508,6 +1512,27 @@ pub(crate) const fn default_platform_version(_network: &Network) -> &'static Pla
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_secret_prompt_recovers_poisoned_slot() {
+        use crate::context::test_support::test_app_context;
+        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ctx.secret_prompt.0.lock().expect("prompt slot lock");
+            panic!("poison prompt slot");
+        }));
+        assert!(poisoned.is_err(), "the prompt slot must be poisoned");
+
+        let prompt: Arc<dyn SecretPrompt> = Arc::new(TestPrompt::never());
+        ctx.install_secret_prompt(Arc::clone(&prompt));
+        assert!(
+            Arc::ptr_eq(&prompt, &ctx.secret_prompt()),
+            "install_secret_prompt must replace the host after lock poisoning"
+        );
+    }
 
     #[test]
     fn wallet_name_with_spaces_is_url_encoded() {

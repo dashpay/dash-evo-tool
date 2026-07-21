@@ -6,10 +6,8 @@ Planning specification. No implementation is authorized by this document.
 
 ## Problem statement
 
-DET exposes DPNS voting through two disconnected experiences:
-
-- a quick per-node section on the Masternodes detail page; and
-- a legacy DPNS bulk dialog for multiple contests, nodes, and schedules.
+DET previously exposed DPNS voting through disconnected per-node and bulk
+experiences. The adopted design consolidates them on DPNS Active contests.
 
 Both call the same backend, but neither owns a complete, authoritative model of
 the operation. The result is unsafe ambiguity: a vote can be accepted while DET
@@ -47,14 +45,15 @@ Everyday User workflow.
 | Progress is screen-owned | App results are routed to the currently visible screen | Navigation can strand controls in progress or deliver feedback to the wrong page |
 | Duplicate prevention is local or absent | Quick and bulk submit buttons do not share an operation lock | Repeated clicks or cross-screen actions can submit duplicates |
 | Post-broadcast wait failure is ambiguous | A cause-less `StateTransitionBroadcastError` can follow successful broadcast | DET must not label it rejected or invite immediate retry |
-| Legacy bulk workflow is disconnected | Bulk and scheduling live under DPNS while node management lives under Masternodes | Operators can miss existing capabilities or assume they were removed |
+| Voting entry points were disconnected | Per-node and bulk flows used different UI ownership | Operators could miss capabilities or assume they were removed |
 
 ## Product decisions
 
-1. Masternodes is the primary home for operator voting.
-2. DPNS remains the home for name registration, contest discovery, and contest
-   history, with a route into the shared voting workspace.
-3. Quick voting and bulk/scheduled voting use one shared composer and one shared
+1. DPNS Active contests is the single home for immediate, bulk, and scheduled
+   vote composition.
+2. Masternode detail links plainly to Active contests without carrying a node
+   filter or draft.
+3. Single and bulk/scheduled voting use one review sheet and one shared
    operation coordinator.
 4. Current vote state is authoritative Platform data, not UI-local memory.
 5. A vote row remains visible after voting and shows the current choice. Voting
@@ -68,12 +67,11 @@ Everyday User workflow.
 
 ### Information architecture
 
-- **VOTE-FR-001** — Masternodes provides `Nodes`, `Voting`, and `Scheduled`
-  views under one operator-focused root.
-- **VOTE-FR-002** — The DPNS Active Contests page links to the same Voting view;
-  it does not maintain a second bulk implementation.
-- **VOTE-FR-003** — A node detail page offers quick voting and an `Open Voting
-  Center` action pre-filtered to that node.
+- **VOTE-FR-001** — Masternodes provides only the node list and node detail.
+- **VOTE-FR-002** — DPNS Active contests owns the single vote composer and
+  review sheet.
+- **VOTE-FR-003** — A node detail page offers one `DPNS Voting` action that
+  navigates plainly to Active contests.
 
 ### Authoritative state
 

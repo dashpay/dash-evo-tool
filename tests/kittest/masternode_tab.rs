@@ -308,10 +308,10 @@ fn empty_state_renders_canonical_copy() {
     });
 }
 
-/// VOTE-TC-023: operator navigation exposes Nodes, Voting, and Scheduled and
-/// opens the shared full-page composer.
+/// The Masternodes root contains only its list and detail flow. DPNS owns all
+/// voting and scheduled-vote navigation.
 #[test]
-fn voting_navigation_routes_to_shared_workspaces() {
+fn masternodes_has_no_operator_voting_subnavigation() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -320,44 +320,16 @@ fn voting_navigation_routes_to_shared_workspaces() {
         let app_context = harness.state().current_app_context().clone();
         activate_masternodes_tab(&mut harness, &app_context);
 
-        assert!(harness.query_by_label("Nodes").is_some());
-        assert!(harness.query_by_label("Voting").is_some());
-        assert!(harness.query_by_label("Scheduled").is_some());
-
-        harness.get_by_label("Voting").click();
-        harness.run_steps(3);
-        assert_eq!(
-            harness.state().selected_main_screen,
-            RootScreenType::RootScreenMasternodes
-        );
-        assert!(
-            harness
-                .query_by_label("Step 1 of 3: Nodes and timing")
-                .is_some()
-        );
-        assert!(
-            harness
-                .query_by_label("No voting nodes are available")
-                .is_some(),
-            "an empty voting workspace must explain why voting cannot start"
-        );
-        assert!(
-            harness.query_by_label("Go to Nodes").is_some(),
-            "an empty voting workspace must offer a direct recovery action"
-        );
-        harness.get_by_label("Go to Nodes").click();
-        harness.run_steps(2);
-        assert!(
-            harness.query_by_label("No masternodes loaded").is_some(),
-            "the empty-workspace recovery action must return to the Nodes tab"
-        );
+        assert!(harness.query_by_label("Nodes").is_none());
+        assert!(harness.query_by_label("Voting").is_none());
+        assert!(harness.query_by_label("Scheduled").is_none());
+        assert!(harness.query_by_label("No masternodes loaded").is_some());
     });
 }
 
-/// VOTE-TC-023/075: the retired DPNS scheduled surface redirects to the shared
-/// Masternodes scheduled view instead of exposing a second submit path.
+/// Scheduled votes remain a DPNS subscreen.
 #[test]
-fn legacy_dpns_scheduled_route_opens_masternodes_scheduled_view() {
+fn dpns_scheduled_route_stays_in_dpns() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -367,9 +339,9 @@ fn legacy_dpns_scheduled_route_opens_masternodes_scheduled_view() {
 
         assert_eq!(
             harness.state().selected_main_screen,
-            RootScreenType::RootScreenMasternodes
+            RootScreenType::RootScreenDPNSScheduledVotes
         );
-        assert!(harness.query_by_label("Scheduled votes").is_some());
+        assert!(harness.query_by_label("No scheduled votes.").is_some());
     });
 }
 
@@ -610,13 +582,10 @@ fn detail_view_opens_from_card_with_sections_and_back() {
     });
 }
 
-/// TC-DPNS-01/02/09/10 — the DPNS section is collapsed by default (its body is
-/// not rendered), the header carries the open-contest count, and for a node with
-/// no voter identity the expanded section shows the actionable missing-voter
-/// message with an `Add voting key` action that opens a scoped in-place prompt
-/// (not FR-4's load form — no ProTxHash field).
+/// The detail screen has one plain route to DPNS voting and no inline voting
+/// controls or node-prefilter state.
 #[test]
-fn dpns_section_missing_voter_scoped_prompt() {
+fn detail_dpns_voting_button_opens_active_contests() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -628,42 +597,22 @@ fn dpns_section_missing_voter_scoped_prompt() {
         harness.get_by_label("Open mn-vote-01").click();
         harness.run_steps(3);
 
-        // With no voter key the "Add voting key" CTA and its
-        // actionable message are rendered ABOVE, outside the collapsed-by-default
-        // DPNS section, so they are visible immediately without expanding
-        // anything. The empty DPNS header is omitted in this state (no contests
-        // are possible without a voter).
+        assert!(harness.query_by_label("DPNS Voting").is_some());
         assert!(
             harness
-                .query_by_label("DPNS name contests to vote on (0)")
-                .is_none(),
-            "the empty DPNS header must be omitted when the node has no voter key"
+                .query_by_label_contains("DPNS name contests to vote on")
+                .is_none()
         );
-        assert!(
-            harness
-                .query_by_label(
-                    "This node has no voting key loaded. Add its voting private key to cast votes."
-                )
-                .is_some(),
-            "the actionable missing-voter message must be visible without expanding"
-        );
-        assert!(
-            harness.query_by_label("Add voting key").is_some(),
-            "missing-voter state must offer an Add voting key action"
-        );
+        assert!(harness.query_by_label("Add voting key").is_none());
+        assert!(harness.query_by_label_contains("Review ").is_none());
 
-        // Click Add voting key → scoped in-place prompt (Save/Cancel), NOT the
-        // load form (no ProTxHash field) (TC-DPNS-10/11).
-        harness.get_by_label("Add voting key").click();
+        harness.get_by_label("DPNS Voting").click();
         harness.run_steps(3);
-        assert!(
-            harness.query_by_label("Save").is_some(),
-            "scoped voter-key prompt must open with a Save action"
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenDPNSActiveContests
         );
-        assert!(
-            harness.query_by_label("ProTxHash").is_none(),
-            "the scoped prompt must not be FR-4's load form (no ProTxHash re-entry)"
-        );
+        assert!(harness.query_by_label("Active contests").is_some());
     });
 }
 

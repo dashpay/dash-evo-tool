@@ -325,7 +325,7 @@ fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
 }
 
-fn dpns_result_needs_hidden_masternode_route(
+fn dpns_result_needs_hidden_active_contests_route(
     selected: RootScreenType,
     screen_stack_is_empty: bool,
     result: &BackendTaskSuccessResult,
@@ -334,7 +334,7 @@ fn dpns_result_needs_hidden_masternode_route(
         result,
         BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
             | BackendTaskSuccessResult::RefreshedDpnsContests
-    ) && (selected != RootScreenType::RootScreenMasternodes || !screen_stack_is_empty)
+    ) && (selected != RootScreenType::RootScreenDPNSActiveContests || !screen_stack_is_empty)
 }
 
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
@@ -2048,12 +2048,12 @@ impl AppState {
         }
     }
 
-    fn route_dpns_vote_result_to_hidden_masternodes(
+    fn route_dpns_vote_result_to_hidden_active_contests(
         &mut self,
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
-        if !dpns_result_needs_hidden_masternode_route(
+        if !dpns_result_needs_hidden_active_contests_route(
             self.selected_main_screen,
             self.screen_stack.is_empty(),
             result,
@@ -2062,9 +2062,10 @@ impl AppState {
         }
         if let Some(screen) = self
             .main_screens
-            .get_mut(&RootScreenType::RootScreenMasternodes)
+            .get_mut(&RootScreenType::RootScreenDPNSActiveContests)
         {
             screen.display_backend_task_result(context, result.clone());
+            screen.refresh();
         }
     }
 
@@ -2216,7 +2217,10 @@ impl App for AppState {
                 } => {
                     let unboxed_message = *message;
                     self.route_contact_request_result_to_hidden_hub(&unboxed_message);
-                    self.route_dpns_vote_result_to_hidden_masternodes(&context, &unboxed_message);
+                    self.route_dpns_vote_result_to_hidden_active_contests(
+                        &context,
+                        &unboxed_message,
+                    );
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::Refresh => {
@@ -3340,32 +3344,32 @@ mod dpns_result_routing_tests {
     use crate::model::dpns_voting::DpnsVoteOperationId;
 
     #[test]
-    fn correlated_vote_result_routes_when_masternodes_root_is_hidden() {
+    fn correlated_vote_result_routes_when_active_contests_is_hidden() {
         let result = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: Network::Testnet,
             operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
         };
 
-        assert!(dpns_result_needs_hidden_masternode_route(
+        assert!(dpns_result_needs_hidden_active_contests_route(
             RootScreenType::RootScreenWalletsBalances,
             true,
             &result,
         ));
-        assert!(dpns_result_needs_hidden_masternode_route(
-            RootScreenType::RootScreenMasternodes,
+        assert!(dpns_result_needs_hidden_active_contests_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             false,
             &result,
         ));
-        assert!(!dpns_result_needs_hidden_masternode_route(
-            RootScreenType::RootScreenMasternodes,
+        assert!(!dpns_result_needs_hidden_active_contests_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             true,
             &result,
         ));
     }
 
     #[test]
-    fn refreshed_contests_route_when_masternodes_root_is_hidden() {
-        assert!(dpns_result_needs_hidden_masternode_route(
+    fn refreshed_contests_route_when_active_contests_is_hidden() {
+        assert!(dpns_result_needs_hidden_active_contests_route(
             RootScreenType::RootScreenWalletsBalances,
             true,
             &BackendTaskSuccessResult::RefreshedDpnsContests,

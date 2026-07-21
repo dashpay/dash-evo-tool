@@ -45,7 +45,6 @@ use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionC
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
@@ -75,15 +74,6 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings
 pub(crate) struct ContactRequestActionClaim<'a> {
     registry: &'a Mutex<HashSet<Identifier>>,
     request_id: Identifier,
-}
-
-/// One-shot navigation into the Masternodes DPNS operator workflow.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DpnsOperatorRoute {
-    Voting {
-        choices: BTreeMap<String, ResourceVoteChoice>,
-    },
-    Scheduled,
 }
 
 impl Drop for ContactRequestActionClaim<'_> {
@@ -248,8 +238,6 @@ pub struct AppContext {
     /// the hub adopts it on return (forward-courier, mirrors
     /// `pending_wallet_selection`).
     pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
-    /// One-shot DPNS deep link consumed by the Masternodes Voting Center.
-    pending_dpns_operator_route: Mutex<Option<DpnsOperatorRoute>>,
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
@@ -525,7 +513,6 @@ impl AppContext {
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
             selected_identity_id: Mutex::new(None),
             pending_identity_selection: Mutex::new(None),
-            pending_dpns_operator_route: Mutex::new(None),
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
@@ -706,40 +693,6 @@ impl AppContext {
 
     pub fn network(&self) -> Network {
         self.network
-    }
-
-    /// Route DPNS contest browsing into the shared Masternodes Voting Center.
-    pub fn route_to_dpns_voting_center(&self, contested_names: Vec<String>) {
-        self.route_to_dpns_operator(DpnsOperatorRoute::Voting {
-            choices: contested_names
-                .into_iter()
-                .map(|name| (name, ResourceVoteChoice::Abstain))
-                .collect(),
-        });
-    }
-
-    /// Route to the shared Masternodes DPNS operator workflow.
-    pub fn route_to_dpns_operator(&self, route: DpnsOperatorRoute) {
-        *self
-            .pending_dpns_operator_route
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(route);
-    }
-
-    /// Consume a one-shot DPNS → Masternodes Voting Center deep link.
-    pub fn take_dpns_voting_center_route(&self) -> Option<Vec<String>> {
-        match self.take_dpns_operator_route()? {
-            DpnsOperatorRoute::Voting { choices } => Some(choices.into_keys().collect()),
-            DpnsOperatorRoute::Scheduled => None,
-        }
-    }
-
-    /// Consume a one-shot DPNS operator deep link.
-    pub fn take_dpns_operator_route(&self) -> Option<DpnsOperatorRoute> {
-        self.pending_dpns_operator_route
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
     }
 
     pub fn connection_status(&self) -> &ConnectionStatus {
@@ -1651,7 +1604,6 @@ pub(crate) const fn default_platform_version(_network: &Network) -> &'static Pla
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
     #[test]
     fn install_secret_prompt_recovers_poisoned_slot() {
@@ -1682,30 +1634,6 @@ mod tests {
         let url = format!("{}/wallet/{}", base, encoded);
         assert_eq!(url, "http://127.0.0.1:9998/wallet/my%20test%20wallet");
         assert!(!url.contains(' '));
-    }
-
-    /// VOTE-TC-023: the DPNS deep link preserves each exact selected choice.
-    #[test]
-    fn dpns_voting_center_route_preserves_selected_choices() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let ctx = crate::context::test_support::test_app_context(tmp.path());
-        let candidate = Identifier::from([7; 32]);
-        let choices = BTreeMap::from([
-            ("alice".to_owned(), ResourceVoteChoice::Lock),
-            (
-                "dominguez".to_owned(),
-                ResourceVoteChoice::TowardsIdentity(candidate),
-            ),
-        ]);
-
-        ctx.route_to_dpns_operator(DpnsOperatorRoute::Voting {
-            choices: choices.clone(),
-        });
-
-        assert_eq!(
-            ctx.take_dpns_operator_route(),
-            Some(DpnsOperatorRoute::Voting { choices })
-        );
     }
 
     // ── FR-6 resolution-layer boundary (B1) ──────────────────────────────────

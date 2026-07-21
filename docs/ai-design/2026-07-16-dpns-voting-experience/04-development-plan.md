@@ -198,38 +198,26 @@ backend tasks. One operation owns both kinds of targets.
 
 ### Non-rendering state
 
-Add `src/ui/state/dpns_vote_workspace.rs` for:
-
-- draft contest choices;
-- selected nodes and timing;
-- current composer step;
-- validation and no-op explanations;
-- conversion to a typed operation request.
+Cache proved current-vote state once when Active contests is built or explicitly
+refreshed. Rendering and draft changes read only this in-memory snapshot; they
+never perform synchronous KV reads in the egui frame loop.
 
 ### Shared rendering
 
-Add `src/ui/components/dpns_vote_composer.rs` implementing the three steps from
-the UX specification.
-
-The compact node-detail controls use the same draft/view-model logic and open
-the shared review step. They do not implement a separate submit path.
+Active contests owns card grouping, draft choices, the sticky review tray, and
+the in-screen `Review and cast` sheet. The sheet expands the draft into typed
+node × contest targets and submits one `DpnsVoteOperation`.
 
 ### Masternodes views
 
-Extend the Masternodes root state with:
-
-- Nodes
-- Voting
-- Scheduled
-- Operation detail
-
-The root observes coordinator snapshots, so progress survives sub-view changes.
+Keep the Masternodes root limited to the node list and node detail. Detail has a
+single `DPNS Voting` button that opens DPNS Active contests without prefiltering.
 
 ### DPNS integration
 
-Replace the legacy bulk popup with `Vote with masternodes`, routing selected
-contests into the shared Voting workspace. Keep Active, Past, and My Usernames
-contest/name browsing in DPNS.
+Replace the legacy table and top-bar trigger with grouped contest cards, a
+sticky `Votes ready to cast` tray, and the in-screen review sheet. Keep Active,
+Past, My usernames, and Scheduled votes in DPNS.
 
 ## Message handling
 
@@ -265,12 +253,12 @@ without every voting entry point using it.
 - Fix scheduled false-success behavior at the executor boundary.
 - Covers VOTE-TC-030 through VOTE-TC-056.
 
-### Workstream C — Shared Voting Center
+### Workstream C — Active-contests voting
 
-- Add shared composer and Masternodes Voting view.
-- Integrate quick node flow.
-- Add operation detail/progress.
-- Route DPNS Active Contests into the shared workspace.
+- Add grouped contest cards and the review sheet.
+- Replace node-detail voting with plain DPNS navigation.
+- Add operation progress and recovery to Active contests.
+- Remove the Masternodes operator sub-navigation and wizard.
 - Covers VOTE-TC-010 through VOTE-TC-025 and VOTE-TC-070 through VOTE-TC-076.
 
 ### Workstream D — Scheduled consolidation and migration
@@ -299,5 +287,5 @@ reviewed as one atomic UX change.
 - Revise DPN-005, DPN-006, DPN-007, and MN-003 acceptance criteria.
 - Correct the protocol note to five votes total: initial vote plus four changes.
 - Add a user story for operation recovery across navigation/restart.
-- Replace the previous Masternodes design decision that made scheduled voting
-  undiscoverable from the operator page.
+- Document DPNS Active contests as the single voting home and keep Scheduled
+  votes discoverable in the DPNS sub-navigation.

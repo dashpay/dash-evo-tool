@@ -10,7 +10,6 @@ pub mod detail_screen;
 pub mod list_screen;
 pub mod load_form;
 pub mod testnet_fixture;
-pub mod voting_center;
 
 pub use list_screen::MasternodesScreen;
 

@@ -9,7 +9,7 @@ pub mod account_summary;
 pub mod avatar_cache;
 pub mod contacts_view;
 pub mod dpns_vote_operations;
-pub mod dpns_vote_workspace;
+pub mod dpns_vote_state;
 pub mod global_nav;
 pub mod hub_selection;
 pub mod masternodes_view;

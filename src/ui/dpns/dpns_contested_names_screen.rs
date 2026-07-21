@@ -10,28 +10,31 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Button, Color32, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
-use itertools::Itertools;
 
 use crate::app::{AppAction, DesiredAppAction, scheduled_vote_sweep_is_quiet};
-use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
-use crate::context::{AppContext, DpnsOperatorRoute};
+use crate::backend_task::{BackendTask, BackendTaskContext};
+use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming,
+    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
 };
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::progress_overlay::{OptionOverlayExt, OverlayConfig, OverlayHandle};
 use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot;
+use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -42,6 +45,79 @@ pub enum DPNSSubscreen {
     Past,
     Owned,
     ScheduledVotes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveContestGroup {
+    NeedsVote,
+    Voted,
+    NotVotable,
+}
+
+fn classify_vote_states(
+    states: impl IntoIterator<Item = DpnsCurrentVoteState>,
+) -> ActiveContestGroup {
+    let mut has_vote = false;
+    for state in states {
+        match state {
+            DpnsCurrentVoteState::Available(None) => return ActiveContestGroup::NeedsVote,
+            DpnsCurrentVoteState::Available(Some(_)) => has_vote = true,
+            DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {}
+        }
+    }
+    if has_vote {
+        ActiveContestGroup::Voted
+    } else {
+        ActiveContestGroup::NotVotable
+    }
+}
+
+fn tally_chip(ui: &mut Ui, votes: u32, dark_mode: bool) {
+    egui::Frame::new()
+        .fill(DashColors::surface(dark_mode))
+        .corner_radius(egui::CornerRadius::same(255))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(format!("{votes} votes"));
+        });
+}
+
+fn short_identifier(identifier: Identifier) -> String {
+    let encoded = identifier.to_string(Encoding::Base58);
+    format!("{}…{}", &encoded[..6], &encoded[encoded.len() - 4..])
+}
+
+fn vote_choice_label(choice: ResourceVoteChoice) -> String {
+    match choice {
+        ResourceVoteChoice::Lock => "Lock name".to_owned(),
+        ResourceVoteChoice::Abstain => "Abstain".to_owned(),
+        ResourceVoteChoice::TowardsIdentity(identifier) => {
+            format!("Vote for {}", short_identifier(identifier))
+        }
+    }
+}
+
+fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
+    match status {
+        DpnsVoteTargetStatus::Scheduled => "Scheduled",
+        DpnsVoteTargetStatus::Queued => "Queued",
+        DpnsVoteTargetStatus::Submitting => "Submitting",
+        DpnsVoteTargetStatus::Confirming => "Confirming",
+        DpnsVoteTargetStatus::Confirmed => "Confirmed",
+        DpnsVoteTargetStatus::Unconfirmed => "Confirmation is still being checked",
+        DpnsVoteTargetStatus::Rejected => "Rejected",
+        DpnsVoteTargetStatus::FailedBeforeSubmission => "Not submitted",
+        DpnsVoteTargetStatus::NotApplied => "Not applied",
+        DpnsVoteTargetStatus::Cancelled => "Cancelled",
+    }
+}
+
+fn dpns_operation_id(context: &BackendTaskContext) -> Option<DpnsVoteOperationId> {
+    match context {
+        BackendTaskContext::Dispatched { operation, .. } => dpns_operation_id(operation),
+        BackendTaskContext::DpnsVoteOperation { operation_id, .. } => Some(*operation_id),
+        _ => None,
+    }
 }
 
 impl DPNSSubscreen {
@@ -98,8 +174,6 @@ pub enum RefreshingStatus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SortColumn {
     ContestedName,
-    LockedVotes,
-    AbstainVotes,
     EndingTime,
     LastUpdated,
     AwardedTo,
@@ -127,6 +201,11 @@ pub struct DPNSScreen {
     pub app_context: Arc<AppContext>,
     pending_backend_task: Option<BackendTask>,
     vote_operations: DpnsVoteOperationSnapshot,
+    vote_state: DpnsVoteStateSnapshot,
+    vote_overlay: Option<OverlayHandle>,
+    pending_vote_operation: Option<DpnsVoteOperationId>,
+    clear_vote_overlay_on_error: bool,
+    scheduled_clear_dialog: Option<(bool, ConfirmationDialog)>,
 
     /// Sorting
     sort_column: SortColumn,
@@ -143,9 +222,7 @@ pub struct DPNSScreen {
     /// Selected vote handling
     show_bulk_schedule_popup: bool,
     bulk_identity_options: Vec<VoteOption>,
-    bulk_schedule_message: Option<(MessageType, String)>,
     bulk_vote_handling_status: VoteHandlingStatus,
-    vote_banner: Option<BannerHandle>,
     set_all_option: VoteOption,
 }
 
@@ -192,6 +269,21 @@ impl DPNSScreen {
                 );
                 DpnsVoteOperationSnapshot::default()
             });
+        let vote_poll_ids = contested_names
+            .lock_recover()
+            .iter()
+            .filter_map(|contest| {
+                app_context
+                    .dpns_vote_poll_id(&contest.normalized_contested_name)
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        let voter_ids = voting_identities
+            .iter()
+            .map(|identity| identity.identity.id())
+            .collect::<Vec<_>>();
+        let vote_state = DpnsVoteStateSnapshot::load(app_context, &voter_ids, &vote_poll_ids)
+            .unwrap_or_default();
 
         // Initialize vote handling pop-up state to hidden
         let identity_count = voting_identities.len();
@@ -213,6 +305,11 @@ impl DPNSScreen {
             scheduled_vote_cast_in_progress: false,
             pending_backend_task: None,
             vote_operations,
+            vote_state,
+            vote_overlay: None,
+            pending_vote_operation: None,
+            clear_vote_overlay_on_error: false,
+            scheduled_clear_dialog: None,
             dpns_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
             refresh_banner: None,
@@ -220,9 +317,7 @@ impl DPNSScreen {
             // Vote handling
             show_bulk_schedule_popup: false,
             bulk_identity_options,
-            bulk_schedule_message: None,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
-            vote_banner: None,
             set_all_option: VoteOption::CastNow,
         }
     }
@@ -248,8 +343,6 @@ impl DPNSScreen {
                 SortColumn::ContestedName => a
                     .normalized_contested_name
                     .cmp(&b.normalized_contested_name),
-                SortColumn::LockedVotes => a.locked_votes.cmp(&b.locked_votes),
-                SortColumn::AbstainVotes => a.abstain_votes.cmp(&b.abstain_votes),
                 SortColumn::EndingTime => a.end_time.cmp(&b.end_time),
                 SortColumn::LastUpdated => a.last_updated.cmp(&b.last_updated),
                 SortColumn::AwardedTo => a.awarded_to.cmp(&b.awarded_to),
@@ -335,7 +428,7 @@ impl DPNSScreen {
                 let dark_mode = ui.style().visuals.dark_mode;
                 let text_color = DashColors::text_primary(dark_mode);
                 ui.label(
-                    RichText::new("To schedule votes, go to the Active Contests subscreen, click your choices, and then click the 'Vote' button in the top-right.").color(text_color)
+                    RichText::new("Choose votes on the Active contests screen, then use Review and cast to schedule them.").color(text_color)
                 );
             }
         });
@@ -347,331 +440,356 @@ impl DPNSScreen {
     // Rendering: Active, Past, Owned, Scheduled
     // ---------------------------
 
-    /// Show the Active Contests table
-    fn render_table_active_contests(&mut self, ui: &mut Ui) {
+    /// Render active contests as decision cards grouped by what the loaded nodes can do.
+    fn render_active_contests(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
-            let dark_mode = ui.style().visuals.dark_mode;
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
             ui.text_edit_singleline(&mut self.active_filter_term);
         });
+        ui.label(
+            RichText::new("Each node can change its vote up to four times after its initial vote.")
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(8.0);
 
-        let contested_names = {
-            let guard = self.contested_names.lock_recover();
-            let mut cn = guard.clone();
-            if !self.active_filter_term.is_empty() {
-                let mut filter_lc = self.active_filter_term.to_lowercase();
-                // Convert o and O to 0 and l to 1 in filter_lc
-                filter_lc = filter_lc
-                    .chars()
-                    .map(|c| match c {
-                        'o' | 'O' => '0',
-                        'l' => '1',
-                        _ => c,
-                    })
-                    .collect();
-                cn.retain(|c| {
-                    c.normalized_contested_name
+        let filter = self.active_filter_term.to_lowercase();
+        let contests = self
+            .contested_names
+            .lock_recover()
+            .iter()
+            .filter(|contest| {
+                filter.is_empty()
+                    || contest
+                        .normalized_contested_name
                         .to_lowercase()
-                        .contains(&filter_lc)
-                });
-            }
-            self.sort_contested_names(&mut cn);
-            cn
-        };
+                        .contains(&filter)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut groups = [Vec::new(), Vec::new(), Vec::new()];
+        for contest in contests {
+            let index = match self.contest_group(&contest) {
+                ActiveContestGroup::NeedsVote => 0,
+                ActiveContestGroup::Voted => 1,
+                ActiveContestGroup::NotVotable => 2,
+            };
+            groups[index].push(contest);
+        }
 
-        // Space allocation for UI elements is handled by the layout system
+        egui::ScrollArea::vertical()
+            .id_salt("active_contest_cards")
+            .show(ui, |ui| {
+                self.render_contest_group(ui, "Needs your vote", &groups[0], true, true);
+                self.render_contest_group(ui, "Voted", &groups[1], false, true);
+                self.render_contest_group(
+                    ui,
+                    "Not votable by your nodes",
+                    &groups[2],
+                    false,
+                    false,
+                );
+                self.render_voting_activity(ui);
+            });
 
-        egui::ScrollArea::both().show(ui, |ui| {
-            TableBuilder::new(ui)
-                .striped(false)
-                .resizable(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::auto().resizable(true)) // Contested Name
-                .column(Column::auto().resizable(true)) // Locked
-                .column(Column::auto().resizable(true)) // Abstain
-                .column(Column::auto().resizable(true)) // Ending Time
-                .column(Column::auto().resizable(true)) // Last Updated
-                .column(Column::auto().resizable(true)) // Contestants
-                .header(30.0, |mut header| {
-                    header.col(|ui| {
-                        if ui.button("Name").clicked() {
-                            self.toggle_sort(SortColumn::ContestedName);
-                        }
-                    });
-                    header.col(|ui| {
-                        if ui.button("Locked Votes").clicked() {
-                            self.toggle_sort(SortColumn::LockedVotes);
-                        }
-                    });
-                    header.col(|ui| {
-                        if ui.button("Abstain Votes").clicked() {
-                            self.toggle_sort(SortColumn::AbstainVotes);
-                        }
-                    });
-                    header.col(|ui| {
-                        if ui.button("Ending Time").clicked() {
-                            self.toggle_sort(SortColumn::EndingTime);
-                        }
-                    });
-                    header.col(|ui| {
-                        if ui.button("Last Updated").clicked() {
-                            self.toggle_sort(SortColumn::LastUpdated);
-                        }
-                    });
-                    header.col(|ui| {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.heading(
-                            RichText::new("Contestants").color(DashColors::text_primary(dark_mode)),
-                        );
-                    });
-                })
-                .body(|mut body| {
-                    for contested_name in &contested_names {
-                        body.row(25.0, |mut row| {
-                            let locked_votes = contested_name.locked_votes.unwrap_or(0);
-                            let max_contestant_votes = contested_name
-                                .contestants
-                                .as_ref()
-                                .map(|contestants| {
-                                    contestants.iter().map(|c| c.votes).max().unwrap_or(0)
-                                })
-                                .unwrap_or(0);
-                            let is_locked_votes_bold = locked_votes > max_contestant_votes;
-
-                            // Contested Name
-                            row.col(|ui| {
-                                let (used_name, highlighted) =
-                                    if let Some(contestants) = &contested_name.contestants {
-                                        if let Some(first) = contestants.first() {
-                                            if contestants.iter().all(|c| c.name == first.name) {
-                                                // Everyone has same name
-                                                (
-                                                    first.name.clone(),
-                                                    Some(
-                                                        contested_name
-                                                            .normalized_contested_name
-                                                            .clone(),
-                                                    ),
-                                                )
-                                            } else {
-                                                // Multiple different names
-                                                (
-                                                    contestants
-                                                        .iter()
-                                                        .map(|c| c.name.clone())
-                                                        .join(" or "),
-                                                    Some(
-                                                        contestants
-                                                            .iter()
-                                                            .map(|c| {
-                                                                format!(
-                                                                    "{} trying to get {}",
-                                                                    c.id,
-                                                                    c.name.clone()
-                                                                )
-                                                            })
-                                                            .join(" and "),
-                                                    ),
-                                                )
-                                            }
-                                        } else {
-                                            (contested_name.normalized_contested_name.clone(), None)
-                                        }
-                                    } else {
-                                        (contested_name.normalized_contested_name.clone(), None)
-                                    };
-
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                let label_response = ui.label(
-                                    RichText::new(used_name)
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                                if let Some(tooltip) = highlighted {
-                                    label_response.info_tooltip(tooltip);
-                                }
-                            });
-
-                            // LOCK button
-                            row.col(|ui| {
-                                let label_text = format!("{}", locked_votes);
-                                let dark_green = Color32::from_rgb(0, 100, 0);
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                let normal_color = DashColors::text_primary(dark_mode);
-                                let text_widget = if is_locked_votes_bold {
-                                    RichText::new(label_text).strong().color(dark_green)
-                                } else {
-                                    RichText::new(label_text).color(normal_color)
-                                };
-
-                                // See if this (LOCK) is selected
-                                let is_selected = self.selected_votes.iter().any(|sv| {
-                                    sv.contested_name == contested_name.normalized_contested_name
-                                        && sv.vote_choice == ResourceVoteChoice::Lock
-                                });
-
-                                let button = if is_selected {
-                                    Button::new(text_widget).fill(Color32::from_rgb(0, 150, 255))
-                                } else {
-                                    Button::new(text_widget)
-                                };
-                                let resp = ui.add(button);
-                                if resp.clicked() {
-                                    // Is there already a selection for this contested name?
-                                    if let Some(existing_index) =
-                                        self.selected_votes.iter().position(|sv| {
-                                            sv.contested_name
-                                                == contested_name.normalized_contested_name
-                                        })
-                                    {
-                                        // If the user clicked the same choice, that toggles it off (unselect).
-                                        if self.selected_votes[existing_index].vote_choice
-                                            == ResourceVoteChoice::Lock
-                                        {
-                                            // Remove it entirely -> no selection
-                                            self.selected_votes.remove(existing_index);
-                                        } else {
-                                            // Otherwise replace the old choice with Lock
-                                            self.selected_votes[existing_index].vote_choice =
-                                                ResourceVoteChoice::Lock;
-                                        }
-                                    } else {
-                                        // No existing selection for this name, so add this new Lock
-                                        self.selected_votes.push(SelectedVote {
-                                            contested_name: contested_name
-                                                .normalized_contested_name
-                                                .clone(),
-                                            vote_choice: ResourceVoteChoice::Lock,
-                                            end_time: contested_name.end_time,
-                                        });
-                                    }
-                                }
-                            });
-
-                            // ABSTAIN button
-                            row.col(|ui| {
-                                let abstain_votes = contested_name.abstain_votes.unwrap_or(0);
-                                let label_text = format!("{}", abstain_votes);
-
-                                let is_selected = self.selected_votes.iter().any(|sv| {
-                                    sv.contested_name == contested_name.normalized_contested_name
-                                        && sv.vote_choice == ResourceVoteChoice::Abstain
-                                });
-
-                                let button = if is_selected {
-                                    Button::new(label_text).fill(Color32::from_rgb(0, 150, 255))
-                                } else {
-                                    Button::new(label_text)
-                                };
-                                let resp = ui.add(button);
-                                if resp.clicked() {
-                                    // Is there already a selection for this contested name?
-                                    if let Some(existing_index) =
-                                        self.selected_votes.iter().position(|sv| {
-                                            sv.contested_name
-                                                == contested_name.normalized_contested_name
-                                        })
-                                    {
-                                        // If the user clicked the same choice, that toggles it off (unselect).
-                                        if self.selected_votes[existing_index].vote_choice
-                                            == ResourceVoteChoice::Abstain
-                                        {
-                                            // Remove it entirely -> no selection
-                                            self.selected_votes.remove(existing_index);
-                                        } else {
-                                            // Otherwise replace the old choice with Abstain
-                                            self.selected_votes[existing_index].vote_choice =
-                                                ResourceVoteChoice::Abstain;
-                                        }
-                                    } else {
-                                        // No existing selection for this name, so add this new Abstain
-                                        self.selected_votes.push(SelectedVote {
-                                            contested_name: contested_name
-                                                .normalized_contested_name
-                                                .clone(),
-                                            vote_choice: ResourceVoteChoice::Abstain,
-                                            end_time: contested_name.end_time,
-                                        });
-                                    }
-                                }
-                            });
-
-                            // Ending Time
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                if let Some(ending_time) = contested_name.end_time {
-                                    if let LocalResult::Single(dt) =
-                                        Utc.timestamp_millis_opt(ending_time as i64)
-                                    {
-                                        let iso_date = dt.format("%Y-%m-%d %H:%M:%S");
-                                        let relative_time = HumanTime::from(dt).to_string();
-                                        let text = format!("{} ({})", iso_date, relative_time);
-                                        ui.label(
-                                            RichText::new(text)
-                                                .color(DashColors::text_primary(dark_mode)),
-                                        );
-                                    } else {
-                                        ui.label(
-                                            RichText::new("Invalid timestamp")
-                                                .color(DashColors::text_primary(dark_mode)),
-                                        );
-                                    }
-                                } else {
-                                    ui.label(
-                                        RichText::new("Fetching")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                }
-                            });
-
-                            // Last Updated
-                            row.col(|ui| {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                if let Some(last_updated) = contested_name.last_updated {
-                                    if let LocalResult::Single(dt) =
-                                        Utc.timestamp_opt(last_updated as i64, 0)
-                                    {
-                                        let rel_time = HumanTime::from(dt).to_string();
-                                        if rel_time.contains("seconds") {
-                                            ui.label(
-                                                RichText::new("now")
-                                                    .color(DashColors::text_primary(dark_mode)),
-                                            );
-                                        } else {
-                                            ui.label(
-                                                RichText::new(rel_time)
-                                                    .color(DashColors::text_primary(dark_mode)),
-                                            );
-                                        }
-                                    } else {
-                                        ui.label(
-                                            RichText::new("Invalid timestamp")
-                                                .color(DashColors::text_primary(dark_mode)),
-                                        );
-                                    }
-                                } else {
-                                    ui.label(
-                                        RichText::new("Fetching")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                }
-                            });
-
-                            // Contestants
-                            row.col(|ui| {
-                                self.show_contestants_for_contested_name(
-                                    ui,
-                                    contested_name,
-                                    is_locked_votes_bold,
-                                    max_contestant_votes,
-                                );
-                            });
-                        });
-                    }
-                });
+        ui.separator();
+        ui.horizontal(|ui| {
+            let count = self.selected_votes.len();
+            ui.label(
+                RichText::new(format!("Votes ready to cast: {count}"))
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ComponentStyles::add_primary_button_enabled(ui, count > 0, "Review and cast")
+                    .disabled_tooltip("Choose a vote on at least one contest before reviewing it.")
+                    .clicked()
+                {
+                    self.show_bulk_schedule_popup = true;
+                }
+            });
         });
     }
 
-    /// Show a Past Contests table
+    fn contest_group(&self, contest: &ContestedName) -> ActiveContestGroup {
+        let Ok(poll_id) = self
+            .app_context
+            .dpns_vote_poll_id(&contest.normalized_contested_name)
+        else {
+            return ActiveContestGroup::NotVotable;
+        };
+        classify_vote_states(
+            self.voting_identities
+                .iter()
+                .map(|identity| self.vote_state.state(identity.identity.id(), poll_id)),
+        )
+    }
+
+    fn render_contest_group(
+        &mut self,
+        ui: &mut Ui,
+        title: &str,
+        contests: &[ContestedName],
+        default_open: bool,
+        voting_enabled: bool,
+    ) {
+        egui::CollapsingHeader::new(format!("{title} ({})", contests.len()))
+            .default_open(default_open)
+            .show(ui, |ui| {
+                if contests.is_empty() {
+                    ui.label("There are no contests in this group.");
+                }
+                for contest in contests {
+                    let contest_enabled =
+                        voting_enabled && self.contest_has_available_target(contest);
+                    ui.add_enabled_ui(contest_enabled, |ui| {
+                        self.render_contest_card(ui, contest, contest_enabled);
+                    });
+                    ui.add_space(8.0);
+                }
+            });
+    }
+
+    fn contest_has_available_target(&self, contest: &ContestedName) -> bool {
+        let Ok(vote_poll_id) = self
+            .app_context
+            .dpns_vote_poll_id(&contest.normalized_contested_name)
+        else {
+            return false;
+        };
+        self.voting_identities.iter().any(|identity| {
+            let voter_id = identity.identity.id();
+            matches!(
+                self.vote_state.state(voter_id, vote_poll_id),
+                DpnsCurrentVoteState::Available(_)
+            ) && self
+                .vote_operations
+                .target_status(&DpnsVoteTargetKey {
+                    network: self.app_context.network(),
+                    voter_id,
+                    vote_poll_id,
+                })
+                .is_none()
+        })
+    }
+
+    fn render_contest_card(&mut self, ui: &mut Ui, contest: &ContestedName, voting_enabled: bool) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let selected = self
+            .selected_votes
+            .iter()
+            .find(|vote| vote.contested_name == contest.normalized_contested_name)
+            .map(|vote| vote.vote_choice);
+        let locked_votes = contest.locked_votes.unwrap_or_default();
+        let abstain_votes = contest.abstain_votes.unwrap_or_default();
+
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{}.dash", contest.normalized_contested_name))
+                        .heading()
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                if let Some(end_time) = contest.end_time
+                    && let LocalResult::Single(date_time) =
+                        Utc.timestamp_millis_opt(end_time as i64)
+                {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!("Voting ends {}.", HumanTime::from(date_time)))
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    });
+                }
+            });
+            ui.add_space(6.0);
+
+            ui.horizontal_wrapped(|ui| {
+                let clicked = ui
+                    .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock name")
+                    .on_disabled_hover_text(
+                        "None of your loaded nodes can vote on this contest right now.",
+                    )
+                    .clicked();
+                tally_chip(ui, locked_votes, dark_mode);
+                if clicked && voting_enabled {
+                    self.set_selected_vote(contest, ResourceVoteChoice::Lock);
+                }
+
+                let clicked = ui
+                    .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
+                    .clicked();
+                tally_chip(ui, abstain_votes, dark_mode);
+                if clicked && voting_enabled {
+                    self.set_selected_vote(contest, ResourceVoteChoice::Abstain);
+                }
+            });
+
+            if let Some(contestants) = &contest.contestants {
+                for contestant in contestants {
+                    ui.horizontal_wrapped(|ui| {
+                        let choice = ResourceVoteChoice::TowardsIdentity(contestant.id);
+                        let clicked = ui
+                            .selectable_label(
+                                selected == Some(choice),
+                                format!("Vote for {}", contestant.name),
+                            )
+                            .clicked();
+                        tally_chip(ui, contestant.votes, dark_mode);
+                        ui.label(
+                            RichText::new(short_identifier(contestant.id))
+                                .monospace()
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                        if clicked && voting_enabled {
+                            self.set_selected_vote(contest, choice);
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    fn set_selected_vote(&mut self, contest: &ContestedName, choice: ResourceVoteChoice) {
+        if let Some(index) = self
+            .selected_votes
+            .iter()
+            .position(|vote| vote.contested_name == contest.normalized_contested_name)
+        {
+            if self.selected_votes[index].vote_choice == choice {
+                self.selected_votes.remove(index);
+            } else {
+                self.selected_votes[index].vote_choice = choice;
+            }
+        } else {
+            self.selected_votes.push(SelectedVote {
+                contested_name: contest.normalized_contested_name.clone(),
+                vote_choice: choice,
+                end_time: contest.end_time,
+            });
+        }
+    }
+
+    fn render_voting_activity(&mut self, ui: &mut Ui) {
+        let mut operations = self.vote_operations.operations().to_vec();
+        operations.sort_by_key(|operation| operation.created_at);
+        let operations = operations
+            .into_iter()
+            .rev()
+            .filter(|operation| !operation.targets.is_empty())
+            .take(5)
+            .collect::<Vec<_>>();
+        if operations.is_empty() {
+            return;
+        }
+
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.add_space(12.0);
+        ui.heading("Recent voting activity");
+        for operation in operations {
+            let settled = operation
+                .targets
+                .iter()
+                .filter(|outcome| !outcome.status.holds_lock())
+                .count();
+            ui.group(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{settled} of {} votes settled.",
+                        operation.targets.len()
+                    ))
+                    .strong(),
+                );
+                for outcome in &operation.targets {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(format!(
+                            "{}.dash — {} — {}",
+                            outcome.target.contested_name,
+                            vote_choice_label(outcome.target.requested_choice),
+                            target_status_label(outcome.status),
+                        ));
+                        if outcome.status == DpnsVoteTargetStatus::Unconfirmed
+                            && ComponentStyles::add_secondary_button(
+                                ui,
+                                "Check again",
+                                dark_mode,
+                            )
+                            .clicked()
+                        {
+                            self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
+                                ContestedResourceTask::ReconcileDpnsVoteOperation(
+                                    operation.id,
+                                    self.app_context.network(),
+                                ),
+                            ));
+                            self.pending_vote_operation = Some(operation.id);
+                            self.raise_vote_overlay(
+                                ui.ctx(),
+                                "Checking the submitted votes with Platform…",
+                            );
+                        }
+                        if matches!(
+                            outcome.status,
+                            DpnsVoteTargetStatus::Rejected
+                                | DpnsVoteTargetStatus::FailedBeforeSubmission
+                                | DpnsVoteTargetStatus::NotApplied
+                        ) && ComponentStyles::add_secondary_button(
+                            ui,
+                            "Review again",
+                            dark_mode,
+                        )
+                        .clicked()
+                        {
+                            self.set_selected_vote_from_outcome(outcome);
+                            self.bulk_identity_options =
+                                vec![VoteOption::CastNow; self.voting_identities.len()];
+                            self.set_all_option = VoteOption::CastNow;
+                            self.show_bulk_schedule_popup = true;
+                        }
+                    });
+                    if matches!(
+                        outcome.status,
+                        DpnsVoteTargetStatus::Confirming
+                            | DpnsVoteTargetStatus::Unconfirmed
+                    ) {
+                        ui.label(
+                            RichText::new(
+                                "This vote may already have been submitted. Do not submit it again.",
+                            )
+                            .color(DashColors::warning_color(dark_mode)),
+                        );
+                    }
+                }
+            });
+        }
+    }
+
+    fn set_selected_vote_from_outcome(
+        &mut self,
+        outcome: &crate::model::dpns_voting::DpnsVoteOutcome,
+    ) {
+        let name = outcome.target.contested_name.clone();
+        if let Some(vote) = self
+            .selected_votes
+            .iter_mut()
+            .find(|vote| vote.contested_name == name)
+        {
+            vote.vote_choice = outcome.target.requested_choice;
+        } else {
+            self.selected_votes.push(SelectedVote {
+                contested_name: name,
+                vote_choice: outcome.target.requested_choice,
+                end_time: None,
+            });
+        }
+    }
+
+    fn raise_vote_overlay(&mut self, ctx: &egui::Context, message: &str) {
+        self.vote_overlay
+            .raise(ctx, message, OverlayConfig::default());
+    }
     fn render_table_past_contests(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             let dark_mode = ui.style().visuals.dark_mode;
@@ -735,7 +853,7 @@ impl DPNSScreen {
                         }
                     });
                     header.col(|ui| {
-                        if ui.button("Awarded To").clicked() {
+                        if ui.button("Outcome").clicked() {
                             self.toggle_sort(SortColumn::AwardedTo);
                         }
                     });
@@ -826,17 +944,21 @@ impl DPNSScreen {
                                         );
                                     }
                                     ContestState::WonBy(identifier) => {
-                                        ui.add(
-                                            egui::Label::new(
-                                                identifier.to_string(Encoding::Base58),
-                                            )
-                                            .sense(egui::Sense::hover())
-                                            .truncate(),
-                                        );
+                                        let winner = contested_name
+                                            .contestants
+                                            .as_ref()
+                                            .and_then(|contestants| {
+                                                contestants
+                                                    .iter()
+                                                    .find(|contestant| contestant.id == identifier)
+                                            })
+                                            .map(|contestant| contestant.name.clone())
+                                            .unwrap_or_else(|| short_identifier(identifier));
+                                        ui.label(format!("Won by {winner}."));
                                     }
                                     ContestState::Locked => {
                                         ui.label(
-                                            RichText::new("Locked")
+                                            RichText::new("Locked; no name was awarded.")
                                                 .color(DashColors::text_primary(dark_mode)),
                                         );
                                     }
@@ -1003,6 +1125,7 @@ impl DPNSScreen {
     /// Show the Scheduled Votes table
     fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
+        let mut show_cast_overlay = false;
         let mut sorted_votes = {
             let guard = self.scheduled_votes.lock_recover();
             guard.clone()
@@ -1081,22 +1204,21 @@ impl DPNSScreen {
                         body.row(25.0, |mut row| {
                             // Contested name
                             row.col(|ui| {
-                                ui.add(Label::new(&vote.0.contested_name));
+                                ui.add(Label::new(format!("{}.dash", vote.0.contested_name)));
                             });
                             // Voter
                             row.col(|ui| {
-                                ui.add(
-                                    Label::new(vote.0.voter_id.to_string(Encoding::Hex)).truncate(),
-                                );
+                                let voter = self
+                                    .voting_identities
+                                    .iter()
+                                    .find(|identity| identity.identity.id() == vote.0.voter_id)
+                                    .and_then(|identity| identity.alias.clone())
+                                    .unwrap_or_else(|| short_identifier(vote.0.voter_id));
+                                ui.add(Label::new(voter));
                             });
                             // Choice
                             row.col(|ui| {
-                                let display_text = match &vote.0.choice {
-                                    ResourceVoteChoice::TowardsIdentity(id) => {
-                                        id.to_string(Encoding::Base58)
-                                    }
-                                    other => other.to_string(),
-                                };
+                                let display_text = vote_choice_label(vote.0.choice);
                                 ui.add(Label::new(display_text));
                             });
                             // Time
@@ -1200,9 +1322,9 @@ impl DPNSScreen {
                                 ) && !target_is_busy;
 
                                 let cast_button = if cast_button_enabled {
-                                    Button::new("Cast Now")
+                                    Button::new("Cast now")
                                 } else {
-                                    Button::new("Cast Now").sense(egui::Sense::hover())
+                                    Button::new("Cast now").sense(egui::Sense::hover())
                                 };
 
                                 if ui.add(cast_button).clicked() && cast_button_enabled {
@@ -1231,7 +1353,7 @@ impl DPNSScreen {
                                         .iter()
                                         .find(|i| i.identity.id() == vote.0.voter_id)
                                     {
-                                        action = AppAction::BackendTask(
+                                    action = AppAction::BackendTask(
                                             BackendTask::ContestedResourceTask(
                                                 ContestedResourceTask::CastScheduledVote(
                                                     vote.0.clone(),
@@ -1239,6 +1361,7 @@ impl DPNSScreen {
                                                 ),
                                             ),
                                         );
+                                        show_cast_overlay = true;
                                     }
                                 }
                             });
@@ -1247,86 +1370,19 @@ impl DPNSScreen {
                 });
         });
 
+        if show_cast_overlay {
+            self.raise_vote_overlay(ui.ctx(), "Submitting the scheduled vote to Dash Platform…");
+        }
+
         action
     }
 
-    /// For each contested name row, show the possible contestants. This is the old `show_contested_name_details` function.
-    fn show_contestants_for_contested_name(
-        &mut self,
-        ui: &mut Ui,
-        contested_name: &ContestedName,
-        is_locked_votes_bold: bool,
-        max_contestant_votes: u32,
-    ) {
-        if let Some(contestants) = &contested_name.contestants {
-            for contestant in contestants {
-                let first_6_chars: String = contestant
-                    .id
-                    .to_string(Encoding::Base58)
-                    .chars()
-                    .take(6)
-                    .collect();
-                let button_text = format!("{}... - {} votes", first_6_chars, contestant.votes);
-
-                // Bold if highest
-                let text = if contestant.votes == max_contestant_votes && !is_locked_votes_bold {
-                    RichText::new(button_text)
-                        .strong()
-                        .color(Color32::from_rgb(0, 100, 0))
-                } else {
-                    RichText::new(button_text)
-                };
-
-                // Check if selected
-                let is_selected = self.selected_votes.iter().any(|sv| {
-                    sv.contested_name == contested_name.normalized_contested_name
-                        && sv.vote_choice == ResourceVoteChoice::TowardsIdentity(contestant.id)
-                });
-
-                let button = if is_selected {
-                    Button::new(text).fill(Color32::from_rgb(0, 150, 255))
-                } else {
-                    Button::new(text)
-                };
-                let resp = ui.add(button);
-                if resp.clicked() {
-                    // Is there already a selection for this contested name?
-                    if let Some(existing_index) = self.selected_votes.iter().position(|sv| {
-                        sv.contested_name == contested_name.normalized_contested_name
-                    }) {
-                        // If the user clicked the same choice, that toggles it off (unselect).
-                        if self.selected_votes[existing_index].vote_choice
-                            == ResourceVoteChoice::TowardsIdentity(contestant.id)
-                        {
-                            // Remove it entirely -> no selection
-                            self.selected_votes.remove(existing_index);
-                        } else {
-                            // Otherwise replace the old choice with TowardsIdentity
-                            self.selected_votes[existing_index].vote_choice =
-                                ResourceVoteChoice::TowardsIdentity(contestant.id);
-                        }
-                    } else {
-                        // No existing selection for this name, so add this new TowardsIdentity
-                        self.selected_votes.push(SelectedVote {
-                            contested_name: contested_name.normalized_contested_name.clone(),
-                            vote_choice: ResourceVoteChoice::TowardsIdentity(contestant.id),
-                            end_time: contested_name.end_time,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    // ---------------------------
-    // Bulk scheduling ephemeral UI
-    // ---------------------------
     fn show_bulk_schedule_popup_window(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         let dark_mode = ui.style().visuals.dark_mode;
         ui.heading(
-            RichText::new("Cast or Schedule Votes").color(DashColors::text_primary(dark_mode)),
+            RichText::new("Review selected votes").color(DashColors::text_primary(dark_mode)),
         );
         ui.add_space(10.0);
 
@@ -1365,7 +1421,7 @@ impl DPNSScreen {
             ui.group(|ui| {
                 let dark_mode = ui.style().visuals.dark_mode;
                 ui.heading(
-                    RichText::new("Selected Votes:").color(DashColors::text_primary(dark_mode)),
+                    RichText::new("Selected votes").color(DashColors::text_primary(dark_mode)),
                 );
                 ui.separator();
                 for sv in &self.selected_votes {
@@ -1400,29 +1456,28 @@ impl DPNSScreen {
 
             // Show each identity + let user pick None / Immediate / Scheduled
             let dark_mode = ui.style().visuals.dark_mode;
-            ui.heading(
-                RichText::new("Select cast method for each node:")
-                    .color(DashColors::text_primary(dark_mode)),
-            );
+            ui.heading(RichText::new("All my nodes").color(DashColors::text_primary(dark_mode)));
             ui.add_space(10.0);
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     let dark_mode = ui.style().visuals.dark_mode;
-                    ui.label(RichText::new("Set all:").color(DashColors::text_primary(dark_mode)));
+                    ui.label(
+                        RichText::new("Cast timing:").color(DashColors::text_primary(dark_mode)),
+                    );
 
                     // A ComboBox to pick No Vote / Cast Now / Schedule
                     ComboBox::from_id_salt("set_all_combo")
                         .width(120.0)
                         .selected_text(match self.set_all_option {
-                            VoteOption::NoVote => "No Vote".to_string(),
-                            VoteOption::CastNow => "Cast Now".to_string(),
+                            VoteOption::NoVote => "Do not use these nodes".to_string(),
+                            VoteOption::CastNow => "Cast now".to_string(),
                             VoteOption::Scheduled { .. } => "Schedule".to_string(),
                         })
                         .show_ui(ui, |ui| {
                             if ui
                                 .selectable_label(
                                     matches!(self.set_all_option, VoteOption::NoVote),
-                                    "No Vote",
+                                    "Do not use these nodes",
                                 )
                                 .clicked()
                             {
@@ -1431,7 +1486,7 @@ impl DPNSScreen {
                             if ui
                                 .selectable_label(
                                     matches!(self.set_all_option, VoteOption::CastNow),
-                                    "Cast Now",
+                                    "Cast now",
                                 )
                                 .clicked()
                             {
@@ -1470,7 +1525,7 @@ impl DPNSScreen {
                     {
                         let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
-                            RichText::new("Schedule In:")
+                            RichText::new("Schedule after:")
                                 .color(DashColors::text_primary(dark_mode)),
                         );
                         ui.add(egui::DragValue::new(days).prefix("Days: ").range(0..=14));
@@ -1479,7 +1534,7 @@ impl DPNSScreen {
                     }
 
                     // Button to apply the "Set all" choice to each identity in bulk_identity_options
-                    if ui.button("Apply to All").clicked() {
+                    if ui.button("Apply to all nodes").clicked() {
                         for option in &mut self.bulk_identity_options {
                             *option = self.set_all_option.clone();
                         }
@@ -1487,103 +1542,115 @@ impl DPNSScreen {
                 });
             });
             ui.add_space(10.0);
-            for (i, identity) in self.voting_identities.iter().enumerate() {
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        let label = identity
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.label(
-                            RichText::new(format!("Identity: {}", label))
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
+            egui::CollapsingHeader::new("Choose per node (advanced)")
+                .default_open(false)
+                .show(ui, |ui| {
+                    for (i, identity) in self.voting_identities.iter().enumerate() {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                let label = identity.alias.clone().unwrap_or_else(|| {
+                                    identity.identity.id().to_string(Encoding::Base58)
+                                });
+                                let dark_mode = ui.style().visuals.dark_mode;
+                                ui.label(
+                                    RichText::new(format!("Identity: {}", label))
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
 
-                        // This is a hack
-                        // I'm seeing a panic if I load the app in mainnet context where I have no voting identities,
-                        // and then switch to testnet and pressed "Vote".
-                        if self.bulk_identity_options.len() <= i {
-                            let voting_identities = self
-                                .app_context
-                                .load_local_voting_identities()
-                                .unwrap_or_default();
-                            // Initialize ephemeral bulk-schedule state to hidden
-                            let identity_count = voting_identities.len();
-                            self.bulk_identity_options = vec![VoteOption::CastNow; identity_count];
-                        }
+                                // This is a hack
+                                // I'm seeing a panic if I load the app in mainnet context where I have no voting identities,
+                                // and then switch to testnet and pressed "Vote".
+                                if self.bulk_identity_options.len() <= i {
+                                    let voting_identities = self
+                                        .app_context
+                                        .load_local_voting_identities()
+                                        .unwrap_or_default();
+                                    // Initialize ephemeral bulk-schedule state to hidden
+                                    let identity_count = voting_identities.len();
+                                    self.bulk_identity_options =
+                                        vec![VoteOption::CastNow; identity_count];
+                                }
 
-                        let current_option = &mut self.bulk_identity_options[i];
-                        ComboBox::from_id_salt(format!("combo_bulk_identity_{}", i))
-                            .width(120.0)
-                            .selected_text(match current_option {
-                                VoteOption::NoVote => "No Vote".to_string(),
-                                VoteOption::CastNow => "Cast Now".to_string(),
-                                VoteOption::Scheduled { .. } => "Schedule".to_string(),
-                            })
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        matches!(current_option, VoteOption::NoVote),
-                                        "No Vote",
-                                    )
-                                    .clicked()
+                                let current_option = &mut self.bulk_identity_options[i];
+                                ComboBox::from_id_salt(format!("combo_bulk_identity_{}", i))
+                                    .width(120.0)
+                                    .selected_text(match current_option {
+                                        VoteOption::NoVote => "Do not use this node".to_string(),
+                                        VoteOption::CastNow => "Cast now".to_string(),
+                                        VoteOption::Scheduled { .. } => "Schedule".to_string(),
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                matches!(current_option, VoteOption::NoVote),
+                                                "Do not use this node",
+                                            )
+                                            .clicked()
+                                        {
+                                            *current_option = VoteOption::NoVote;
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                matches!(current_option, VoteOption::CastNow),
+                                                "Cast now",
+                                            )
+                                            .clicked()
+                                        {
+                                            *current_option = VoteOption::CastNow;
+                                        }
+                                        if ui
+                                            .selectable_label(
+                                                matches!(
+                                                    current_option,
+                                                    VoteOption::Scheduled { .. }
+                                                ),
+                                                "Schedule",
+                                            )
+                                            .clicked()
+                                        {
+                                            let (d, h, m) = match current_option {
+                                                VoteOption::Scheduled {
+                                                    days,
+                                                    hours,
+                                                    minutes,
+                                                } => (*days, *hours, *minutes),
+                                                _ => (0, 0, 0),
+                                            };
+                                            *current_option = VoteOption::Scheduled {
+                                                days: d,
+                                                hours: h,
+                                                minutes: m,
+                                            };
+                                        }
+                                    });
+
+                                if let VoteOption::Scheduled {
+                                    days,
+                                    hours,
+                                    minutes,
+                                } = current_option
                                 {
-                                    *current_option = VoteOption::NoVote;
-                                }
-                                if ui
-                                    .selectable_label(
-                                        matches!(current_option, VoteOption::CastNow),
-                                        "Cast Now",
-                                    )
-                                    .clicked()
-                                {
-                                    *current_option = VoteOption::CastNow;
-                                }
-                                if ui
-                                    .selectable_label(
-                                        matches!(current_option, VoteOption::Scheduled { .. }),
-                                        "Schedule",
-                                    )
-                                    .clicked()
-                                {
-                                    let (d, h, m) = match current_option {
-                                        VoteOption::Scheduled {
-                                            days,
-                                            hours,
-                                            minutes,
-                                        } => (*days, *hours, *minutes),
-                                        _ => (0, 0, 0),
-                                    };
-                                    *current_option = VoteOption::Scheduled {
-                                        days: d,
-                                        hours: h,
-                                        minutes: m,
-                                    };
+                                    let dark_mode = ui.style().visuals.dark_mode;
+                                    ui.label(
+                                        RichText::new("Schedule after:")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(days).prefix("Days: ").range(0..=14),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(hours).prefix("Hours: ").range(0..=23),
+                                    );
+                                    ui.add(
+                                        egui::DragValue::new(minutes).prefix("Min: ").range(0..=59),
+                                    );
                                 }
                             });
-
-                        if let VoteOption::Scheduled {
-                            days,
-                            hours,
-                            minutes,
-                        } = current_option
-                        {
-                            let dark_mode = ui.style().visuals.dark_mode;
-                            ui.label(
-                                RichText::new("Schedule In:")
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-                            ui.add(egui::DragValue::new(days).prefix("Days: ").range(0..=14));
-                            ui.add(egui::DragValue::new(hours).prefix("Hours: ").range(0..=23));
-                            ui.add(egui::DragValue::new(minutes).prefix("Min: ").range(0..=59));
-                        }
-                    });
+                        });
+                        ui.add_space(10.0);
+                    }
                 });
-                ui.add_space(10.0);
-            }
         });
-
         // If any selected votes are scheduled, show a warning
         if self
             .bulk_identity_options
@@ -1611,19 +1678,21 @@ impl DPNSScreen {
             if operation_in_progress {
                 "Submitting votes…"
             } else {
-                "Apply Votes"
+                "Submit votes"
             },
         )
         .disabled_tooltip("The selected votes are already being submitted.")
         .clicked()
         {
             action = self.bulk_apply_votes();
-            if self.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes {
-                self.vote_banner.take_and_clear();
-                let handle =
-                    MessageBanner::set_global(ui.ctx(), "Casting votes...", MessageType::Info);
-                handle.with_elapsed();
-                self.vote_banner = Some(handle);
+            if matches!(
+                self.bulk_vote_handling_status,
+                VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
+            ) {
+                self.raise_vote_overlay(
+                    ui.ctx(),
+                    "Submitting the selected votes to Dash Platform…",
+                );
             }
         }
 
@@ -1639,9 +1708,9 @@ impl DPNSScreen {
         {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
-            self.bulk_schedule_message = None;
             self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-            self.vote_banner.take_and_clear();
+            self.vote_overlay.take_and_clear();
+            self.pending_vote_operation = None;
         }
 
         // Handle status
@@ -1661,10 +1730,7 @@ impl DPNSScreen {
                 // handled above
             }
             VoteHandlingStatus::Failed(message) => {
-                ui.colored_label(
-                    Color32::RED,
-                    format!("Error casting/scheduling votes: {}", message),
-                );
+                ui.colored_label(Color32::RED, message);
             }
         }
 
@@ -1708,8 +1774,15 @@ impl DPNSScreen {
                 {
                     Ok(vote_poll_id) => vote_poll_id,
                     Err(error) => {
-                        self.bulk_vote_handling_status =
-                            VoteHandlingStatus::Failed(error.to_string());
+                        tracing::warn!(
+                            ?error,
+                            contested_name = selected_vote.contested_name,
+                            "Could not build a DPNS vote target"
+                        );
+                        self.bulk_vote_handling_status = VoteHandlingStatus::Failed(
+                            "This vote could not be prepared. Refresh Active contests and try again."
+                                .to_owned(),
+                        );
                         return AppAction::None;
                     }
                 };
@@ -1725,13 +1798,9 @@ impl DPNSScreen {
                     ));
                     return AppAction::None;
                 }
-                let current_choice = match self
-                    .app_context
-                    .dpns_current_vote_state(voter_id, vote_poll_id)
-                {
-                    Ok(DpnsCurrentVoteState::Available(choice)) => choice,
-                    Ok(DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable)
-                    | Err(_) => {
+                let current_choice = match self.vote_state.state(voter_id, vote_poll_id) {
+                    DpnsCurrentVoteState::Available(choice) => choice,
+                    DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
                         self.bulk_vote_handling_status = VoteHandlingStatus::Failed(
                             "Current vote state is unavailable. Refresh voting before applying votes."
                                 .to_owned(),
@@ -1769,6 +1838,7 @@ impl DPNSScreen {
         } else {
             VoteHandlingStatus::SchedulingVotes
         };
+        self.pending_vote_operation = Some(operation.id);
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
             ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
@@ -1786,58 +1856,24 @@ impl DPNSScreen {
         self.selected_votes.clear();
 
         ui.vertical_centered(|ui| {
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add_space(20.0);
             match &self.bulk_vote_handling_status {
                 VoteHandlingStatus::Completed => {
-                    // This means DET side was successful, but Platform may have returned errors
-                    if let Some(message) = &self.bulk_schedule_message {
-                        match message.0 {
-                            MessageType::Error => {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.heading(
-                                    RichText::new("❌").color(DashColors::text_primary(dark_mode)),
-                                );
-                                if message.1.contains("Successes") {
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    ui.heading(
-                                        RichText::new("Only some votes succeeded")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                } else {
-                                    let dark_mode = ui.style().visuals.dark_mode;
-                                    ui.heading(
-                                        RichText::new("No votes succeeded")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                }
-                                ui.add_space(10.0);
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.label(
-                                    RichText::new(message.1.clone())
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                            }
-                            MessageType::Success => {
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.heading(
-                                    RichText::new("🎉").color(DashColors::text_primary(dark_mode)),
-                                );
-                                let dark_mode = ui.style().visuals.dark_mode;
-                                ui.heading(
-                                    RichText::new("Successfully casted and scheduled all votes")
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
+                    ui.heading(
+                        RichText::new("The voting operation has been updated.")
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.label(
+                        "Review the recent voting activity for each confirmed, pending, or failed target.",
+                    );
                 }
                 VoteHandlingStatus::Failed(message) => {
                     // This means there was a DET-side error, not Platform-side
                     let dark_mode = ui.style().visuals.dark_mode;
                     ui.heading(RichText::new("❌").color(DashColors::text_primary(dark_mode)));
                     ui.heading(
-                        RichText::new("Error casting and scheduling votes (DET-side)")
+                        RichText::new("The votes could not be submitted.")
                             .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(10.0);
@@ -1927,6 +1963,31 @@ impl ScreenLike for DPNSScreen {
                     .collect();
             }
         }
+        drop(contested_names);
+        drop(dpns_names);
+        drop(scheduled_votes);
+
+        let voter_ids = self
+            .voting_identities
+            .iter()
+            .map(|identity| identity.identity.id())
+            .collect::<Vec<_>>();
+        let poll_ids = self
+            .contested_names
+            .lock_recover()
+            .iter()
+            .filter_map(|contest| {
+                self.app_context
+                    .dpns_vote_poll_id(&contest.normalized_contested_name)
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        if let Err(error) = self
+            .vote_state
+            .refresh(&self.app_context, &voter_ids, &poll_ids)
+        {
+            tracing::warn!(?error, "Could not refresh cached DPNS vote state");
+        }
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -1934,6 +1995,8 @@ impl ScreenLike for DPNSScreen {
             .app_context
             .load_local_voting_identities()
             .unwrap_or_default();
+        self.bulk_identity_options = vec![VoteOption::CastNow; self.voting_identities.len()];
+        self.set_all_option = VoteOption::CastNow;
         self.user_identities = self
             .app_context
             .load_local_user_identities()
@@ -1945,11 +2008,22 @@ impl ScreenLike for DPNSScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
-            self.vote_banner.take_and_clear();
         }
     }
 
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.clear_vote_overlay_on_error = match self.pending_vote_operation {
+            Some(operation_id) => dpns_operation_id(context) == Some(operation_id),
+            None => self.vote_overlay.is_some() && dpns_operation_id(context).is_none(),
+        };
+    }
+
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if self.clear_vote_overlay_on_error {
+            self.vote_overlay.take_and_clear();
+            self.pending_vote_operation = None;
+            self.clear_vote_overlay_on_error = false;
+        }
         if let Err(refresh_error) = self.vote_operations.refresh(&self.app_context) {
             tracing::warn!(
                 ?refresh_error,
@@ -1979,10 +2053,19 @@ impl ScreenLike for DPNSScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
-            BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. } => {
-                self.vote_banner.take_and_clear();
-                self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
-                self.refresh();
+            BackendTaskSuccessResult::DpnsVoteOperationUpdated { operation_id, .. } => {
+                let owns_result = self.pending_vote_operation == Some(operation_id)
+                    || (self.pending_vote_operation.is_none() && self.vote_overlay.is_some());
+                if owns_result {
+                    self.vote_overlay.take_and_clear();
+                    self.pending_vote_operation = None;
+                    if matches!(
+                        self.bulk_vote_handling_status,
+                        VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
+                    ) {
+                        self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
+                    }
+                }
             }
             BackendTaskSuccessResult::ScheduledVotesInProgress(votes) => {
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
@@ -2011,19 +2094,9 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        if self.dpns_subscreen == DPNSSubscreen::ScheduledVotes {
-            self.app_context
-                .route_to_dpns_operator(DpnsOperatorRoute::Scheduled);
-            return AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
-        }
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
         let has_identity_that_can_register = !self.user_identities.is_empty();
-        let has_active_contests = {
-            let guard = self.contested_names.lock_recover();
-            !guard.is_empty()
-        };
-
         // Build top-right buttons
         let mut right_buttons = match self.dpns_subscreen {
             DPNSSubscreen::Active => {
@@ -2033,17 +2106,7 @@ impl ScreenLike for DPNSScreen {
                         ContestedResourceTask::QueryDPNSContests,
                     ))),
                 );
-                if has_active_contests {
-                    vec![
-                        refresh_button,
-                        (
-                            "Vote with masternodes",
-                            DesiredAppAction::Custom("Vote".to_string()),
-                        ),
-                    ]
-                } else {
-                    vec![refresh_button]
-                }
+                vec![refresh_button]
             }
             DPNSSubscreen::Past => {
                 let refresh_button = (
@@ -2067,19 +2130,11 @@ impl ScreenLike for DPNSScreen {
                 vec![
                     (
                         "Clear All",
-                        DesiredAppAction::BackendTask(Box::new(
-                            BackendTask::ContestedResourceTask(
-                                ContestedResourceTask::ClearAllScheduledVotes,
-                            ),
-                        )),
+                        DesiredAppAction::Custom("Clear all scheduled votes".to_owned()),
                     ),
                     (
-                        "Clear Casted",
-                        DesiredAppAction::BackendTask(Box::new(
-                            BackendTask::ContestedResourceTask(
-                                ContestedResourceTask::ClearExecutedScheduledVotes,
-                            ),
-                        )),
+                        "Clear Completed",
+                        DesiredAppAction::Custom("Clear completed scheduled votes".to_owned()),
                     ),
                 ]
             }
@@ -2105,18 +2160,28 @@ impl ScreenLike for DPNSScreen {
             subdued_everyday_spec("DPNS", RootScreenType::RootScreenDPNSActiveContests),
             right_buttons,
         );
-
-        // If user clicked "Apply Votes" in the top bar
-        if action == AppAction::Custom("Vote".to_string()) {
-            self.app_context
-                .route_to_dpns_operator(DpnsOperatorRoute::Voting {
-                    choices: self
-                        .selected_votes
-                        .iter()
-                        .map(|vote| (vote.contested_name.clone(), vote.vote_choice))
-                        .collect(),
-                });
-            action = AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
+        if action == AppAction::Custom("Clear all scheduled votes".to_owned()) {
+            self.scheduled_clear_dialog = Some((
+                true,
+                ConfirmationDialog::new(
+                    "Clear all scheduled votes",
+                    "Remove every scheduled vote from this device? Votes already submitted to Platform cannot be undone.",
+                )
+                .danger_mode(true)
+                .confirm_text(Some("Clear all scheduled votes")),
+            ));
+            action = AppAction::None;
+        } else if action == AppAction::Custom("Clear completed scheduled votes".to_owned()) {
+            self.scheduled_clear_dialog = Some((
+                false,
+                ConfirmationDialog::new(
+                    "Clear completed scheduled votes",
+                    "Remove every completed scheduled vote from this device? Pending votes will stay scheduled.",
+                )
+                .danger_mode(true)
+                .confirm_text(Some("Clear completed scheduled votes")),
+            ));
+            action = AppAction::None;
         }
 
         // Left panel
@@ -2135,9 +2200,23 @@ impl ScreenLike for DPNSScreen {
         // Main panel
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
+            if let Some((clear_all, dialog)) = self.scheduled_clear_dialog.as_mut()
+                && let Some(status) = dialog.show(ui).inner.dialog_response
+            {
+                let clear_all = *clear_all;
+                self.scheduled_clear_dialog = None;
+                if status == ConfirmationStatus::Confirmed {
+                    inner_action =
+                        AppAction::BackendTask(BackendTask::ContestedResourceTask(if clear_all {
+                            ContestedResourceTask::ClearAllScheduledVotes
+                        } else {
+                            ContestedResourceTask::ClearExecutedScheduledVotes
+                        }));
+                }
+            }
             // Bulk-schedule ephemeral popup
             if self.show_bulk_schedule_popup {
-                egui::Window::new("Voting")
+                egui::Window::new("Review and cast")
                     .collapsible(false)
                     .resizable(true)
                     .vscroll(true)
@@ -2154,7 +2233,7 @@ impl ScreenLike for DPNSScreen {
                         !guard.is_empty()
                     };
                     if has_any {
-                        self.render_table_active_contests(ui);
+                        self.render_active_contests(ui);
                     } else {
                         inner_action |= self.render_no_active_contests_or_owned_names(ui);
                     }
@@ -2275,6 +2354,62 @@ mod tests {
         )
         .expect("offline regtest AppContext::new");
         (ctx, temp_dir)
+    }
+
+    #[test]
+    fn vote_submission_overlay_clears_when_the_operation_finishes() {
+        let (ctx, _temp_dir) = offline_ctx();
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+
+        screen.raise_vote_overlay(
+            ctx.egui_ctx(),
+            "Submitting the selected votes to Dash Platform…",
+        );
+        screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([7; 16]));
+        assert!(
+            crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: ctx.network(),
+            operation_id: DpnsVoteOperationId::from_bytes([8; 16]),
+        });
+        assert!(
+            crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: ctx.network(),
+            operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
+        });
+
+        assert!(
+            !crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
+        );
+    }
+
+    #[test]
+    fn active_contest_groups_prioritize_nodes_that_still_need_a_vote() {
+        assert!(matches!(
+            classify_vote_states([
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
+                DpnsCurrentVoteState::Available(None),
+            ]),
+            ActiveContestGroup::NeedsVote
+        ));
+        assert!(matches!(
+            classify_vote_states([DpnsCurrentVoteState::Available(Some(
+                ResourceVoteChoice::Abstain,
+            ))]),
+            ActiveContestGroup::Voted
+        ));
+        assert!(matches!(
+            classify_vote_states([
+                DpnsCurrentVoteState::Checking,
+                DpnsCurrentVoteState::Unavailable,
+            ]),
+            ActiveContestGroup::NotVotable
+        ));
     }
 
     #[test]

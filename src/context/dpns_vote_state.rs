@@ -86,7 +86,7 @@ fn save_snapshot(
 }
 
 fn snapshot_vote_state(
-    snapshot: Option<StoredCurrentVotes>,
+    snapshot: Option<&StoredCurrentVotes>,
     vote_poll_id: Identifier,
     checked_at_ms: u64,
 ) -> DpnsCurrentVoteState {
@@ -135,11 +135,31 @@ impl AppContext {
         voter_id: Identifier,
         vote_poll_id: Identifier,
     ) -> Result<DpnsCurrentVoteState, TaskError> {
+        let snapshot = load_snapshot(&self.det_kv()?, self.network, &voter_id)?;
         Ok(snapshot_vote_state(
-            load_snapshot(&self.det_kv()?, self.network, &voter_id)?,
+            snapshot.as_ref(),
             vote_poll_id,
             now_ms(),
         ))
+    }
+
+    /// Read one node's current choices for many polls with a single storage read.
+    pub fn dpns_current_vote_states(
+        &self,
+        voter_id: Identifier,
+        vote_poll_ids: impl IntoIterator<Item = Identifier>,
+    ) -> Result<BTreeMap<Identifier, DpnsCurrentVoteState>, TaskError> {
+        let snapshot = load_snapshot(&self.det_kv()?, self.network, &voter_id)?;
+        let checked_at_ms = now_ms();
+        Ok(vote_poll_ids
+            .into_iter()
+            .map(|vote_poll_id| {
+                (
+                    vote_poll_id,
+                    snapshot_vote_state(snapshot.as_ref(), vote_poll_id, checked_at_ms),
+                )
+            })
+            .collect())
     }
 
     /// Refresh proved vote state once per loaded masternode, paging only as needed.
@@ -273,7 +293,38 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CountingKv {
+        inner: InMemoryKv,
+        gets: AtomicUsize,
+    }
+
+    impl KvStore for CountingKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            self.gets.fetch_add(1, Ordering::Relaxed);
+            self.inner.get(scope, key)
+        }
+
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            self.inner.list_keys(scope, prefix)
+        }
+    }
 
     fn kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -377,8 +428,43 @@ mod tests {
         };
 
         assert_eq!(
-            snapshot_vote_state(Some(snapshot), poll, CURRENT_VOTE_MAX_AGE_MS + 2),
+            snapshot_vote_state(Some(&snapshot), poll, CURRENT_VOTE_MAX_AGE_MS + 2),
             DpnsCurrentVoteState::Checking
         );
+    }
+
+    #[test]
+    fn many_poll_states_use_one_storage_read_per_node() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(CountingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let voter = Identifier::from([1; 32]);
+        let polls = (0..100)
+            .map(|byte| Identifier::from([byte; 32]))
+            .collect::<Vec<_>>();
+        save_snapshot(
+            &kv,
+            Network::Testnet,
+            &voter,
+            &StoredCurrentVotes {
+                available: true,
+                updated_at: now_ms(),
+                votes: BTreeMap::new(),
+            },
+        )
+        .expect("seed current-vote snapshot");
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        let before = store.gets.load(Ordering::Relaxed);
+
+        let states = context
+            .dpns_current_vote_states(voter, polls.iter().copied())
+            .expect("load current-vote states");
+
+        assert_eq!(states.len(), polls.len());
+        assert_eq!(store.gets.load(Ordering::Relaxed) - before, 1);
     }
 }

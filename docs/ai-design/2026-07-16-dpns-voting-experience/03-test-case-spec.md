@@ -5,7 +5,7 @@
 | ID | Description | Preconditions | Steps | Expected outcome | Requirements |
 |---|---|---|---|---|---|
 | VOTE-TC-001 | Current vote loads from Platform | Node has a proved Lock vote | Refresh Voting | Row shows `Current vote: Lock` | FR-010, FR-011 |
-| VOTE-TC-002 | Existing vote remains visible | Node already voted; contest active | Open node detail | Contest remains listed and change controls are available | FR-012 |
+| VOTE-TC-002 | Existing vote remains visible | Node already voted; contest active | Open Active contests | Contest appears in Voted and change controls are available | FR-012 |
 | VOTE-TC-003 | Current choice is a no-op | Current vote is Lock | Select Lock and review | Target is removed; nothing can be submitted | FR-013, FR-025 |
 | VOTE-TC-004 | Coherent refresh | Contest tally and current vote both changed | Refresh | One snapshot shows both new values | FR-014 |
 | VOTE-TC-005 | Vote query is per node | One node, 100 contests | Refresh | Identity-votes query runs once for the node, not 100 times | NFR-007 |
@@ -13,14 +13,14 @@
 | VOTE-TC-007 | Vote query failure is not `Not voted` | Proved identity-votes query fails | Open voting | State is unavailable; affected submit controls are disabled | FR-016, NFR-004 |
 | VOTE-TC-008 | Node summary distinguishes active and unvoted | Three active contests; node voted in two | View node card | Summary says three active and one needs a vote | FR-017 |
 
-## Quick voting
+## Single-contest voting
 
 | ID | Description | Preconditions | Steps | Expected outcome | Requirements |
 |---|---|---|---|---|---|
-| VOTE-TC-010 | Quick single vote | Node detail, one draft choice | Review and submit | One target is created for the selected node and contest | FR-020, FR-024 |
-| VOTE-TC-011 | Quick multi-contest vote | Node detail, three draft choices | Review | Review shows three exact targets | FR-020, FR-031 |
-| VOTE-TC-012 | Quick schedule | Node detail, one draft | Choose Schedule in review | Target appears in Scheduled with the chosen time | FR-023, FR-050 |
-| VOTE-TC-013 | Missing voting key | Node lacks voter key | Open voting | Actionable add-key state appears; submit is unavailable | FR-003 |
+| VOTE-TC-010 | Single vote | Active contests, one draft choice | Review and submit | One target is created per selected loaded node for that contest | FR-020, FR-024 |
+| VOTE-TC-011 | Multi-contest vote | Active contests, three draft choices | Review | Review shows the exact node × contest targets | FR-020, FR-031 |
+| VOTE-TC-012 | Schedule one choice | Active contests, one draft | Choose Schedule in review | Targets appear in Scheduled with the chosen time | FR-023, FR-050 |
+| VOTE-TC-013 | Missing voting key | No loaded node can vote | Open Active contests | Contest appears under Not votable and submit is unavailable | FR-003 |
 
 ## Bulk voting
 
@@ -29,9 +29,9 @@
 | VOTE-TC-020 | Multiple contests and nodes | Two contests, three nodes | Select all and review | Six exact targets are listed | FR-021, FR-024 |
 | VOTE-TC-021 | Set all timing | Three selected nodes | Apply Schedule to all | All nodes receive the same schedule | FR-022, FR-023 |
 | VOTE-TC-022 | Per-node override | Set all Cast now | Override one node to Schedule | Review reflects two Now and one Scheduled target | FR-022 |
-| VOTE-TC-023 | DPNS route reuses workspace | DPNS Active Contests visible | Click `Vote with masternodes` | Shared Masternodes Voting view opens; no legacy popup appears | FR-002 |
-| VOTE-TC-024 | Node route prefilters | Node detail visible | Click `Open Voting Center` | Voting view opens with only that node selected | FR-003 |
-| VOTE-TC-025 | Current summary uses selected nodes | Three nodes loaded; two selected | Open Votes step | `Current across selected nodes` excludes the unselected node | FR-011, FR-021 |
+| VOTE-TC-023 | Sticky review tray | Active contests visible | Select a choice | `Votes ready to cast: 1` appears and Review and cast opens in place | FR-002 |
+| VOTE-TC-024 | Node navigation is plain | Node detail visible | Click `DPNS Voting` | Active contests opens without a node filter or carried draft | FR-003 |
+| VOTE-TC-025 | Advanced node overrides | Three nodes loaded | Open Review and cast, expand advanced choices | All nodes default to Cast now and each can be overridden | FR-011, FR-021 |
 
 ## Execution correctness
 
@@ -48,7 +48,7 @@
 | ID | Description | Preconditions | Steps | Expected outcome | Requirements |
 |---|---|---|---|---|---|
 | VOTE-TC-040 | Double click | Submit enabled | Double-click Submit | Exactly one operation and one target broadcast are created | FR-034, FR-035 |
-| VOTE-TC-041 | Cross-screen duplicate | Target is confirming from quick vote | Open Voting Center | Same node × contest target is disabled with explanation | FR-034, FR-036 |
+| VOTE-TC-041 | Cross-screen duplicate | Target is confirming | Return to Active contests | Same node × contest target is disabled with explanation | FR-034, FR-036 |
 | VOTE-TC-042 | Unrelated target stays usable | One target confirming | Select another node or contest | Unrelated target remains enabled | Product decision 7 |
 | VOTE-TC-043 | Navigation preserves lock | Submit, leave page, return before result | Inspect target | Progress and lock remain active | FR-036 |
 | VOTE-TC-044 | Restart preserves lock | Persist unresolved target; restart | Open Voting | Target is restored and reconciled before resubmission is allowed | FR-037, NFR-003 |
@@ -80,8 +80,8 @@
 
 | ID | Description | Preconditions | Steps | Expected outcome | Requirements |
 |---|---|---|---|---|---|
-| VOTE-TC-070 | Progress button state | Target submitting | Inspect action | Disabled styled action shows spinner, text, and tooltip | FR-035, NFR-005 |
-| VOTE-TC-071 | Keyboard review | Composer draft ready | Tab, Enter, Escape | Focus order is logical; Enter submits only at review; Escape closes only drafts | NFR-005 |
+| VOTE-TC-070 | Blocking submission feedback | Target submitting | Inspect screen | Full-window progress overlay remains visible until success or error | FR-035, NFR-005 |
+| VOTE-TC-071 | Keyboard review | Review sheet open | Tab and activate controls | Focus order is logical and advanced node choices are reachable | NFR-005 |
 | VOTE-TC-072 | Network isolation | Testnet target unresolved | Switch Mainnet | Mainnet has no Testnet locks or operation rows | NFR-008 |
 | VOTE-TC-073 | No secret persistence | Operation stored | Inspect serialized operation | No private key or WIF bytes are present | NFR-009 |
 | VOTE-TC-074 | Complete message units | All new copy | Localization audit | Strings are complete and do not parse technical errors | NFR-006 |

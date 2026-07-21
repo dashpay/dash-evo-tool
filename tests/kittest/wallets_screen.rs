@@ -87,6 +87,11 @@ fn add_receiving_address_button_opens_receive_dialog() {
             "clicking 'Add Receiving Address' must open the same Receive dialog as the \
              'Receive' button, not silently generate an address with no visible feedback"
         );
+        assert!(
+            harness
+                .query_by_label("Generating a new address…")
+                .is_some()
+        );
 
         harness.step();
         assert!(harness.query_by_label("Core Address").is_some());

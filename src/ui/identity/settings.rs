@@ -14,6 +14,7 @@
 //! - **Delete social profile** — no `DashPayTask::DeleteProfile` variant.
 //! - **Add / remove alias** and **Make primary** — no `IdentityTask::AddAlias`
 //!   / `RemoveAlias` / `MakePrimaryAlias` variants.
+//!
 //! These appear as `Gated(missing_task)` non-interactive rows with the copy
 //! from design-spec §D (tooltip catalog entries #49 and #59). A TODO comment
 //! marks each one so the backend follow-up can search for the flag.

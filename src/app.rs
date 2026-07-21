@@ -2350,6 +2350,15 @@ impl App for AppState {
                         // TaskError Debug output is shown to users, deliberately.
                         // Ensure inner error types don't expose secrets.
                         handle.with_details(&err);
+                        match &err {
+                            TaskError::WalletStorageNotReady => {
+                                self.migration.track_storage_startup_error(handle);
+                            }
+                            TaskError::MasternodeListNotReady { .. } => {
+                                self.connection_banner.track_quorum_startup_error(handle);
+                            }
+                            _ => {}
+                        }
                         if !is_database_clear {
                             self.visible_screen_mut()
                                 .display_message(&msg, MessageType::Error);

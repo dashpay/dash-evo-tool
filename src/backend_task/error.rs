@@ -1218,6 +1218,13 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// Proof verification ran before SPV had synchronized quorum keys.
+    #[error("The network is still syncing. Please wait a moment and try again.")]
+    MasternodeListNotReady {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet / platform-address operation errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -2732,6 +2739,12 @@ impl From<dashcore_rpc::Error> for TaskError {
 
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
+        if sdk_error_is_masternode_list_not_ready(&error) {
+            return TaskError::MasternodeListNotReady {
+                source_error: Box::new(error),
+            };
+        }
+
         // Check DapiClientError for domain errors carried as gRPC Internal status.
         // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
         // metadata, but some platform errors arrive as plain Internal with descriptive
@@ -3030,6 +3043,15 @@ impl From<SdkError> for TaskError {
             },
         }
     }
+}
+
+fn sdk_error_is_masternode_list_not_ready(error: &SdkError) -> bool {
+    matches!(
+        error,
+        SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config(detail)
+        )) if detail == crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL
+    )
 }
 
 fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
@@ -3606,6 +3628,20 @@ mod tests {
             matches!(err, TaskError::SdkError { .. }),
             "Expected SdkError, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn quorum_startup_error_maps_to_transient_task_error() {
+        let sdk_error = SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config(
+                crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL.to_string(),
+            ),
+        ));
+
+        assert!(matches!(
+            TaskError::from(sdk_error),
+            TaskError::MasternodeListNotReady { .. }
+        ));
     }
 
     #[test]

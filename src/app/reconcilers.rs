@@ -226,6 +226,27 @@ impl SpvBlockReconciler {
     }
 }
 
+#[derive(Default)]
+struct TransientBanner(Option<BannerHandle>);
+
+impl TransientBanner {
+    fn track(&mut self, handle: BannerHandle) {
+        self.0 = Some(handle);
+    }
+
+    fn reset(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.clear();
+        }
+    }
+
+    fn clear_if(&mut self, condition: bool) {
+        if condition {
+            self.reset();
+        }
+    }
+}
+
 /// Reconciles the connection-status banner with the overall connection state.
 pub(super) struct ConnectionBanner {
     /// Previous state, to detect transitions. `None` forces re-evaluation.
@@ -233,7 +254,7 @@ pub(super) struct ConnectionBanner {
     /// Handle to the current connection banner, if displayed.
     handle: Option<BannerHandle>,
     /// Startup proof error cleared once quorum keys become available.
-    quorum_startup_error: Option<BannerHandle>,
+    quorum_startup_error: TransientBanner,
 }
 
 impl ConnectionBanner {
@@ -241,13 +262,13 @@ impl ConnectionBanner {
         Self {
             previous_state: None,
             handle: None,
-            quorum_startup_error: None,
+            quorum_startup_error: TransientBanner::default(),
         }
     }
 
     /// Adopt a quorum-not-ready error banner from the generic task fallback.
     pub(super) fn track_quorum_startup_error(&mut self, handle: BannerHandle) {
-        self.quorum_startup_error = Some(handle);
+        self.quorum_startup_error.track(handle);
     }
 
     /// Clear the banner and force re-evaluation next frame (network switch).
@@ -255,9 +276,7 @@ impl ConnectionBanner {
         if let Some(handle) = self.handle.take() {
             handle.clear();
         }
-        if let Some(handle) = self.quorum_startup_error.take() {
-            handle.clear();
-        }
+        self.quorum_startup_error.reset();
         self.previous_state = None;
     }
 
@@ -274,11 +293,8 @@ impl ConnectionBanner {
         onboarding_active: bool,
     ) -> Option<BackendTask> {
         let connection_status = app_context.connection_status();
-        if connection_status.masternodes_ready()
-            && let Some(handle) = self.quorum_startup_error.take()
-        {
-            handle.clear();
-        }
+        self.quorum_startup_error
+            .clear_if(connection_status.masternodes_ready());
         let current_state = connection_status.overall_state();
         let state_changed = self.previous_state != Some(current_state);
 
@@ -377,8 +393,8 @@ impl ConnectionBanner {
 pub(super) struct MigrationReconciler {
     /// Handle to the current migration banner, if displayed.
     banner_handle: Option<BannerHandle>,
-    /// Wallet-storage guard error cleared when migration leaves progress state.
-    storage_startup_error: Option<BannerHandle>,
+    /// Wallet-storage error cleared once migration is terminal and its run guard is free.
+    storage_startup_error: TransientBanner,
     /// Last-seen migration state so reconciliation fires only on change.
     last_state: Option<MigrationState>,
     /// Networks whose cold-start `FinishUnwire` has been dispatched this process.
@@ -397,7 +413,7 @@ impl MigrationReconciler {
     pub(super) fn new() -> Self {
         Self {
             banner_handle: None,
-            storage_startup_error: None,
+            storage_startup_error: TransientBanner::default(),
             last_state: None,
             dispatched: BTreeSet::new(),
             backend_wait_since: BTreeMap::new(),
@@ -409,7 +425,7 @@ impl MigrationReconciler {
 
     /// Adopt a storage-not-ready error banner from the generic task fallback.
     pub(super) fn track_storage_startup_error(&mut self, handle: BannerHandle) {
-        self.storage_startup_error = Some(handle);
+        self.storage_startup_error.track(handle);
     }
 
     /// Clear the migration banner and force re-evaluation (network switch). The
@@ -419,9 +435,7 @@ impl MigrationReconciler {
         if let Some(handle) = self.banner_handle.take() {
             handle.clear();
         }
-        if let Some(handle) = self.storage_startup_error.take() {
-            handle.clear();
-        }
+        self.storage_startup_error.reset();
         self.last_state = None;
         self.wallet_unlock_popup.close();
         self.prompt_wallet = None;
@@ -519,10 +533,8 @@ impl MigrationReconciler {
             MigrationState::Idle
                 | MigrationState::Running { .. }
                 | MigrationState::AwaitingWalletPasswords { .. }
-        );
-        if storage_guard_resolved && let Some(handle) = self.storage_startup_error.take() {
-            handle.clear();
-        }
+        ) && app_context.migration_run.try_lock().is_ok();
+        self.storage_startup_error.clear_if(storage_guard_resolved);
         self.update_password_prompt(ctx, app_context, &state);
         if self.last_state.as_ref() == Some(&state) {
             return;
@@ -995,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_reconciler_clears_storage_startup_error_when_ready() {
+    fn migration_reconciler_waits_for_storage_guard_before_clearing_startup_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let app_context = test_app_context(tmp.path());
         let message = TaskError::WalletStorageNotReady.to_string();
@@ -1017,6 +1029,10 @@ mod tests {
         harness.run();
         assert!(harness.query_by_label(&message).is_some());
 
+        let migration_guard = app_context
+            .migration_run
+            .try_lock()
+            .expect("migration guard");
         app_context
             .migration_status()
             .set_state(MigrationState::Ready);
@@ -1024,8 +1040,16 @@ mod tests {
         reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
         harness.run();
         assert!(
+            harness.query_by_label(&message).is_some(),
+            "terminal state must not clear the startup error while storage remains locked",
+        );
+
+        drop(migration_guard);
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        harness.run();
+        assert!(
             harness.query_by_label(&message).is_none(),
-            "the startup error must clear when the storage update becomes ready",
+            "the startup error must clear when the storage update is ready and unlocked",
         );
     }
 

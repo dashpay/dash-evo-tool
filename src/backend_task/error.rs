@@ -3046,6 +3046,7 @@ impl From<SdkError> for TaskError {
 }
 
 fn sdk_error_is_masternode_list_not_ready(error: &SdkError) -> bool {
+    // Matches the `SpvProvider::get_quorum_public_key` payload from `context_provider`.
     matches!(
         error,
         SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
@@ -3632,10 +3633,14 @@ mod tests {
 
     #[test]
     fn quorum_startup_error_maps_to_transient_task_error() {
+        // Recheck this upstream-format contract on every dash-sdk bump.
+        let sdk_detail = "masternode list not yet synced (quorums unavailable)";
+        assert_eq!(
+            crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL,
+            sdk_detail
+        );
         let sdk_error = SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
-            dash_sdk::error::ContextProviderError::Config(
-                crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL.to_string(),
-            ),
+            dash_sdk::error::ContextProviderError::Config(sdk_detail.to_string()),
         ));
 
         assert!(matches!(

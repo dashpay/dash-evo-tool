@@ -142,6 +142,7 @@ impl ContextProvider for SpvProvider {
         // pre-unlock guard below uses. Any stray early proof call thus degrades
         // gracefully instead of triggering the self-ban storm.
         if !app_ctx.connection_status().masternodes_ready() {
+            // Consumed by `sdk_error_is_masternode_list_not_ready` in `backend_task::error`.
             return Err(ContextProviderError::Config(
                 MASTERNODE_LIST_NOT_READY_DETAIL.to_string(),
             ));

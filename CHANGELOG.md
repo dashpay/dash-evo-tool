@@ -38,8 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   batching, and scheduling DPNS name-contest votes across your masternodes
   now happens in one place — DPNS → Active contests. Contests are grouped
   into Needs your vote / Voted / Not votable by your nodes, with a Review
-  and cast step for casting now or scheduling later, and your remaining
-  vote changes shown up front (Platform allows four per contest). The
+  and cast step for casting now or scheduling later, plus a reminder that
+  Platform allows up to four changes after the initial vote. The
   Masternodes detail screen no longer casts votes inline — its "DPNS
   Voting" button takes you straight to Active contests instead.
 

@@ -9,7 +9,7 @@ use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use dash_evo_tool::model::user_role::UserRole;
-use dash_evo_tool::ui::{RootScreenType, ScreenLike};
+use dash_evo_tool::ui::{RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -345,6 +345,45 @@ fn dpns_scheduled_votes_tab_is_clickable() {
             RootScreenType::RootScreenDPNSScheduledVotes
         );
         assert!(harness.query_by_label("No scheduled votes.").is_some());
+    });
+}
+
+/// VOTE-TC-013 — Active contests must expose the actionable no-voter-key state
+/// directly; the user cannot open Review and cast without a usable voter.
+#[test]
+fn active_contests_without_a_voting_key_shows_the_load_action() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
+        let app_context = harness.state().current_app_context().clone();
+        app_context
+            .insert_name_contests_as_normalized_names(vec!["alice".to_owned()])
+            .expect("seed active contest");
+        let active_screen = harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenDPNSActiveContests)
+            .expect("active contests screen");
+        let Screen::DPNSScreen(active_screen) = active_screen else {
+            panic!("active contests root must contain a DPNS screen");
+        };
+        active_screen.refresh();
+        harness.run_steps(5);
+
+        assert!(
+            harness
+                .query_by_label("None of your loaded nodes has a voting key.")
+                .is_some(),
+            "the no-voter-key explanation must render on Active contests"
+        );
+        harness.get_by_label("Load a masternode").click();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes
+        );
     });
 }
 

@@ -55,7 +55,8 @@ enum ActiveContestGroup {
     NotVotable,
 }
 
-const NO_VOTING_NODES_MESSAGE: &str = "No voting-enabled masternodes are loaded. Open the Masternodes tab, load a masternode with its voting key, then try again.";
+const NO_VOTING_NODES_MESSAGE: &str = "None of your loaded nodes has a voting key.";
+const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
 
 fn candidate_choice_label(candidate_name: &str) -> String {
     format!("Vote for {candidate_name}")
@@ -104,14 +105,37 @@ fn short_identifier(identifier: Identifier) -> String {
     format!("{}…{}", &encoded[..6], &encoded[encoded.len() - 4..])
 }
 
-fn vote_choice_label(choice: ResourceVoteChoice) -> String {
+fn vote_choice_label(choice: ResourceVoteChoice, candidate_name: Option<&str>) -> String {
     match choice {
-        ResourceVoteChoice::Lock => "Lock name".to_owned(),
+        ResourceVoteChoice::Lock => "Lock".to_owned(),
         ResourceVoteChoice::Abstain => "Abstain".to_owned(),
-        ResourceVoteChoice::TowardsIdentity(identifier) => {
-            format!("Vote for {}", short_identifier(identifier))
-        }
+        ResourceVoteChoice::TowardsIdentity(identifier) => candidate_name
+            .map(candidate_choice_label)
+            .unwrap_or_else(|| format!("Vote for {}", short_identifier(identifier))),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProvedVoteSummary {
+    None,
+    Choice(ResourceVoteChoice),
+    Mixed,
+}
+
+fn proved_vote_summary(
+    states: impl IntoIterator<Item = DpnsCurrentVoteState>,
+) -> ProvedVoteSummary {
+    let mut proved_choice = None;
+    for state in states {
+        let DpnsCurrentVoteState::Available(Some(choice)) = state else {
+            continue;
+        };
+        if proved_choice.is_some_and(|current| current != choice) {
+            return ProvedVoteSummary::Mixed;
+        }
+        proved_choice = Some(choice);
+    }
+    proved_choice.map_or(ProvedVoteSummary::None, ProvedVoteSummary::Choice)
 }
 
 fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
@@ -253,7 +277,7 @@ impl DPNSScreen {
             DPNSSubscreen::Active => app_context.ongoing_contested_names().unwrap_or_default(),
             DPNSSubscreen::Past => app_context.all_contested_names().unwrap_or_default(),
             DPNSSubscreen::Owned => Vec::new(),
-            DPNSSubscreen::ScheduledVotes => Vec::new(),
+            DPNSSubscreen::ScheduledVotes => app_context.all_contested_names().unwrap_or_default(),
         }));
 
         let local_dpns_names = Arc::new(Mutex::new(match dpns_subscreen {
@@ -303,7 +327,10 @@ impl DPNSScreen {
             .map(|identity| identity.identity.id())
             .collect::<Vec<_>>();
         let vote_state = DpnsVoteStateSnapshot::load(app_context, &voter_ids, &vote_poll_ids)
-            .unwrap_or_default();
+            .unwrap_or_else(|error| {
+                tracing::warn!(?error, "Could not cache proved DPNS vote state");
+                DpnsVoteStateSnapshot::default()
+            });
 
         // Initialize vote handling pop-up state to hidden
         let identity_count = voting_identities.len();
@@ -382,6 +409,33 @@ impl DPNSScreen {
     // ---------------------------
     // Rendering: Empty states
     // ---------------------------
+    fn render_no_voting_nodes(&self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_max_width(520.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new(NO_VOTING_NODES_MESSAGE)
+                            .strong()
+                            .color(DashColors::warning_color(dark_mode)),
+                    );
+                    ui.label(
+                        RichText::new(NO_VOTING_NODES_DETAIL)
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(12.0);
+                    if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
+                        action = AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
+                    }
+                });
+            });
+        });
+        action
+    }
+
     fn render_no_active_contests_or_owned_names(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         ui.vertical_centered(|ui| {
@@ -529,12 +583,13 @@ impl DPNSScreen {
         egui::ScrollArea::vertical()
             .id_salt("active_contest_cards")
             .show(ui, |ui| {
-                self.render_contest_group(ui, "Needs your vote", &groups[0], true, true);
-                self.render_contest_group(ui, "Voted", &groups[1], false, true);
+                self.render_contest_group(ui, "Needs your vote", &groups[0], true, true, false);
+                self.render_contest_group(ui, "Voted", &groups[1], false, true, true);
                 self.render_contest_group(
                     ui,
                     "Not votable by your nodes",
                     &groups[2],
+                    false,
                     false,
                     false,
                 );
@@ -581,6 +636,7 @@ impl DPNSScreen {
         contests: &[ContestedName],
         default_open: bool,
         voting_enabled: bool,
+        show_current_vote: bool,
     ) {
         egui::CollapsingHeader::new(format!("{title} ({})", contests.len()))
             .default_open(default_open)
@@ -592,7 +648,7 @@ impl DPNSScreen {
                     let contest_enabled =
                         voting_enabled && self.contest_has_available_target(contest);
                     ui.add_enabled_ui(contest_enabled, |ui| {
-                        self.render_contest_card(ui, contest, contest_enabled);
+                        self.render_contest_card(ui, contest, contest_enabled, show_current_vote);
                     });
                     ui.add_space(8.0);
                 }
@@ -622,13 +678,57 @@ impl DPNSScreen {
         })
     }
 
-    fn render_contest_card(&mut self, ui: &mut Ui, contest: &ContestedName, voting_enabled: bool) {
+    fn proved_vote_for_contest(&self, contest: &ContestedName) -> ProvedVoteSummary {
+        let Ok(poll_id) = self
+            .app_context
+            .dpns_vote_poll_id(&contest.normalized_contested_name)
+        else {
+            return ProvedVoteSummary::None;
+        };
+        proved_vote_summary(
+            self.voting_identities
+                .iter()
+                .map(|identity| self.vote_state.state(identity.identity.id(), poll_id)),
+        )
+    }
+
+    fn candidate_name_in_contest(
+        contest: &ContestedName,
+        choice: ResourceVoteChoice,
+    ) -> Option<&str> {
+        let ResourceVoteChoice::TowardsIdentity(candidate_id) = choice else {
+            return None;
+        };
+        contest
+            .contestants
+            .as_ref()?
+            .iter()
+            .find(|candidate| candidate.id == candidate_id)
+            .map(|candidate| candidate.name.as_str())
+    }
+
+    fn render_contest_card(
+        &mut self,
+        ui: &mut Ui,
+        contest: &ContestedName,
+        voting_enabled: bool,
+        show_current_vote: bool,
+    ) {
         let dark_mode = ui.style().visuals.dark_mode;
-        let selected = self
+        let staged = self
             .selected_votes
             .iter()
             .find(|vote| vote.contested_name == contest.normalized_contested_name)
             .map(|vote| vote.vote_choice);
+        let proved = if show_current_vote {
+            self.proved_vote_for_contest(contest)
+        } else {
+            ProvedVoteSummary::None
+        };
+        let selected = staged.or(match proved {
+            ProvedVoteSummary::Choice(choice) => Some(choice),
+            ProvedVoteSummary::None | ProvedVoteSummary::Mixed => None,
+        });
         let locked_votes = contest.locked_votes.unwrap_or_default();
         let abstain_votes = contest.abstain_votes.unwrap_or_default();
 
@@ -654,6 +754,30 @@ impl DPNSScreen {
                 }
             });
             ui.add_space(6.0);
+
+            match proved {
+                ProvedVoteSummary::Choice(choice) => {
+                    let candidate_name = Self::candidate_name_in_contest(contest, choice);
+                    ui.label(
+                        RichText::new(format!(
+                            "You voted: {}.",
+                            vote_choice_label(choice, candidate_name)
+                        ))
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(4.0);
+                }
+                ProvedVoteSummary::Mixed => {
+                    ui.label(
+                        RichText::new("Your loaded nodes have different current votes.")
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(4.0);
+                }
+                ProvedVoteSummary::None => {}
+            }
 
             ui.horizontal_wrapped(|ui| {
                 let clicked = ui
@@ -756,7 +880,14 @@ impl DPNSScreen {
                         ui.label(format!(
                             "{}.dash — {} — {}",
                             outcome.target.contested_name,
-                            vote_choice_label(outcome.target.requested_choice),
+                            vote_choice_label(
+                                outcome.target.requested_choice,
+                                self.candidate_name(
+                                    &outcome.target.contested_name,
+                                    outcome.target.requested_choice,
+                                )
+                                .as_deref(),
+                            ),
                             target_status_label(outcome.status),
                         ));
                         if outcome.status == DpnsVoteTargetStatus::Unconfirmed
@@ -1256,7 +1387,10 @@ impl DPNSScreen {
                             });
                             // Choice
                             row.col(|ui| {
-                                let display_text = vote_choice_label(vote.0.choice);
+                                let candidate_name =
+                                    self.candidate_name(&vote.0.contested_name, vote.0.choice);
+                                let display_text =
+                                    vote_choice_label(vote.0.choice, candidate_name.as_deref());
                                 ui.add(Label::new(display_text));
                             });
                             // Time
@@ -1320,10 +1454,16 @@ impl DPNSScreen {
                                         );
                                     }
                                     ScheduledVoteCastingStatus::Failed => {
-                                        ui.colored_label(Color32::DARK_RED, "Failed");
+                                        ui.colored_label(
+                                            DashColors::error_color(dark_mode),
+                                            "Failed",
+                                        );
                                     }
                                     ScheduledVoteCastingStatus::Completed => {
-                                        ui.colored_label(Color32::DARK_GREEN, "Casted");
+                                        ui.colored_label(
+                                            DashColors::success_color(dark_mode),
+                                            "Cast",
+                                        );
                                     }
                                 }
                             });
@@ -1437,14 +1577,14 @@ impl DPNSScreen {
         self.bulk_identity_options.fill(option);
     }
 
-    fn review_candidate_name(&self, vote: &SelectedVote) -> Option<String> {
-        let ResourceVoteChoice::TowardsIdentity(candidate_id) = vote.vote_choice else {
+    fn candidate_name(&self, contested_name: &str, choice: ResourceVoteChoice) -> Option<String> {
+        let ResourceVoteChoice::TowardsIdentity(candidate_id) = choice else {
             return None;
         };
         self.contested_names
             .lock_recover()
             .iter()
-            .find(|contest| contest.normalized_contested_name == vote.contested_name)
+            .find(|contest| contest.normalized_contested_name == contested_name)
             .and_then(|contest| contest.contestants.as_ref())
             .and_then(|contestants| {
                 contestants
@@ -1470,9 +1610,10 @@ impl DPNSScreen {
                 DashColors::warning_color(dark_mode),
                 NO_VOTING_NODES_MESSAGE,
             );
+            ui.label(NO_VOTING_NODES_DETAIL);
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ComponentStyles::add_primary_button(ui, "Open Masternodes").clicked() {
+                if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
                     action = AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
                     self.show_bulk_schedule_popup = false;
                 }
@@ -1507,7 +1648,7 @@ impl DPNSScreen {
             ui.separator();
             ui.heading(format!("Votes to cast ({}):", self.selected_votes.len()));
             for vote in &self.selected_votes {
-                let candidate_name = self.review_candidate_name(vote);
+                let candidate_name = self.candidate_name(&vote.contested_name, vote.vote_choice);
                 let choice = review_vote_choice_label(vote.vote_choice, candidate_name.as_deref());
                 ui.label(format!("• {name}.dash → {choice}", name = vote.contested_name));
             }
@@ -1924,7 +2065,6 @@ impl DPNSScreen {
                 VoteHandlingStatus::Failed(message) => {
                     // This means there was a DET-side error, not Platform-side
                     let dark_mode = ui.style().visuals.dark_mode;
-                    ui.heading(RichText::new("❌").color(DashColors::text_primary(dark_mode)));
                     ui.heading(
                         RichText::new("The votes could not be submitted.")
                             .color(DashColors::text_primary(dark_mode)),
@@ -1989,6 +2129,7 @@ impl ScreenLike for DPNSScreen {
                 *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
             }
             DPNSSubscreen::ScheduledVotes => {
+                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
                 let new_scheduled = self.app_context.get_scheduled_votes().unwrap_or_default();
                 *scheduled_votes = new_scheduled
                     .iter()
@@ -2281,11 +2422,10 @@ impl ScreenLike for DPNSScreen {
             // Render sub-screen
             match self.dpns_subscreen {
                 DPNSSubscreen::Active => {
-                    let has_any = {
-                        let guard = self.contested_names.lock_recover();
-                        !guard.is_empty()
-                    };
-                    if has_any {
+                    let has_any = !self.contested_names.lock_recover().is_empty();
+                    if self.voting_identities.is_empty() {
+                        inner_action |= self.render_no_voting_nodes(ui);
+                    } else if has_any {
                         self.render_active_contests(ui);
                     } else {
                         inner_action |= self.render_no_active_contests_or_owned_names(ui);
@@ -2478,8 +2618,38 @@ mod tests {
     }
 
     #[test]
-    fn missing_voting_nodes_copy_points_to_the_masternodes_tab() {
-        assert!(NO_VOTING_NODES_MESSAGE.contains("Masternodes tab"));
+    fn activity_choice_uses_the_cached_candidate_name() {
+        let candidate_id = Identifier::from([42; 32]);
+        let label = vote_choice_label(
+            ResourceVoteChoice::TowardsIdentity(candidate_id),
+            Some("alice"),
+        );
+
+        assert_eq!(label, "Vote for alice");
+        assert!(!label.contains(&candidate_id.to_string(Encoding::Base58)));
+    }
+
+    #[test]
+    fn proved_choice_is_highlighted_only_when_loaded_nodes_agree() {
+        assert_eq!(
+            proved_vote_summary([
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
+                DpnsCurrentVoteState::Checking,
+            ]),
+            ProvedVoteSummary::Choice(ResourceVoteChoice::Abstain)
+        );
+        assert_eq!(
+            proved_vote_summary([
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
+            ]),
+            ProvedVoteSummary::Mixed
+        );
+    }
+
+    #[test]
+    fn missing_voting_nodes_copy_is_actionable_and_avoids_the_stale_route() {
+        assert!(NO_VOTING_NODES_DETAIL.contains("masternode"));
         assert!(!NO_VOTING_NODES_MESSAGE.contains("Identities screen"));
     }
 

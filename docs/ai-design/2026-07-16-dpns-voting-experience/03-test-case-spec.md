@@ -5,7 +5,7 @@
 | ID | Description | Preconditions | Steps | Expected outcome | Requirements |
 |---|---|---|---|---|---|
 | VOTE-TC-001 | Current vote loads from Platform | Node has a proved Lock vote | Refresh Voting | Row shows `Current vote: Lock` | FR-010, FR-011 |
-| VOTE-TC-002 | Existing vote remains visible | Node already voted; contest active | Open Active contests | Contest appears in Voted and change controls are available | FR-012 |
+| VOTE-TC-002 | Existing vote remains visible | Node already voted; contest active | Open Active contests | Contest appears in Voted, its proved choice is highlighted, `You voted: {choice}` is visible, and change controls are available | FR-012 |
 | VOTE-TC-003 | Current choice is a no-op | Current vote is Lock | Select Lock and review | Target is removed; nothing can be submitted | FR-013, FR-025 |
 | VOTE-TC-004 | Coherent refresh | Contest tally and current vote both changed | Refresh | One snapshot shows both new values | FR-014 |
 | VOTE-TC-005 | Vote query is per node | One node, 100 contests | Refresh | Identity-votes query runs once for the node, not 100 times | NFR-007 |
@@ -20,7 +20,7 @@
 | VOTE-TC-010 | Single vote | Active contests, one draft choice | Review and submit | One target is created per selected loaded node for that contest | FR-020, FR-024 |
 | VOTE-TC-011 | Multi-contest vote | Active contests, three draft choices | Review | Review shows the exact node × contest targets | FR-020, FR-031 |
 | VOTE-TC-012 | Schedule one choice | Active contests, one draft | Choose Schedule in review | Targets appear in Scheduled with the chosen time | FR-023, FR-050 |
-| VOTE-TC-013 | Missing voting key | No loaded node can vote | Open Active contests | Contest appears under Not votable and submit is unavailable | FR-003 |
+| VOTE-TC-013 | Missing voting key | No loaded node has a voting key | Open Active contests | An actionable state explains that a voting key is missing, offers `Load a masternode`, and leaves submit unavailable | FR-003 |
 
 ## Bulk voting
 

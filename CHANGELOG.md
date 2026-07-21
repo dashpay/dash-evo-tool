@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
+  installation now triggers a best-effort Mainnet or Testnet node refresh.
+  Failed attempts retry on later launches until fresh addresses are saved and
+  the app reconnects, so upgrading users do not need to find the manual action.
+
 - **Search tags in the "Send to" field**: type `type:core`, `type:platform`,
   `type:shielded`, or `wallet:<name>` to narrow the address suggestions
   instead of scrolling through everything; plain words still search like

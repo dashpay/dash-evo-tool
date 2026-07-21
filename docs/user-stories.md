@@ -1261,6 +1261,9 @@ As a user, I want to fetch a fresh list of Platform (DAPI) node addresses from D
 - "Refresh DAPI endpoints" action available on Mainnet and Testnet.
 - Confirmation prompt before replacing an existing configured address set.
 - New addresses are persisted to config and the SDK reinitialized without an app restart.
+- A pre-1.0 migration triggers a silent, best-effort Mainnet or Testnet address
+  refresh; failures retry on later launches until addresses are saved, while
+  the manual action keeps its existing success message.
 
 ### NET-017: View live connection status (indicator and Platform endpoints) [Implemented]
 **Persona:** Alex, Priya, Jordan

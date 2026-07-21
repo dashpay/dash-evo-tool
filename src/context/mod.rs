@@ -149,10 +149,9 @@ pub struct AppContext {
     /// frame from the UI. Always present and idle on fresh installs;
     /// driven by [`MigrationTask::FinishUnwire`](crate::backend_task::migration::MigrationTask).
     pub(crate) migration_status: Arc<MigrationStatus>,
-    /// Serializes complete storage-update runs. This prevents a GUI dispatch
-    /// and a shared MCP request from creating two password waiters for the same
-    /// wallet; a follower waits here and returns the leader's terminal result
-    /// without rerunning the update.
+    /// Serializes complete storage-update runs, including the detached automatic
+    /// DAPI refresh that continues after migration publishes terminal status.
+    /// This also prevents duplicate password waiters for the same wallet.
     pub(crate) migration_run: tokio::sync::Mutex<()>,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.

@@ -226,6 +226,10 @@ async fn ensure_legacy_storage_migrated(ctx: &Arc<AppContext>) -> Result<(), Mcp
 /// `WalletStorageNotReady` fast-fail that `run_backend_task` applies while
 /// migration is mid-flight.
 ///
+/// Once synced, an unpopulated Platform protocol cache is refreshed so
+/// headless feature gates evaluate the connected network rather than boot state.
+/// Refresh failures remain best-effort here so Core-only tools can proceed.
+///
 /// ## Why `SpvStatus::Running`, not `OverallConnectionState::Synced`
 ///
 /// `OverallConnectionState::Synced` requires both SPV running **and**
@@ -237,6 +241,26 @@ async fn ensure_legacy_storage_migrated(ctx: &Arc<AppContext>) -> Result<(), Mcp
 /// proof-verifying SDK calls only require a synced chain, not a live DAPI
 /// counter at the `ensure_spv_synced` callsite.
 pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    ensure_spv_ready(ctx, ProtocolRefresh::BestEffortIfUnpopulated).await
+}
+
+/// Require synced SPV and fresh epoch metadata before a shielded fund movement.
+pub(crate) async fn ensure_shielded_operations_ready(
+    ctx: &Arc<AppContext>,
+) -> Result<(), McpToolError> {
+    ensure_spv_ready(ctx, ProtocolRefresh::Required).await
+}
+
+#[derive(Clone, Copy)]
+enum ProtocolRefresh {
+    BestEffortIfUnpopulated,
+    Required,
+}
+
+async fn ensure_spv_ready(
+    ctx: &Arc<AppContext>,
+    protocol_refresh: ProtocolRefresh,
+) -> Result<(), McpToolError> {
     // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
     // it, so the receiver is dropped. The `EventBridge` only does non-blocking
     // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
@@ -249,11 +273,15 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
 
     ensure_legacy_storage_migrated(ctx).await?;
 
-    // Subscribe BEFORE reading the current value so no transition is lost
-    // between the `ensure_wallet_backend_and_start_spv` call above and the
-    // first `borrow_and_update` below. borrow_and_update marks the current
-    // value "seen", so the loop never spins — each iteration always sleeps on
-    // a real change.
+    wait_for_spv_and_refresh_platform_info(ctx, protocol_refresh).await
+}
+
+async fn wait_for_spv_and_refresh_platform_info(
+    ctx: &Arc<AppContext>,
+    protocol_refresh: ProtocolRefresh,
+) -> Result<(), McpToolError> {
+    // Subscribe before reading the current value so no transition is lost.
+    // `borrow_and_update` keeps later iterations asleep until a real change.
     let mut rx = ctx.connection_status().subscribe_spv_status();
 
     let wait = async {
@@ -274,16 +302,49 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
     };
 
     match tokio::time::timeout(SPV_WAIT_TIMEOUT, wait).await {
-        Ok(result) => result,
+        Ok(result) => result?,
         Err(_elapsed) => {
             tracing::warn!(
                 "SPV sync timed out after {} seconds (status: {:?})",
                 SPV_WAIT_TIMEOUT.as_secs(),
                 ctx.connection_status().spv_status()
             );
-            Err(McpToolError::SpvSyncFailed)
+            return Err(McpToolError::SpvSyncFailed);
         }
     }
+
+    match protocol_refresh {
+        ProtocolRefresh::BestEffortIfUnpopulated if ctx.platform_protocol_version() == 0 => {
+            let _ = refresh_platform_protocol_version(ctx).await;
+            Ok(())
+        }
+        ProtocolRefresh::BestEffortIfUnpopulated => Ok(()),
+        ProtocolRefresh::Required => refresh_platform_protocol_version(ctx).await,
+    }
+}
+
+async fn refresh_platform_protocol_version(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    tracing::trace!("Refreshing Platform epoch information for headless feature gating");
+    crate::mcp::dispatch::dispatch_task(
+        ctx,
+        crate::backend_task::BackendTask::PlatformInfo(
+            crate::backend_task::platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
+        ),
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(
+            error = ?error,
+            "Platform epoch information refresh failed for headless feature gating"
+        );
+        McpToolError::TaskFailed(error)
+    })?;
+
+    tracing::trace!(
+        protocol_version = ctx.platform_protocol_version(),
+        "Platform epoch information refreshed for headless feature gating"
+    );
+    Ok(())
 }
 
 /// Reject a zero send amount. `unit_label` names the JSON parameter's unit
@@ -346,6 +407,92 @@ pub(crate) fn qualified_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::Sdk;
+    use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
+    use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
+    use dash_sdk::platform::LimitQuery;
+    use dash_sdk::platform::types::epoch::EpochQuery;
+
+    async fn mock_sdk_with_current_epoch(protocol_version: u32) -> Sdk {
+        let epoch_info = ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
+            index: 42,
+            first_block_time: 1,
+            first_block_height: 2,
+            first_core_block_height: 3,
+            fee_multiplier_permille: 1_000,
+            protocol_version,
+        });
+        let current_epoch_query = LimitQuery {
+            query: EpochQuery {
+                start: None,
+                ascending: false,
+            },
+            limit: Some(1),
+            start_info: None,
+        };
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(current_epoch_query, Some(epoch_info))
+            .await
+            .expect("register current epoch response");
+        sdk
+    }
+
+    #[tokio::test]
+    async fn headless_sync_populates_protocol_version_after_spv_is_running() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        let protocol_version = 12;
+        ctx.sdk.store(Arc::new(
+            mock_sdk_with_current_epoch(protocol_version).await,
+        ));
+        ctx.connection_status().set_spv_status(SpvStatus::Running);
+
+        assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
+
+        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
+            .await
+            .expect("headless sync completion");
+
+        assert_eq!(ctx.platform_protocol_version(), protocol_version);
+        assert_eq!(ctx.fee_multiplier_permille(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn protocol_refresh_observes_activation_after_a_pre_activation_epoch() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        ctx.set_platform_protocol_version(11);
+        ctx.sdk
+            .store(Arc::new(mock_sdk_with_current_epoch(12).await));
+
+        refresh_platform_protocol_version(&ctx)
+            .await
+            .expect("refresh current epoch");
+
+        assert_eq!(ctx.platform_protocol_version(), 12);
+    }
+
+    #[tokio::test]
+    async fn best_effort_protocol_refresh_retries_without_blocking_spv_readiness() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        ctx.sdk.store(Arc::new(Sdk::new_mock()));
+        ctx.connection_status().set_spv_status(SpvStatus::Running);
+
+        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
+            .await
+            .expect("SPV readiness survives a Platform metadata failure");
+        assert_eq!(ctx.platform_protocol_version(), 0);
+
+        ctx.sdk
+            .store(Arc::new(mock_sdk_with_current_epoch(12).await));
+        wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
+            .await
+            .expect("SPV readiness retries Platform metadata");
+
+        assert_eq!(ctx.platform_protocol_version(), 12);
+    }
 
     #[tokio::test]
     async fn storage_ready_rejects_terminal_migration_failure() {

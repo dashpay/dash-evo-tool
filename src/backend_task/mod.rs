@@ -10,7 +10,6 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -869,9 +868,9 @@ impl AppContext {
         // lock/await/secret), so it is safe to call before backend init. The
         // in-handler gate in `run_shielded_task` stays as the authoritative check.
         if let BackendTask::ShieldedTask(_) = &task
-            && !FeatureGate::ShieldedOperations.is_available(self)
+            && let Some(error) = shielded::shielded_operations_unavailable_error(self)
         {
-            return Err(TaskError::ShieldedOperationsUnavailable);
+            return Err(error);
         }
 
         let _contact_request_claim = match dashpay_request_id(&task) {
@@ -1182,6 +1181,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::feature_gate::FeatureGate;
 
     fn dapi_connection_refused_error() -> TaskError {
         use dash_sdk::Error as SdkError;
@@ -1627,11 +1627,9 @@ mod tests {
         }
     }
 
-    /// The shielded pre-check runs before the migration gate, so an *unavailable*
-    /// shielded write is refused with `ShieldedOperationsUnavailable` even while a
-    /// storage update collects wallet passwords — the accurate, actionable message
-    /// ("shielded is not available") rather than the misleading "wait for the
-    /// update", since waiting will never make shielded available.
+    /// The shielded pre-check runs before the migration gate, so a role-gated
+    /// shielded write reports the interface mode needed to unlock it even while a
+    /// storage update collects wallet passwords.
     ///
     /// The migration gate for shielded still applies once shielded operations
     /// ship (the pre-check passes, then the gate short-circuits); its
@@ -1644,9 +1642,11 @@ mod tests {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
+        use dash_sdk::dpp::version::feature_initial_protocol_versions::SHIELDED_POOL_INITIAL_PROTOCOL_VERSION;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
+        ctx.set_platform_protocol_version(SHIELDED_POOL_INITIAL_PROTOCOL_VERSION);
         assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
@@ -1667,8 +1667,8 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(result, Err(TaskError::ShieldedOperationsUnavailable)),
-            "the shielded pre-check must refuse an unavailable write before the migration gate, got {result:?}",
+            matches!(result, Err(TaskError::ShieldedOperationsRoleUnavailable)),
+            "the shielded pre-check must report the role gate before the migration gate, got {result:?}",
         );
 
         if let Ok(backend) = ctx.wallet_backend() {

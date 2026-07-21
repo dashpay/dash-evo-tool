@@ -78,7 +78,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
 
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
-        resolve::ensure_spv_synced(&ctx).await?;
+        resolve::ensure_shielded_operations_ready(&ctx).await?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
             seed_hash,
@@ -163,10 +163,9 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
 
-        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
-        // not Core UTXO spends
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        resolve::ensure_shielded_operations_ready(&ctx).await?;
 
         // Pre-flight: verify the wallet's total platform balance can cover the
         // amount. The upstream coordinator selects the actual input addresses —
@@ -271,10 +270,9 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
         let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
-        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
-        // not Core UTXO spends
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        resolve::ensure_shielded_operations_ready(&ctx).await?;
 
         let recipient_bytes =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&param.to_address)
@@ -367,10 +365,9 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
-        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
-        // not Core UTXO spends
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        resolve::ensure_shielded_operations_ready(&ctx).await?;
 
         let platform_addr =
             dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(&param.to_address)
@@ -465,10 +462,9 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::validate_address(&param.to_address)?;
-        // INTENTIONAL: no SPV sync needed — this tool dispatches a Platform state transition
-        // (withdrawal is queued on Platform and settles after confirmation)
         resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        resolve::ensure_shielded_operations_ready(&ctx).await?;
 
         let core_address = param
             .to_address

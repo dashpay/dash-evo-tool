@@ -2482,10 +2482,12 @@ impl App for AppState {
         // runs before the connection banner, which suppresses its redundant
         // Connecting/Syncing text while the overlay is up.
         let spv_overlaying = self.spv_block.is_overlaying();
-        if let Some(task) = self
-            .connection_banner
-            .update(ctx, &active_context, spv_overlaying)
-        {
+        if let Some(task) = self.connection_banner.update(
+            ctx,
+            &active_context,
+            spv_overlaying,
+            self.show_welcome_screen,
+        ) {
             self.handle_backend_task(task);
         }
         if !self.network_selection_required

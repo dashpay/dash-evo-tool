@@ -347,3 +347,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   currently knows about becomes briefly unreachable at once — a temporary,
   self-recovering condition. The app now recognizes it and says "All Dash network
   servers are temporarily unreachable. Please wait a minute and retry." instead.
+- The onboarding Welcome screen on first launch no longer shows a red
+  "Disconnected — check your internet connection" banner before you have done
+  anything. On a fresh start there is no wallet yet and no sync has been
+  attempted, so that message was misleading; it now stays hidden until you
+  finish onboarding, and real connection problems are still reported afterwards.

@@ -103,6 +103,23 @@ impl ProfileCache {
         true
     }
 
+    /// Optimistically record a just-saved profile so every tab reflects it
+    /// immediately, without waiting for a re-fetch.
+    ///
+    /// `record_result` only consumes `LoadProfile` results; a save arrives as
+    /// `DashPayProfileUpdated(id)`, which carries no fields, so without this the
+    /// cache keeps the pre-save profile and the save appears lost across the
+    /// app. Clears the debounce bookkeeping for `id` so a later explicit refresh
+    /// can still re-resolve the authoritative state from the network.
+    pub fn record_saved(&mut self, id: Identifier, fields: ProfileFields) {
+        self.loaded.insert(id, Some(fields));
+        self.requested.remove(&id);
+        if self.in_flight == Some(id) {
+            self.in_flight = None;
+        }
+        self.wanted.retain(|q| q.identity.id() != id);
+    }
+
     /// Drop cached state and pending loads so a refresh re-resolves profiles.
     pub fn reset(&mut self) {
         self.loaded.clear();

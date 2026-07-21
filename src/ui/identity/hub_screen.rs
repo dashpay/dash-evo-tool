@@ -533,7 +533,19 @@ impl ScreenLike for IdentityHubScreen {
                     .selected_identity()
                     .is_some_and(|qi| qi.identity.id() == saved_id);
                 if matches {
-                    self.settings_tab.on_profile_saved();
+                    // Commit the edit baseline and push the saved fields into the
+                    // shared cache so the hero, Contacts gate, and this tab on
+                    // re-entry all reflect the save instead of the pre-save
+                    // profile. Then confirm to the user — app.rs deliberately
+                    // shows no generic success banner for this result.
+                    if let Some(fields) = self.settings_tab.on_profile_saved() {
+                        self.profile_cache.record_saved(*saved_id, fields);
+                    }
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        crate::ui::identity::settings::PROFILE_SAVED,
+                        MessageType::Success,
+                    );
                 }
             }
             // Populate the Received/Sent request caches so the Contacts tab

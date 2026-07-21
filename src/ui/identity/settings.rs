@@ -34,8 +34,10 @@ use crate::ui::MessageType;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::message_banner::MessageBanner;
+use crate::ui::components::pill;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::identity::identity_hero_card::HeroIdentityKind;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Typography};
 use crate::ui::{RootScreenType, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -48,6 +50,12 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 const TIP_CHANGE_PHOTO: &str = "Upload a square image. Other apps will see this avatar.";
+/// Progress banner shown while an `UpdateProfile` save is in flight.
+const PROFILE_SAVING: &str = "Saving your social profile…";
+/// Confirmation banner shown after a social profile save succeeds.
+pub const PROFILE_SAVED: &str = "Your social profile is saved.";
+/// Guidance under the Avatar URL field — supported formats and recommended size.
+const AVATAR_URL_HINT: &str = "Link to a public square image (JPEG, PNG, WebP, or GIF); 256×256 pixels or larger is recommended.";
 const TIP_SAVE_NO_CHANGES: &str = "There are no changes to save.";
 const TIP_SAVE_INVALID: &str = "Fix the highlighted fields before saving.";
 const TIP_DELETE_PROFILE: &str = "Remove the display name, bio, and avatar from DashPay. Your identity, usernames, and \
@@ -300,6 +308,11 @@ impl SettingsTab {
                 .hint_text("https://example.com/avatar.jpg")
                 .desired_width(f32::INFINITY),
         );
+        ui.label(
+            RichText::new(AVATAR_URL_HINT)
+                .font(Typography::hint())
+                .color(DashColors::text_secondary(dark_mode)),
+        );
         counter(ui, self.edit_avatar_url.len(), MAX_AVATAR_URL, dark_mode);
 
         ui.add_space(12.0);
@@ -334,6 +347,12 @@ impl SettingsTab {
                     self.edit_bio.clone(),
                     self.edit_avatar_url.clone(),
                 ));
+                // Progress feedback: the save round-trips to Platform and can
+                // take minutes. Keep the banner up (no auto-dismiss) until the
+                // task finishes — the success banner (hub) or the error banner
+                // (AppState) replaces it then.
+                MessageBanner::set_global(ui.ctx(), PROFILE_SAVING, MessageType::Info)
+                    .disable_auto_dismiss();
                 action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
                     DashPayTask::UpdateProfile {
                         identity: identity.clone(),
@@ -395,20 +414,32 @@ impl SettingsTab {
 
         // Identity-type badge + tooltip — design-spec §B.8 rule 1 moves this
         // into Advanced, but we also surface a compact badge here so the
-        // user knows which identity they are editing. Matches wireframe Frame 8.
+        // user knows which identity they are editing. Rendered as a read-only
+        // accent pill (not an input-looking button) so it reads as a label,
+        // matching the identity-type pill on the Home hero card.
         let (badge_label, badge_tip) = identity_type_badge(identity.identity_type);
-        let badge = egui::Button::new(RichText::new(badge_label).small())
-            .fill(DashColors::surface(dark_mode))
-            .stroke(egui::Stroke::new(
-                1.0,
-                DashColors::text_secondary(dark_mode),
-            ));
-        ui.add(badge).info_tooltip(badge_tip);
+        let accent = HeroIdentityKind::from(identity.identity_type).badge_accent();
+        pill::accent_pill(ui, badge_label, accent, Some(badge_tip));
         ui.add_space(8.0);
 
         section_heading(ui, "Username", dark_mode);
 
-        // Primary DPNS name. If none, show the CTA card.
+        // A DPNS name requested but not yet awarded — surfaced only when the
+        // identity owns no name yet. Best-effort read; a failure omits it.
+        let pending_username = if identity
+            .dpns_names
+            .iter()
+            .any(|n| !n.name.trim().is_empty())
+        {
+            None
+        } else {
+            app_context
+                .pending_dpns_username_for(&identity.identity.id())
+                .ok()
+                .flatten()
+        };
+
+        // Primary DPNS name. If none, show the pending indicator or the CTA card.
         let primary = identity.dpns_names.first();
         if let Some(name) = primary {
             ui.horizontal(|ui| {
@@ -432,6 +463,18 @@ impl SettingsTab {
                 {
                     ui.ctx().copy_text(format!("@{}", name.name));
                 }
+            });
+        } else if let Some(pending) = &pending_username {
+            // Requested but not yet awarded — show the requested name with a
+            // "Pending" pill instead of the register CTA.
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("@{}", pending.name))
+                        .monospace()
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(4.0);
+                pill::pending_username_pill(ui, pending);
             });
         } else {
             // Pick-a-username CTA.
@@ -876,15 +919,22 @@ impl SettingsTab {
     ///
     /// A failed `UpdateProfile` task does NOT call this method, so the baseline
     /// stays at the last-confirmed state and the user can retry.
-    pub fn on_profile_saved(&mut self) {
-        if let Some((dn, bio, url)) = self.pending_save.take() {
-            self.original_display_name = dn;
-            self.original_bio = bio;
-            self.original_avatar_url = url;
-        }
-        // If pending_save is None (e.g. stale success after an identity switch
-        // cleared it) we do nothing — the hub's identity-ID guard should have
-        // prevented this call, but defending is harmless.
+    ///
+    /// Returns the committed fields so the caller can refresh the shared profile
+    /// cache — otherwise the rest of the app (hero, Contacts gate, this tab on
+    /// re-entry) keeps reading the pre-save profile and the save looks lost.
+    /// Returns `None` when there was no pending snapshot (e.g. a stale success
+    /// after an identity switch cleared it).
+    pub fn on_profile_saved(&mut self) -> Option<super::profile_cache::ProfileFields> {
+        let (dn, bio, url) = self.pending_save.take()?;
+        self.original_display_name = dn.clone();
+        self.original_bio = bio.clone();
+        self.original_avatar_url = url.clone();
+        Some(super::profile_cache::ProfileFields {
+            display_name: dn,
+            bio,
+            avatar_url: url,
+        })
     }
 
     /// Clear any in-flight pending save snapshot. Called by the hub's
@@ -1290,10 +1340,33 @@ mod tests {
         );
         // If on_profile_saved is now called (stale result) it must be a no-op.
         let original_before = tab.original_display_name.clone();
-        tab.on_profile_saved();
+        assert!(
+            tab.on_profile_saved().is_none(),
+            "stale on_profile_saved (no pending snapshot) must return None"
+        );
         assert_eq!(
             tab.original_display_name, original_before,
             "stale on_profile_saved must not corrupt baseline"
         );
+    }
+
+    /// A confirmed save returns the submitted fields so the hub can refresh the
+    /// shared profile cache — without this the save looks lost app-wide.
+    #[test]
+    fn on_profile_saved_returns_committed_fields_for_cache_refresh() {
+        let mut tab = SettingsTab::new();
+        tab.pending_save = Some((
+            "Alicia".into(),
+            "Loves Dash.".into(),
+            "https://example.com/a.png".into(),
+        ));
+        let fields = tab
+            .on_profile_saved()
+            .expect("a confirmed save must return the committed fields");
+        assert_eq!(fields.display_name, "Alicia");
+        assert_eq!(fields.bio, "Loves Dash.");
+        assert_eq!(fields.avatar_url, "https://example.com/a.png");
+        // Snapshot consumed → a second call is a no-op.
+        assert!(tab.on_profile_saved().is_none());
     }
 }

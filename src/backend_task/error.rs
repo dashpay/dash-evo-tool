@@ -2930,25 +2930,10 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
-                    ConsensusError::StateError(StateError::DuplicateUniqueIndexError(e)) => {
-                        let properties = e.duplicating_properties();
-                        let is_dpns_username = properties.len() == 2
-                            && properties
-                                .iter()
-                                .any(|property| property == "normalizedParentDomainName")
-                            && properties
-                                .iter()
-                                .any(|property| property == "normalizedLabel");
-
-                        if is_dpns_username {
-                            Some(Box::new(|source_error| {
-                                TaskError::DpnsUsernameAlreadyTaken { source_error }
-                            }))
-                        } else {
-                            Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
-                                source_error,
-                            }))
-                        }
+                    ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
+                        Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
+                            source_error,
+                        }))
                     }
                     _ => None,
                 }
@@ -3572,7 +3557,7 @@ mod tests {
     }
 
     #[test]
-    fn from_sdk_error_duplicate_unique_index_dpns_username_is_actionable() {
+    fn from_sdk_error_duplicate_unique_index_dpns_named_fields_is_generic() {
         let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
             Identifier::random(),
             vec![
@@ -3589,13 +3574,13 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "This username is already taken. Please choose a different username and try again."
+            "This request conflicts with an existing entry. Please use different values and try again."
         );
         match &err {
-            TaskError::DpnsUsernameAlreadyTaken { source_error } => {
+            TaskError::PlatformEntryConflict { source_error } => {
                 assert_duplicate_unique_index_broadcast_source(source_error);
             }
-            other => panic!("expected DpnsUsernameAlreadyTaken, got {other:?}"),
+            other => panic!("expected PlatformEntryConflict, got {other:?}"),
         }
     }
 
@@ -3625,6 +3610,29 @@ mod tests {
                 assert_duplicate_unique_index_broadcast_source(source_error);
             }
             other => panic!("expected PlatformEntryConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_unique_index_boundary_property_counts_are_generic() {
+        for properties in [vec![], vec!["normalizedLabel".to_string()]] {
+            let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
+                Identifier::random(),
+                properties,
+            ));
+            let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+                code: 40105,
+                message: "duplicate unique index".to_string(),
+                cause: Some(consensus),
+            };
+            let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+            match &err {
+                TaskError::PlatformEntryConflict { source_error } => {
+                    assert_duplicate_unique_index_broadcast_source(source_error);
+                }
+                other => panic!("expected PlatformEntryConflict, got {other:?}"),
+            }
         }
     }
 

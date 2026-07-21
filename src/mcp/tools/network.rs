@@ -1,6 +1,6 @@
 //! Network MCP tools.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use rmcp::handler::server::router::tool::{AsyncTool, ToolBase};
 use rmcp::model::ToolAnnotations;
@@ -8,7 +8,7 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::mcp::dispatch::dispatch_task;
+use crate::mcp::dispatch::{dispatch_task, dispatch_task_with};
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::{DashMcpService, collect_available, network_display_name};
@@ -228,35 +228,31 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
             network: target,
             start_spv: true,
         };
-        let result = dispatch_task(&ctx, task)
-            .await
-            .map_err(McpToolError::TaskFailed)?;
-
-        match result {
-            BackendTaskSuccessResult::NetworkContextCreated {
-                context,
-                spv_started,
-                ..
-            } => {
-                // S5: drain the OUTGOING context's wallet backend before
-                // replacing it.  The old `ctx` (still in scope above) is the
-                // context that is being evicted; the new `context` is the one
-                // being installed.  Draining here — at the swap callsite —
-                // ensures every network switch leaves no orphaned WalletBackend,
-                // regardless of how many switches happen in a session.
-                if let Ok(backend) = ctx.wallet_backend() {
-                    backend.shutdown().await;
-                }
-                service.swap_context(context);
-                Ok(NetworkSwitchOutput {
-                    active: network_display_name(target).to_owned(),
+        let outgoing_context = Arc::clone(&ctx);
+        let switch_service = service.clone();
+        dispatch_task_with(&ctx, task, move |result| async move {
+            match result {
+                BackendTaskSuccessResult::NetworkContextCreated {
+                    context,
                     spv_started,
-                })
+                    ..
+                } => {
+                    if let Ok(backend) = outgoing_context.wallet_backend() {
+                        backend.shutdown().await;
+                    }
+                    switch_service.swap_context(context);
+                    Ok(NetworkSwitchOutput {
+                        active: network_display_name(target).to_owned(),
+                        spv_started,
+                    })
+                }
+                other => Err(McpToolError::Internal(format!(
+                    "Unexpected task result: {other:?}"
+                ))),
             }
-            other => Err(McpToolError::Internal(format!(
-                "Unexpected task result: {other:?}"
-            ))),
-        }
+        })
+        .await
+        .map_err(McpToolError::TaskFailed)?
     }
 }
 

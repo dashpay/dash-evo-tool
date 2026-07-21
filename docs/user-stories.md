@@ -1399,6 +1399,7 @@ As any user, I want the same wallet/identity switcher on every page, so that I c
 - The third segment is page-scoped: the app-global User identity on everyday-user pages (Dashpay, Identities, Identity Hub), or the masternode/evonode in view on the Masternodes tab. Picking a masternode there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter).
 - On a page that does not yet consume a given pill, that pill renders dimmed with no caret; a hover tooltip explains how to change the selection elsewhere.
 - A page with no identity/object context (e.g. a Wallet page) shows only the wallet pill.
+- On the Masternodes tab the wallet segment is a read-only indicator, not an interactive pill: a masternode/evonode is loaded from raw keys and controlled by no wallet on this device, so it shows a muted "Not in a wallet" with an explanatory tooltip rather than naming an arbitrary loaded wallet.
 
 ### UX-004: One-time post-migration disclosure notice [Gap]
 **Persona:** Alex, Priya, Jordan

@@ -2058,9 +2058,7 @@ impl AppState {
         wallet_backends: &[Arc<B>],
         shutdown_timeout: Duration,
     ) -> ShutdownOutcome {
-        for backend in wallet_backends {
-            backend.forget_all_secrets();
-        }
+        Self::forget_wallet_backend_secrets(wallet_backends);
 
         let shutdowns = futures::future::join_all(
             wallet_backends
@@ -2080,14 +2078,21 @@ impl AppState {
             ShutdownOutcome::Complete
         };
 
-        for backend in wallet_backends {
-            backend.forget_all_secrets();
-        }
+        Self::forget_wallet_backend_secrets(wallet_backends);
 
         outcome
     }
 
-    async fn shutdown_wallet_backends(contexts: Vec<Arc<AppContext>>) -> ShutdownOutcome {
+    fn forget_wallet_backend_secrets<B: ShutdownWalletBackend>(wallet_backends: &[Arc<B>]) {
+        for backend in wallet_backends {
+            backend.forget_all_secrets();
+        }
+    }
+
+    async fn shutdown_wallet_backends(
+        task_shutdown_outcome: Option<TaskShutdownOutcome>,
+        contexts: Vec<Arc<AppContext>>,
+    ) -> ShutdownOutcome {
         let mut wallet_backends = Vec::new();
         for context in contexts {
             if let Ok(backend) = context.wallet_backend()
@@ -2099,8 +2104,15 @@ impl AppState {
             }
         }
 
-        Self::shutdown_wallet_backend_instances(&wallet_backends, WALLET_BACKEND_SHUTDOWN_TIMEOUT)
-            .await
+        Self::finish_shutdown_after_tasks(
+            task_shutdown_outcome,
+            &wallet_backends,
+            Self::shutdown_wallet_backend_instances(
+                &wallet_backends,
+                WALLET_BACKEND_SHUTDOWN_TIMEOUT,
+            ),
+        )
+        .await
     }
 
     fn initial_shutdown_contexts(&self) -> Vec<Arc<AppContext>> {
@@ -2112,6 +2124,7 @@ impl AppState {
     }
 
     async fn finish_wallet_shutdown(
+        task_shutdown_outcome: Option<TaskShutdownOutcome>,
         mut contexts: Vec<Arc<AppContext>>,
         mut task_result_receiver: tokiompsc::Receiver<TaskResult>,
         #[cfg(feature = "mcp")] mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
@@ -2125,16 +2138,20 @@ impl AppState {
             Self::push_unique_context(&mut contexts, mcp_app_context.load_full());
         }
 
-        Self::shutdown_wallet_backends(contexts).await
+        Self::shutdown_wallet_backends(task_shutdown_outcome, contexts).await
     }
 
-    async fn finish_shutdown_after_tasks<F>(
+    async fn finish_shutdown_after_tasks<B, F>(
         task_shutdown_outcome: Option<TaskShutdownOutcome>,
+        wallet_backends: &[Arc<B>],
         wallet_shutdown: F,
     ) -> ShutdownOutcome
     where
+        B: ShutdownWalletBackend,
         F: std::future::Future<Output = ShutdownOutcome>,
     {
+        Self::forget_wallet_backend_secrets(wallet_backends);
+
         match task_shutdown_outcome {
             Some(TaskShutdownOutcome::Complete) => wallet_shutdown.await,
             Some(TaskShutdownOutcome::BackendTasksTimedOut) => {
@@ -2167,14 +2184,12 @@ impl AppState {
                 }
             };
 
-            let outcome = Self::finish_shutdown_after_tasks(
+            let outcome = Self::finish_wallet_shutdown(
                 task_shutdown_outcome,
-                Self::finish_wallet_shutdown(
-                    contexts,
-                    task_result_receiver,
-                    #[cfg(feature = "mcp")]
-                    mcp_app_context,
-                ),
+                contexts,
+                task_result_receiver,
+                #[cfg(feature = "mcp")]
+                mcp_app_context,
             )
             .await;
             let _ = tx.send(outcome);
@@ -2209,14 +2224,12 @@ impl AppState {
 
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         tokio::spawn(async move {
-            let outcome = Self::finish_shutdown_after_tasks(
+            let outcome = Self::finish_wallet_shutdown(
                 task_shutdown_outcome,
-                Self::finish_wallet_shutdown(
-                    contexts,
-                    task_result_receiver,
-                    #[cfg(feature = "mcp")]
-                    mcp_app_context,
-                ),
+                contexts,
+                task_result_receiver,
+                #[cfg(feature = "mcp")]
+                mcp_app_context,
             )
             .await;
             let _ = tx.send(outcome);
@@ -3550,12 +3563,18 @@ mod shutdown_tests {
     }
 
     #[tokio::test]
-    async fn backend_task_timeout_skips_wallet_teardown() {
+    async fn backend_task_timeout_forgets_secrets_without_wallet_teardown() {
+        let backend = Arc::new(MockShutdownBackend {
+            forget_calls: AtomicUsize::new(0),
+            secret_cached: AtomicBool::new(true),
+            shutdown_completes: true,
+        });
         let teardown_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&teardown_calls);
 
         let outcome = AppState::finish_shutdown_after_tasks(
             Some(TaskShutdownOutcome::BackendTasksTimedOut),
+            &[Arc::clone(&backend)],
             async move {
                 calls.fetch_add(1, Ordering::Relaxed);
                 ShutdownOutcome::Complete
@@ -3564,31 +3583,47 @@ mod shutdown_tests {
         .await;
 
         assert_eq!(outcome, ShutdownOutcome::BackendTasksTimedOut);
+        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
+        assert!(!backend.secret_cached.load(Ordering::Acquire));
         assert_eq!(teardown_calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
-    async fn task_manager_failure_skips_wallet_teardown() {
+    async fn task_manager_failure_forgets_secrets_without_wallet_teardown() {
+        let backend = Arc::new(MockShutdownBackend {
+            forget_calls: AtomicUsize::new(0),
+            secret_cached: AtomicBool::new(true),
+            shutdown_completes: true,
+        });
         let teardown_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&teardown_calls);
 
-        let outcome = AppState::finish_shutdown_after_tasks(None, async move {
-            calls.fetch_add(1, Ordering::Relaxed);
-            ShutdownOutcome::Complete
-        })
-        .await;
+        let outcome =
+            AppState::finish_shutdown_after_tasks(None, &[Arc::clone(&backend)], async move {
+                calls.fetch_add(1, Ordering::Relaxed);
+                ShutdownOutcome::Complete
+            })
+            .await;
 
         assert_eq!(outcome, ShutdownOutcome::TaskManagerFailed);
+        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
+        assert!(!backend.secret_cached.load(Ordering::Acquire));
         assert_eq!(teardown_calls.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
-    async fn complete_task_shutdown_runs_wallet_teardown_once() {
+    async fn complete_task_shutdown_forgets_secrets_and_runs_wallet_teardown_once() {
+        let backend = Arc::new(MockShutdownBackend {
+            forget_calls: AtomicUsize::new(0),
+            secret_cached: AtomicBool::new(true),
+            shutdown_completes: true,
+        });
         let teardown_calls = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&teardown_calls);
 
         let outcome = AppState::finish_shutdown_after_tasks(
             Some(TaskShutdownOutcome::Complete),
+            &[Arc::clone(&backend)],
             async move {
                 calls.fetch_add(1, Ordering::Relaxed);
                 ShutdownOutcome::Complete
@@ -3597,6 +3632,8 @@ mod shutdown_tests {
         .await;
 
         assert_eq!(outcome, ShutdownOutcome::Complete);
+        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
+        assert!(!backend.secret_cached.load(Ordering::Acquire));
         assert_eq!(teardown_calls.load(Ordering::Relaxed), 1);
     }
 

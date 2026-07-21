@@ -1281,8 +1281,10 @@ mod tests {
 
     #[test]
     fn tc_dpns_02_header_shows_open_contest_count() {
-        let mut summary = MasternodeContestSummary::default();
-        summary.open_contest_count = 3;
+        let summary = MasternodeContestSummary {
+            open_contest_count: 3,
+            ..Default::default()
+        };
         assert_eq!(
             dpns_section_header(summary),
             "DPNS name contests to vote on (3)"

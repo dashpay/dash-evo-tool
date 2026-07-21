@@ -442,7 +442,8 @@ impl AppContext {
 
         for wallet in open_wallets {
             let ctx = Arc::clone(self);
-            self.subtasks
+            let _ = self
+                .subtasks
                 .spawn_sync("all_wallets_identity_discovery", async move {
                     if let Err(error) = ctx
                         .discover_identities_gap_limited(&wallet, 0, false, None)
@@ -475,7 +476,8 @@ impl AppContext {
     ) {
         let ctx = Arc::clone(self);
         let wallet = Arc::clone(wallet);
-        self.subtasks
+        let _ = self
+            .subtasks
             .spawn_sync("unlocked_wallet_identity_discovery", async move {
                 ctx.discover_unlocked_wallet_identities(&wallet).await;
             });
@@ -513,7 +515,8 @@ impl AppContext {
     ) {
         let ctx = Arc::clone(self);
         let wallet_clone = Arc::clone(wallet);
-        self.subtasks
+        let _ = self
+            .subtasks
             .spawn_sync("wallet_identity_discovery", async move {
                 if let Err(error) = ctx
                     .discover_identities_from_wallet(&wallet_clone, max_identity_index)

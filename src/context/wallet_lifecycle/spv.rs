@@ -40,7 +40,8 @@ impl AppContext {
         } = backend.forget_all_wallets_local();
         for wallet_id in upstream_ids {
             let backend = Arc::clone(&backend);
-            self.subtasks
+            let _ = self
+                .subtasks
                 .spawn_sync("wallet_upstream_removal", async move {
                     if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
                         tracing::warn!(%error, "Upstream wallet removal failed during clear");

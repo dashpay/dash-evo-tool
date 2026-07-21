@@ -87,20 +87,45 @@ pub(crate) async fn await_managed_network_request_with_timeout<T>(
 where
     T: Send + 'static,
 {
-    let mut task = tokio::spawn(request);
-    match tokio::time::timeout(timeout_duration, &mut task).await {
-        Ok(result) => result.map_err(|source| TaskError::BackendTaskFailed {
-            source: source.into(),
-        }),
-        Err(source) => {
-            task_manager.spawn_sync(reaper_name, async move {
-                if let Err(source) = task.await {
-                    let error = crate::backend_task::error::BackendTaskJoinError::from(source);
-                    tracing::error!(?error, "Timed-out background request stopped unexpectedly");
-                }
-            });
-            Err(timeout_error(source))
-        }
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let reply = Arc::new(std::sync::Mutex::new(Some(reply_tx)));
+    let request_reply = Arc::clone(&reply);
+    let join_reply = Arc::clone(&reply);
+    let registration = task_manager.spawn_tracked_sync(
+        reaper_name,
+        async move {
+            let result = request.await;
+            if let Some(reply) = request_reply
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                let _ = reply.send(Ok(result));
+            }
+        },
+        move |join_result| async move {
+            if let Err(source) = join_result
+                && let Some(reply) = join_reply
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take()
+            {
+                let _ = reply.send(Err(crate::backend_task::error::BackendTaskJoinError::from(
+                    source,
+                )));
+            }
+        },
+    );
+    if registration.is_err() {
+        return Err(TaskError::TaskManagerShuttingDown);
+    }
+    drop(reply);
+
+    match tokio::time::timeout(timeout_duration, reply_rx).await {
+        Ok(Ok(Ok(result))) => Ok(result),
+        Ok(Ok(Err(source))) => Err(TaskError::BackendTaskFailed { source }),
+        Ok(Err(_)) => Err(TaskError::TaskManagerShuttingDown),
+        Err(source) => Err(timeout_error(source)),
     }
 }
 
@@ -729,6 +754,12 @@ pub enum BackendTaskSuccessResult {
     CoreClientReinitialized,
 
     /// A new network context was created asynchronously during a network switch.
+    NetworkContextRegistered {
+        network: Network,
+        context: Arc<AppContext>,
+    },
+
+    /// A new network context finished its asynchronous network switch setup.
     NetworkContextCreated {
         network: Network,
         context: Arc<AppContext>,
@@ -1015,28 +1046,68 @@ impl AppContext {
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;
                 new_ctx.install_secret_prompt(self.secret_prompt());
 
-                // Wire the freshly-built context's wallet backend and then start
-                // chain sync. The old code called `start_spv()` on an unwired
-                // context, which fast-failed with `WalletBackendNotYetWired` and
-                // reported `spv_started=false`. Wiring first removes that race so
-                // `spv_started` reflects whether sync actually began.
-                let spv_started = if start_spv {
-                    match new_ctx
-                        .ensure_wallet_backend_and_start_spv(sender.clone())
-                        .await
-                    {
-                        Ok(()) => {
-                            tracing::info!(?network, "SPV started after network switch");
-                            true
+                let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
+                    Ok(()) => {
+                        if let Err(error) = sender
+                            .send(TaskResult::unattributed_success(
+                                BackendTaskSuccessResult::NetworkContextRegistered {
+                                    network,
+                                    context: Arc::clone(&new_ctx),
+                                },
+                            ))
+                            .await
+                        {
+                            tracing::debug!(
+                                ?network,
+                                %error,
+                                "Network switch context registration receiver was unavailable"
+                            );
                         }
-                        Err(e) => {
-                            tracing::warn!(?network, "SPV start failed after network switch: {e}");
-                            false
+                        true
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            ?network,
+                            %error,
+                            "Wallet backend wiring failed after network switch"
+                        );
+                        false
+                    }
+                };
+
+                let cancellation_token = self.subtasks.cancellation_token.clone();
+                let spv_started = if start_spv
+                    && backend_wired
+                    && !cancellation_token.is_cancelled()
+                {
+                    tokio::select! {
+                        result = new_ctx.ensure_wallet_backend_and_start_spv(sender.clone()) => {
+                            match result {
+                                Ok(()) => {
+                                    tracing::info!(?network, "SPV started after network switch");
+                                    true
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        ?network,
+                                        %error,
+                                        "SPV start failed after network switch"
+                                    );
+                                    false
+                                }
+                            }
                         }
+                        _ = cancellation_token.cancelled() => false,
                     }
                 } else {
                     false
                 };
+                if cancellation_token.is_cancelled()
+                    && let Ok(backend) = new_ctx.wallet_backend()
+                {
+                    backend.forget_all_secrets();
+                    backend.shutdown().await;
+                }
                 Ok(BackendTaskSuccessResult::NetworkContextCreated {
                     network,
                     context: new_ctx,
@@ -1182,6 +1253,82 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::context::feature_gate::FeatureGate;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_registers_wired_backend_before_cancellation_teardown() {
+        use crate::context::test_support::test_app_context;
+        use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
+        use zeroize::Zeroizing;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        let mut switch = Box::pin(context.run_backend_task(
+            BackendTask::SwitchNetwork {
+                network: Network::Mainnet,
+                start_spv: true,
+            },
+            sender,
+        ));
+
+        let registered_context = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = rx.recv() => {
+                        let result = result.expect("switch registration result");
+                        if let TaskResult::Success { result, .. } = result
+                            && let BackendTaskSuccessResult::NetworkContextRegistered {
+                                context, ..
+                            } = *result
+                        {
+                            break context;
+                        }
+                    }
+                    _ = switch.as_mut() => {
+                        panic!("switch completed before early registration");
+                    }
+                }
+            }
+        })
+        .await
+        .expect("wired switch context is registered before network startup");
+
+        let backend = registered_context
+            .wallet_backend()
+            .expect("registered context has a wired backend");
+        let secret_access = backend.secret_access();
+        let scope = SecretScope::HdSeed {
+            seed_hash: [0x5a; 32],
+        };
+        secret_access.remember_session(
+            &scope,
+            SecretPlaintext::HdSeed(&Zeroizing::new([0x7b; 64])),
+            RememberPolicy::UntilAppClose,
+        );
+        assert!(secret_access.is_session_cached(&scope));
+
+        context.subtasks.cancellation_token.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(5), switch.as_mut())
+            .await
+            .expect("cancelled switch task terminates")
+            .expect("cancelled switch returns its context");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: completed_context,
+            spv_started,
+            ..
+        } = result
+        else {
+            panic!("expected completed network context");
+        };
+
+        assert!(Arc::ptr_eq(&registered_context, &completed_context));
+        assert!(!spv_started);
+        assert!(
+            !secret_access.is_session_cached(&scope),
+            "cancellation teardown clears secrets on the registered backend"
+        );
+    }
 
     fn dapi_connection_refused_error() -> TaskError {
         use dash_sdk::Error as SdkError;

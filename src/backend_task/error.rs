@@ -886,6 +886,10 @@ pub enum TaskError {
         source: BackendTaskJoinError,
     },
 
+    /// A backend task reached the app after the shutdown admission barrier closed.
+    #[error("This action could not start because the app is closing. Reopen the app and try again.")]
+    TaskManagerShuttingDown,
+
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]
     DapiDiscovery(#[from] crate::backend_task::dapi_discovery::DapiDiscoveryError),

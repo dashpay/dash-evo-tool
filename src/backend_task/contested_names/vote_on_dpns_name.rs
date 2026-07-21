@@ -85,21 +85,45 @@ fn classify_post_broadcast_error(error: dash_sdk::Error) -> DpnsVoteAttempt {
 
 fn classify_broadcast_error(error: dash_sdk::Error) -> DpnsVoteAttempt {
     match &error {
+        dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(_)) => {
+            DpnsVoteAttempt::Rejected(TaskError::from(error))
+        }
         dash_sdk::Error::StateTransitionBroadcastError(broadcast_error) => {
             let rejected = broadcast_error.cause.is_some();
             let error = TaskError::from(error);
             if rejected {
                 DpnsVoteAttempt::Rejected(error)
             } else {
-                DpnsVoteAttempt::Unconfirmed(error)
+                DpnsVoteAttempt::FailedBeforeSubmission(error)
             }
         }
-        _ => DpnsVoteAttempt::FailedBeforeSubmission(TaskError::from(error)),
+        _ => DpnsVoteAttempt::Unconfirmed(TaskError::from(error)),
     }
 }
 
-fn classify_broadcast_journal_result(result: Result<(), TaskError>) -> Result<(), DpnsVoteAttempt> {
-    result.map_err(DpnsVoteAttempt::Unconfirmed)
+fn classify_broadcast_journal_result(
+    result: Result<bool, TaskError>,
+) -> Result<(), DpnsVoteAttempt> {
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(DpnsVoteAttempt::FailedBeforeSubmission(
+            TaskError::DpnsVoteBroadcastPhaseNotMarked,
+        )),
+        Err(error) => Err(DpnsVoteAttempt::FailedBeforeSubmission(error)),
+    }
+}
+
+async fn broadcast_after_journal_mark<Mark, Broadcast, BroadcastFuture>(
+    mark_broadcast: Mark,
+    broadcast: Broadcast,
+) -> Result<(), DpnsVoteAttempt>
+where
+    Mark: FnOnce() -> Result<bool, TaskError>,
+    Broadcast: FnOnce() -> BroadcastFuture,
+    BroadcastFuture: std::future::Future<Output = Result<(), dash_sdk::Error>>,
+{
+    classify_broadcast_journal_result(mark_broadcast())?;
+    broadcast().await.map_err(classify_broadcast_error)
 }
 
 impl AppContext {
@@ -197,11 +221,11 @@ impl AppContext {
         .map_err(dash_sdk::Error::from)?;
         ensure_valid_vote_transition_structure(&state_transition, sdk)?;
         state_transition.broadcast_request_for_state_transition()?;
-        if let Err(error) = state_transition.broadcast(sdk, Some(settings)).await {
-            return Ok(classify_broadcast_error(error));
-        }
-        if let Err(attempt) =
-            classify_broadcast_journal_result(self.mark_dpns_vote_broadcast(operation_id, key))
+        if let Err(attempt) = broadcast_after_journal_mark(
+            || self.mark_dpns_vote_broadcast(operation_id, key),
+            || state_transition.broadcast(sdk, Some(settings)),
+        )
+        .await
         {
             return Ok(attempt);
         }
@@ -263,9 +287,23 @@ mod tests {
     }
 
     #[test]
-    fn broadcast_transport_error_fails_before_submission() {
+    fn broadcast_transport_error_after_phase_boundary_is_unconfirmed() {
         let attempt =
             classify_broadcast_error(dash_sdk::Error::Generic("connection refused".to_owned()));
+
+        assert!(matches!(attempt, DpnsVoteAttempt::Unconfirmed(_)));
+    }
+
+    #[test]
+    fn cause_less_broadcast_rejection_fails_before_submission() {
+        let attempt = classify_broadcast_error(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 1,
+                message: "broadcast rejected".to_owned(),
+                cause: None,
+            }
+            .into(),
+        );
 
         assert!(matches!(
             attempt,
@@ -274,10 +312,92 @@ mod tests {
     }
 
     #[test]
-    fn journal_failure_after_broadcast_is_unconfirmed() {
-        let attempt = classify_broadcast_journal_result(Err(TaskError::DpnsVoteTargetBusy))
-            .expect_err("a failed journal mark must stop the confirmation wait");
+    fn broadcast_consensus_error_is_rejected() {
+        let attempt = classify_broadcast_error(dash_sdk::Error::Protocol(
+            dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(ConsensusError::DefaultError)),
+        ));
 
-        assert!(matches!(attempt, DpnsVoteAttempt::Unconfirmed(_)));
+        assert!(matches!(attempt, DpnsVoteAttempt::Rejected(_)));
+    }
+
+    #[test]
+    fn journal_failure_before_broadcast_fails_before_submission() {
+        let attempt = classify_broadcast_journal_result(Err(TaskError::DpnsVoteTargetBusy))
+            .expect_err("a failed journal mark must prevent the broadcast");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+    }
+
+    #[test]
+    fn journal_no_op_before_broadcast_fails_before_submission() {
+        let attempt = classify_broadcast_journal_result(Ok(false))
+            .expect_err("a no-op journal mark must prevent the broadcast");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn durable_phase_boundary_precedes_broadcast() {
+        let marked = std::cell::Cell::new(false);
+        let broadcast_called = std::cell::Cell::new(false);
+
+        broadcast_after_journal_mark(
+            || {
+                marked.set(true);
+                Ok(true)
+            },
+            || async {
+                assert!(marked.get(), "journal must be marked before broadcasting");
+                broadcast_called.set(true);
+                Ok(())
+            },
+        )
+        .await
+        .expect("journal mark and broadcast succeed");
+
+        assert!(broadcast_called.get());
+    }
+
+    #[tokio::test]
+    async fn failed_phase_boundaries_prevent_broadcast() {
+        let broadcast_called = std::cell::Cell::new(false);
+
+        let attempt = broadcast_after_journal_mark(
+            || Ok(false),
+            || async {
+                broadcast_called.set(true);
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("a no-op journal mark must stop submission");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+        assert!(!broadcast_called.get());
+
+        let attempt = broadcast_after_journal_mark(
+            || Err(TaskError::DpnsVoteTargetBusy),
+            || async {
+                broadcast_called.set(true);
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("a failed journal write must stop submission");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+        assert!(!broadcast_called.get());
     }
 }

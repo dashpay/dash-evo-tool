@@ -743,6 +743,13 @@ pub enum TaskError {
     )]
     DpnsVoteTargetBusy,
 
+    /// The journal could not advance the exact claimed target into its
+    /// ambiguous network phase, so broadcasting must not start.
+    #[error(
+        "This vote could not be prepared safely. Check its saved status before trying again."
+    )]
+    DpnsVoteBroadcastPhaseNotMarked,
+
     /// A cancellation lost the race to execution after the target was claimed.
     #[error(
         "This scheduled vote has already started and can no longer be cancelled. Check its result once it finishes."

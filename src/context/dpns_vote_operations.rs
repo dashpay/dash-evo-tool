@@ -322,8 +322,8 @@ fn prune_terminal_operations(
             operation.is_complete()
                 && !operation.targets.is_empty()
                 && operation.targets.iter().all(|outcome| {
-                    matches!(outcome.target.timing, VoteTiming::Scheduled(_))
-                        && removed_scheduled_votes.contains(&(
+                    !matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+                        || removed_scheduled_votes.contains(&(
                             outcome.target.key.voter_id.to_buffer(),
                             outcome.target.contested_name.clone(),
                         ))
@@ -519,25 +519,26 @@ fn mark_target_broadcast(
     network: Network,
     operation_id: DpnsVoteOperationId,
     key: &DpnsVoteTargetKey,
-) -> Result<(), TaskError> {
+) -> Result<bool, TaskError> {
     let Some(mut operation): Option<DpnsVoteOperation> = kv
         .get(DetScope::Global, &operation_key(network, operation_id))
         .map_err(unreadable_operation_err)?
     else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(outcome) = operation
         .targets
         .iter_mut()
         .find(|outcome| outcome.target.key == *key)
     else {
-        return Ok(());
+        return Ok(false);
     };
     if outcome.status == DpnsVoteTargetStatus::Submitting {
         outcome.status = DpnsVoteTargetStatus::Confirming;
         write_existing_operation(kv, network, &operation)?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 impl AppContext {
@@ -745,12 +746,12 @@ impl AppContext {
         Ok(true)
     }
 
-    /// Record that a target was broadcast before waiting for its result.
+    /// Record that a target is entering the ambiguous broadcast phase.
     pub(crate) fn mark_dpns_vote_broadcast(
         &self,
         operation_id: DpnsVoteOperationId,
         key: &DpnsVoteTargetKey,
-    ) -> Result<(), TaskError> {
+    ) -> Result<bool, TaskError> {
         let _guard = self
             .dpns_vote_operation_guard
             .lock()
@@ -1426,21 +1427,41 @@ mod tests {
     }
 
     #[test]
-    fn pruning_removes_terminal_records_and_preserves_live_locks() {
+    fn pruning_removes_terminal_scheduled_immediate_and_mixed_records() {
         let kv = kv();
-        let mut terminal = operation(DpnsVoteTargetStatus::Confirmed);
-        terminal.targets[0].target.timing = VoteTiming::Scheduled(42);
+        let mut scheduled = operation(DpnsVoteTargetStatus::Confirmed);
+        scheduled.targets[0].target.timing = VoteTiming::Scheduled(42);
+        scheduled.targets[0].target.contested_name = "scheduled".to_owned();
+        let mut immediate = operation(DpnsVoteTargetStatus::Confirmed);
+        immediate.targets[0].target.contested_name = "immediate".to_owned();
+        immediate.targets[0].target.key.vote_poll_id = Identifier::from([3; 32]);
+        let mut mixed = operation(DpnsVoteTargetStatus::Confirmed);
+        mixed.targets[0].target.contested_name = "mixed-immediate".to_owned();
+        mixed.targets[0].target.key.vote_poll_id = Identifier::from([4; 32]);
+        let mut mixed_scheduled = mixed.targets[0].clone();
+        mixed_scheduled.target.timing = VoteTiming::Scheduled(43);
+        mixed_scheduled.target.contested_name = "mixed-scheduled".to_owned();
+        mixed_scheduled.target.key.vote_poll_id = Identifier::from([5; 32]);
+        mixed.targets.push(mixed_scheduled);
         let live = operation(DpnsVoteTargetStatus::Unconfirmed);
-        let removed_scheduled_votes = BTreeSet::from([(
-            terminal.targets[0].target.key.voter_id.to_buffer(),
-            terminal.targets[0].target.contested_name.clone(),
-        )]);
-        persist_operation(&kv, Network::Testnet, &terminal).unwrap();
+        let removed_scheduled_votes = BTreeSet::from([
+            (
+                scheduled.targets[0].target.key.voter_id.to_buffer(),
+                scheduled.targets[0].target.contested_name.clone(),
+            ),
+            (
+                mixed.targets[1].target.key.voter_id.to_buffer(),
+                mixed.targets[1].target.contested_name.clone(),
+            ),
+        ]);
+        persist_operation(&kv, Network::Testnet, &scheduled).unwrap();
+        persist_operation(&kv, Network::Testnet, &immediate).unwrap();
+        persist_operation(&kv, Network::Testnet, &mixed).unwrap();
         persist_operation(&kv, Network::Testnet, &live).unwrap();
 
         assert_eq!(
             prune_terminal_operations(&kv, Network::Testnet, &removed_scheduled_votes).unwrap(),
-            1
+            3
         );
         assert_eq!(
             load_operations_read_only(&kv, Network::Testnet).unwrap(),
@@ -1449,7 +1470,23 @@ mod tests {
         assert!(
             kv.get::<DpnsVoteOperation>(
                 DetScope::Global,
-                &operation_key(Network::Testnet, terminal.id),
+                &operation_key(Network::Testnet, scheduled.id),
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            kv.get::<DpnsVoteOperation>(
+                DetScope::Global,
+                &operation_key(Network::Testnet, immediate.id),
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            kv.get::<DpnsVoteOperation>(
+                DetScope::Global,
+                &operation_key(Network::Testnet, mixed.id),
             )
             .unwrap()
             .is_none()
@@ -1535,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn successful_broadcast_crosses_the_durable_phase_boundary() {
+    fn marking_broadcast_crosses_the_durable_phase_boundary() {
         let kv = kv();
         let submitting = operation(DpnsVoteTargetStatus::Submitting);
         let key = submitting.targets[0].target.key.clone();
@@ -1546,6 +1583,39 @@ mod tests {
         assert_eq!(
             load_operations(&kv, Network::Testnet).unwrap()[0].targets[0].status,
             DpnsVoteTargetStatus::Confirming
+        );
+    }
+
+    #[test]
+    fn marking_broadcast_fails_closed_without_submitting_target() {
+        let kv = kv();
+        let confirmed = operation(DpnsVoteTargetStatus::Confirmed);
+        let missing_key = DpnsVoteTargetKey {
+            vote_poll_id: Identifier::from([9; 32]),
+            ..confirmed.targets[0].target.key.clone()
+        };
+
+        assert!(
+            !mark_target_broadcast(
+                &kv,
+                Network::Testnet,
+                confirmed.id,
+                &confirmed.targets[0].target.key,
+            )
+            .unwrap()
+        );
+        persist_operation(&kv, Network::Testnet, &confirmed).unwrap();
+        assert!(
+            !mark_target_broadcast(&kv, Network::Testnet, confirmed.id, &missing_key,).unwrap()
+        );
+        assert!(
+            !mark_target_broadcast(
+                &kv,
+                Network::Testnet,
+                confirmed.id,
+                &confirmed.targets[0].target.key,
+            )
+            .unwrap()
         );
     }
 }

@@ -1126,6 +1126,20 @@ impl WalletBackend {
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
+    /// Delete the Global entity-timestamp entry keyed by `identity_id`.
+    ///
+    /// Payment timestamps and timestamps for other entities are not safely
+    /// owner-attributable, so only full-wallet teardown reclaims those entries.
+    pub fn dashpay_clear_identity_timestamps(
+        &self,
+        identity_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let key = sidecar_key(KV_PREFIX_TIMESTAMPS, identity_id);
+        self.kv()
+            .delete(DetScope::Global, &key)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
     /// Write DET-local `(created_at_ms, confirmed_at_ms)` timestamps for a
     /// payment in the k/v sidecar, keyed by transaction id. Upstream
     /// `PaymentEntry` carries no timestamps of its own, so this is the

@@ -6,20 +6,14 @@
 //!
 //! ## Backend integration
 //!
-//! This tab is **additive** with respect to the backend: it dispatches only
-//! backend tasks that already exist and never introduces new variants. As of
-//! 2026-04-23 the following controls cannot be wired to a backend task and are
+//! This tab dispatches backend tasks for supported settings actions. The
+//! following controls do not have a backend task and are
 //! therefore feature-gated — rendered as non-interactive affordances with a
 //! `disabled_tooltip` explaining that the action is coming in a follow-up:
 //!
 //! - **Delete social profile** — no `DashPayTask::DeleteProfile` variant.
 //! - **Add / remove alias** and **Make primary** — no `IdentityTask::AddAlias`
 //!   / `RemoveAlias` / `MakePrimaryAlias` variants.
-//! - **Unload this identity from this device** — no identity-unload task; the
-//!   existing `wallet_lifecycle` unload path is wallet-scoped, not identity-
-//!   scoped, and wiring it here would bypass the dashpay / DPNS state cleanup
-//!   the operation implies.
-//!
 //! These appear as `Gated(missing_task)` non-interactive rows with the copy
 //! from design-spec §D (tooltip catalog entries #49 and #59). A TODO comment
 //! marks each one so the backend follow-up can search for the flag.
@@ -136,7 +130,7 @@ pub struct SettingsTab {
     advanced_open: bool,
     /// Confirmation dialog for the (gated) "Delete social profile" action.
     confirm_delete_profile: Option<ConfirmationDialog>,
-    /// Confirmation dialog for the (gated) "Unload this identity" action.
+    /// Confirmation dialog for the destructive "Unload this identity" action.
     confirm_unload: Option<ConfirmationDialog>,
     /// Track whether we have loaded the cached profile for the current
     /// identity. Reset on identity change.
@@ -214,7 +208,7 @@ impl SettingsTab {
             });
 
         // Dialogs on top.
-        action |= self.show_gated_dialogs(ui);
+        action |= self.show_confirmation_dialogs(ui);
 
         action
     }
@@ -713,24 +707,19 @@ impl SettingsTab {
                     .color(DashColors::text_secondary(dark_mode)),
                 );
                 ui.add_space(6.0);
-                // TODO(identity-hub): wire once an identity-scoped unload task
-                // exists. Wallet-scoped unload (wallet_lifecycle) is too broad
-                // — it would silently drop sibling identities on the same wallet.
-                let unload = ui
-                    .add_enabled(
-                        false,
-                        ComponentStyles::danger_button("Unload this identity from this device"),
-                    )
-                    .disabled_tooltip(format!("{TIP_UNLOAD} {GATED_COMING_SOON}"));
+                let unload =
+                    ComponentStyles::add_danger_button(ui, "Unload this identity from this device")
+                        .clickable_tooltip(TIP_UNLOAD);
                 if unload.clicked() {
                     self.confirm_unload = Some(
                         ConfirmationDialog::new(
                             "Unload this identity",
-                            "This removes the identity from this device. It remains on Dash \
-                             Platform — you can load it again later.",
+                            "Unloading permanently deletes this identity's private keys and \
+                             local data from this device. The identity remains on Dash Platform, \
+                             but you will need its recovery information to load it again.",
                         )
-                        .confirm_text(Some("Unload"))
-                        .cancel_text(Some("Keep"))
+                        .confirm_text(Some("Permanently unload"))
+                        .cancel_text(Some("Keep identity"))
                         .danger_mode(true),
                     );
                 }
@@ -743,7 +732,7 @@ impl SettingsTab {
     // Dialog handling
     // -----------------------------------------------------------------
 
-    fn show_gated_dialogs(&mut self, ui: &mut Ui) -> AppAction {
+    fn show_confirmation_dialogs(&mut self, ui: &mut Ui) -> AppAction {
         if let Some(dialog) = self.confirm_delete_profile.as_mut() {
             match dialog.show(ui).inner.dialog_response {
                 Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
@@ -755,7 +744,17 @@ impl SettingsTab {
 
         if let Some(dialog) = self.confirm_unload.as_mut() {
             match dialog.show(ui).inner.dialog_response {
-                Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
+                Some(ConfirmationStatus::Confirmed) => {
+                    self.confirm_unload = None;
+                    if let Some(identity) = self.selected_identity.as_ref() {
+                        return AppAction::BackendTask(BackendTask::IdentityTask(
+                            IdentityTask::UnloadIdentity {
+                                identity_id: identity.identity.id(),
+                            },
+                        ));
+                    }
+                }
+                Some(ConfirmationStatus::Canceled) => {
                     self.confirm_unload = None;
                 }
                 None => {}

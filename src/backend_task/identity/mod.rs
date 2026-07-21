@@ -11,6 +11,7 @@ mod register_dpns_name;
 mod register_identity;
 mod top_up_identity;
 mod transfer;
+mod unload_identity;
 mod withdraw_from_identity;
 
 use super::{BackendTaskSuccessResult, FeeResult, TaskError};
@@ -497,6 +498,12 @@ pub enum IdentityTask {
         /// The current per-identity password, verified before downgrading.
         password: Secret,
     },
+    /// Permanently remove one identity's keys and local device state while
+    /// leaving the Platform identity itself unchanged.
+    UnloadIdentity {
+        /// The identity to unload from this device.
+        identity_id: Identifier,
+    },
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -902,6 +909,7 @@ impl AppContext {
                 identity_id,
                 password,
             } => self.unprotect_identity_keys(identity_id, password),
+            IdentityTask::UnloadIdentity { identity_id } => self.unload_identity(identity_id),
         }
     }
 

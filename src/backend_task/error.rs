@@ -1424,6 +1424,15 @@ pub enum TaskError {
     )]
     MasternodeNotFound { identity_id: Identifier },
 
+    /// A regular identity load fetched a registered masternode or evonode.
+    /// Carries the resolved identity id for structured matching.
+    #[error(
+        "This identifier belongs to a registered masternode or evonode, not a regular identity. \
+         Load it from the Masternodes page instead, where you can enter its owner, voting, and \
+         payout keys."
+    )]
+    IdentityIsMasternode { identity_id: Identifier },
+
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]
     IdentityCreationError {

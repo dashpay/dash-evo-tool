@@ -543,6 +543,14 @@ fn identity_blob_decode_config() -> impl bincode::config::Config {
     bincode::config::standard().with_limit::<{ IDENTITY_BLOB_DECODE_LIMIT }>()
 }
 
+/// Returns whether an identity has a masternode or evonode owner key.
+pub fn identity_carries_owner_key(identity: &Identity) -> bool {
+    identity
+        .public_keys()
+        .values()
+        .any(|key| key.purpose() == Purpose::OWNER)
+}
+
 impl QualifiedIdentity {
     /// Serializes the QualifiedIdentity to a vector of bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -1082,6 +1090,40 @@ impl QualifiedIdentity {
             .next();
 
         Ok(wallet_info)
+    }
+}
+
+#[cfg(test)]
+mod identity_owner_key_tests {
+    use super::*;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    fn identity_with_key_purpose(purpose: Purpose) -> Identity {
+        let platform_version = PlatformVersion::latest();
+        let mut key = IdentityPublicKey::random_key(1, Some(1), platform_version);
+        key.set_purpose(purpose);
+        Identity::new_with_id_and_keys(
+            Identifier::random(),
+            BTreeMap::from([(key.id(), key)]),
+            platform_version,
+        )
+        .expect("identity")
+    }
+
+    #[test]
+    fn identity_with_owner_key_is_detected() {
+        let identity = identity_with_key_purpose(Purpose::OWNER);
+
+        assert!(identity_carries_owner_key(&identity));
+    }
+
+    #[test]
+    fn identity_with_only_authentication_key_is_not_detected() {
+        let identity = identity_with_key_purpose(Purpose::AUTHENTICATION);
+
+        assert!(!identity_carries_owner_key(&identity));
     }
 }
 

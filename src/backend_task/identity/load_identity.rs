@@ -14,7 +14,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity, identity_carries_owner_key,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
@@ -75,6 +75,19 @@ fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIden
     if new.associated_owner_key_id.is_none() {
         new.associated_owner_key_id = existing.associated_owner_key_id;
     }
+}
+
+fn validate_loaded_identity_type(
+    identity_type: IdentityType,
+    identity: &Identity,
+) -> Result<(), TaskError> {
+    if identity_type == IdentityType::User && identity_carries_owner_key(identity) {
+        return Err(TaskError::IdentityIsMasternode {
+            identity_id: identity.id(),
+        });
+    }
+
+    Ok(())
 }
 
 impl AppContext {
@@ -209,6 +222,8 @@ impl AppContext {
             Ok(None) => return Err(TaskError::IdentityNotFound),
             Err(e) => return Err(TaskError::from(e)),
         };
+
+        validate_loaded_identity_type(identity_type, &identity)?;
 
         let mut encrypted_private_keys = BTreeMap::new();
 
@@ -804,6 +819,8 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::KeyID;
+    use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::IdentityPublicKey;
@@ -811,6 +828,49 @@ mod tests {
 
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    fn identity_with_key_purpose(purpose: Purpose) -> Identity {
+        let platform_version = PlatformVersion::latest();
+        let mut key = IdentityPublicKey::random_key(1, Some(1), platform_version);
+        key.set_purpose(purpose);
+        Identity::new_with_id_and_keys(
+            Identifier::random(),
+            BTreeMap::from([(key.id(), key)]),
+            platform_version,
+        )
+        .expect("identity")
+    }
+
+    /// Exercises the post-fetch guard directly because this module has no fetch stub.
+    #[test]
+    fn user_load_rejects_identity_with_owner_key() {
+        let identity = identity_with_key_purpose(Purpose::OWNER);
+        let expected_id = identity.id();
+
+        let error = validate_loaded_identity_type(IdentityType::User, &identity)
+            .expect_err("a User load must reject a masternode-owned identity");
+
+        assert!(matches!(
+            error,
+            TaskError::IdentityIsMasternode { identity_id } if identity_id == expected_id
+        ));
+    }
+
+    #[test]
+    fn user_load_accepts_identity_with_only_authentication_key() {
+        let identity = identity_with_key_purpose(Purpose::AUTHENTICATION);
+
+        assert!(validate_loaded_identity_type(IdentityType::User, &identity).is_ok());
+    }
+
+    #[test]
+    fn node_load_accepts_identity_with_owner_key() {
+        let identity = identity_with_key_purpose(Purpose::OWNER);
+
+        for identity_type in [IdentityType::Masternode, IdentityType::Evonode] {
+            assert!(validate_loaded_identity_type(identity_type, &identity).is_ok());
+        }
+    }
 
     #[tokio::test]
     async fn identity_network_timeout_is_typed_and_actionable() {

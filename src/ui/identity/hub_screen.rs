@@ -536,6 +536,13 @@ impl ScreenLike for IdentityHubScreen {
                     self.settings_tab.on_profile_saved();
                 }
             }
+            BackendTaskSuccessResult::UnloadedIdentity(_) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This identity was unloaded from this device.",
+                    MessageType::Success,
+                );
+            }
             // Populate the Received/Sent request caches so the Contacts tab
             // can render real RequestCard rows instead of hardcoded empties.
             // The result arrives from LoadContactRequests,

@@ -6,20 +6,14 @@
 //!
 //! ## Backend integration
 //!
-//! This tab is **additive** with respect to the backend: it dispatches only
-//! backend tasks that already exist and never introduces new variants. As of
-//! 2026-04-23 the following controls cannot be wired to a backend task and are
+//! This tab dispatches backend tasks for supported settings actions. The
+//! following controls do not have a backend task and are
 //! therefore feature-gated — rendered as non-interactive affordances with a
 //! `disabled_tooltip` explaining that the action is coming in a follow-up:
 //!
 //! - **Delete social profile** — no `DashPayTask::DeleteProfile` variant.
 //! - **Add / remove alias** and **Make primary** — no `IdentityTask::AddAlias`
 //!   / `RemoveAlias` / `MakePrimaryAlias` variants.
-//! - **Unload this identity from this device** — no identity-unload task; the
-//!   existing `wallet_lifecycle` unload path is wallet-scoped, not identity-
-//!   scoped, and wiring it here would bypass the dashpay / DPNS state cleanup
-//!   the operation implies.
-//!
 //! These appear as `Gated(missing_task)` non-interactive rows with the copy
 //! from design-spec §D (tooltip catalog entries #49 and #59). A TODO comment
 //! marks each one so the backend follow-up can search for the flag.
@@ -39,6 +33,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{RootScreenType, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use eframe::egui::{Id, Margin, RichText, TextEdit, Ui};
 use std::sync::Arc;
 
@@ -100,6 +95,11 @@ use crate::model::dashpay::{
 // Stateful tab component
 // ---------------------------------------------------------------------------
 
+struct PendingIdentityUnload {
+    dialog: ConfirmationDialog,
+    target_id: Identifier,
+}
+
 /// Settings tab state. Holds the currently-selected identity (picked on
 /// construction) plus per-field edit state. Follows the project's stateful-UI
 /// pattern used by `ProfileScreen`: form fields, dirty tracking, confirmation
@@ -136,8 +136,8 @@ pub struct SettingsTab {
     advanced_open: bool,
     /// Confirmation dialog for the (gated) "Delete social profile" action.
     confirm_delete_profile: Option<ConfirmationDialog>,
-    /// Confirmation dialog for the (gated) "Unload this identity" action.
-    confirm_unload: Option<ConfirmationDialog>,
+    /// Confirmation dialog for the destructive "Unload this identity" action.
+    confirm_unload: Option<PendingIdentityUnload>,
     /// Track whether we have loaded the cached profile for the current
     /// identity. Reset on identity change.
     profile_loaded: bool,
@@ -214,7 +214,7 @@ impl SettingsTab {
             });
 
         // Dialogs on top.
-        action |= self.show_gated_dialogs(ui);
+        action |= self.show_confirmation_dialogs(ui);
 
         action
     }
@@ -713,26 +713,28 @@ impl SettingsTab {
                     .color(DashColors::text_secondary(dark_mode)),
                 );
                 ui.add_space(6.0);
-                // TODO(identity-hub): wire once an identity-scoped unload task
-                // exists. Wallet-scoped unload (wallet_lifecycle) is too broad
-                // — it would silently drop sibling identities on the same wallet.
-                let unload = ui
-                    .add_enabled(
-                        false,
-                        ComponentStyles::danger_button("Unload this identity from this device"),
-                    )
-                    .disabled_tooltip(format!("{TIP_UNLOAD} {GATED_COMING_SOON}"));
+                let unload =
+                    ComponentStyles::add_danger_button(ui, "Unload this identity from this device")
+                        .clickable_tooltip(TIP_UNLOAD);
                 if unload.clicked() {
-                    self.confirm_unload = Some(
-                        ConfirmationDialog::new(
+                    let target_id = identity.identity.id();
+                    let identity_label = identity_unload_label(identity);
+                    self.confirm_unload = Some(PendingIdentityUnload {
+                        dialog: ConfirmationDialog::new(
                             "Unload this identity",
-                            "This removes the identity from this device. It remains on Dash \
-                             Platform — you can load it again later.",
+                            format!(
+                                "Identity \"{identity_label}\" will be permanently unloaded from \
+                                 this device, deleting its private keys and local data. It remains \
+                                 on Dash Platform, but you will need its recovery information to \
+                                 load it again."
+                            ),
                         )
-                        .confirm_text(Some("Unload"))
-                        .cancel_text(Some("Keep"))
-                        .danger_mode(true),
-                    );
+                        .confirm_text(Some("Permanently unload"))
+                        .cancel_text(Some("Keep identity"))
+                        .danger_mode(true)
+                        .blocks_input(true),
+                        target_id,
+                    });
                 }
             });
 
@@ -743,7 +745,7 @@ impl SettingsTab {
     // Dialog handling
     // -----------------------------------------------------------------
 
-    fn show_gated_dialogs(&mut self, ui: &mut Ui) -> AppAction {
+    fn show_confirmation_dialogs(&mut self, ui: &mut Ui) -> AppAction {
         if let Some(dialog) = self.confirm_delete_profile.as_mut() {
             match dialog.show(ui).inner.dialog_response {
                 Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
@@ -753,9 +755,14 @@ impl SettingsTab {
             }
         }
 
-        if let Some(dialog) = self.confirm_unload.as_mut() {
-            match dialog.show(ui).inner.dialog_response {
-                Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
+        if let Some(pending) = self.confirm_unload.as_mut() {
+            match pending.dialog.show(ui).inner.dialog_response {
+                Some(ConfirmationStatus::Confirmed) => {
+                    let target_id = pending.target_id;
+                    self.confirm_unload = None;
+                    return confirmed_unload_action(target_id);
+                }
+                Some(ConfirmationStatus::Canceled) => {
                     self.confirm_unload = None;
                 }
                 None => {}
@@ -821,6 +828,8 @@ impl SettingsTab {
 
         if !changed {
             self.selected_identity = incoming.clone();
+        } else {
+            self.confirm_unload = None;
         }
 
         changed
@@ -926,6 +935,22 @@ fn keys_screen_type(identity: &QualifiedIdentity) -> ScreenType {
     ScreenType::Keys(identity.identity.clone())
 }
 
+fn identity_unload_label(identity: &QualifiedIdentity) -> String {
+    identity
+        .alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58))
+}
+
+fn confirmed_unload_action(target_id: Identifier) -> AppAction {
+    AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::UnloadIdentity {
+        identity_id: target_id,
+    }))
+}
+
 fn usernames_screen_action() -> AppAction {
     AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSOwnedNames)
 }
@@ -1012,9 +1037,9 @@ mod tests {
     use dash_sdk::platform::{Identifier, IdentityPublicKey};
     use std::collections::BTreeMap;
 
-    fn qualified_identity() -> QualifiedIdentity {
+    fn qualified_identity_with(byte: u8, alias: Option<&str>) -> QualifiedIdentity {
         let identity = Identity::create_basic_identity(
-            Identifier::from_bytes(&[7; 32]).expect("32-byte identifier"),
+            Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier"),
             PlatformVersion::latest(),
         )
         .expect("basic identity");
@@ -1024,7 +1049,7 @@ mod tests {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: None,
+            alias: alias.map(str::to_owned),
             private_keys: Default::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
@@ -1034,6 +1059,10 @@ mod tests {
             status: IdentityStatus::Active,
             network: Network::Testnet,
         }
+    }
+
+    fn qualified_identity() -> QualifiedIdentity {
+        qualified_identity_with(7, None)
     }
 
     #[test]
@@ -1082,6 +1111,56 @@ mod tests {
                 .len(),
             1,
             "a refresh must replace the selected identity's complete key set",
+        );
+    }
+
+    #[test]
+    fn identity_change_clears_an_open_unload_confirmation() {
+        let mut tab = SettingsTab::new();
+        tab.selected_identity = Some(qualified_identity_with(7, Some("Primary")));
+        tab.confirm_unload = Some(PendingIdentityUnload {
+            dialog: ConfirmationDialog::new("Unload", "Confirm unload"),
+            target_id: tab
+                .selected_identity
+                .as_ref()
+                .expect("selected identity")
+                .identity
+                .id(),
+        });
+
+        let changed = tab.reconcile_selected_identity(&Some(qualified_identity_with(8, None)));
+
+        assert!(changed, "the selected identity changed");
+        assert!(
+            tab.confirm_unload.is_none(),
+            "the old identity's unload confirmation must be dismissed"
+        );
+    }
+
+    #[test]
+    fn confirmed_unload_action_uses_the_captured_target() {
+        let captured_target = Identifier::from([0x41; 32]);
+        let newly_selected = Identifier::from([0x42; 32]);
+
+        let action = confirmed_unload_action(captured_target);
+
+        assert!(matches!(
+            action,
+            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::UnloadIdentity {
+                identity_id,
+            })) if identity_id == captured_target && identity_id != newly_selected
+        ));
+    }
+
+    #[test]
+    fn unload_dialog_label_prefers_alias_and_falls_back_to_base58_id() {
+        let aliased = qualified_identity_with(9, Some("  Daily identity  "));
+        let unaliased = qualified_identity_with(10, None);
+
+        assert_eq!(identity_unload_label(&aliased), "Daily identity");
+        assert_eq!(
+            identity_unload_label(&unaliased),
+            unaliased.identity.id().to_string(Encoding::Base58)
         );
     }
 

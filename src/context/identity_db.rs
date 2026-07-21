@@ -909,8 +909,8 @@ impl AppContext {
             .collect())
     }
 
-    /// Remove a locally-stored identity and all of its Identity-scoped
-    /// children. Returns `Ok(())` even when the identity is unknown —
+    /// Remove a locally-stored identity and its owner-attributable local state.
+    /// Returns `Ok(())` even when the identity is unknown —
     /// mirrors the pre-C7 `DELETE` which silently no-ops on missing rows.
     ///
     /// Cleanup verdict: explicit. DET never deletes the upstream
@@ -918,13 +918,20 @@ impl AppContext {
     /// DET stores the qualified-identity blob in the `meta_identity` k/v
     /// scope only), so the upstream `cascade_meta_identity_on_identity_delete`
     /// trigger never fires for this path. This method therefore drains the
-    /// Identity scope itself — the blob, the top-up history, and every
-    /// scheduled vote queued for this identity — and removes the Global
-    /// index entries that the trigger would not touch.
+    /// identity blob, keys, top-up history, scheduled votes, DashPay overlays,
+    /// entity timestamp, reverse address mappings, metadata, and Global identity
+    /// index entry itself.
+    /// Global payment timestamp entries keyed only by transaction id cannot be
+    /// attributed to one owner and remain until full-wallet teardown. Upstream
+    /// `platform-wallet`'s `IdentitySyncManager`, exposed through
+    /// `identity_sync()`, also has no per-identity forget operation, so token sync
+    /// continues tracking a removed identity until upstream adds one.
     pub fn delete_local_qualified_identity(
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
+        // The load registry provides the existing per-identity exclusive claim.
+        let load_guard = self.begin_identity_load(*identifier, None)?;
         let _migration_guard = self
             .migration_run
             .try_lock()
@@ -939,9 +946,43 @@ impl AppContext {
                 source: Arc::new(source),
             },
         )?;
+        match self.wallet_backend() {
+            Ok(backend) => {
+                backend
+                    .dashpay_clear_owner_overlays(identifier)
+                    .map_err(|source| TaskError::IdentityUnloadCleanupFailed {
+                        identity_id: *identifier,
+                        source: Box::new(source),
+                    })?;
+                // Conversation/payment timestamps that are not keyed by this identity
+                // may be shared; full-wallet teardown is the safe reclamation boundary.
+                backend
+                    .dashpay_clear_identity_timestamps(identifier)
+                    .map_err(|source| TaskError::IdentityUnloadCleanupFailed {
+                        identity_id: *identifier,
+                        source: Box::new(source),
+                    })?;
+                backend
+                    .dashpay_clear_identity_addr_map(identifier)
+                    .map_err(|source| TaskError::IdentityUnloadCleanupFailed {
+                        identity_id: *identifier,
+                        source: Box::new(source),
+                    })?;
+                backend.identity_meta().delete(self.network, &id)?;
+            }
+            Err(TaskError::WalletBackendNotYetWired) => {
+                tracing::warn!(
+                    identity_id = %identifier,
+                    "Identity unload left DashPay overlays, timestamps, address mappings, and identity details because the wallet backend is not wired"
+                );
+            }
+            Err(error) => return Err(error),
+        }
         self.clear_identity_vault_keys(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
-        index_remove_identity(&kv, &id)
+        index_remove_identity(&kv, &id)?;
+        load_guard.loaded();
+        Ok(())
     }
 
     /// EAGER identity-key migration (dialog-free): move any plaintext
@@ -1688,7 +1729,8 @@ mod tests {
     /// A `QualifiedIdentity` carrying one `Clear` (HIGH), one `AlwaysClear`
     /// (MEDIUM), and one `AtWalletDerivationPath` key. Returns the QI plus the
     /// `(target, key_id)` of each plaintext key for assertions.
-    fn qi_with_plaintext_and_derived(
+    fn qi_with_id_plaintext_and_derived(
+        identity_id: Identifier,
         secret_high: [u8; 32],
         secret_medium: [u8; 32],
     ) -> QualifiedIdentity {
@@ -1721,8 +1763,7 @@ mod tests {
                 }),
             ),
         );
-        let identity =
-            Identity::create_basic_identity(Identifier::default(), pv).expect("basic identity");
+        let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
         QualifiedIdentity {
             identity,
             associated_voter_identity: None,
@@ -1739,6 +1780,295 @@ mod tests {
             status: IdentityStatus::Active,
             network: Network::Testnet,
         }
+    }
+
+    fn qi_with_plaintext_and_derived(
+        secret_high: [u8; 32],
+        secret_medium: [u8; 32],
+    ) -> QualifiedIdentity {
+        qi_with_id_plaintext_and_derived(Identifier::default(), secret_high, secret_medium)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_unload_removes_all_owned_state_and_preserves_siblings() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::model::dashpay::{ContactAddressIndex, ContactPrivateInfo};
+        use crate::model::qualified_identity::identity_meta::IdentityMeta;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::wallet_backend::WalletSeedView;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let target_id = Identifier::from([0x11; 32]);
+        let sibling_id = Identifier::from([0x22; 32]);
+        let contact_id = Identifier::from([0x33; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0x41; 32], [0x42; 32]);
+        let sibling = qi_with_id_plaintext_and_derived(sibling_id, [0x51; 32], [0x52; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+        ctx.insert_local_qualified_identity(&sibling, &None)
+            .expect("insert sibling identity");
+
+        let target_buf = target_id.to_buffer();
+        let sibling_buf = sibling_id.to_buffer();
+        let target_vault = IdentityKeyView::new(backend.secret_store(), target_buf);
+        let sibling_vault = IdentityKeyView::new(backend.secret_store(), sibling_buf);
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read target key")
+                .is_some(),
+            "target key must exist before removal"
+        );
+
+        backend
+            .dashpay_set_private_info(
+                &target_id,
+                &contact_id,
+                &ContactPrivateInfo {
+                    nickname: "target contact".into(),
+                    notes: "target note".into(),
+                    is_hidden: false,
+                },
+            )
+            .expect("seed target private memo");
+        backend
+            .dashpay_set_address_index(
+                &target_id,
+                &contact_id,
+                &ContactAddressIndex {
+                    owner_identity_id: target_buf.to_vec(),
+                    contact_identity_id: contact_id.to_buffer().to_vec(),
+                    next_send_index: 3,
+                    highest_receive_index: 2,
+                    bloom_registered_count: 1,
+                },
+            )
+            .expect("seed target address index");
+        backend
+            .dashpay_mark_blocked(&target_id, &contact_id)
+            .expect("seed target blocked marker");
+        backend
+            .dashpay_mark_declined(&target_id, &contact_id)
+            .expect("seed target declined marker");
+        backend
+            .dashpay_mark_withdrawn(&target_id, &contact_id)
+            .expect("seed target withdrawn marker");
+        let contact_b58 = contact_id.to_string(Encoding::Base58);
+        backend
+            .kv()
+            .put::<()>(
+                DetScope::Identity(&target_buf),
+                &format!("det:dashpay:request_action:decline:{contact_b58}"),
+                &(),
+            )
+            .expect("seed target request-action journal");
+
+        backend
+            .dashpay_set_private_info(
+                &sibling_id,
+                &contact_id,
+                &ContactPrivateInfo {
+                    nickname: "sibling contact".into(),
+                    notes: "sibling note".into(),
+                    is_hidden: true,
+                },
+            )
+            .expect("seed sibling private memo");
+        backend
+            .dashpay_mark_blocked(&sibling_id, &contact_id)
+            .expect("seed sibling blocked marker");
+
+        backend
+            .dashpay_set_timestamps(&target_id, 11, 12)
+            .expect("seed target timestamps");
+        backend
+            .dashpay_set_timestamps(&sibling_id, 21, 22)
+            .expect("seed sibling timestamps");
+        backend
+            .dashpay_set_address_mapping(&target_id, "target-address-1", &contact_id, 1)
+            .expect("seed first target address mapping");
+        backend
+            .dashpay_set_address_mapping(&target_id, "target-address-2", &contact_id, 2)
+            .expect("seed second target address mapping");
+        backend
+            .dashpay_set_address_mapping(&sibling_id, "sibling-address", &contact_id, 3)
+            .expect("seed sibling address mapping");
+        backend
+            .identity_meta()
+            .set(
+                Network::Testnet,
+                &target_buf,
+                &IdentityMeta {
+                    password_hint: Some("target hint".into()),
+                },
+            )
+            .expect("seed target identity metadata");
+
+        let wallet_seed_hash = [0x77; 32];
+        let wallet_seed = [0x88; 64];
+        WalletSeedView::new(backend.secret_store())
+            .set_raw(&wallet_seed_hash, &wallet_seed)
+            .expect("seed wallet secret");
+
+        let kv = backend.kv();
+        assert_eq!(
+            kv.list(DetScope::Identity(&target_buf), Some("det:dashpay:"))
+                .expect("list target overlays")
+                .len(),
+            6,
+            "all six owner-overlay families must be seeded"
+        );
+
+        ctx.delete_local_qualified_identity(&target_id)
+            .expect("remove target identity");
+
+        assert!(
+            ctx.get_local_qualified_identity(&target_id)
+                .expect("read removed identity")
+                .is_none(),
+            "target identity blob must be removed"
+        );
+        assert_eq!(
+            ctx.local_identity_ids().expect("read identity index"),
+            vec![sibling_id],
+            "identity index must retain only the sibling"
+        );
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read removed target key")
+                .is_none(),
+            "target vault keys must be removed"
+        );
+        assert!(
+            sibling_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read sibling key")
+                .is_some(),
+            "sibling vault keys must survive"
+        );
+        assert!(
+            kv.list(DetScope::Identity(&target_buf), Some("det:dashpay:"))
+                .expect("list removed target overlays")
+                .is_empty(),
+            "all target owner overlays must be removed"
+        );
+        assert_eq!(
+            kv.list(DetScope::Identity(&sibling_buf), Some("det:dashpay:"))
+                .expect("list sibling overlays")
+                .len(),
+            2,
+            "sibling owner overlays must survive"
+        );
+
+        let target_timestamps = format!(
+            "det:dashpay:timestamps:{}",
+            target_id.to_string(Encoding::Base58)
+        );
+        let sibling_timestamps = format!(
+            "det:dashpay:timestamps:{}",
+            sibling_id.to_string(Encoding::Base58)
+        );
+        assert!(
+            kv.get::<(i64, i64)>(DetScope::Global, &target_timestamps)
+                .expect("read target timestamps")
+                .is_none(),
+            "target entity timestamps must be removed"
+        );
+        assert_eq!(
+            kv.get::<(i64, i64)>(DetScope::Global, &sibling_timestamps)
+                .expect("read sibling timestamps"),
+            Some((21, 22)),
+            "sibling entity timestamps must survive"
+        );
+        assert!(
+            backend
+                .dashpay_get_address_mapping(&target_id, "target-address-1")
+                .expect("read first removed target address mapping")
+                .is_none(),
+            "the first target address mapping must be removed"
+        );
+        assert!(
+            backend
+                .dashpay_get_address_mapping(&target_id, "target-address-2")
+                .expect("read second removed target address mapping")
+                .is_none(),
+            "the second target address mapping must be removed"
+        );
+        assert_eq!(
+            backend
+                .dashpay_get_address_mapping(&sibling_id, "sibling-address")
+                .expect("read sibling address mapping"),
+            Some((contact_id, 3)),
+            "the sibling address mapping must survive"
+        );
+        assert!(
+            backend
+                .identity_meta()
+                .get(Network::Testnet, &target_buf)
+                .is_none(),
+            "target identity metadata must be removed"
+        );
+        assert_eq!(
+            WalletSeedView::new(backend.secret_store())
+                .get_raw(&wallet_seed_hash)
+                .expect("read wallet seed")
+                .as_deref(),
+            Some(&wallet_seed),
+            "wallet seed.raw.v1 must survive identity removal"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_unload_respects_an_in_flight_load_claim() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let target_id = Identifier::from([0x71; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0x72; 32], [0x73; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+        let load_guard = ctx
+            .begin_identity_load(target_id, None)
+            .expect("claim target for an in-flight load");
+
+        assert!(
+            matches!(
+                ctx.delete_local_qualified_identity(&target_id),
+                Err(TaskError::IdentityLoadInProgress { identity_id }) if identity_id == target_id
+            ),
+            "deletion must not race a load of the same identity"
+        );
+        assert!(
+            ctx.get_local_qualified_identity(&target_id)
+                .expect("read retained identity")
+                .is_some(),
+            "a rejected deletion must not mutate the identity"
+        );
+
+        drop(load_guard);
+        backend.shutdown().await;
     }
 
     /// Load-path migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,

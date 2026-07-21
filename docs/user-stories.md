@@ -645,6 +645,15 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 - When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
 - An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
 
+### IDN-017: Unload one identity from this device [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to unload one identity from this device so that I can recover from an incorrect import or stop keeping its private keys locally without removing a shared wallet.
+
+- The Identity Hub asks for confirmation and warns that local private keys are permanently deleted before unloading.
+- Unloading removes only the selected identity's local keys, metadata, DashPay overlays, and device record while leaving the Platform identity unchanged.
+- Other identities on the same wallet and the wallet's recovery seed remain available.
+
 ---
 
 ## DPNS (DPN)

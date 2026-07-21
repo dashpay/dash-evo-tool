@@ -661,6 +661,8 @@ pub enum BackendTaskSuccessResult {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
     },
+    /// One identity and its owner-attributable local state were removed.
+    UnloadedIdentity(Identifier),
 
     // Document operation results (replacing string messages)
     DeletedDocument(Identifier, FeeResult),

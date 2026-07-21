@@ -73,13 +73,6 @@ impl AppContext {
         match self.local_identity_ids() {
             Ok(owners) => {
                 for owner in owners {
-                    if let Err(e) = backend.dashpay_clear_owner_overlays(&owner) {
-                        tracing::warn!(
-                            owner = %owner,
-                            "DashPay per-owner overlay clear failed: {e:?}"
-                        );
-                        failures.push(e);
-                    }
                     // Wipe each identity's vault keys and det:identity:* records too —
                     // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)
                     // are plaintext-recoverable, so a full wipe must remove them as well.

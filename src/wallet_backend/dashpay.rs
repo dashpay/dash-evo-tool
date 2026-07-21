@@ -1140,6 +1140,28 @@ impl WalletBackend {
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
+    /// Delete every Global reverse-address mapping owned by `identity_id`.
+    pub fn dashpay_clear_identity_addr_map(
+        &self,
+        identity_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+        let owner_prefix = format!(
+            "{KV_PREFIX_ADDR_MAP}{}:",
+            identity_id.to_string(Encoding::Base58)
+        );
+        let kv = self.kv();
+        let keys = kv
+            .list(DetScope::Global, Some(&owner_prefix))
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+        for key in keys {
+            kv.delete(DetScope::Global, &key)
+                .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+        }
+        Ok(())
+    }
+
     /// Write DET-local `(created_at_ms, confirmed_at_ms)` timestamps for a
     /// payment in the k/v sidecar, keyed by transaction id. Upstream
     /// `PaymentEntry` carries no timestamps of its own, so this is the
@@ -1288,11 +1310,8 @@ impl WalletBackend {
     /// per-contact private memos, address-index cursors, the blocked / declined /
     /// withdrawn markers, and paid-action recovery journals.
     ///
-    /// The remaining Global-scoped overlays (timestamps, reverse address map)
-    /// are not owner-scoped and are swept by the `det:dashpay:` Global prefix in
-    /// [`crate::context::AppContext::clear_network_database`]; this method
-    /// covers the overlays that live under [`DetScope::Identity`] of the owner,
-    /// which that Global sweep can no longer reach.
+    /// Global-scoped overlays are cleared separately because this method covers
+    /// only the overlays under [`DetScope::Identity`] of the owner.
     pub fn dashpay_clear_owner_overlays(&self, owner: &Identifier) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
         let scope = DetScope::Identity(&owner_buf);

@@ -670,6 +670,18 @@ pub enum TaskError {
         source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
 
+    /// Owner-attributable local state could not be fully removed while
+    /// unloading an identity. The identity id identifies the affected local
+    /// record; the nested typed error preserves the storage failure for logs.
+    #[error(
+        "Some local data for identity {identity_id} could not be fully removed. Try unloading it again."
+    )]
+    IdentityUnloadCleanupFailed {
+        identity_id: Identifier,
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// An identity top-up history record could not be persisted to the
     /// per-network wallet k/v store.
     #[error("Could not save your top-up history. Check available disk space and try again.")]

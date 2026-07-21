@@ -45,7 +45,11 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::model::wallet::Wallet;
+    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::version::PlatformVersion;
+    use std::sync::{Arc, RwLock};
 
     #[test]
     fn identity_unload_evicts_only_target_from_wallet_cache() {
@@ -66,5 +70,78 @@ mod tests {
             Some(sibling_id),
             "the sibling identity must remain cached"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_unload_handler_clears_wallet_cache_and_identity_selection() {
+        use crate::app::TaskResult;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let platform_version = PlatformVersion::latest();
+        let target_id = Identifier::from([0x31; 32]);
+        let sibling_id = Identifier::from([0x32; 32]);
+        let target = Identity::create_basic_identity(target_id, platform_version)
+            .expect("create target identity");
+        let sibling = Identity::create_basic_identity(sibling_id, platform_version)
+            .expect("create sibling identity");
+        let mut wallet = Wallet::new_from_seed([0x33; 64], Network::Testnet, None, None)
+            .expect("build test wallet");
+        wallet.identities.insert(3, target);
+        wallet.identities.insert(7, sibling);
+        let wallet_seed_hash = wallet.seed_hash();
+        ctx.wallets()
+            .write()
+            .expect("write wallets")
+            .insert(wallet_seed_hash, Arc::new(RwLock::new(wallet)));
+        ctx.set_selected_identity(Some(target_id));
+        ctx.set_pending_identity_selection(target_id);
+
+        let result = ctx
+            .unload_identity(target_id)
+            .expect("unload identity through the real handler");
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::UnloadedIdentity(identity_id) if identity_id == target_id
+        ));
+        let wallets = ctx.wallets().read().expect("read wallets");
+        let wallet = wallets
+            .get(&wallet_seed_hash)
+            .expect("test wallet remains")
+            .read()
+            .expect("read test wallet");
+        assert!(
+            wallet
+                .identities
+                .values()
+                .all(|identity| identity.id() != target_id),
+            "the target identity must be evicted from the wallet cache"
+        );
+        assert_eq!(
+            wallet.identities.get(&7).map(IdentityGettersV0::id),
+            Some(sibling_id),
+            "the sibling identity must remain cached"
+        );
+        drop(wallet);
+        drop(wallets);
+        assert_eq!(
+            ctx.selected_identity_id(),
+            None,
+            "the unloaded identity must no longer be selected"
+        );
+        assert_eq!(
+            ctx.take_pending_identity_selection(),
+            None,
+            "a pending selection for the unloaded identity must be cleared"
+        );
+        backend.shutdown().await;
     }
 }

@@ -77,6 +77,28 @@ fn receive_dialog_stays_open_on_triggering_click() {
 }
 
 #[test]
+fn add_receiving_address_button_opens_receive_dialog() {
+    with_isolated_data_dir(|| {
+        let mut harness = wallet_screen_harness(None);
+
+        click_in_one_frame(&mut harness, "➕ Add Receiving Address");
+        assert!(
+            harness.query_by_label("Core Address").is_some(),
+            "clicking 'Add Receiving Address' must open the same Receive dialog as the \
+             'Receive' button, not silently generate an address with no visible feedback"
+        );
+        assert!(
+            harness
+                .query_by_label("Generating a new address…")
+                .is_some()
+        );
+
+        harness.step();
+        assert!(harness.query_by_label("Core Address").is_some());
+    });
+}
+
+#[test]
 fn rename_dialog_stays_open_on_triggering_click() {
     with_isolated_data_dir(|| {
         let mut harness = wallet_screen_harness(None);

@@ -15,6 +15,10 @@ use std::sync::Arc;
 /// will reject a mismatch, catching forgotten additions at build time.
 pub(crate) const SYSTEM_CONTRACT_COUNT: usize = 5;
 
+/// Diagnostic carried by the SDK while quorum keys are unavailable at startup.
+pub(crate) const MASTERNODE_LIST_NOT_READY_DETAIL: &str =
+    "masternode list not yet synced (quorums unavailable)";
+
 /// Resolve a data contract by ID: check cached system contracts first, then DB.
 ///
 /// All system contracts are listed in `cached` — adding a new one is a single
@@ -138,8 +142,9 @@ impl ContextProvider for SpvProvider {
         // pre-unlock guard below uses. Any stray early proof call thus degrades
         // gracefully instead of triggering the self-ban storm.
         if !app_ctx.connection_status().masternodes_ready() {
+            // Consumed by `sdk_error_is_masternode_list_not_ready` in `backend_task::error`.
             return Err(ContextProviderError::Config(
-                "masternode list not yet synced (quorums unavailable)".to_string(),
+                MASTERNODE_LIST_NOT_READY_DETAIL.to_string(),
             ));
         }
 

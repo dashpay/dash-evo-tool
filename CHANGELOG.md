@@ -211,6 +211,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Closing the app now finishes wallet activity and clears in-memory secrets**:
+  wallet cleanup still completes if you close the app again while it is already
+  closing or if a network change is still connecting.
+
 - **Token balance refresh status**: requesting a refresh while token balances
   are already updating now shows a brief informational note instead of a red
   error banner that must be dismissed.

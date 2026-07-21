@@ -27,3 +27,4 @@ pub mod single_key;
 pub mod spv_status;
 pub mod user_role;
 pub mod wallet;
+pub mod wallet_association;

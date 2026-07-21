@@ -2,7 +2,7 @@ use crate::wallet_backend::poison::MutexRecover;
 use std::sync::{Arc, Mutex};
 use tracing::error;
 
-use chrono::{DateTime, LocalResult, TimeZone, Utc};
+use chrono::{DateTime, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_humanize::HumanTime;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -18,6 +18,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
+use crate::model::dpns::normalize_dpns_label;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
     DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
@@ -52,6 +53,22 @@ enum ActiveContestGroup {
     NeedsVote,
     Voted,
     NotVotable,
+}
+
+const NO_VOTING_NODES_MESSAGE: &str = "No voting-enabled masternodes are loaded. Open the Masternodes tab, load a masternode with its voting key, then try again.";
+
+fn candidate_choice_label(candidate_name: &str) -> String {
+    format!("Vote for {candidate_name}")
+}
+
+fn review_vote_choice_label(choice: ResourceVoteChoice, candidate_name: Option<&str>) -> String {
+    match choice {
+        ResourceVoteChoice::Lock => "Lock".to_owned(),
+        ResourceVoteChoice::Abstain => "Abstain".to_owned(),
+        ResourceVoteChoice::TowardsIdentity(_) => candidate_name
+            .map(candidate_choice_label)
+            .unwrap_or_else(|| "Vote for a candidate that is no longer listed.".to_owned()),
+    }
 }
 
 fn classify_vote_states(
@@ -224,6 +241,9 @@ pub struct DPNSScreen {
     bulk_identity_options: Vec<VoteOption>,
     bulk_vote_handling_status: VoteHandlingStatus,
     set_all_option: VoteOption,
+    simple_schedule_date: String,
+    simple_schedule_hour: u32,
+    simple_schedule_minute: u32,
 }
 
 impl DPNSScreen {
@@ -288,6 +308,7 @@ impl DPNSScreen {
         // Initialize vote handling pop-up state to hidden
         let identity_count = voting_identities.len();
         let bulk_identity_options = vec![VoteOption::CastNow; identity_count];
+        let default_schedule_time = Utc::now() + chrono::Duration::days(1);
 
         Self {
             voting_identities,
@@ -319,6 +340,9 @@ impl DPNSScreen {
             bulk_identity_options,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
             set_all_option: VoteOption::CastNow,
+            simple_schedule_date: default_schedule_time.format("%Y-%m-%d").to_string(),
+            simple_schedule_hour: default_schedule_time.hour(),
+            simple_schedule_minute: default_schedule_time.minute(),
         }
     }
 
@@ -445,7 +469,10 @@ impl DPNSScreen {
         let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
-            ui.text_edit_singleline(&mut self.active_filter_term);
+            ui.text_edit_singleline(&mut self.active_filter_term)
+                .on_hover_text(
+                    "The letters i and l match the digit 1, and the letter o matches 0.",
+                );
         });
         ui.label(
             RichText::new("Each node can change its vote up to four times after its initial vote.")
@@ -453,18 +480,11 @@ impl DPNSScreen {
         );
         ui.add_space(8.0);
 
-        let filter = self.active_filter_term.to_lowercase();
+        let filter = normalize_dpns_label(&self.active_filter_term);
         let contests = self
             .contested_names
             .lock_recover()
             .iter()
-            .filter(|contest| {
-                filter.is_empty()
-                    || contest
-                        .normalized_contested_name
-                        .to_lowercase()
-                        .contains(&filter)
-            })
             .cloned()
             .collect::<Vec<_>>();
         let mut groups = [Vec::new(), Vec::new(), Vec::new()];
@@ -475,6 +495,35 @@ impl DPNSScreen {
                 ActiveContestGroup::NotVotable => 2,
             };
             groups[index].push(contest);
+        }
+
+        let closes_within_day = groups[0]
+            .iter()
+            .filter(|contest| {
+                contest.end_time.is_some_and(|end_time| {
+                    let remaining = end_time as i64 - Utc::now().timestamp_millis();
+                    remaining > 0 && remaining <= chrono::Duration::days(1).num_milliseconds()
+                })
+            })
+            .count();
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(format!(
+                "Names still available to your nodes: {available}. Names closing within 24 hours: {closing}.",
+                available = groups[0].len(),
+                closing = closes_within_day,
+            ));
+        });
+        ui.add_space(8.0);
+
+        if !filter.is_empty() {
+            for group in &mut groups {
+                group.retain(|contest| {
+                    contest
+                        .normalized_contested_name
+                        .to_lowercase()
+                        .contains(&filter)
+                });
+            }
         }
 
         egui::ScrollArea::vertical()
@@ -634,7 +683,7 @@ impl DPNSScreen {
                         let clicked = ui
                             .selectable_label(
                                 selected == Some(choice),
-                                format!("Vote for {}", contestant.name),
+                                candidate_choice_label(&contestant.name),
                             )
                             .clicked();
                         tally_chip(ui, contestant.votes, dark_mode);
@@ -794,31 +843,20 @@ impl DPNSScreen {
         ui.horizontal(|ui| {
             let dark_mode = ui.style().visuals.dark_mode;
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
-            ui.text_edit_singleline(&mut self.past_filter_term);
+            ui.text_edit_singleline(&mut self.past_filter_term)
+                .on_hover_text(
+                    "The letters i and l match the digit 1, and the letter o matches 0.",
+                );
         });
 
         let contested_names = {
             let guard = self.contested_names.lock_recover();
             let mut cn = guard.clone();
             cn.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
-            // 1) Filter by `past_filter_term`
             if !self.past_filter_term.is_empty() {
-                let mut filter_lc = self.past_filter_term.to_lowercase();
-                // Convert o and O to 0 and l to 1 in filter_lc
-                filter_lc = filter_lc
-                    .chars()
-                    .map(|c| match c {
-                        'o' | 'O' => '0',
-                        'l' => '1',
-                        _ => c,
-                    })
-                    .collect();
+                let filter = normalize_dpns_label(&self.past_filter_term);
 
-                cn.retain(|c| {
-                    c.normalized_contested_name
-                        .to_lowercase()
-                        .contains(&filter_lc)
-                });
+                cn.retain(|c| c.normalized_contested_name.to_lowercase().contains(&filter));
             }
             self.sort_contested_names(&mut cn);
             cn
@@ -1377,170 +1415,172 @@ impl DPNSScreen {
         action
     }
 
-    fn show_bulk_schedule_popup_window(&mut self, ui: &mut Ui) -> AppAction {
+    fn simple_schedule_option(&self) -> Option<VoteOption> {
+        let date = NaiveDate::parse_from_str(&self.simple_schedule_date, "%Y-%m-%d").ok()?;
+        let time =
+            NaiveTime::from_hms_opt(self.simple_schedule_hour, self.simple_schedule_minute, 0)?;
+        let scheduled_at = DateTime::<Utc>::from_naive_utc_and_offset(date.and_time(time), Utc);
+        let seconds = scheduled_at.signed_duration_since(Utc::now()).num_seconds();
+        if seconds <= 0 {
+            return None;
+        }
+        let total_minutes = u32::try_from((seconds + 59) / 60).ok()?;
+        Some(VoteOption::Scheduled {
+            days: total_minutes / (24 * 60),
+            hours: total_minutes / 60 % 24,
+            minutes: total_minutes % 60,
+        })
+    }
+
+    fn apply_all_nodes_option(&mut self, option: VoteOption) {
+        self.set_all_option = option.clone();
+        self.bulk_identity_options.fill(option);
+    }
+
+    fn review_candidate_name(&self, vote: &SelectedVote) -> Option<String> {
+        let ResourceVoteChoice::TowardsIdentity(candidate_id) = vote.vote_choice else {
+            return None;
+        };
+        self.contested_names
+            .lock_recover()
+            .iter()
+            .find(|contest| contest.normalized_contested_name == vote.contested_name)
+            .and_then(|contest| contest.contestants.as_ref())
+            .and_then(|contestants| {
+                contestants
+                    .iter()
+                    .find(|candidate| candidate.id == candidate_id)
+            })
+            .map(|candidate| candidate.name.clone())
+    }
+
+    fn show_review_and_cast_window(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
         let dark_mode = ui.style().visuals.dark_mode;
-        ui.heading(
-            RichText::new("Review selected votes").color(DashColors::text_primary(dark_mode)),
-        );
-        ui.add_space(10.0);
 
-        // If self.bulk_vote_handling_status is Complete, show completed message
         if self.bulk_vote_handling_status == VoteHandlingStatus::Completed {
             action |= self.show_bulk_vote_handling_complete(ui);
             return action;
         }
 
-        // If no voting identities are loaded, display a message and return
         if self.voting_identities.is_empty() {
             ui.add_space(5.0);
-            ui.colored_label(Color32::DARK_RED, "No masternode identities loaded. Please go to the Identities screen to load your masternodes.");
+            ui.colored_label(
+                DashColors::warning_color(dark_mode),
+                NO_VOTING_NODES_MESSAGE,
+            );
             ui.add_space(10.0);
-            let dark_mode = ui.style().visuals.dark_mode;
-            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
-                self.show_bulk_schedule_popup = false;
-            }
+            ui.horizontal(|ui| {
+                if ComponentStyles::add_primary_button(ui, "Open Masternodes").clicked() {
+                    action = AppAction::SetMainScreen(RootScreenType::RootScreenMasternodes);
+                    self.show_bulk_schedule_popup = false;
+                }
+                if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
+                    self.show_bulk_schedule_popup = false;
+                }
+            });
             return action;
         }
 
-        // If no votes are selected, display a message and return
         if self.selected_votes.is_empty() {
             ui.add_space(5.0);
-            ui.colored_label(Color32::DARK_RED, "No votes selected. Please click the votes you want to cast or schedule in the Active Contests screen.");
+            ui.colored_label(
+                DashColors::warning_color(dark_mode),
+                "No votes are ready to review. Choose at least one vote on Active contests, then try again.",
+            );
             ui.add_space(10.0);
-            let dark_mode = ui.style().visuals.dark_mode;
-            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
+            if ComponentStyles::add_secondary_button(ui, "Back to Active contests", dark_mode)
+                .clicked()
+            {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
         }
 
+        let mut simple_schedule_valid = true;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            // Show which votes were clicked
-            ui.group(|ui| {
-                let dark_mode = ui.style().visuals.dark_mode;
-                ui.heading(
-                    RichText::new("Selected votes").color(DashColors::text_primary(dark_mode)),
-                );
-                ui.separator();
-                for sv in &self.selected_votes {
-                    // Convert end_time -> readable
-                    let end_str = if let Some(e) = sv.end_time {
-                        if let LocalResult::Single(dt) = Utc.timestamp_millis_opt(e as i64) {
-                            let iso = dt.format("%Y-%m-%d %H:%M:%S").to_string();
-                            let rel = HumanTime::from(dt).to_string();
-                            format!("{} ({})", iso, rel)
-                        } else {
-                            "Invalid timestamp".to_string()
-                        }
-                    } else {
-                        "N/A".to_string()
-                    };
-                    let display_text = match &sv.vote_choice {
-                        ResourceVoteChoice::TowardsIdentity(id) => id.to_string(Encoding::Base58),
-                        other => other.to_string(),
-                    };
-                    let dark_mode = ui.style().visuals.dark_mode;
-                    ui.label(
-                        RichText::new(format!(
-                            "{}   =>   {}   |   Contest ends at {}",
-                            sv.contested_name, display_text, end_str
-                        ))
-                        .color(DashColors::text_primary(dark_mode)),
-                    );
+            ui.label(format!(
+                "Casting on behalf of all my nodes ({count}).",
+                count = self.voting_identities.len()
+            ));
+            ui.separator();
+            ui.heading(format!("Votes to cast ({}):", self.selected_votes.len()));
+            for vote in &self.selected_votes {
+                let candidate_name = self.review_candidate_name(vote);
+                let choice = review_vote_choice_label(vote.vote_choice, candidate_name.as_deref());
+                ui.label(format!("• {name}.dash → {choice}", name = vote.contested_name));
+            }
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("When:");
+                if ui
+                    .selectable_label(
+                        matches!(self.set_all_option, VoteOption::CastNow),
+                        "Cast now",
+                    )
+                    .clicked()
+                {
+                    self.apply_all_nodes_option(VoteOption::CastNow);
+                }
+                if ui
+                    .selectable_label(
+                        matches!(self.set_all_option, VoteOption::Scheduled { .. }),
+                        "Schedule for later",
+                    )
+                    .clicked()
+                    && let Some(option) = self.simple_schedule_option()
+                {
+                    self.apply_all_nodes_option(option);
                 }
             });
 
-            ui.add_space(10.0);
-
-            // Show each identity + let user pick None / Immediate / Scheduled
-            let dark_mode = ui.style().visuals.dark_mode;
-            ui.heading(RichText::new("All my nodes").color(DashColors::text_primary(dark_mode)));
-            ui.add_space(10.0);
-            ui.group(|ui| {
+            if matches!(self.set_all_option, VoteOption::Scheduled { .. }) {
+                let mut schedule_changed = false;
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.style().visuals.dark_mode;
-                    ui.label(
-                        RichText::new("Cast timing:").color(DashColors::text_primary(dark_mode)),
-                    );
-
-                    // A ComboBox to pick No Vote / Cast Now / Schedule
-                    ComboBox::from_id_salt("set_all_combo")
-                        .width(120.0)
-                        .selected_text(match self.set_all_option {
-                            VoteOption::NoVote => "Do not use these nodes".to_string(),
-                            VoteOption::CastNow => "Cast now".to_string(),
-                            VoteOption::Scheduled { .. } => "Schedule".to_string(),
-                        })
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(
-                                    matches!(self.set_all_option, VoteOption::NoVote),
-                                    "Do not use these nodes",
-                                )
-                                .clicked()
-                            {
-                                self.set_all_option = VoteOption::NoVote;
-                            }
-                            if ui
-                                .selectable_label(
-                                    matches!(self.set_all_option, VoteOption::CastNow),
-                                    "Cast now",
-                                )
-                                .clicked()
-                            {
-                                self.set_all_option = VoteOption::CastNow;
-                            }
-                            if ui
-                                .selectable_label(
-                                    matches!(self.set_all_option, VoteOption::Scheduled { .. }),
-                                    "Schedule",
-                                )
-                                .clicked()
-                            {
-                                // Default scheduled values if none set yet
-                                let (d, h, m) = match &self.set_all_option {
-                                    VoteOption::Scheduled {
-                                        days,
-                                        hours,
-                                        minutes,
-                                    } => (*days, *hours, *minutes),
-                                    _ => (0, 0, 0),
-                                };
-                                self.set_all_option = VoteOption::Scheduled {
-                                    days: d,
-                                    hours: h,
-                                    minutes: m,
-                                };
-                            }
-                        });
-
-                    // If scheduling, show the days/hours/minutes widgets inline
-                    if let VoteOption::Scheduled {
-                        ref mut days,
-                        ref mut hours,
-                        ref mut minutes,
-                    } = self.set_all_option
-                    {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        ui.label(
-                            RichText::new("Schedule after:")
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add(egui::DragValue::new(days).prefix("Days: ").range(0..=14));
-                        ui.add(egui::DragValue::new(hours).prefix("Hours: ").range(0..=23));
-                        ui.add(egui::DragValue::new(minutes).prefix("Min: ").range(0..=59));
-                    }
-
-                    // Button to apply the "Set all" choice to each identity in bulk_identity_options
-                    if ui.button("Apply to all nodes").clicked() {
-                        for option in &mut self.bulk_identity_options {
-                            *option = self.set_all_option.clone();
-                        }
-                    }
+                    ui.label("Cast on (UTC):");
+                    schedule_changed |= ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.simple_schedule_date)
+                                .desired_width(100.0)
+                                .hint_text("YYYY-MM-DD"),
+                        )
+                        .changed();
+                    ui.label("at");
+                    schedule_changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.simple_schedule_hour)
+                                .prefix("Hour: ")
+                                .range(0..=23),
+                        )
+                        .changed();
+                    schedule_changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.simple_schedule_minute)
+                                .prefix("Minute: ")
+                                .range(0..=59),
+                        )
+                        .changed();
                 });
-            });
+                simple_schedule_valid = self.simple_schedule_option().is_some();
+                if schedule_changed
+                    && let Some(option) = self.simple_schedule_option()
+                {
+                    self.apply_all_nodes_option(option);
+                }
+                if !simple_schedule_valid {
+                    ui.colored_label(
+                        DashColors::warning_color(dark_mode),
+                        "Choose a future date and time before scheduling these votes.",
+                    );
+                }
+                ui.colored_label(
+                    DashColors::warning_color(dark_mode),
+                    "Keep Dash Evo Tool running and connected until then, or the scheduled votes will not be cast.",
+                );
+            }
+
+            ui.separator();
             ui.add_space(10.0);
             egui::CollapsingHeader::new("Choose per node (advanced)")
                 .default_open(false)
@@ -1557,18 +1597,9 @@ impl DPNSScreen {
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
 
-                                // This is a hack
-                                // I'm seeing a panic if I load the app in mainnet context where I have no voting identities,
-                                // and then switch to testnet and pressed "Vote".
                                 if self.bulk_identity_options.len() <= i {
-                                    let voting_identities = self
-                                        .app_context
-                                        .load_local_voting_identities()
-                                        .unwrap_or_default();
-                                    // Initialize ephemeral bulk-schedule state to hidden
-                                    let identity_count = voting_identities.len();
                                     self.bulk_identity_options =
-                                        vec![VoteOption::CastNow; identity_count];
+                                        vec![VoteOption::CastNow; self.voting_identities.len()];
                                 }
 
                                 let current_option = &mut self.bulk_identity_options[i];
@@ -1652,12 +1683,16 @@ impl DPNSScreen {
                 });
         });
         // If any selected votes are scheduled, show a warning
-        if self
-            .bulk_identity_options
-            .iter()
-            .any(|o| matches!(o, VoteOption::Scheduled { .. }))
+        if !matches!(self.set_all_option, VoteOption::Scheduled { .. })
+            && self
+                .bulk_identity_options
+                .iter()
+                .any(|option| matches!(option, VoteOption::Scheduled { .. }))
         {
-            ui.colored_label(Color32::DARK_RED, "NOTE: Dash Evo Tool must remain running and connected for scheduled votes to execute on time.");
+            ui.colored_label(
+                DashColors::warning_color(ui.style().visuals.dark_mode),
+                "Keep Dash Evo Tool running and connected until then, or the scheduled votes will not be cast.",
+            );
             ui.add_space(10.0);
         }
 
@@ -1671,19 +1706,47 @@ impl DPNSScreen {
                 ui.label("Submitting votes…");
             });
         }
-        // "Apply Votes" button
-        if ComponentStyles::add_primary_button_enabled(
-            ui,
-            !operation_in_progress,
-            if operation_in_progress {
-                "Submitting votes…"
-            } else {
-                "Submit votes"
-            },
-        )
-        .disabled_tooltip("The selected votes are already being submitted.")
-        .clicked()
-        {
+        let has_immediate = self
+            .bulk_identity_options
+            .iter()
+            .any(|option| matches!(option, VoteOption::CastNow));
+        let has_scheduled = self
+            .bulk_identity_options
+            .iter()
+            .any(|option| matches!(option, VoteOption::Scheduled { .. }));
+        let submit_label = match (has_immediate, has_scheduled) {
+            (true, false) => "Cast votes",
+            (false, true) => "Schedule votes",
+            _ => "Submit votes",
+        };
+        let (submit_clicked, cancel_clicked) = ui
+            .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let submit_clicked = ComponentStyles::add_primary_button_enabled(
+                    ui,
+                    !operation_in_progress && simple_schedule_valid,
+                    if operation_in_progress {
+                        "Submitting votes…"
+                    } else {
+                        submit_label
+                    },
+                )
+                .disabled_tooltip(if operation_in_progress {
+                    "The selected votes are already being submitted."
+                } else {
+                    "Choose a future date and time before scheduling these votes."
+                })
+                .clicked();
+                let cancel_clicked = ui
+                    .add_enabled(
+                        !operation_in_progress,
+                        ComponentStyles::secondary_button("Cancel", dark_mode),
+                    )
+                    .disabled_tooltip("Submitted votes cannot be cancelled.")
+                    .clicked();
+                (submit_clicked, cancel_clicked)
+            })
+            .inner;
+        if submit_clicked {
             action = self.bulk_apply_votes();
             if matches!(
                 self.bulk_vote_handling_status,
@@ -1696,16 +1759,7 @@ impl DPNSScreen {
             }
         }
 
-        ui.add_space(5.0);
-        let dark_mode = ui.style().visuals.dark_mode;
-        if ui
-            .add_enabled(
-                !operation_in_progress,
-                ComponentStyles::secondary_button("Cancel", dark_mode),
-            )
-            .disabled_tooltip("Submitted votes cannot be cancelled.")
-            .clicked()
-        {
+        if cancel_clicked {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
             self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
@@ -1737,7 +1791,6 @@ impl DPNSScreen {
         action
     }
 
-    /// The logic that was in BulkScheduleVoteScreen::schedule_votes
     fn bulk_apply_votes(&mut self) -> AppAction {
         let mut targets = Vec::new();
         let mut selected_voters = Vec::new();
@@ -2221,7 +2274,7 @@ impl ScreenLike for DPNSScreen {
                     .resizable(true)
                     .vscroll(true)
                     .show(ui.ctx(), |ui| {
-                        inner_action |= self.show_bulk_schedule_popup_window(ui);
+                        inner_action |= self.show_review_and_cast_window(ui);
                     });
             }
 
@@ -2410,6 +2463,24 @@ mod tests {
             ]),
             ActiveContestGroup::NotVotable
         ));
+    }
+
+    #[test]
+    fn review_choice_uses_the_candidate_name_instead_of_its_identifier() {
+        let candidate_id = Identifier::from([42; 32]);
+        let label = review_vote_choice_label(
+            ResourceVoteChoice::TowardsIdentity(candidate_id),
+            Some("alice"),
+        );
+
+        assert_eq!(label, "Vote for alice");
+        assert!(!label.contains(&candidate_id.to_string(Encoding::Base58)));
+    }
+
+    #[test]
+    fn missing_voting_nodes_copy_points_to_the_masternodes_tab() {
+        assert!(NO_VOTING_NODES_MESSAGE.contains("Masternodes tab"));
+        assert!(!NO_VOTING_NODES_MESSAGE.contains("Identities screen"));
     }
 
     #[test]

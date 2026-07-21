@@ -327,15 +327,18 @@ fn masternodes_has_no_operator_voting_subnavigation() {
     });
 }
 
-/// Scheduled votes remain a DPNS subscreen.
+/// Scheduled votes remain reachable from the persistent DPNS subscreen bar.
 #[test]
-fn dpns_scheduled_route_stays_in_dpns() {
+fn dpns_scheduled_votes_tab_is_clickable() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenDPNSScheduledVotes);
+        let mut harness = mount_app(RootScreenType::RootScreenDPNSActiveContests);
         harness.run_steps(5);
+
+        harness.get_by_label("Scheduled votes").click();
+        harness.run_steps(3);
 
         assert_eq!(
             harness.state().selected_main_screen,

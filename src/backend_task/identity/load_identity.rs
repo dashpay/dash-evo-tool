@@ -40,6 +40,14 @@ use std::sync::{Arc, RwLock};
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
 type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
 
+fn is_bare_placeholder(qualified_identity: &QualifiedIdentity) -> bool {
+    qualified_identity.private_keys.private_keys.is_empty()
+        && qualified_identity.alias.is_none()
+        && qualified_identity.associated_voter_identity.is_none()
+        && qualified_identity.associated_operator_identity.is_none()
+        && qualified_identity.associated_owner_key_id.is_none()
+}
+
 /// Merge an already-stored identity's keys and associations into a freshly
 /// built one, preserving anything the new (partial) load did not resupply
 /// (§10.8, the "Add voting key" in-place update). Keys the new load provides
@@ -151,7 +159,11 @@ impl AppContext {
         // layer, so every `RejectIfExists` caller is guarded uniformly.
         let existing_stored = self.get_local_qualified_identity(&identity_id)?;
         match load_mode {
-            IdentityLoadMode::RejectIfExists if existing_stored.is_some() => {
+            IdentityLoadMode::RejectIfExists
+                if existing_stored
+                    .as_ref()
+                    .is_some_and(|identity| !is_bare_placeholder(identity)) =>
+            {
                 return Err(TaskError::DuplicateProTxHash { identity_id });
             }
             _ => {}
@@ -486,7 +498,9 @@ impl AppContext {
         // newly-supplied keys into the already-stored identity's keys instead of
         // clobbering them — the new voting key is added while the existing
         // Owner/Payout keys (which the update leaves blank) survive.
-        if load_mode == IdentityLoadMode::MergeIntoExisting
+        if (load_mode == IdentityLoadMode::MergeIntoExisting
+            || (load_mode == IdentityLoadMode::RejectIfExists
+                && existing_stored.as_ref().is_some_and(is_bare_placeholder)))
             && let Some(existing) = existing_stored
         {
             merge_existing_keys_into(&mut qualified_identity, existing);
@@ -1129,8 +1143,8 @@ mod tests {
         let sdk = ctx.sdk();
         let result = ctx.load_identity(&sdk, input).await;
         assert!(
-            result.is_ok(),
-            "bare User-typed record must not block correct masternode load: {result:?}"
+            !matches!(result, Err(TaskError::DuplicateProTxHash { .. })),
+            "bare User-typed record must not be treated as a conflicting duplicate: {result:?}"
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

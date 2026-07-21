@@ -810,10 +810,15 @@ impl WalletBackend {
     //   adopt it:
     //     1. dashpay/rust-dashcore#818 "feat(key-wallet): reserve receive
     //        addresses on hand-out" — adds `next_unused_and_reserve`
-    //        (+ reserve/release/sweep); ready-for-review, NOT yet merged.
+    //        (+ reserve/release/sweep). MERGED and present in the pinned rev;
+    //        `AddressPool::next_unused` (DET's path) stays non-reserving —
+    //        it now returns the lowest `is_available()` (neither used nor
+    //        reserved) address, which equals the old lowest-unused for DET
+    //        because DET never reserves.
     //     2. dashpay/platform — surface it as
-    //        `CoreWallet::next_receive_address_and_reserve_for_account` (the
-    //        pinned rev still calls the old non-reserving path).
+    //        `CoreWallet::next_receive_address_and_reserve_for_account`. NOT
+    //        yet present; the pinned rev's `next_receive_address_for_account`
+    //        still calls the old non-reserving path.
     //     3. DET — bump the platform dep, then switch
     //        `next_receive_address()` to the reserving variant.
     //   Until all three land, `next_receive_address` stays on `next_unused`

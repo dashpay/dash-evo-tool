@@ -3449,7 +3449,7 @@ async fn rediscovery_update_preserves_user_alias_and_wallet_binding() {
 ///
 /// DET always reloads wallets **seedless** from the upstream persister.
 /// `WalletBackend::new` → `load_from_persistor_seedless` → upstream
-/// `load_from_persistor()` → `Wallet::new_watch_only(…)`.  The wallet has
+/// `load_from_persistor()` → `Wallet::new_external_signable(…)`.  The wallet has
 /// the BIP44/BIP32 accounts it was persisted with, but **no root private
 /// key**.
 ///

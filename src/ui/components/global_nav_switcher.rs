@@ -18,6 +18,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet_association::{NOT_IN_WALLET_LABEL, WalletAssociation};
 use crate::ui::RootScreenType;
 use crate::ui::components::breadcrumb_pill::{BreadcrumbPill, BreadcrumbPillMode};
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
@@ -290,8 +291,13 @@ pub fn render(
             effect = GlobalNavEffect::NavigateToRoot(spec.segment1_target());
         }
 
-        // --- Segment 2: wallet pill ------------------------------------------
-        if let Some(consumption) = spec.wallet_pill() {
+        // --- Segment 2: wallet -----------------------------------------------
+        // A page may show a fixed, read-only wallet association for the object in
+        // view (e.g. a wallet-less masternode) instead of the app-scoped pill.
+        if let Some((association, tooltip)) = spec.object_wallet() {
+            ui.label(RichText::new("›").color(DashColors::text_secondary(dark_mode)));
+            render_object_wallet_pill(ui, association, tooltip);
+        } else if let Some(consumption) = spec.wallet_pill() {
             ui.label(RichText::new("›").color(DashColors::text_secondary(dark_mode)));
             render_wallet_pill(
                 ui,
@@ -453,6 +459,27 @@ fn render_wallet_pill(
                         }
                     });
             }
+        }
+    }
+}
+
+/// Render the fixed, read-only wallet indicator for the object in view. Names
+/// the owning wallet subdued when one controls the object, else shows the muted
+/// "not in a wallet" placeholder — never an interactive pill, so a wallet-less
+/// object (e.g. a masternode) never appears to belong to an arbitrary wallet.
+fn render_object_wallet_pill(ui: &mut Ui, association: &WalletAssociation, tooltip: &str) {
+    match association {
+        WalletAssociation::InWallet(name) => {
+            BreadcrumbPill::new(name.clone())
+                .with_icon("💼")
+                .subdued(true)
+                .with_tooltip(tooltip.to_string())
+                .show(ui);
+        }
+        WalletAssociation::NotInWallet => {
+            BreadcrumbPill::placeholder(NOT_IN_WALLET_LABEL)
+                .with_tooltip(tooltip.to_string())
+                .show(ui);
         }
     }
 }

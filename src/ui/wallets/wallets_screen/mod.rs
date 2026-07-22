@@ -566,33 +566,6 @@ impl WalletsBalancesScreen {
         self.cached_tx_source_len = None;
     }
 
-    /// Request a fresh receive address through the SPV-watched upstream pool.
-    ///
-    /// Routes through the [`GenerateReceiveAddress`](crate::backend_task::wallet::WalletTask::GenerateReceiveAddress)
-    /// backend task (→ `next_receive_address` → upstream `next_unused`) so the
-    /// returned address is always inside the gap-limit window SPV monitors.
-    /// Deriving DET-side here would hand out addresses past the watched window
-    /// and lose deposits sent to them.
-    fn add_receiving_address(&mut self) -> AppAction {
-        let Some(seed_hash) = self
-            .selected_wallet
-            .as_ref()
-            .and_then(|w| w.read().ok())
-            .map(|w| w.seed_hash())
-        else {
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Select a wallet first, then try again.",
-                MessageType::Error,
-            );
-            return AppAction::None;
-        };
-
-        AppAction::BackendTask(BackendTask::WalletTask(
-            crate::backend_task::wallet::WalletTask::GenerateReceiveAddress { seed_hash },
-        ))
-    }
-
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> AppAction {
         let action = AppAction::None;
 
@@ -826,7 +799,24 @@ impl WalletsBalancesScreen {
                     .button(RichText::new("➕ Add Receiving Address").size(14.0))
                     .clicked()
                 {
-                    action |= self.add_receiving_address();
+                    // Same flow as the "Receive" button above + its "New Address"
+                    // control: open the Receive dialog and queue a fresh Core
+                    // address request through it, so the newly generated address
+                    // is actually visible to the user (see `queue_core_address_request`
+                    // / `open_receive_dialog`). Previously this issued the backend
+                    // task directly without opening the dialog, so the new address
+                    // landed silently in `receive_dialog.core_addresses` with
+                    // nothing on screen to show for the click.
+                    if let Some(wallet) = self.selected_wallet.clone() {
+                        action |= self.open_receive_dialog(ui.ctx());
+                        self.queue_core_address_request(&wallet);
+                    } else {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Select a wallet first, then try again.",
+                            MessageType::Error,
+                        );
+                    }
                 }
             });
         }

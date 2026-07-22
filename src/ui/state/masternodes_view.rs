@@ -16,6 +16,7 @@
 use dash_sdk::platform::Identifier;
 
 use crate::model::qualified_identity::IdentityType;
+use crate::model::wallet_association::WalletAssociation;
 use crate::ui::RootScreenType;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::masternodes::card::card_heading;
@@ -29,6 +30,10 @@ const NO_NODES_PLACEHOLDER: &str = "(no masternode yet)";
 const NO_NODE_SELECTED_PLACEHOLDER: &str = "(choose a masternode)";
 /// Hover tooltip for the interactive node pill.
 const TT_NODE_PILL: &str = "Switch between your loaded masternodes and evonodes.";
+/// Hover tooltip for the read-only wallet indicator on the Masternodes page,
+/// explaining why no wallet is shown for the node.
+const TT_NODE_WALLET: &str =
+    "This masternode's keys aren't controlled by any wallet loaded in this app.";
 
 /// Dropdown label for a loaded node: its alias when set, otherwise the
 /// shortened ProTxHash — the same heading rule as its card, so the pill and the
@@ -56,16 +61,23 @@ fn node_placeholder(node_count: usize) -> &'static str {
     }
 }
 
-/// Build the Masternodes page's global-nav spec: page-aware segment-1, an
-/// interactive wallet pill, and an interactive node pill listing `items` with
-/// `selected` (the node whose detail view is open) shown on the pill.
+/// Build the Masternodes page's global-nav spec: page-aware segment-1, a
+/// read-only wallet indicator (`wallet_association`) for the node in view, and
+/// an interactive node pill listing `items` with `selected` (the node whose
+/// detail view is open) shown on the pill.
+///
+/// The wallet segment is a fixed, read-only indicator rather than an interactive
+/// pill: a masternode/evonode is loaded from raw owner/voting/payout keys, so no
+/// wallet on this device controls it — showing an arbitrary loaded wallet there
+/// would falsely imply ownership.
 pub fn masternodes_page_nav_spec(
     items: Vec<PageObjectItem>,
     selected: Option<Identifier>,
+    wallet_association: WalletAssociation,
 ) -> PageNavSpec {
     let placeholder = node_placeholder(items.len());
     PageNavSpec::new("Masternodes", RootScreenType::RootScreenMasternodes)
-        .with_wallet_pill(PillConsumption::Consumed)
+        .with_object_wallet(wallet_association, TT_NODE_WALLET)
         .with_identity_pill(
             IdentityPillScope::page_scoped_object(placeholder, TT_NODE_PILL, items, selected),
             PillConsumption::Consumed,
@@ -80,25 +92,33 @@ mod tests {
         Identifier::new([byte; 32])
     }
 
-    /// The Masternodes breadcrumb carries segment-1, an interactive wallet pill
-    /// (FR-9 Top up) and an interactive page-scoped node pill carrying the node
-    /// in view (FR-GLOBAL-NAV-3).
+    /// The Masternodes breadcrumb carries segment-1, a read-only wallet
+    /// indicator (never an interactive wallet pill — masternodes are wallet-less)
+    /// and an interactive page-scoped node pill carrying the node in view
+    /// (FR-GLOBAL-NAV-3).
     #[test]
-    fn spec_has_segment1_and_two_interactive_pills() {
+    fn spec_has_segment1_readonly_wallet_and_interactive_node_pill() {
         let items = vec![node_pill_item(
             id(7),
             Some("mn-east-01"),
             "abcd…ef01",
             IdentityType::Masternode,
         )];
-        let spec = masternodes_page_nav_spec(items, Some(id(7)));
+        let spec = masternodes_page_nav_spec(items, Some(id(7)), WalletAssociation::NotInWallet);
 
         assert_eq!(spec.segment1_label(), "Masternodes");
         assert_eq!(
             spec.segment1_target(),
             RootScreenType::RootScreenMasternodes
         );
-        assert!(spec.wallet_pill().expect("wallet pill").is_consumed());
+        // The wallet segment is a read-only association, not an interactive pill.
+        assert!(
+            spec.wallet_pill().is_none(),
+            "the Masternodes page shows no interactive wallet pill"
+        );
+        let (assoc, tooltip) = spec.object_wallet().expect("read-only wallet indicator");
+        assert_eq!(*assoc, WalletAssociation::NotInWallet);
+        assert_eq!(tooltip, TT_NODE_WALLET);
 
         let (scope, consumption) = spec.identity_pill().expect("node pill");
         assert!(consumption.is_consumed(), "the node pill is interactive");

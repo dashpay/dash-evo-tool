@@ -52,7 +52,8 @@ impl AppContext {
             // sole async step; it carries no secret, so drive it off-thread.
             if let Some(wallet_id) = upstream_id {
                 let backend = Arc::clone(&backend);
-                self.subtasks
+                let _ = self
+                    .subtasks
                     .spawn_sync("wallet_upstream_removal", async move {
                         if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
                             tracing::warn!(%error, "Upstream wallet removal failed");

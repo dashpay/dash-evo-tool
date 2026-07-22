@@ -10,7 +10,6 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -39,7 +38,6 @@ pub(super) enum ReceiveAddressType {
 #[derive(Default)]
 pub(super) struct ReceiveDialogState {
     pub is_open: bool,
-    opening_guard: ModalOpeningGuard,
     /// Selected address type (Core or Platform)
     pub address_type: ReceiveAddressType,
     /// Core addresses with balances: (address, balance_duffs)
@@ -69,7 +67,6 @@ pub(super) struct ReceiveDialogState {
 impl ReceiveDialogState {
     pub(super) fn open(&mut self) {
         self.is_open = true;
-        self.opening_guard.arm();
     }
 }
 
@@ -77,7 +74,6 @@ impl ReceiveDialogState {
 #[derive(Default)]
 pub(super) struct FundPlatformAddressDialogState {
     pub is_open: bool,
-    pub(super) opening_guard: ModalOpeningGuard,
     /// Outpoint of the upstream-tracked asset lock chosen to fund a Platform
     /// address. `None` until the user clicks "Fund" on a row in the asset-
     /// locks table.
@@ -98,7 +94,6 @@ pub(super) struct FundPlatformAddressDialogState {
 #[derive(Default)]
 pub(super) struct MineDialogState {
     pub is_open: bool,
-    opening_guard: ModalOpeningGuard,
     pub address_input: Option<AddressInput>,
     pub validated_address: Option<ValidatedAddress>,
     pub block_count_str: String,
@@ -214,13 +209,14 @@ impl WalletsBalancesScreen {
         }
 
         let mut open = self.receive_dialog.is_open;
+        let mut close_clicked = false;
 
         // Draw dark overlay behind the dialog (only when open)
         if open {
             Self::draw_modal_overlay(ctx, "receive_dialog_overlay");
         }
 
-        let window_response = egui::Window::new("Receive")
+        egui::Window::new("Receive")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -512,16 +508,17 @@ impl WalletsBalancesScreen {
                             RichText::new(status).color(DashColors::text_secondary(dark_mode)),
                         );
                     }
+
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
+                            close_clicked = true;
+                        }
+                    });
                 });
             });
 
-        if let Some(ref resp) = window_response
-            && clicked_outside_window_after_open(
-                ctx,
-                resp.response.rect,
-                &mut self.receive_dialog.opening_guard,
-            )
-        {
+        if close_clicked {
             open = false;
         }
 
@@ -573,6 +570,23 @@ impl WalletsBalancesScreen {
         self.receive_dialog.status = Some("Generating a new address…".to_string());
     }
 
+    /// Opens a funded-address dialog with deterministic inputs for UI tests.
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    pub fn open_fund_platform_dialog_for_test(&mut self, platform_addresses: Vec<(String, u64)>) {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+
+        self.fund_platform_dialog = FundPlatformAddressDialogState {
+            is_open: true,
+            selected_asset_lock_out_point: Some(dash_sdk::dpp::dashcore::OutPoint::new(
+                dash_sdk::dpp::dashcore::Txid::from_byte_array([0; 32]),
+                0,
+            )),
+            platform_addresses,
+            ..Default::default()
+        };
+    }
+
     /// Render the Fund Platform Address from Asset Lock dialog
     pub(super) fn render_fund_platform_dialog(&mut self, ctx: &Context) -> AppAction {
         if !self.fund_platform_dialog.is_open {
@@ -586,7 +600,7 @@ impl WalletsBalancesScreen {
         // Draw dark overlay behind the popup
         Self::draw_modal_overlay(ctx, "fund_platform_dialog_overlay");
 
-        let window_response = egui::Window::new("Fund Platform Address from Asset Lock")
+        egui::Window::new("Fund Platform Address from Asset Lock")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -731,16 +745,6 @@ impl WalletsBalancesScreen {
                     );
                 });
             });
-
-        if let Some(ref resp) = window_response
-            && clicked_outside_window_after_open(
-                ctx,
-                resp.response.rect,
-                &mut self.fund_platform_dialog.opening_guard,
-            )
-        {
-            open = false;
-        }
 
         // Only update from `open` if we didn't manually close via cancel button
         if self.fund_platform_dialog.is_open {
@@ -1145,7 +1149,6 @@ impl WalletsBalancesScreen {
 
         self.mine_dialog = MineDialogState {
             is_open: true,
-            opening_guard: ModalOpeningGuard::armed(),
             address_input: Some(address_input),
             validated_address: None,
             block_count_str: "1".to_string(),
@@ -1164,7 +1167,7 @@ impl WalletsBalancesScreen {
 
         Self::draw_modal_overlay(ctx, "mine_dialog_overlay");
 
-        let window_response = egui::Window::new("Mine Blocks")
+        egui::Window::new("Mine Blocks")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1280,16 +1283,6 @@ impl WalletsBalancesScreen {
                     });
                 });
             });
-
-        if let Some(ref resp) = window_response
-            && clicked_outside_window_after_open(
-                ctx,
-                resp.response.rect,
-                &mut self.mine_dialog.opening_guard,
-            )
-        {
-            open = false;
-        }
 
         if !open || !self.mine_dialog.is_open {
             self.mine_dialog = MineDialogState::default();

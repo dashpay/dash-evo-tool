@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::ScreenType;
-use crate::ui::theme::{DashColors, ResponseExt};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::wallet_backend::poison::RwLockRecover;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
@@ -62,19 +62,9 @@ impl WalletsBalancesScreen {
             .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
             .show(ui, |ui| {
                 let dark_mode = ui.style().visuals.dark_mode;
-                ui.horizontal(|ui| {
-                    ui.heading(
-                        RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Create Asset Lock").clicked() {
-                            app_action = AppAction::AddScreen(
-                                ScreenType::CreateAssetLock(arc_wallet.clone())
-                                    .create_screen(&self.app_context),
-                            );
-                        }
-                    });
-                });
+                ui.heading(
+                    RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)),
+                );
                 ui.add_space(10.0);
 
                 let Some(tracked) = tracked.as_deref() else {
@@ -99,6 +89,14 @@ impl WalletsBalancesScreen {
                         }
                         ui.add_space(20.0);
                     });
+
+                    ui.add_space(10.0);
+                    if ComponentStyles::add_primary_button(ui, "Create Asset Lock").clicked() {
+                        app_action = AppAction::AddScreen(
+                            ScreenType::CreateAssetLock(arc_wallet.clone())
+                                .create_screen(&self.app_context),
+                        );
+                    }
                     return;
                 };
 
@@ -185,6 +183,14 @@ impl WalletsBalancesScreen {
                                 });
                         });
                 }
+
+                ui.add_space(10.0);
+                if ComponentStyles::add_primary_button(ui, "Create Asset Lock").clicked() {
+                    app_action = AppAction::AddScreen(
+                        ScreenType::CreateAssetLock(arc_wallet.clone())
+                            .create_screen(&self.app_context),
+                    );
+                }
             });
 
         if retry_clicked {
@@ -194,7 +200,6 @@ impl WalletsBalancesScreen {
         if let Some((out_point, platform_addresses)) = open_fund_dialog_for_op {
             self.fund_platform_dialog.selected_asset_lock_out_point = Some(out_point);
             self.fund_platform_dialog.is_open = true;
-            self.fund_platform_dialog.opening_guard.arm();
             self.fund_platform_dialog.platform_addresses = platform_addresses;
             self.fund_platform_dialog.selected_platform_address = None;
             self.fund_platform_dialog.status = None;

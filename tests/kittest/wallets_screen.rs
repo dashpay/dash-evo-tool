@@ -1,11 +1,33 @@
 use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::Wallet;
+use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+const WALLET_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn build_wallet_screen_harness(
+    runtime: tokio::runtime::Runtime,
+    app_context: Arc<dash_evo_tool::context::AppContext>,
+) -> Harness<'static, WalletsBalancesScreen> {
+    let screen = WalletsBalancesScreen::new(&app_context);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .build_ui_state(
+            move |ui, screen: &mut WalletsBalancesScreen| {
+                let _runtime = &runtime;
+                screen.ui(ui);
+            },
+            screen,
+        );
+    harness.run();
+    harness
+}
 
 fn wallet_screen_harness(password: Option<&Secret>) -> Harness<'static, WalletsBalancesScreen> {
     let (runtime, app_context) = fresh_app_context();
@@ -26,18 +48,47 @@ fn wallet_screen_harness(password: Option<&Secret>) -> Harness<'static, WalletsB
         .expect("wallet map")
         .insert(seed_hash, Arc::new(RwLock::new(wallet)));
 
-    let screen = WalletsBalancesScreen::new(&app_context);
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(1280.0, 800.0))
-        .build_ui_state(
-            move |ui, screen: &mut WalletsBalancesScreen| {
-                let _runtime = &runtime;
-                screen.ui(ui);
-            },
-            screen,
-        );
-    harness.run();
-    harness
+    build_wallet_screen_harness(runtime, app_context)
+}
+
+fn registered_wallet_screen_harness() -> Harness<'static, WalletsBalancesScreen> {
+    let (runtime, app_context) = fresh_app_context();
+    let seed = [0x42; 64];
+    let wallet = Wallet::new_from_seed(
+        seed,
+        app_context.network(),
+        Some("Dialog wallet".to_string()),
+        None,
+    )
+    .expect("create wallet fixture");
+    let (seed_hash, _) = {
+        let _guard = runtime.enter();
+        app_context
+            .register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("register wallet fixture")
+    };
+    let backend = app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired");
+    let monitored_addresses = runtime.block_on(async {
+        tokio::time::timeout(WALLET_REGISTRATION_TIMEOUT, async {
+            loop {
+                let addresses = backend.snapshot_monitored_receive_addresses(&seed_hash);
+                if !addresses.is_empty() {
+                    return addresses;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("wallet registration must publish monitored receive addresses")
+    });
+    assert!(
+        !monitored_addresses.is_empty(),
+        "the fixture must have a monitored receive address before the click"
+    );
+
+    build_wallet_screen_harness(runtime, app_context)
 }
 
 fn click_in_one_frame(harness: &mut Harness<'_, WalletsBalancesScreen>, label: &str) {
@@ -79,7 +130,7 @@ fn receive_dialog_stays_open_on_triggering_click() {
 #[test]
 fn add_receiving_address_button_opens_receive_dialog() {
     with_isolated_data_dir(|| {
-        let mut harness = wallet_screen_harness(None);
+        let mut harness = registered_wallet_screen_harness();
 
         click_in_one_frame(&mut harness, "➕ Add Receiving Address");
         assert!(

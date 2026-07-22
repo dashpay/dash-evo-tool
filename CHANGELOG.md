@@ -76,6 +76,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Wallets already migrated to Tier-2 storage by a July 2026 weekly build with
   a shorter password cannot be opened at this upstream tip; do not upgrade
   those profiles until upstream provides a compatibility reader.
+  Development builds between `f7ca95f` and `69b7546` stored shielded viewing
+  keys in an interim metadata row that this final pin does not migrate; those
+  commits were never released, and unlocking the wallet safely re-derives and
+  persists the same viewing key in upstream's native table.
   Transitively, the pinned dashpay git dependencies advance with it:
   `rust-dashcore` (`be6e776` → `0091c4a`, which lands the reserve-on-hand-out
   receive-address APIs), `grovedb` (`v5.0.0` → `v5.0.1`), and the `orchard`

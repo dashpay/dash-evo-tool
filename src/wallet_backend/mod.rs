@@ -47,7 +47,6 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
-mod persister;
 pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
@@ -159,8 +158,6 @@ use crate::model::selected_wallet::SelectedWallet;
 use crate::model::wallet::meta::wallet_label;
 use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
-
-use persister::DetPersister;
 
 /// Which side of a contact relationship
 /// [`WalletBackend::record_contact_request`] writes into the local
@@ -319,11 +316,11 @@ impl RegistrationFlight {
 }
 
 struct Inner {
-    pwm: PlatformWalletManager<DetPersister>,
-    /// Shared handle to the SQLite persister wrapped by `pwm`'s
-    /// [`DetPersister`]. Kept so [`DetKv`] can read/write app data alongside
-    /// wallet state without opening a second connection.
-    persister: Arc<SqlitePersister>,
+    pwm: PlatformWalletManager<SqlitePersister>,
+    /// Native persistence handle for operations the manager does not expose,
+    /// including DET metadata and durable deletion. At this pin, the manager's
+    /// `remove_wallet` only evicts runtime state.
+    wallet_persister: Arc<SqlitePersister>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
     /// selection (A04 fund-safety gate).
@@ -458,12 +455,10 @@ impl WalletBackend {
 
         let persister_config =
             SqlitePersisterConfig::new(spv_storage_dir.join("platform-wallet.sqlite"));
-        let sqlite_persister = Arc::new(
+        let persister = Arc::new(
             SqlitePersister::open(persister_config)
                 .map_err(TaskError::from_wallet_storage_open_error)?,
         );
-        let persister = Arc::new(DetPersister::new(Arc::clone(&sqlite_persister)));
-
         // Reuse the vault handle `AppContext` already opened at boot. The file
         // backend holds an exclusive advisory lock for the handle's lifetime,
         // so opening a second handle here would fail with `AlreadyLocked` — and
@@ -519,7 +514,7 @@ impl WalletBackend {
         let backend = Self {
             inner: Arc::new(Inner {
                 pwm,
-                persister: sqlite_persister,
+                wallet_persister: persister,
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1212,7 +1207,11 @@ impl WalletBackend {
                     continue;
                 }
             };
-            match self.inner.persister.get_core_tx_record(*wallet_id, &txid) {
+            match self
+                .inner
+                .wallet_persister
+                .get_core_tx_record(*wallet_id, &txid)
+            {
                 Ok(Some(record)) => records.push(record),
                 Ok(None) => {
                     record_persisted_transaction_skip(
@@ -1251,8 +1250,7 @@ impl WalletBackend {
 
     /// Wipe every piece of DET-local state for a forgotten wallet — the
     /// encrypted seed-envelope vault, the session secret cache, the wallet-meta
-    /// sidecar, persisted shielded viewing keys, and the in-memory
-    /// `id_map`/`wallets`/snapshot registration.
+    /// sidecar, and the in-memory `id_map`/`wallets`/snapshot registration.
     /// (Orchard state lives in the upstream coordinator now and is detached by
     /// [`Self::remove_upstream_wallet`].)
     ///
@@ -1325,13 +1323,6 @@ impl WalletBackend {
 
         // In-memory maps + snapshot registration.
         if let Some(wallet_id) = wallet_id {
-            if let Err(error) = persister::forget_wallet_viewing_keys(&self.kv(), wallet_id) {
-                tracing::warn!(
-                    wallet_id = %hex::encode(wallet_id),
-                    error = ?error,
-                    "Failed to delete shielded viewing keys during wallet removal"
-                );
-            }
             self.inner.id_map.write()?.remove(seed_hash);
             self.inner.wallets.write()?.remove(&wallet_id);
             self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);
@@ -1384,11 +1375,20 @@ impl WalletBackend {
         wallet_id: &WalletId,
     ) -> Result<(), TaskError> {
         use platform_wallet::error::PlatformWalletError;
+        use platform_wallet_storage::WalletStorageError;
+
         match self.inner.pwm.remove_wallet(wallet_id).await {
-            Ok(_) | Err(PlatformWalletError::WalletNotFound(_)) => Ok(()),
-            Err(e) => Err(TaskError::WalletBackend {
-                source: Arc::new(e),
-            }),
+            Ok(_) | Err(PlatformWalletError::WalletNotFound(_)) => {}
+            Err(source) => {
+                return Err(TaskError::WalletBackend {
+                    source: Arc::new(source),
+                });
+            }
+        }
+
+        match self.inner.wallet_persister.delete_wallet(*wallet_id) {
+            Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
+            Err(source) => Err(TaskError::WalletStorage { source }),
         }
     }
 
@@ -1702,7 +1702,7 @@ impl WalletBackend {
     /// schema of its own. See [`DetKv`] for namespacing conventions and
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
-        DetKv::new(Arc::clone(&self.inner.persister))
+        DetKv::new(Arc::clone(&self.inner.wallet_persister))
     }
 
     /// Persisted platform-address warm-start data, read straight from the
@@ -1717,7 +1717,7 @@ impl WalletBackend {
     /// first coordinator push warms the UI once the network is reachable.
     pub(crate) fn persisted_platform_address_warm_start(&self) -> PlatformWarmStartSeed {
         use platform_wallet::changeset::PlatformWalletPersistence;
-        let start = match self.inner.persister.load() {
+        let start = match self.inner.wallet_persister.load() {
             Ok(start) => start,
             Err(e) => {
                 tracing::debug!(error = ?e, "platform-address warm-start: persister load failed");

@@ -799,14 +799,8 @@ impl WalletsBalancesScreen {
                     .button(RichText::new("➕ Add Receiving Address").size(14.0))
                     .clicked()
                 {
-                    // Same flow as the "Receive" button above + its "New Address"
-                    // control: open the Receive dialog and queue a fresh Core
-                    // address request through it, so the newly generated address
-                    // is actually visible to the user (see `queue_core_address_request`
-                    // / `open_receive_dialog`). Previously this issued the backend
-                    // task directly without opening the dialog, so the new address
-                    // landed silently in `receive_dialog.core_addresses` with
-                    // nothing on screen to show for the click.
+                    // Mirrors the "Receive" + "New Address" flow: open the dialog,
+                    // then queue a fresh Core address request so the result is visible.
                     if let Some(wallet) = self.selected_wallet.clone() {
                         action |= self.open_receive_dialog(ui.ctx());
                         self.queue_core_address_request(&wallet);

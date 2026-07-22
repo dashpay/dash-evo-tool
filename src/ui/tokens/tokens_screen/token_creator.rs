@@ -1236,7 +1236,7 @@ impl TokensScreen {
             if seen_languages.contains(&name_with_language.2) {
                 return Err(format!(
                     "Duplicate token name language: {language:?}",
-                    language = name_with_language.1
+                    language = name_with_language.2
                 ));
             }
             seen_languages.insert(name_with_language.2);

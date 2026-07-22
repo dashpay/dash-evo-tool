@@ -9,9 +9,7 @@ impl AppContext {
         identity_id: Identifier,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let associated_voter_identity_id = self
-            .load_local_qualified_identities()?
-            .into_iter()
-            .find(|identity| identity.identity.id() == identity_id)
+            .get_local_qualified_identity(&identity_id)?
             .and_then(|identity| {
                 identity
                     .associated_voter_identity

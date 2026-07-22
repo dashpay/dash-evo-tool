@@ -78,6 +78,21 @@ impl WalletBackend {
             })
     }
 
+    #[cfg(test)]
+    pub(crate) async fn bind_shielded_from_persisted_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<bool, TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let coordinator = self.shielded_coordinator_arc().await?;
+        wallet
+            .bind_shielded_from_persisted(&[0], &coordinator)
+            .await
+            .map_err(|error| TaskError::WalletBackend {
+                source: Arc::new(error),
+            })
+    }
+
     /// Bind Orchard keys for `seed_hash` by resolving its HD seed just-in-time
     /// through the [`SecretAccess`](super::SecretAccess) chokepoint, then delegating to
     /// [`Self::ensure_shielded_bound`].

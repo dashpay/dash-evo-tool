@@ -3733,6 +3733,109 @@ async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corru
     backend.shutdown().await;
 }
 
+/// A corrupt FVK row is isolated to its wallet during a real seedless cold boot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_boot_skips_corrupt_fvks_for_one_wallet_and_restores_healthy_wallet() {
+    use platform_wallet_storage::{KvStore, ObjectId, SqlitePersister, SqlitePersisterConfig};
+
+    let _guard = backend_reopen_lock().await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let corrupt_seed = [0xE4u8; 64];
+    let healthy_seed = [0xE5u8; 64];
+
+    let (corrupt_hash, corrupt_wallet_id, healthy_hash) = {
+        let corrupt_wallet =
+            crate::model::wallet::Wallet::new_from_seed(corrupt_seed, Network::Testnet, None, None)
+                .expect("build corrupt-row wallet");
+        let corrupt_hash = corrupt_wallet.seed_hash();
+        let healthy_wallet =
+            crate::model::wallet::Wallet::new_from_seed(healthy_seed, Network::Testnet, None, None)
+                .expect("build healthy wallet");
+        let healthy_hash = healthy_wallet.seed_hash();
+        let (ctx, sender) = offline_testnet_context_at(source_dir.path());
+
+        ctx.register_wallet(corrupt_wallet, &corrupt_seed, WalletOrigin::Fresh)
+            .expect("persist corrupt-row wallet sidecars");
+        ctx.register_wallet(healthy_wallet, &healthy_seed, WalletOrigin::Fresh)
+            .expect("persist healthy wallet sidecars");
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire boot-1 backend");
+        let backend = ctx.wallet_backend().expect("boot-1 backend");
+
+        for (seed_hash, seed) in [
+            (&corrupt_hash, &corrupt_seed),
+            (&healthy_hash, &healthy_seed),
+        ] {
+            backend
+                .register_wallet_from_seed(seed_hash, seed, Some(0))
+                .await
+                .expect("persist upstream wallet");
+            backend
+                .ensure_shielded_bound(seed_hash, seed)
+                .await
+                .expect("persist wallet viewing key");
+        }
+        let corrupt_wallet_id = backend
+            .registered_wallet_id(&corrupt_hash)
+            .expect("corrupt-row upstream wallet id");
+
+        backend.shutdown().await;
+        let _ = ctx.subtasks.shutdown_async().await;
+        (corrupt_hash, corrupt_wallet_id, healthy_hash)
+    };
+
+    let cold_dir = tempfile::tempdir().expect("cold tempdir");
+    copy_dir_recursive(source_dir.path(), cold_dir.path());
+    let persister_path = cold_dir
+        .path()
+        .join("spv")
+        .join("testnet")
+        .join("platform-wallet.sqlite");
+    let persister = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path))
+        .expect("open persister for corrupt FVK fixture");
+    KvStore::put(
+        &persister,
+        &ObjectId::Wallet(corrupt_wallet_id),
+        "shielded:fvks:v1",
+        &[0],
+    )
+    .expect("corrupt one wallet's FVK row");
+    drop(persister);
+
+    let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("one corrupt FVK row must not fail cold-boot rehydration");
+    let backend = ctx.wallet_backend().expect("boot-2 backend");
+
+    assert!(
+        backend.is_wallet_registered(&corrupt_hash),
+        "the wallet with a corrupt FVK row must remain registered"
+    );
+    assert!(
+        backend.is_wallet_registered(&healthy_hash),
+        "the healthy wallet must remain registered"
+    );
+    assert!(
+        backend
+            .bind_shielded_from_persisted_for_test(&healthy_hash)
+            .await
+            .expect("load the healthy wallet's persisted viewing key"),
+        "the healthy wallet's viewing key must remain available"
+    );
+    assert!(
+        backend
+            .shielded_default_address(&healthy_hash, 0)
+            .await
+            .expect("read rebound shielded address")
+            .is_some(),
+        "the healthy persisted viewing key must be installed on the wallet"
+    );
+
+    backend.shutdown().await;
+}
+
 /// Build a minimal basic identity for manager-reconcile tests — only its
 /// id() and (empty) public_keys() are read by `add_identity`.
 fn basic_test_identity() -> dash_sdk::dpp::identity::Identity {

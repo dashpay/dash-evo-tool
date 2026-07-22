@@ -320,9 +320,9 @@ impl RegistrationFlight {
 
 struct Inner {
     pwm: PlatformWalletManager<DetPersister>,
-    /// Shared handle to the same persister `pwm` consumes. Kept so the
-    /// typed key/value adapter ([`DetKv`]) can read/write app data
-    /// alongside wallet state without opening a second connection.
+    /// Shared handle to the SQLite persister wrapped by `pwm`'s
+    /// [`DetPersister`]. Kept so [`DetKv`] can read/write app data alongside
+    /// wallet state without opening a second connection.
     persister: Arc<SqlitePersister>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin

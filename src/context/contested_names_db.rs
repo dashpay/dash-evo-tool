@@ -11,11 +11,13 @@ use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{
     ContestState, Contestant, ContestedName, PendingUsername, pending_usernames_in,
 };
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::{DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::prelude::{BlockHeight, CoreBlockHeight};
 use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winner_info::ContestedDocumentVotePollWinnerInfo;
 use dash_sdk::platform::Identifier;
@@ -255,6 +257,34 @@ impl AppContext {
             .collect())
     }
 
+    /// Return a pending DPNS username only while `identity` owns no awarded name.
+    pub fn pending_dpns_username_for_identity(
+        &self,
+        identity: &QualifiedIdentity,
+    ) -> Option<PendingUsername> {
+        if identity_owns_dpns_name(identity) {
+            None
+        } else {
+            self.pending_dpns_username_for(&identity.identity.id())
+                .ok()
+                .flatten()
+        }
+    }
+
+    /// Map identities without an awarded name to their pending DPNS usernames.
+    pub fn pending_dpns_usernames_for_identities(
+        &self,
+        identities: &[QualifiedIdentity],
+    ) -> HashMap<Identifier, PendingUsername> {
+        let identity_ids = identities
+            .iter()
+            .filter(|identity| !identity_owns_dpns_name(identity))
+            .map(|identity| identity.identity.id())
+            .collect::<Vec<_>>();
+        self.pending_dpns_usernames(&identity_ids)
+            .unwrap_or_default()
+    }
+
     /// Summarise a masternode/evonode node's DPNS voting position for its card.
     ///
     /// `voter_id` is the node's voter-identity id (`associated_voter_identity`);
@@ -464,12 +494,26 @@ impl AppContext {
     }
 }
 
+fn identity_owns_dpns_name(identity: &QualifiedIdentity) -> bool {
+    identity
+        .dpns_names
+        .iter()
+        .any(|name| !name.name.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::test_app_context;
     use crate::model::contested_name::pending_username_in;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{
+        DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+    };
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
     use std::sync::Arc;
 
     fn empty_kv() -> DetKv {
@@ -487,6 +531,73 @@ mod tests {
             created_at_core_block_height: None,
             document_id: [id; 32],
         }
+    }
+
+    fn qualified_identity(id: u8, dpns_name: &str) -> QualifiedIdentity {
+        let identity =
+            Identity::create_basic_identity(Identifier::from([id; 32]), PlatformVersion::latest())
+                .expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![DPNSNameInfo {
+                name: dpns_name.to_string(),
+                acquired_at: 0,
+            }],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[test]
+    fn pending_dpns_usernames_for_identities_omits_owned_identity() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(temp_dir.path());
+        let owned = qualified_identity(1, "alice");
+        let unowned = qualified_identity(2, "   ");
+        {
+            let mut pending = context
+                .pending_dpns_usernames
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pending.insert(
+                owned.identity.id(),
+                PendingUsername {
+                    name: "alice".to_string(),
+                    decided_at: None,
+                },
+            );
+            pending.insert(
+                unowned.identity.id(),
+                PendingUsername {
+                    name: "bob".to_string(),
+                    decided_at: None,
+                },
+            );
+        }
+
+        let pending = context.pending_dpns_usernames_for_identities(&[owned, unowned]);
+
+        assert!(
+            !pending.contains_key(&Identifier::from([1; 32])),
+            "an awarded DPNS name must suppress the stale pending indicator"
+        );
+        assert_eq!(
+            pending
+                .get(&Identifier::from([2; 32]))
+                .map(|name| name.name.as_str()),
+            Some("bob"),
+            "a blank DPNS entry is not ownership and must keep the pending indicator"
+        );
     }
 
     // ----------------------------------------------------------------

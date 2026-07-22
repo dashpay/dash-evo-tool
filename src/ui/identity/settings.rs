@@ -41,6 +41,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typogr
 use crate::ui::{RootScreenType, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use eframe::egui::{Id, Margin, RichText, TextEdit, Ui};
 use std::sync::Arc;
 
@@ -54,9 +55,20 @@ const TIP_CHANGE_PHOTO: &str = "Upload a square image. Other apps will see this 
 pub(crate) const PROFILE_SAVING: &str = "Saving your social profile…";
 /// Confirmation banner shown after a social profile save succeeds.
 pub const PROFILE_SAVED: &str = "Your social profile is saved.";
+const PROFILE_SAVING_OWNER_ID: &str = "__profile_saving_owner";
 
-pub(crate) fn clear_profile_saving_banner(ctx: &egui::Context) {
+pub(crate) fn show_profile_saving_banner(ctx: &egui::Context, identity_id: Identifier) {
+    ctx.data_mut(|data| data.insert_temp(Id::new(PROFILE_SAVING_OWNER_ID), identity_id));
+    MessageBanner::set_global(ctx, PROFILE_SAVING, MessageType::Info).disable_auto_dismiss();
+}
+
+pub(crate) fn clear_profile_saving_banner(ctx: &egui::Context, identity_id: &Identifier) {
+    let owner = ctx.data(|data| data.get_temp::<Identifier>(Id::new(PROFILE_SAVING_OWNER_ID)));
+    if owner.as_ref() != Some(identity_id) {
+        return;
+    }
     MessageBanner::clear_global_message(ctx, PROFILE_SAVING);
+    ctx.data_mut(|data| data.remove::<Identifier>(Id::new(PROFILE_SAVING_OWNER_ID)));
 }
 /// Guidance under the Avatar URL field — supported formats and recommended size.
 const AVATAR_URL_HINT: &str = "Link to a public square image (JPEG, PNG, WebP, or GIF); 256×256 pixels or larger is recommended.";
@@ -348,8 +360,7 @@ impl SettingsTab {
                 // Progress feedback: the save round-trips to Platform and can
                 // take minutes. Keep the banner up (no auto-dismiss) until the
                 // task finishes. Its attributed result clears this banner.
-                MessageBanner::set_global(ui.ctx(), PROFILE_SAVING, MessageType::Info)
-                    .disable_auto_dismiss();
+                show_profile_saving_banner(ui.ctx(), identity.identity.id());
                 action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
                     DashPayTask::UpdateProfile {
                         identity: identity.clone(),
@@ -413,18 +424,7 @@ impl SettingsTab {
 
         // A DPNS name requested but not yet awarded — surfaced only when the
         // identity owns no name yet. Best-effort read; a failure omits it.
-        let pending_username = if identity
-            .dpns_names
-            .iter()
-            .any(|n| !n.name.trim().is_empty())
-        {
-            None
-        } else {
-            app_context
-                .pending_dpns_username_for(&identity.identity.id())
-                .ok()
-                .flatten()
-        };
+        let pending_username = app_context.pending_dpns_username_for_identity(identity);
 
         // Primary DPNS name. If none, show the pending indicator or the CTA card.
         let primary = identity.dpns_names.first();
@@ -927,12 +927,15 @@ impl SettingsTab {
         })
     }
 
-    /// Clear any in-flight pending save snapshot. Called by the hub's
-    /// `display_task_error` so a failed `UpdateProfile` doesn't leave a stale
-    /// snapshot that would be committed if a later `DashPayProfileUpdated` from
-    /// a different path (e.g. legacy ProfileScreen "Change photo") arrives.
-    pub fn clear_pending_save(&mut self) {
-        self.pending_save = None;
+    /// Clear the pending snapshot only when the failed save belongs to this identity.
+    pub fn clear_pending_save_for_identity(&mut self, identity_id: &Identifier) {
+        if self
+            .selected_identity
+            .as_ref()
+            .is_some_and(|identity| identity.identity.id() == *identity_id)
+        {
+            self.pending_save = None;
+        }
     }
 
     /// Validation check used to drive Save button state. Returns `None` when
@@ -1354,6 +1357,25 @@ mod tests {
         assert_eq!(
             tab.original_display_name, original_before,
             "stale on_profile_saved must not corrupt baseline"
+        );
+    }
+
+    #[test]
+    fn pending_save_is_cleared_only_for_its_identity_error() {
+        let mut tab = SettingsTab::new();
+        tab.selected_identity = Some(qualified_identity());
+        tab.pending_save = Some(("Alicia".into(), String::new(), String::new()));
+
+        tab.clear_pending_save_for_identity(&Identifier::from([8; 32]));
+        assert!(
+            tab.pending_save.is_some(),
+            "another identity's failure must preserve the selected identity's snapshot"
+        );
+
+        tab.clear_pending_save_for_identity(&Identifier::from([7; 32]));
+        assert!(
+            tab.pending_save.is_none(),
+            "the selected identity's failure must clear its stale snapshot"
         );
     }
 

@@ -283,18 +283,8 @@ pub fn render(
     // the onboarding checklist so a pending request is not mistaken for "no
     // username". Only meaningful when the identity owns no name yet; the cache
     // read is best-effort, so a failure simply omits the indicator.
-    let owns_dpns_name = identity
-        .dpns_names
-        .iter()
-        .any(|n| !n.name.trim().is_empty());
-    let pending_username: Option<PendingUsername> = if owns_dpns_name {
-        None
-    } else {
-        app_context
-            .pending_dpns_username_for(&identity.identity.id())
-            .ok()
-            .flatten()
-    };
+    let pending_username: Option<PendingUsername> =
+        app_context.pending_dpns_username_for_identity(&identity);
 
     // A tiny local closure that dispatches via the pure
     // `home_button_action` function and merges the result into the

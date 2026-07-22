@@ -531,12 +531,9 @@ impl IdentitiesScreen {
         // Pending DPNS username requests (requested but not yet awarded), keyed
         // by identity id. One cache read serves every row; a failure yields an
         // empty map so the list still renders.
-        let pending_usernames = {
-            let ids: Vec<Identifier> = local_identities.iter().map(|qi| qi.identity.id()).collect();
-            self.app_context
-                .pending_dpns_usernames(&ids)
-                .unwrap_or_default()
-        };
+        let pending_usernames = self
+            .app_context
+            .pending_dpns_usernames_for_identities(&local_identities);
 
         // Space allocation for UI elements is handled by the layout system
 

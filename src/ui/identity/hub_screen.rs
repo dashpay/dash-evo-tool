@@ -9,10 +9,9 @@
 use super::breadcrumb_switcher::{self, BreadcrumbEffect};
 use super::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::UnreadableContactInfoPolicy;
 use crate::ui::components::component_trait::Component;
@@ -580,6 +579,13 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if let Some(identity_id) = context.dashpay_profile_update_identity() {
+            self.settings_tab
+                .clear_pending_save_for_identity(&identity_id);
+        }
+    }
+
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         if self.handle_contact_request_error(error) {
             return matches!(
@@ -599,14 +605,6 @@ impl ScreenLike for IdentityHubScreen {
             self.pending_contact_info_tasks.remove(&key);
         }
         release_request_guard_for_error(&mut self.contacts_state, error);
-
-        // Clear any dangling pending_save so a failed UpdateProfile doesn't
-        // leave a stale snapshot around. If a later DashPayProfileUpdated from
-        // a different path (e.g. the legacy ProfileScreen) arrives it would
-        // otherwise commit the stale submitted values as the new baseline.
-        // Clearing on any error is safe: pending_save is None most of the time,
-        // and clearing it while it's None is a no-op.
-        self.settings_tab.clear_pending_save();
 
         // Let AppState render the default error banner — the hub has no
         // other special-case error handling of its own yet.

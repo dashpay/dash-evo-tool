@@ -54,7 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip
-  (`d18020f` → `ebbd15c`), which lands an embeddable SQLite persistence backend with
+  (`d18020f` → `e75f259`), which lands an embeddable SQLite persistence backend with
   *seedless rehydration*. The wallet manager now restores watch-only wallet state
   (accounts, balances, identities, platform addresses) from the on-disk store
   without the HD seed, re-deriving spend authority just-in-time from the seed only
@@ -67,11 +67,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rehydration, selects platform-address transfer and withdrawal inputs from
   hydrated candidates with authoritative on-chain balances, freezes the SPV sync
   watermark when persistence fails, and persists address-reservation timestamps
-  plus DashPay address used-state updates. Transitively, the pinned dashpay git
-  dependencies advance with it: `rust-dashcore` (`be6e776` → `0091c4a`, which
-  lands the reserve-on-hand-out receive-address APIs), `grovedb` (`v5.0.0` →
-  `v5.0.1`), and the `orchard` shielded-crypto fork (`dashified-0.14.0` →
-  `dashified-0.14.1`); no crates.io dependencies change.
+  plus DashPay address used-state updates. On Unix, DET now tightens app and
+  per-network storage directories to owner-only before opening the hardened
+  upstream database, so permissive system defaults do not prevent startup. New
+  wallet passwords must now be at least eight characters after trimming;
+  existing wallets with shorter passwords that are still in DET's legacy
+  encrypted format remain usable instead of failing during lazy migration.
+  Wallets already migrated to Tier-2 storage by a July 2026 weekly build with
+  a shorter password cannot be opened at this upstream tip; do not upgrade
+  those profiles until upstream provides a compatibility reader.
+  Transitively, the pinned dashpay git dependencies advance with it:
+  `rust-dashcore` (`be6e776` → `0091c4a`, which lands the reserve-on-hand-out
+  receive-address APIs), `grovedb` (`v5.0.0` → `v5.0.1`), and the `orchard`
+  shielded-crypto fork (`dashified-0.14.0` → `dashified-0.14.1`); no crates.io
+  dependencies change.
 
 - **Shielded transactions are available on supported networks**: sending,
   receiving, shielding, and unshielding are enabled when the connected network's

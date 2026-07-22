@@ -83,6 +83,11 @@ pub fn ensure_data_dir_exists(data_dir: &Path) -> Result<(), std::io::Error> {
     if !metadata.is_dir() {
         return Err(std::io::Error::other("Created path is not a directory"));
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700))?;
+    }
     Ok(())
 }
 
@@ -143,4 +148,28 @@ pub fn create_dash_core_config_if_not_exists(
     resource.write_to_file(&config_path, false)?;
 
     Ok(config_path)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::ensure_data_dir_exists;
+
+    #[test]
+    fn ensure_data_dir_exists_restricts_existing_directory_permissions() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let data_dir = parent.path().join("data");
+        std::fs::create_dir(&data_dir).expect("create data dir");
+        std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o775))
+            .expect("make data dir group-writable");
+
+        ensure_data_dir_exists(&data_dir).expect("secure data dir");
+
+        let mode = std::fs::metadata(&data_dir)
+            .expect("read data dir metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "data dir must be owner-only");
+    }
 }

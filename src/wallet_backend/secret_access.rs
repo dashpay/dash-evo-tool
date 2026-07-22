@@ -499,8 +499,9 @@ impl SecretAccess {
     /// The lazy legacy→steady-state re-wrap happens inside [`Self::decrypt_jit`]:
     /// a protected seed re-wraps to **Tier-2 under the same password** (protection
     /// KEPT, never downgraded to a raw secret), an unprotected one to the raw
-    /// label. So there is nothing for the unlock callsite to "finalize" — the
-    /// wallet's `uses_password` stays accurate (`true` for a protected wallet).
+    /// label. A protected re-wrap rejected by the current storage policy is
+    /// deferred without blocking the successfully decrypted seed; the legacy
+    /// envelope remains intact for the next unlock.
     pub fn promote_hd_seed_with_passphrase(
         &self,
         seed_hash: &WalletSeedHash,
@@ -848,7 +849,13 @@ impl SecretAccess {
                         let seed = decrypt_hd_seed(&envelope, passphrase)?;
                         if envelope.uses_password {
                             let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
-                            view.set_protected(seed_hash, &seed, pw)?;
+                            if let Err(e) = view.set_protected(seed_hash, &seed, pw) {
+                                tracing::warn!(
+                                    target = "wallet_backend::secret_access",
+                                    error = ?e,
+                                    "HD seed lazy Tier-2 re-wrap deferred (storage rejected write)",
+                                );
+                            }
                         } else {
                             view.set_raw(seed_hash, &seed)?;
                         }
@@ -2634,6 +2641,45 @@ mod tests {
         assert!(
             view.get_raw(&seed_hash).is_err(),
             "raw read of a protected seed must fail, never strip protection"
+        );
+    }
+
+    /// A legacy wallet may use a password shorter than the upstream Tier-2
+    /// floor. Successful legacy decryption must still release the seed for the
+    /// requested operation; the unsupported re-wrap is deferred and the
+    /// legacy envelope remains the source of truth.
+    #[tokio::test]
+    async fn short_legacy_seed_password_remains_usable_without_tier2_migration() {
+        const SHORT_LEGACY_PASSWORD: &str = "short";
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x73; 32];
+        store_protected_hd(&store, &seed_hash, &SENTINEL_SEED, SHORT_LEGACY_PASSWORD);
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(
+            SHORT_LEGACY_PASSWORD,
+        )]));
+        let sa = access(store.clone(), prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("legacy password must keep unlocking the seed");
+        assert_eq!(prompt.ask_count(), 1);
+
+        let view = WalletSeedView::new(&store);
+        assert_eq!(
+            view.scheme(&seed_hash).unwrap(),
+            SecretScheme::Absent,
+            "a sub-floor password must not be enrolled into Tier-2"
+        );
+        assert!(
+            view.get(&seed_hash).unwrap().is_some(),
+            "the legacy envelope must remain for the next unlock"
         );
     }
 

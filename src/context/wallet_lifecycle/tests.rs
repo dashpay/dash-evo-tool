@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::TaskResult;
-use crate::app_dir::ensure_env_file;
+use crate::app_dir::{ensure_data_dir_exists, ensure_env_file};
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
 use crate::context::migration_status::MigrationState;
@@ -80,7 +80,7 @@ fn offline_testnet_context_with_db(
 /// over a fresh path (identical on-disk bytes) to sidestep the persister's
 /// single-open advisory lock a lingering subtask may still hold.
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
-    std::fs::create_dir_all(dst).expect("mkdir dst");
+    ensure_data_dir_exists(dst).expect("create secure destination directory");
     for entry in std::fs::read_dir(src).expect("read_dir") {
         let entry = entry.expect("dir entry");
         let from = entry.path();

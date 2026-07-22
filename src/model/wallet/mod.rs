@@ -18,6 +18,7 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
+use platform_wallet_storage::secrets::MIN_PASSPHRASE_LEN;
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
@@ -50,6 +51,9 @@ pub enum PaymentValidationError {
 /// backend-task layer; `TaskError` provides a `From` conversion.
 #[derive(Debug, Error)]
 pub enum WalletCreationError {
+    /// The password cannot satisfy the persistent secret store's minimum.
+    #[error("Wallet passwords must be at least {min} characters after trimming.")]
+    PasswordTooShort { min: u32 },
     /// Encrypting the seed with the supplied password failed.
     #[error("Could not process encrypted data. Please check your keys and try again.")]
     Encryption { detail: String },
@@ -432,6 +436,11 @@ impl Wallet {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
+                if pw.expose_secret().trim().chars().count() < MIN_PASSPHRASE_LEN {
+                    return Err(WalletCreationError::PasswordTooShort {
+                        min: MIN_PASSPHRASE_LEN as u32,
+                    });
+                }
                 // `encrypt_seed` is fully typed; `WalletCreationError::Encryption`
                 // still carries a `String` (pre-existing debt tracked for a later
                 // type-through), so the typed error is rendered via `Display` here.
@@ -2618,6 +2627,23 @@ mod tests {
         let hash1 = wallet.seed_hash();
         let hash2 = wallet.seed_hash();
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn new_wallet_rejects_password_below_storage_floor() {
+        let short_password = Secret::new("1234567");
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("short-password".to_string()),
+            Some(&short_password),
+        );
+
+        assert!(matches!(
+            result,
+            Err(WalletCreationError::PasswordTooShort { min })
+                if min == MIN_PASSPHRASE_LEN as u32
+        ));
     }
 
     /// R3 capstone: an open wallet retains NO plaintext seed.

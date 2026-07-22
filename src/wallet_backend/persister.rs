@@ -204,6 +204,10 @@ impl PlatformWalletPersistence for DetPersister {
         Ok(start)
     }
 
+    fn delete_wallet(&self, wallet_id: WalletId) -> Result<(), PersistenceError> {
+        PlatformWalletPersistence::delete_wallet(self.inner.as_ref(), wallet_id)
+    }
+
     fn get_core_tx_record(
         &self,
         wallet_id: WalletId,
@@ -258,6 +262,8 @@ mod tests {
 
     fn test_persister() -> (tempfile::TempDir, DetPersister) {
         let dir = tempfile::tempdir().expect("persister tempdir");
+        crate::app_dir::ensure_data_dir_exists(dir.path())
+            .expect("restrict persister tempdir permissions");
         let inner = Arc::new(
             SqlitePersister::open(SqlitePersisterConfig::new(
                 dir.path().join("platform-wallet.sqlite"),
@@ -345,6 +351,19 @@ mod tests {
                 .load_viewing_keys(wallet_id)
                 .expect("load viewing key"),
             BTreeMap::from([(subwallet_id, fvk)])
+        );
+    }
+
+    #[test]
+    fn delete_wallet_delegates_to_inner_persister() {
+        let (_dir, persister) = test_persister();
+        let error = persister
+            .delete_wallet([0x25; 32])
+            .expect_err("an unknown wallet must reach the inner persister");
+
+        assert!(
+            matches!(error, PersistenceError::Backend { .. }),
+            "the wrapper must not fall back to UnsupportedOperation: {error:?}"
         );
     }
 

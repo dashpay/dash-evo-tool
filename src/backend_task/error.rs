@@ -1920,6 +1920,11 @@ pub enum TaskError {
     #[error("This wallet has already been imported for this network.")]
     WalletAlreadyImported,
 
+    /// A new wallet password is shorter than the persistent secret store's
+    /// minimum and therefore could not be migrated to Tier-2 protection.
+    #[error("Wallet passwords must be at least {min} characters after trimming.")]
+    WalletPasswordTooShort { min: u32 },
+
     /// Wallet key derivation failed during construction.
     #[error("Could not create the wallet. Key derivation failed — please try again.")]
     WalletKeyDerivationFailed {
@@ -2736,6 +2741,9 @@ impl From<crate::model::wallet::WalletCreationError> for TaskError {
     fn from(e: crate::model::wallet::WalletCreationError) -> Self {
         use crate::model::wallet::WalletCreationError;
         match e {
+            WalletCreationError::PasswordTooShort { min } => {
+                TaskError::WalletPasswordTooShort { min }
+            }
             WalletCreationError::Encryption { detail } => TaskError::EncryptionError { detail },
             WalletCreationError::KeyDerivation { source } => {
                 TaskError::WalletKeyDerivationFailed { source }

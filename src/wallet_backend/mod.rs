@@ -2670,10 +2670,12 @@ impl WalletBackend {
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {
-        let mut dir = app_data_dir.to_path_buf();
-        dir.push("spv");
+        let mut dir = app_data_dir.join("spv");
+        crate::app_dir::ensure_data_dir_exists(&dir)
+            .map_err(|source| TaskError::FileSystem { source })?;
         dir.push(kv::network_prefix(network));
-        std::fs::create_dir_all(&dir).map_err(|source| TaskError::FileSystem { source })?;
+        crate::app_dir::ensure_data_dir_exists(&dir)
+            .map_err(|source| TaskError::FileSystem { source })?;
         Ok(dir)
     }
 }
@@ -3021,6 +3023,26 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn spv_storage_directory_ancestors_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_data = tempfile::tempdir().expect("app data tempdir");
+        crate::app_dir::ensure_data_dir_exists(app_data.path()).expect("secure app data dir");
+
+        let network_dir = WalletBackend::resolve_spv_storage_dir(app_data.path(), Network::Testnet)
+            .expect("resolve SPV storage dir");
+
+        for dir in [app_data.path().join("spv"), network_dir] {
+            let mode = std::fs::metadata(&dir)
+                .expect("read storage dir metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "{} must be owner-only", dir.display());
+        }
+    }
 
     #[tokio::test]
     async fn token_balance_sync_reports_an_already_running_upstream_pass() {

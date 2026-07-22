@@ -20,6 +20,14 @@ use super::{DetKv, DetScope, KvAdapterError};
 
 const SHIELDED_FVK_KEY: &str = "shielded:fvks:v1";
 
+/// Delete one wallet's persisted shielded full-viewing keys.
+pub(super) fn forget_wallet_viewing_keys(
+    kv: &DetKv,
+    wallet_id: WalletId,
+) -> Result<(), KvAdapterError> {
+    kv.delete(DetScope::Wallet(&wallet_id), SHIELDED_FVK_KEY)
+}
+
 /// Upstream wallet persistence plus DET's wallet-scoped shielded FVK rows.
 pub(super) struct DetPersister {
     inner: Arc<SqlitePersister>,

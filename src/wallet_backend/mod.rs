@@ -1251,7 +1251,8 @@ impl WalletBackend {
 
     /// Wipe every piece of DET-local state for a forgotten wallet — the
     /// encrypted seed-envelope vault, the session secret cache, the wallet-meta
-    /// sidecar, and the in-memory `id_map`/`wallets`/snapshot registration.
+    /// sidecar, persisted shielded viewing keys, and the in-memory
+    /// `id_map`/`wallets`/snapshot registration.
     /// (Orchard state lives in the upstream coordinator now and is detached by
     /// [`Self::remove_upstream_wallet`].)
     ///
@@ -1324,6 +1325,13 @@ impl WalletBackend {
 
         // In-memory maps + snapshot registration.
         if let Some(wallet_id) = wallet_id {
+            if let Err(error) = persister::forget_wallet_viewing_keys(&self.kv(), wallet_id) {
+                tracing::warn!(
+                    wallet_id = %hex::encode(wallet_id),
+                    error = ?error,
+                    "Failed to delete shielded viewing keys during wallet removal"
+                );
+            }
             self.inner.id_map.write()?.remove(seed_hash);
             self.inner.wallets.write()?.remove(&wallet_id);
             self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);

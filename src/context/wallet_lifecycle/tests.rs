@@ -1691,6 +1691,68 @@ async fn remove_wallet_wipes_seed_envelope() {
     backend.shutdown().await;
 }
 
+/// Removing a wallet reaps its persisted Orchard full-viewing-key row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {
+    use std::collections::BTreeMap;
+
+    use platform_wallet_storage::{KvStore, ObjectId, SqlitePersister, SqlitePersisterConfig};
+
+    let _guard = backend_reopen_lock().await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let seed = [0xA2u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    let (ctx, sender) = offline_testnet_context_at(source_dir.path());
+
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("wire wallet backend");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+    backend
+        .ensure_shielded_bound(&seed_hash, &seed)
+        .await
+        .expect("persist wallet viewing key");
+    let wallet_id = backend
+        .registered_wallet_id(&seed_hash)
+        .expect("registered upstream wallet id");
+    let stored: Option<BTreeMap<u32, Vec<u8>>> = backend
+        .kv()
+        .get(
+            crate::wallet_backend::DetScope::Wallet(&wallet_id),
+            "shielded:fvks:v1",
+        )
+        .expect("read persisted viewing keys");
+    assert!(stored.is_some(), "precondition: the FVK row must exist");
+
+    ctx.remove_wallet(&seed_hash).expect("remove wallet");
+    let _ = ctx.subtasks.shutdown_async().await;
+    backend.shutdown().await;
+
+    let inspection_dir = tempfile::tempdir().expect("inspection tempdir");
+    copy_dir_recursive(source_dir.path(), inspection_dir.path());
+    let persister_path = inspection_dir
+        .path()
+        .join("spv")
+        .join("testnet")
+        .join("platform-wallet.sqlite");
+    let persister = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path))
+        .expect("open post-removal persister");
+    assert!(
+        KvStore::get(&persister, &ObjectId::Wallet(wallet_id), "shielded:fvks:v1")
+            .expect("read post-removal FVK row")
+            .is_none(),
+        "the FVK row must be deleted with the wallet"
+    );
+}
+
 /// The receive-address snapshot is empty until a bind publishes into it, so a
 /// wallet that is locked or not yet bound reports `None` and the Shielded tab
 /// falls back to its "not ready yet" copy instead of rendering a wrong address.

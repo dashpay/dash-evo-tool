@@ -603,6 +603,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn install_fatal_signal_handler_sets_sa_onstack() {
+        use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
+
+        install_fatal_signal_handler_impl();
+
+        for signal in [
+            Signal::SIGSEGV,
+            Signal::SIGABRT,
+            Signal::SIGBUS,
+            Signal::SIGILL,
+            Signal::SIGFPE,
+        ] {
+            // Reset to the default disposition and capture what was
+            // installed in the same call -- this test binary never installs
+            // a real OS signal handler for these signals on its own, so
+            // `SigDfl` is the correct prior state to restore, and doing the
+            // restore and the read in one `sigaction` call means a fatal
+            // signal can never find these left mid-swap.
+            //
+            // SAFETY: `SigDfl` is always a valid disposition to install.
+            let installed = unsafe {
+                sigaction(
+                    signal,
+                    &SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty()),
+                )
+            }
+            .unwrap_or_else(|e| panic!("query/reset {signal:?} disposition: {e}"));
+
+            assert!(
+                installed.flags().contains(SaFlags::SA_ONSTACK),
+                "{signal:?} handler should be installed with SA_ONSTACK, got {:?}",
+                installed.flags()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn marker_for_signal_names_each_fatal_signal() {
         use nix::sys::signal::Signal;
 

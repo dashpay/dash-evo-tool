@@ -107,7 +107,7 @@ fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskErr
 
     let mut qualified_ids = load_operation_ids(kv, network)?;
     let mut qualified_changed = false;
-    let retained_legacy_ids = Vec::<[u8; 16]>::new();
+    let mut retained_legacy_ids = Vec::<[u8; 16]>::new();
     for bytes in &legacy_ids {
         let bytes = *bytes;
         let id = DpnsVoteOperationId::from_bytes(bytes);
@@ -120,7 +120,10 @@ fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskErr
             .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
         match operation_matches_network(&operation, network) {
             Ok(false) => continue,
-            Err(TaskError::DpnsVoteJournalNetworkMismatch) => continue,
+            Err(TaskError::DpnsVoteJournalNetworkMismatch) => {
+                retained_legacy_ids.push(bytes);
+                continue;
+            }
             Err(error) => return Err(error),
             Ok(true) => {}
         }
@@ -1353,13 +1356,26 @@ mod tests {
             kv.get::<Vec<[u8; 16]>>(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
                 .unwrap()
                 .unwrap_or_default(),
-            Vec::<[u8; 16]>::new()
+            vec![poisoned.id.to_bytes()],
+            "a quarantined row must remain indexed for a correct-network migration pass"
         );
         assert!(
             kv.get::<DpnsVoteOperation>(DetScope::Global, &legacy_operation_key(poisoned.id))
                 .unwrap()
                 .is_some(),
             "quarantine must park the foreign record rather than delete it"
+        );
+
+        assert_eq!(
+            load_operations(&kv, Network::Mainnet).unwrap(),
+            vec![poisoned]
+        );
+        assert_eq!(
+            kv.get::<Vec<[u8; 16]>>(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
+                .unwrap()
+                .unwrap_or_default(),
+            Vec::<[u8; 16]>::new(),
+            "the legacy index must drop a quarantined row after correct-network migration"
         );
     }
 

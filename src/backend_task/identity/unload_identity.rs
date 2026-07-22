@@ -113,26 +113,33 @@ mod tests {
             result,
             BackendTaskSuccessResult::UnloadedIdentity(identity_id) if identity_id == target_id
         ));
-        let wallets = ctx.wallets().read().expect("read wallets");
-        let wallet = wallets
-            .get(&wallet_seed_hash)
-            .expect("test wallet remains")
-            .read()
-            .expect("read test wallet");
+        // Snapshot the cache state under the wallet guards, releasing them at the
+        // block's end so no guard is live across `backend.shutdown().await` below
+        // (clippy::await_holding_lock).
+        let (target_evicted, cached_sibling) = {
+            let wallets = ctx.wallets().read().expect("read wallets");
+            let wallet = wallets
+                .get(&wallet_seed_hash)
+                .expect("test wallet remains")
+                .read()
+                .expect("read test wallet");
+            (
+                wallet
+                    .identities
+                    .values()
+                    .all(|identity| identity.id() != target_id),
+                wallet.identities.get(&7).map(IdentityGettersV0::id),
+            )
+        };
         assert!(
-            wallet
-                .identities
-                .values()
-                .all(|identity| identity.id() != target_id),
+            target_evicted,
             "the target identity must be evicted from the wallet cache"
         );
         assert_eq!(
-            wallet.identities.get(&7).map(IdentityGettersV0::id),
+            cached_sibling,
             Some(sibling_id),
             "the sibling identity must remain cached"
         );
-        drop(wallet);
-        drop(wallets);
         assert_eq!(
             ctx.selected_identity_id(),
             None,

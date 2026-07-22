@@ -5,15 +5,21 @@ use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::model::address::{ValidatedAddress, encode_shielded_address};
 use dash_evo_tool::model::amount::Amount;
+use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::ui::wallets::send_screen::{SourceSelection, WalletSendScreen};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::{Address, Network, PublicKey};
+use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 const ONE_DASH_CREDITS: u64 = CREDITS_PER_DUFF * 100_000_000;
@@ -55,6 +61,32 @@ fn send_screen() -> (tokio::runtime::Runtime, WalletSendScreen) {
         runtime,
         WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet))),
     )
+}
+
+/// Wallet-less `SourceSelection::Identity` fixture. Only routing needs it — the
+/// unsupported-route arms match `SourceSelection::Identity(_)` and never read the
+/// identity's contents, so no keys, wallet association, or DB row are required.
+/// Mirrors the `make_qi` pattern in `identity_selector.rs`.
+fn identity_source(byte: u8) -> SourceSelection {
+    let identity =
+        Identity::create_basic_identity(Identifier::from([byte; 32]), PlatformVersion::latest())
+            .expect("basic identity");
+    SourceSelection::Identity(Box::new(QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: Some("Send routing identity".to_string()),
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::PendingCreation,
+        network: Network::Testnet,
+    }))
 }
 
 fn platform_source() -> Vec<(PlatformAddress, Address, u64)> {
@@ -284,5 +316,37 @@ fn rejects_zero_amount_before_routing() {
         Some(ValidatedAddress::Core(core_address())),
         Some(Amount::new_dash(0.0)),
         "Amount must be greater than 0",
+    );
+}
+
+// The two `Err` arms of `validated_send_route` are pure routing decisions with no
+// network dependency. Pinning their exact wording guards the user-facing "not yet
+// supported" guidance against silent drift and keeps the routing match exhaustive.
+
+#[test]
+fn rejects_identity_to_shielded_route() {
+    assert_validation_error(
+        Some(identity_source(0xC1)),
+        Some(ValidatedAddress::Shielded(shielded_address())),
+        Some(Amount::new_dash(1.0)),
+        "Sending from an identity to the shielded pool is not yet supported. \
+         Transfer to a Platform address first, then shield from there.",
+    );
+}
+
+#[test]
+fn rejects_shielded_to_identity_route() {
+    assert_validation_error(
+        Some(SourceSelection::Shielded(
+            rand::random(),
+            3 * ONE_DASH_CREDITS,
+        )),
+        Some(ValidatedAddress::Identity {
+            id: Identifier::from([0xD2; 32]),
+            dpns_name: None,
+        }),
+        Some(Amount::new_dash(1.0)),
+        "Sending from the shielded pool to an identity is not yet supported. \
+         Transfer to a Platform address first, then top up the identity.",
     );
 }

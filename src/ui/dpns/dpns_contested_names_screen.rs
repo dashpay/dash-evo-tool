@@ -965,16 +965,17 @@ impl DPNSScreen {
                                     {
                                         MessageBanner::set_global(
                                             ui.ctx(),
-                                            format!("Failed to set alias: {}", e),
-                                            MessageType::Error,
-                                        );
+                                        "The alias could not be saved. Check available disk space and try again.",
+                                        MessageType::Error,
+                                        )
+                                        .with_details(e);
                                     } else {
                                         MessageBanner::set_global(
                                             ui.ctx(),
                                             format!(
-                                                "Alias set to '{}' for identity {}",
-                                                alias_with_suffix,
-                                                identifier.to_string(Encoding::Base58)
+                                            "Alias set to '{alias}' for identity {identity_id}",
+                                            alias = alias_with_suffix,
+                                            identity_id = identifier.to_string(Encoding::Base58)
                                             ),
                                             MessageType::Success,
                                         );

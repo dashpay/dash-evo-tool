@@ -226,13 +226,14 @@ impl SingleKeyWalletSendScreen {
         let mut total_amount: u64 = 0;
 
         for (index, recipient) in self.recipients.iter().enumerate() {
+            let recipient_number = index + 1;
             if recipient.address.trim().is_empty() {
-                return Err(format!("Recipient {} has an empty address", index + 1));
+                return Err(format!("Recipient {recipient_number} has an empty address"));
             }
             let amount = Self::parse_amount_to_duffs(&recipient.amount)
-                .map_err(|e| format!("Recipient {}: {}", index + 1, e))?;
+                .map_err(|error| format!("Recipient {recipient_number}: {error}"))?;
             if amount == 0 {
-                return Err(format!("Recipient {} has zero amount", index + 1));
+                return Err(format!("Recipient {recipient_number} has zero amount"));
             }
             total_amount = total_amount.saturating_add(amount);
 
@@ -247,9 +248,9 @@ impl SingleKeyWalletSendScreen {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             if total_amount > wallet_guard.total_balance {
                 return Err(format!(
-                    "Insufficient balance. Need {} but only have {}",
-                    format_duffs_as_dash(total_amount),
-                    format_duffs_as_dash(wallet_guard.total_balance)
+                    "Insufficient balance. Need {needed} but only have {available}",
+                    needed = format_duffs_as_dash(total_amount),
+                    available = format_duffs_as_dash(wallet_guard.total_balance)
                 ));
             }
         }
@@ -320,11 +321,12 @@ impl SingleKeyWalletSendScreen {
             .show(ui, |ui| {
                 for i in 0..recipient_count {
                     let recipient_id = self.recipients[i].id;
+                    let recipient_number = i + 1;
 
                     // Address field
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new(format!("Address {}:", i + 1))
+                            RichText::new(format!("Address {recipient_number}:"))
                                 .color(DashColors::text_secondary(dark_mode))
                                 .size(14.0),
                         );
@@ -342,7 +344,7 @@ impl SingleKeyWalletSendScreen {
 
                         // Amount field
                         ui.label(
-                            RichText::new(format!("Amount {} (DASH):", i + 1))
+                            RichText::new(format!("Amount {recipient_number} (DASH):"))
                                 .color(DashColors::text_secondary(dark_mode))
                                 .size(14.0),
                         );
@@ -418,9 +420,8 @@ impl SingleKeyWalletSendScreen {
                         );
                         ui.label(
                             RichText::new(format!(
-                                "{} ({:.8} DASH)",
-                                estimated_fee,
-                                estimated_fee as f64 * 1e-8
+                                "{estimated_fee} ({fee_dash:.8} DASH)",
+                                fee_dash = estimated_fee as f64 * 1e-8
                             ))
                             .color(DashColors::text_primary(dark_mode))
                             .size(14.0),
@@ -434,7 +435,7 @@ impl SingleKeyWalletSendScreen {
                                 .size(12.0),
                         );
                         ui.label(
-                            RichText::new(format!("{} inputs, ~{} bytes", utxo_count, tx_size))
+                            RichText::new(format!("{utxo_count} inputs, ~{tx_size} bytes"))
                                 .color(DashColors::text_secondary(dark_mode))
                                 .size(12.0),
                         );
@@ -512,9 +513,12 @@ impl SingleKeyWalletSendScreen {
                                 .size(14.0),
                         );
                         ui.label(
-                            RichText::new(format!("~{:.8} DASH", estimated_fee as f64 * 1e-8))
-                                .color(DashColors::text_primary(dark_mode))
-                                .size(14.0),
+                            RichText::new(format!(
+                                "~{fee_dash:.8} DASH",
+                                fee_dash = estimated_fee as f64 * 1e-8
+                            ))
+                            .color(DashColors::text_primary(dark_mode))
+                            .size(14.0),
                         );
                     });
                 }
@@ -557,9 +561,9 @@ impl SingleKeyWalletSendScreen {
                             );
                             ui.label(
                                 RichText::new(format!(
-                                    "{} duffs ({:.8} DASH)",
-                                    self.fee_dialog.estimated_fee,
-                                    self.fee_dialog.estimated_fee as f64 * 1e-8
+                                    "{estimated_fee} duffs ({fee_dash:.8} DASH)",
+                                    estimated_fee = self.fee_dialog.estimated_fee,
+                                    fee_dash = self.fee_dialog.estimated_fee as f64 * 1e-8
                                 ))
                                 .color(DashColors::text_primary(dark_mode)),
                             );
@@ -572,9 +576,9 @@ impl SingleKeyWalletSendScreen {
                             );
                             ui.label(
                                 RichText::new(format!(
-                                    "{} duffs ({:.8} DASH)",
-                                    self.fee_dialog.required_fee,
-                                    self.fee_dialog.required_fee as f64 * 1e-8
+                                    "{required_fee} duffs ({fee_dash:.8} DASH)",
+                                    required_fee = self.fee_dialog.required_fee,
+                                    fee_dash = self.fee_dialog.required_fee as f64 * 1e-8
                                 ))
                                 .color(DashColors::WARNING)
                                 .strong(),
@@ -592,9 +596,8 @@ impl SingleKeyWalletSendScreen {
                             );
                             ui.label(
                                 RichText::new(format!(
-                                    "+{} duffs ({:.8} DASH)",
-                                    fee_diff,
-                                    fee_diff as f64 * 1e-8
+                                    "+{fee_diff} duffs ({fee_dash:.8} DASH)",
+                                    fee_dash = fee_diff as f64 * 1e-8
                                 ))
                                 .color(DashColors::text_primary(dark_mode)),
                             );
@@ -930,23 +933,24 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                 let msg = if recipients.len() == 1 {
                     let (address, amount) = &recipients[0];
                     format!(
-                        "Sent {} to {}\nTxID: {}",
-                        format_duffs_as_dash(*amount),
-                        address,
-                        txid
+                        "Sent {amount} to {address}\nTxID: {txid}",
+                        amount = format_duffs_as_dash(*amount)
                     )
                 } else {
                     let recipient_list: String = recipients
                         .iter()
-                        .map(|(addr, amt)| format!("  {} to {}", format_duffs_as_dash(*amt), addr))
+                        .map(|(address, amount)| {
+                            format!(
+                                "  {amount} to {address}",
+                                amount = format_duffs_as_dash(*amount)
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
                     format!(
-                        "Sent {} total to {} recipients:\n{}\nTxID: {}",
-                        format_duffs_as_dash(total_amount),
-                        recipients.len(),
-                        recipient_list,
-                        txid
+                        "Sent {total_amount} total to {recipient_count} recipients:\n{recipient_list}\nTxID: {txid}",
+                        total_amount = format_duffs_as_dash(total_amount),
+                        recipient_count = recipients.len()
                     )
                 };
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);

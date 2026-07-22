@@ -4,6 +4,7 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::validate_account_label;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ResultBannerExt;
@@ -143,10 +144,10 @@ impl AddContactScreen {
             }
 
             // Validate account label length
-            if self.account_label.len() > 100 {
+            if let Err(error) = validate_account_label(&self.account_label) {
                 let error = DashPayError::AccountLabelTooLong {
-                    length: self.account_label.len(),
-                    max: 100,
+                    length: error.actual,
+                    max: error.max,
                 };
                 self.status = ContactRequestStatus::Error(error);
                 return AppAction::None;

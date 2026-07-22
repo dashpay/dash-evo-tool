@@ -669,6 +669,10 @@ pub enum BackendTaskSuccessResult {
     TransferredCredits(FeeResult),
     WithdrewFromIdentity(FeeResult),
     RegisteredDpnsName(FeeResult),
+    RemovedIdentities {
+        identity_ids: Vec<Identifier>,
+        associated_cleanup_failed: bool,
+    },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
     /// This identity's keys were sealed under a password (opt-in).

@@ -5,6 +5,23 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::platform::{Document, Identifier};
 use serde::{Deserialize, Serialize};
 
+use super::validation::{TextLengthError, validate_char_count};
+
+/// Maximum number of characters stored in a DashPay payment memo.
+pub const MAX_PAYMENT_MEMO_CHARS: usize = 100;
+/// Maximum number of characters stored in a contact-request account label.
+pub const MAX_ACCOUNT_LABEL_CHARS: usize = 100;
+
+/// Validate an optional DashPay payment memo.
+pub fn validate_payment_memo(memo: &str) -> Result<(), TextLengthError> {
+    validate_char_count(memo, 0, MAX_PAYMENT_MEMO_CHARS)
+}
+
+/// Validate a DashPay contact-request account label.
+pub fn validate_account_label(label: &str) -> Result<(), TextLengthError> {
+    validate_char_count(label, 0, MAX_ACCOUNT_LABEL_CHARS)
+}
+
 /// The recipient (`toUserId`) of a DashPay `contactRequest` document.
 ///
 /// Returns `None` when the field is absent or does not hold a readable
@@ -542,5 +559,13 @@ mod tests {
     #[test]
     fn avatar_url_scheme_check_ignores_surrounding_whitespace() {
         assert!(validate_profile_fields("", "", "  https://example.com/a.png  ").is_empty());
+    }
+
+    #[test]
+    fn dashpay_text_limits_count_characters() {
+        assert!(validate_payment_memo(&"é".repeat(100)).is_ok());
+        assert!(validate_payment_memo(&"m".repeat(101)).is_err());
+        assert!(validate_account_label(&"é".repeat(100)).is_ok());
+        assert!(validate_account_label(&"l".repeat(101)).is_err());
     }
 }

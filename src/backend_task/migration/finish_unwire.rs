@@ -2195,7 +2195,7 @@ fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskErr
     let view = backend.wallet_meta();
     let outcome = migrate_wallet_meta_rows_from_conn(
         &conn,
-        |seed_hash, meta| view.set(app_context.network, &seed_hash, &meta),
+        |seed_hash, meta| view.set_migrated(app_context.network, &seed_hash, &meta),
         app_context.network,
     )?;
     tracing::info!(

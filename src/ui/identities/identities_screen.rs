@@ -355,14 +355,14 @@ impl IdentitiesScreen {
         };
 
         ui.add(egui::Label::new(message).sense(egui::Sense::hover()))
-            .info_tooltip(format!("{}", qualified_identity.identity.balance()));
+            .info_tooltip(qualified_identity.identity.balance().to_string());
     }
 
     fn show_balance(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
-        let formatted_balance = format!("{:.4} DASH", balance_in_dash);
+        let formatted_balance = format!("{balance_in_dash:.4} DASH");
         ui.add(egui::Label::new(formatted_balance).sense(egui::Sense::hover()))
-            .info_tooltip(format!("{}", qualified_identity.identity.balance()));
+            .info_tooltip(qualified_identity.identity.balance().to_string());
     }
 
     fn format_key_name(&self, key: &IdentityPublicKey) -> String {
@@ -381,7 +381,10 @@ impl IdentitiesScreen {
             SecurityLevel::HIGH => "High",
             SecurityLevel::MEDIUM => "Medium",
         };
-        format!("{} - {} - {}", key.id(), purpose_letter, security_level)
+        format!(
+            "{key_id} - {purpose_letter} - {security_level}",
+            key_id = key.id()
+        )
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
@@ -583,7 +586,7 @@ impl IdentitiesScreen {
                                         ui.vertical_centered(|ui| {
                                             ui.horizontal_centered(|ui| {
                                                 // Show identity type and status
-                                                let type_text = format!("{}", qualified_identity.identity_type);
+                                                let type_text = qualified_identity.identity_type.to_string();
                                                 let status = qualified_identity.status;
                                                 // Always show status information (don't disable this column)
                                                 ui.add_enabled_ui(true, |ui|{
@@ -617,7 +620,10 @@ impl IdentitiesScreen {
                                                         .clickable_tooltip("Manage identity credits")
                                                         .disabled_tooltip("Identity actions are unavailable until this identity becomes active");
 
-                                                    let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+                                                    let actions_popup_id = ui.make_persistent_id(format!(
+                                                        "actions_popup_{identity_id}",
+                                                        identity_id = qualified_identity.identity.id().to_string(Encoding::Base58)
+                                                    ));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
@@ -728,7 +734,10 @@ impl IdentitiesScreen {
 
                                                     let button_response = ui.add(button).clickable_tooltip("View and manage keys for this identity");
 
-                                                    let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+                                                    let popup_id = ui.make_persistent_id(format!(
+                                                        "keys_popup_{identity_id}",
+                                                        identity_id = qualified_identity.identity.id().to_string(Encoding::Base58)
+                                                    ));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
@@ -812,9 +821,9 @@ impl IdentitiesScreen {
                                                 // Remove
                                                 if ui.button("Remove").clickable_tooltip("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
                                                     let message = format!(
-                                                        "Are you sure you want to no longer track this {} identity?\n\nIdentity ID: {}",
-                                                        qualified_identity.identity_type,
-                                                        qualified_identity.identity.id().to_string(
+                                                        "Are you sure you want to no longer track this {identity_type} identity?\n\nIdentity ID: {identity_id}",
+                                                        identity_type = qualified_identity.identity_type,
+                                                        identity_id = qualified_identity.identity.id().to_string(
                                                             qualified_identity.identity_type.default_encoding()
                                                         )
                                                     );
@@ -884,43 +893,9 @@ impl IdentitiesScreen {
                         }
                         if let Some(identity_to_remove) = self.identity_to_remove.take() {
                             let identity_id = identity_to_remove.identity.id();
-
-                            match self
-                                .app_context
-                                .delete_local_qualified_identity(&identity_id)
-                            {
-                                Ok(_) => {
-                                    let mut lock = self.identities.lock_recover();
-                                    lock.shift_remove(&identity_id);
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to delete identity from database: {}",
-                                        e
-                                    );
-                                    MessageBanner::set_global(
-                                        self.app_context.egui_ctx(),
-                                        format!("Failed to remove identity: {}", e),
-                                        MessageType::Error,
-                                    )
-                                    .disable_auto_dismiss();
-                                }
-                            }
-
-                            if let Some((voter_identity, _)) =
-                                &identity_to_remove.associated_voter_identity
-                            {
-                                let voter_identity_id = voter_identity.id();
-                                if let Err(e) = self
-                                    .app_context
-                                    .delete_local_qualified_identity(&voter_identity_id)
-                                {
-                                    tracing::warn!(
-                                        "Failed to delete voter identity from database: {}",
-                                        e
-                                    );
-                                }
-                            }
+                            return AppAction::BackendTask(BackendTask::IdentityTask(
+                                IdentityTask::RemoveIdentity { identity_id },
+                            ));
                         }
                     }
                     ConfirmationStatus::Canceled => {
@@ -1018,7 +993,7 @@ impl IdentitiesScreen {
                             Err(e) => {
                                 MessageBanner::set_global(
                                     ctx,
-                                    "Failed to save alias",
+                                    "The alias could not be saved. Check available disk space and try again.",
                                     MessageType::Error,
                                 )
                                 .with_details(e);
@@ -1073,26 +1048,51 @@ impl ScreenLike for IdentitiesScreen {
         &mut self,
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
-            backend_task_success_result
-        {
-            self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
-            if self.pending_refresh_count == 0 {
-                self.refresh_banner.take_and_clear();
-                let message = if self.total_refresh_count == 1 {
-                    "Successfully refreshed identity".to_string()
-                } else {
-                    format!(
-                        "Successfully refreshed {} identities",
-                        self.total_refresh_count
-                    )
-                };
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    &message,
-                    MessageType::Success,
-                );
+        match backend_task_success_result {
+            crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) => {
+                self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
+                if self.pending_refresh_count == 0 {
+                    self.refresh_banner.take_and_clear();
+                    let message = if self.total_refresh_count == 1 {
+                        "Successfully refreshed identity".to_string()
+                    } else {
+                        format!(
+                            "Successfully refreshed {count} identities",
+                            count = self.total_refresh_count
+                        )
+                    };
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &message,
+                        MessageType::Success,
+                    );
+                }
             }
+            crate::ui::BackendTaskSuccessResult::RemovedIdentities {
+                identity_ids,
+                associated_cleanup_failed,
+            } => {
+                let mut identities = self.identities.lock_recover();
+                for identity_id in identity_ids {
+                    identities.shift_remove(&identity_id);
+                }
+                drop(identities);
+                if associated_cleanup_failed {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.",
+                        MessageType::Warning,
+                    )
+                    .disable_auto_dismiss();
+                } else {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The identity was removed from this device.",
+                        MessageType::Success,
+                    );
+                }
+            }
+            _ => {}
         }
     }
 

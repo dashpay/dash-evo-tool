@@ -9,6 +9,7 @@ use crate::model::dpns_voting::{
 };
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -106,7 +107,7 @@ fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskErr
 
     let mut qualified_ids = load_operation_ids(kv, network)?;
     let mut qualified_changed = false;
-    let mut retained_legacy_ids = Vec::new();
+    let retained_legacy_ids = Vec::<[u8; 16]>::new();
     for bytes in &legacy_ids {
         let bytes = *bytes;
         let id = DpnsVoteOperationId::from_bytes(bytes);
@@ -119,10 +120,8 @@ fn migrate_legacy_operations(kv: &DetKv, network: Network) -> Result<(), TaskErr
             .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
         match operation_matches_network(&operation, network) {
             Ok(false) => continue,
-            Err(error) => {
-                retained_legacy_ids.push(bytes);
-                return Err(error);
-            }
+            Err(TaskError::DpnsVoteJournalNetworkMismatch) => continue,
+            Err(error) => return Err(error),
             Ok(true) => {}
         }
         kv.put(
@@ -505,6 +504,7 @@ fn recover_interrupted_target_statuses(operation: &mut DpnsVoteOperation) -> boo
             }
             DpnsVoteTargetStatus::Confirming => {
                 outcome.status = DpnsVoteTargetStatus::Unconfirmed;
+                outcome.target.current_choice = None;
                 outcome.failure = Some(DpnsVoteFailure::ResultUnconfirmed);
                 changed = true;
             }
@@ -708,9 +708,50 @@ impl AppContext {
             .find(|outcome| outcome.target.key == *key)
         {
             outcome.status = status;
+            if status == DpnsVoteTargetStatus::Unconfirmed {
+                outcome.target.current_choice = None;
+            }
             outcome.failure = failure;
         }
         persist_operation(&kv, self.network, &operation)
+    }
+
+    /// Atomically persist one corroborated reconciliation observation.
+    pub(crate) fn update_dpns_vote_reconciliation(
+        &self,
+        operation_id: DpnsVoteOperationId,
+        key: &DpnsVoteTargetKey,
+        expected_current_choice: Option<ResourceVoteChoice>,
+        observed_choice: Option<ResourceVoteChoice>,
+        status: DpnsVoteTargetStatus,
+    ) -> Result<bool, TaskError> {
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let kv = self.det_kv()?;
+        let Some(mut operation): Option<DpnsVoteOperation> = kv
+            .get(DetScope::Global, &operation_key(self.network, operation_id))
+            .map_err(unreadable_operation_err)?
+        else {
+            return Ok(false);
+        };
+        let Some(outcome) = operation.targets.iter_mut().find(|outcome| {
+            outcome.target.key == *key
+                && outcome.status == DpnsVoteTargetStatus::Unconfirmed
+                && outcome.target.current_choice == expected_current_choice
+        }) else {
+            return Ok(false);
+        };
+        if outcome.target.current_choice == observed_choice && outcome.status == status {
+            return Ok(true);
+        }
+        outcome.target.current_choice = observed_choice;
+        outcome.status = status;
+        outcome.failure = (status == DpnsVoteTargetStatus::Unconfirmed)
+            .then_some(DpnsVoteFailure::ResultUnconfirmed);
+        persist_operation(&kv, self.network, &operation)?;
+        Ok(true)
     }
 
     /// Atomically claim a queued target before any network or nonce work.
@@ -1278,26 +1319,48 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_unresolved_legacy_record_fails_closed() {
+    fn legacy_migration_quarantines_cross_network_row_without_blocking_siblings() {
         let kv = kv();
-        let operation = operation(DpnsVoteTargetStatus::Unconfirmed);
+        let mut poisoned = operation(DpnsVoteTargetStatus::Unconfirmed);
+        poisoned.targets[0].target.key.network = Network::Mainnet;
+        let mut valid = operation(DpnsVoteTargetStatus::Scheduled);
+        valid.targets[0].target.key.vote_poll_id = Identifier::from([3; 32]);
         kv.put(
             DetScope::Global,
-            &legacy_operation_key(operation.id),
-            &operation,
+            &legacy_operation_key(poisoned.id),
+            &poisoned,
         )
         .unwrap();
+        kv.put(DetScope::Global, &legacy_operation_key(valid.id), &valid)
+            .unwrap();
         kv.put(
             DetScope::Global,
             LEGACY_OPERATION_INDEX_KEY,
-            &vec![operation.id.to_bytes()],
+            &vec![poisoned.id.to_bytes(), valid.id.to_bytes()],
         )
         .unwrap();
 
-        assert!(matches!(
-            load_operations(&kv, Network::Mainnet),
-            Err(TaskError::DpnsVoteJournalNetworkMismatch)
-        ));
+        assert_eq!(
+            load_operations(&kv, Network::Testnet).unwrap(),
+            vec![valid.clone()]
+        );
+        assert_eq!(
+            load_operations(&kv, Network::Testnet).unwrap(),
+            vec![valid],
+            "a quarantined row must not block or duplicate valid siblings on later sweeps"
+        );
+        assert_eq!(
+            kv.get::<Vec<[u8; 16]>>(DetScope::Global, LEGACY_OPERATION_INDEX_KEY)
+                .unwrap()
+                .unwrap_or_default(),
+            Vec::<[u8; 16]>::new()
+        );
+        assert!(
+            kv.get::<DpnsVoteOperation>(DetScope::Global, &legacy_operation_key(poisoned.id))
+                .unwrap()
+                .is_some(),
+            "quarantine must park the foreign record rather than delete it"
+        );
     }
 
     #[test]

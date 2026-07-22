@@ -100,8 +100,17 @@ fn missing_voter_outcome(
 fn classify_reconciled_vote(
     observed: Option<ResourceVoteChoice>,
     requested: ResourceVoteChoice,
+    previous_observation: Option<ResourceVoteChoice>,
 ) -> Option<DpnsVoteTargetStatus> {
-    (observed == Some(requested)).then_some(DpnsVoteTargetStatus::Confirmed)
+    match observed {
+        Some(choice) if choice == requested => Some(DpnsVoteTargetStatus::Confirmed),
+        // Two consecutive identical mismatches filter one stale/racing read while
+        // releasing the lock promptly once Platform consistently proves another vote.
+        Some(choice) if previous_observation == Some(choice) => {
+            Some(DpnsVoteTargetStatus::NotApplied)
+        }
+        Some(_) | None => None,
+    }
 }
 
 fn persist_terminal_then_legacy_mirror(
@@ -748,36 +757,35 @@ impl AppContext {
                 order_ascending: true,
             };
             match ResourceVote::fetch_many(sdk, query).await {
-                Ok(votes)
-                    if classify_reconciled_vote(
-                        votes
-                            .get(&poll_id)
-                            .and_then(Option::as_ref)
-                            .map(ResourceVoteGettersV0::resource_vote_choice),
+                Ok(votes) => {
+                    let observed = votes
+                        .get(&poll_id)
+                        .and_then(Option::as_ref)
+                        .map(ResourceVoteGettersV0::resource_vote_choice);
+                    let reconciled_status = classify_reconciled_vote(
+                        observed,
                         outcome.target.requested_choice,
-                    ) == Some(DpnsVoteTargetStatus::Confirmed) =>
-                {
-                    let mirror_error = persist_terminal_then_legacy_mirror(
-                        || {
-                            self.update_dpns_vote_target(
-                                operation_id,
-                                &outcome.target.key,
-                                DpnsVoteTargetStatus::Confirmed,
-                                None,
-                            )
-                        },
-                        || {
-                            if matches!(outcome.target.timing, VoteTiming::Scheduled(_)) {
-                                self.mark_vote_executed(
-                                    outcome.target.key.voter_id.as_slice(),
-                                    outcome.target.contested_name.clone(),
-                                )
-                            } else {
-                                Ok(())
-                            }
-                        },
-                    )?;
-                    if let Some(error) = mirror_error {
+                        outcome.target.current_choice,
+                    );
+                    let status = reconciled_status.unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
+                    if !self.update_dpns_vote_reconciliation(
+                        operation_id,
+                        &outcome.target.key,
+                        outcome.target.current_choice,
+                        observed,
+                        status,
+                    )? {
+                        continue;
+                    }
+                    if status != DpnsVoteTargetStatus::Confirmed {
+                        continue;
+                    }
+                    if matches!(outcome.target.timing, VoteTiming::Scheduled(_))
+                        && let Err(error) = self.mark_vote_executed(
+                            outcome.target.key.voter_id.as_slice(),
+                            outcome.target.contested_name.clone(),
+                        )
+                    {
                         tracing::warn!(
                             ?error,
                             operation_id = %operation_id,
@@ -792,7 +800,6 @@ impl AppContext {
                         outcome.target.requested_choice,
                     )?;
                 }
-                Ok(_) => {}
                 Err(error) => {
                     let error = TaskError::from(error);
                     tracing::warn!(
@@ -1121,19 +1128,116 @@ mod tests {
     #[test]
     fn exact_reconciliation_confirms_only_the_requested_choice() {
         assert_eq!(
-            classify_reconciled_vote(Some(ResourceVoteChoice::Lock), ResourceVoteChoice::Lock),
+            classify_reconciled_vote(
+                Some(ResourceVoteChoice::Lock),
+                ResourceVoteChoice::Lock,
+                None,
+            ),
             Some(DpnsVoteTargetStatus::Confirmed)
         );
         assert_eq!(
-            classify_reconciled_vote(Some(ResourceVoteChoice::Abstain), ResourceVoteChoice::Lock),
+            classify_reconciled_vote(
+                Some(ResourceVoteChoice::Abstain),
+                ResourceVoteChoice::Lock,
+                None,
+            ),
             None,
             "a mismatched row may predate the submitted transition and remains ambiguous"
         );
         assert_eq!(
-            classify_reconciled_vote(None, ResourceVoteChoice::Lock),
+            classify_reconciled_vote(
+                None,
+                ResourceVoteChoice::Lock,
+                Some(ResourceVoteChoice::Abstain),
+            ),
             None,
             "an absent exact row remains ambiguous and must not release its lock"
         );
+    }
+
+    #[test]
+    fn proved_different_reconciliation_releases_target_lock_after_corroboration() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        context.set_det_kv_override_for_test(kv);
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([1; 32]),
+                vote_poll_id: Identifier::from([2; 32]),
+            },
+            voter_alias: None,
+            contested_name: "dominguez".to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: Some(ResourceVoteChoice::Abstain),
+            timing: VoteTiming::Now,
+        }]);
+        operation.targets[0].status = DpnsVoteTargetStatus::Confirming;
+        let operation_id = operation.id;
+        let key = operation.targets[0].target.key.clone();
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .expect("persist confirming operation");
+        context
+            .update_dpns_vote_target(
+                operation_id,
+                &key,
+                DpnsVoteTargetStatus::Unconfirmed,
+                Some(DpnsVoteFailure::ResultUnconfirmed),
+            )
+            .expect("persist unconfirmed operation");
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation_id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .target
+                .current_choice,
+            None,
+            "the pre-broadcast choice must not count as reconciliation corroboration"
+        );
+
+        let observed = Some(ResourceVoteChoice::Abstain);
+        let first_status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock, None)
+            .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
+        assert!(
+            context
+                .update_dpns_vote_reconciliation(operation_id, &key, None, observed, first_status,)
+                .expect("persist first observation")
+        );
+        assert_eq!(first_status, DpnsVoteTargetStatus::Unconfirmed);
+
+        let persisted = context.dpns_vote_operation(operation_id).unwrap().unwrap();
+        let second_status = classify_reconciled_vote(
+            observed,
+            ResourceVoteChoice::Lock,
+            persisted.targets[0].target.current_choice,
+        )
+        .expect("the repeated different choice must be proved not applied");
+        assert!(
+            context
+                .update_dpns_vote_reconciliation(
+                    operation_id,
+                    &key,
+                    persisted.targets[0].target.current_choice,
+                    observed,
+                    second_status,
+                )
+                .expect("persist corroborated observation")
+        );
+
+        let target = &context
+            .dpns_vote_operation(operation_id)
+            .unwrap()
+            .unwrap()
+            .targets[0];
+        assert_eq!(target.status, DpnsVoteTargetStatus::NotApplied);
+        assert!(!target.status.holds_lock());
+        assert_eq!(context.dpns_vote_target_status(&key).unwrap(), None);
     }
 
     #[test]

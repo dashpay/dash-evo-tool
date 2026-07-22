@@ -2428,6 +2428,48 @@ async fn register_wallet_fails_closed_when_wallet_meta_write_fails() {
     );
 }
 
+/// An overlong alias is pure input validation and MUST be rejected BEFORE any
+/// secret-critical write. Otherwise a meta-write-time rejection lands AFTER
+/// `write_seed_envelope`, orphaning the encrypted seed (no meta row → never
+/// hydrated, no cleanup path). Mirrors the single-key import path, which
+/// already validates before writing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_rejects_overlong_alias_before_seed_write() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
+
+    let seed = [0x5Au8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("w".repeat(65)),
+        None,
+    )
+    .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+
+    let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh);
+    assert!(
+        matches!(result, Err(TaskError::InvalidWalletAliasLength { .. })),
+        "an overlong alias must be rejected before any seed write"
+    );
+    assert!(
+        WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
+            .expect("read raw seed")
+            .is_none(),
+        "no seed material must survive a rejected HD registration (orphaned secret)"
+    );
+    assert!(
+        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        "a rejected wallet must not be kept in memory"
+    );
+    assert!(
+        !ctx.has_wallet.load(Ordering::Relaxed),
+        "has_wallet must not flip true when registration is rejected"
+    );
+}
+
 /// Build a valid BIP44 account-0 master xpub (testnet) for a legacy wallet row.
 fn legacy_master_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
     crate::database::test_helpers::legacy_master_epk_bytes(seed, Network::Testnet)

@@ -47,6 +47,7 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
+mod persister;
 pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
@@ -159,10 +160,7 @@ use crate::model::wallet::meta::wallet_label;
 use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
 
-/// The upstream persister DET consumes. Authored upstream (PR #3625) — DET
-/// does not write its own persister (removal-inventory: consume, don't
-/// reimplement).
-type DetPersister = SqlitePersister;
+use persister::DetPersister;
 
 /// Which side of a contact relationship
 /// [`WalletBackend::record_contact_request`] writes into the local
@@ -325,7 +323,7 @@ struct Inner {
     /// Shared handle to the same persister `pwm` consumes. Kept so the
     /// typed key/value adapter ([`DetKv`]) can read/write app data
     /// alongside wallet state without opening a second connection.
-    persister: Arc<DetPersister>,
+    persister: Arc<SqlitePersister>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
     /// selection (A04 fund-safety gate).
@@ -460,10 +458,11 @@ impl WalletBackend {
 
         let persister_config =
             SqlitePersisterConfig::new(spv_storage_dir.join("platform-wallet.sqlite"));
-        let persister = Arc::new(
+        let sqlite_persister = Arc::new(
             SqlitePersister::open(persister_config)
                 .map_err(TaskError::from_wallet_storage_open_error)?,
         );
+        let persister = Arc::new(DetPersister::new(Arc::clone(&sqlite_persister)));
 
         // Reuse the vault handle `AppContext` already opened at boot. The file
         // backend holds an exclusive advisory lock for the handle's lifetime,
@@ -520,7 +519,7 @@ impl WalletBackend {
         let backend = Self {
             inner: Arc::new(Inner {
                 pwm,
-                persister,
+                persister: sqlite_persister,
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -2765,6 +2764,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         // `PlatformWalletError` at this rev; it belongs in this bucket once
         // platform re-adds it.
         other @ (P::WalletCreation(_)
+        | P::PlatformNodePool(_)
         | P::PersisterLoad(_)
         | P::AddressNonceMismatch { .. }
         | P::WalletNotFound(_)
@@ -2778,9 +2778,13 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::DashpayReceivingAccountAlreadyExists { .. }
         | P::DashpayExternalAccountAlreadyExists { .. }
         | P::AssetLockTransaction(_)
+        | P::AssetLockNotTracked(_)
+        | P::AssetLockAlreadyConsumed(_)
+        | P::AssetLockFundingMismatch { .. }
         | P::TransactionBroadcast(_)
         | P::TransactionBroadcastUnconfirmed(_)
         | P::TransactionBuild(_)
+        | P::CoreInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::Sdk(_)
         | P::AddressSync(_)
@@ -2945,6 +2949,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 
         // Everything else — preconditions, wallet state, builder errors.
         P::WalletCreation(_)
+        | P::PlatformNodePool(_)
         | P::WalletNotFound(_)
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
@@ -2954,7 +2959,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::DashpayReceivingAccountAlreadyExists { .. }
         | P::DashpayExternalAccountAlreadyExists { .. }
         | P::AssetLockTransaction(_)
+        | P::AssetLockNotTracked(_)
+        | P::AssetLockAlreadyConsumed(_)
+        | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
+        | P::CoreInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::AddressSync(_)
         | P::AddressOperation(_)

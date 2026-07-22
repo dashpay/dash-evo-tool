@@ -54,7 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip
-  (`d18020f` → `f376d32`), which lands an embeddable SQLite persistence backend with
+  (`d18020f` → `ebbd15c`), which lands an embeddable SQLite persistence backend with
   *seedless rehydration*. The wallet manager now restores watch-only wallet state
   (accounts, balances, identities, platform addresses) from the on-disk store
   without the HD seed, re-deriving spend authority just-in-time from the seed only
@@ -63,11 +63,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   match: each now resolves the HD seed through the secret-seam chokepoint for the
   single spend and drops it on return. The update also adds persistence and
   rehydration for provider (masternode / evonode) platform-node key pools and for
-  DashPay invitations. Transitively, the pinned dashpay git dependencies advance
-  with it: `rust-dashcore` (`be6e776` → `0091c4a`, which lands the reserve-on-
-  hand-out receive-address APIs), `grovedb` (`v5.0.0` → `v5.0.1`), and the
-  `orchard` shielded-crypto fork (`dashified-0.14.0` → `dashified-0.14.1`); no
-  crates.io dependencies change.
+  DashPay invitations. The later review tip also retries transient startup
+  rehydration, selects platform-address transfer and withdrawal inputs from
+  hydrated candidates with authoritative on-chain balances, freezes the SPV sync
+  watermark when persistence fails, and persists address-reservation timestamps
+  plus DashPay address used-state updates. Transitively, the pinned dashpay git
+  dependencies advance with it: `rust-dashcore` (`be6e776` → `0091c4a`, which
+  lands the reserve-on-hand-out receive-address APIs), `grovedb` (`v5.0.0` →
+  `v5.0.1`), and the `orchard` shielded-crypto fork (`dashified-0.14.0` →
+  `dashified-0.14.1`); no crates.io dependencies change.
 
 - **Shielded transactions are available on supported networks**: sending,
   receiving, shielding, and unshielding are enabled when the connected network's

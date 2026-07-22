@@ -278,8 +278,20 @@ mod tests {
 
     /// Reproduces <https://github.com/dashpay/dash-evo-tool/issues/909>.
     /// The root cause is upstream in `dashpay/rust-dashcore` key-wallet's
-    /// `coin_selection.rs`, pinned at revision `be6e776`.
+    /// `coin_selection.rs`, pinned at revision `be6e776`, tracked at
+    /// <https://github.com/dashpay/rust-dashcore/issues/911>.
+    ///
+    /// Asserts the *correct* behavior (a Max send folds the zero/dust remainder
+    /// into its fee), so it stays RED until the upstream fix lands. `#[ignore]`
+    /// keeps it out of the CI gate meanwhile; run it manually with:
+    ///
+    /// ```sh
+    /// cargo test --lib -- core_max_send_with_single_utxo_builds_without_change --ignored
+    /// ```
+    ///
+    /// Remove `#[ignore]` once the pinned key-wallet revision contains the fix.
     #[test]
+    #[ignore = "RED until upstream key-wallet coin-selection fix lands (rust-dashcore#911); run with --ignored"]
     fn core_max_send_with_single_utxo_builds_without_change() {
         const BALANCE_DUFFS: u64 = 10_000_000;
 

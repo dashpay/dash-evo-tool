@@ -219,6 +219,16 @@ fn redirect_stderr_to(_path: &Path) {
     );
 }
 
+/// Size of the alternate signal stack used by [`install_alt_signal_stack`].
+///
+/// The fatal-signal handler itself does a single `write(2)` call with
+/// nothing beneath it, but the kernel/libc signal-delivery machinery needs
+/// some stack space of its own to build the signal frame before the handler
+/// runs. 64 KiB is a generous multiple of `libc::SIGSTKSZ` (8 KiB on this
+/// target) for what is a one-time, process-lifetime allocation per thread.
+#[cfg(unix)]
+const ALT_SIGNAL_STACK_SIZE: usize = 64 * 1024;
+
 /// Installs a handler for the synchronous fatal signals (`SIGSEGV`, `SIGABRT`,
 /// `SIGBUS`, `SIGILL`, `SIGFPE`) that writes a one-line marker to stderr before
 /// the process dies, then lets the default handler take over.
@@ -235,9 +245,65 @@ fn redirect_stderr_to(_path: &Path) {
 /// normal crash / core dump.
 ///
 /// Call once, after [`capture_stderr_to_file`], so the marker lands in the
-/// sidecar file rather than a lost terminal. Best-effort no-op on non-Unix.
+/// sidecar file rather than a lost terminal. This also installs an alternate
+/// signal stack for the calling thread. Other threads need to call
+/// [`install_alt_signal_stack`] separately; `src/main.rs` does so for every
+/// Tokio worker/blocking thread through `Builder::on_thread_start`.
+/// Best-effort no-op on non-Unix.
 pub fn install_fatal_signal_handler() {
     install_fatal_signal_handler_impl();
+}
+
+/// Installs an alternate signal stack for the *calling* thread, so a
+/// `SA_ONSTACK` handler installed by [`install_fatal_signal_handler`] can
+/// still run when this thread's normal stack is exhausted (a guard-page
+/// stack-overflow SIGSEGV).
+///
+/// `sigaltstack(2)` is per-thread: registering it on one thread does
+/// nothing for a fault on any other thread. [`install_fatal_signal_handler`]
+/// calls this once for the thread that calls it (normally `main`), but any
+/// other thread that can run deep, stack-hungry code must call this too —
+/// in this project, every Tokio worker/blocking thread, via
+/// `Builder::on_thread_start` in `src/main.rs`.
+///
+/// The backing buffer is intentionally leaked: the alternate stack must
+/// stay valid for the entire lifetime of the thread that registered it,
+/// since a fatal signal can arrive at any time. Best-effort no-op (with a
+/// warning on failure) on Unix; a true no-op on non-Unix targets, since
+/// `sigaltstack` and the fatal-signal handler itself are Unix-only.
+pub fn install_alt_signal_stack() {
+    install_alt_signal_stack_impl();
+}
+
+#[cfg(unix)]
+fn install_alt_signal_stack_impl() {
+    // Leaked intentionally -- see doc comment on `install_alt_signal_stack`.
+    let stack = vec![0u8; ALT_SIGNAL_STACK_SIZE].into_boxed_slice();
+    let stack_ptr = Box::leak(stack).as_mut_ptr();
+
+    let alt_stack = nix::libc::stack_t {
+        ss_sp: stack_ptr as *mut nix::libc::c_void,
+        ss_flags: 0,
+        ss_size: ALT_SIGNAL_STACK_SIZE,
+    };
+
+    // SAFETY: `stack_ptr` points at a leaked buffer of exactly
+    // `ALT_SIGNAL_STACK_SIZE` bytes. `sigaltstack` copies `alt_stack`, and the
+    // retained `ss_sp` remains valid for the rest of the process.
+    let ret = unsafe { nix::libc::sigaltstack(&alt_stack, std::ptr::null_mut()) };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!(
+            error = %err,
+            "Could not install alternate signal stack; a stack-overflow SIGSEGV on this thread may leave no crash marker"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn install_alt_signal_stack_impl() {
+    // No-op: sigaltstack is a POSIX/Unix mechanism, and the fatal-signal
+    // handler itself is already Unix-only.
 }
 
 /// Maps a fatal signal number to a fixed `'static` marker line written to
@@ -260,6 +326,9 @@ fn marker_for_signal(sig: nix::libc::c_int) -> &'static [u8] {
 fn install_fatal_signal_handler_impl() {
     use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
 
+    // Cover the calling (normally main) thread before installing the handler.
+    install_alt_signal_stack_impl();
+
     extern "C" fn handle_fatal(sig: nix::libc::c_int) {
         let marker = marker_for_signal(sig);
         // SAFETY: `write` is async-signal-safe. `marker` is a 'static byte
@@ -276,12 +345,14 @@ fn install_fatal_signal_handler_impl() {
         // fault (or lets abort() proceed) for the normal crash / core dump.
     }
 
+    // SA_ONSTACK: use the registered alternate stack so a guard-page overflow
+    // can run the handler; unregistered threads fall back to their normal stack.
     // SA_RESETHAND: one-shot, then default disposition re-raises the crash.
     // SA_NODEFER: don't block the signal during the handler, so a fault while
     // the default handler is being restored still terminates cleanly.
     let action = SigAction::new(
         SigHandler::Handler(handle_fatal),
-        SaFlags::SA_RESETHAND | SaFlags::SA_NODEFER,
+        SaFlags::SA_RESETHAND | SaFlags::SA_NODEFER | SaFlags::SA_ONSTACK,
         SigSet::empty(),
     );
 
@@ -511,6 +582,23 @@ mod tests {
         rotate_log_in_dir(dir.path(), "det-stderr");
         let count = fs::read_dir(dir.path()).expect("read_dir").count();
         assert_eq!(count, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_alt_signal_stack_registers_stack_for_calling_thread() {
+        install_alt_signal_stack();
+
+        let mut current_stack = std::mem::MaybeUninit::<nix::libc::stack_t>::uninit();
+        // SAFETY: a null first argument queries the calling thread's current
+        // alternate stack into the valid `current_stack` out-pointer.
+        let ret = unsafe { nix::libc::sigaltstack(std::ptr::null(), current_stack.as_mut_ptr()) };
+
+        assert_eq!(ret, 0, "sigaltstack query should succeed");
+        // SAFETY: a successful query initialized every field of `current_stack`.
+        let current_stack = unsafe { current_stack.assume_init() };
+        assert_eq!(current_stack.ss_flags & nix::libc::SS_DISABLE, 0);
+        assert_eq!(current_stack.ss_size, ALT_SIGNAL_STACK_SIZE);
     }
 
     #[cfg(unix)]

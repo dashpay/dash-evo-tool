@@ -165,38 +165,6 @@ fn plan_account_tabs(
     tabs
 }
 
-/// Refresh mode for dev mode dropdown - controls what gets refreshed.
-///
-/// There is no "Core only" mode: Core wallet state (balances/UTXOs) is kept
-/// current continuously by the upstream runtime and pushed via the EventBridge,
-/// so there is nothing to reconcile on demand. Refresh only re-fetches the
-/// DAPI-sourced Platform-address balances, optionally alongside the always-live
-/// Core view.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum RefreshMode {
-    /// Core wallet + Platform address sync
-    #[default]
-    All,
-    /// Only Platform address sync
-    PlatformOnly,
-}
-
-impl RefreshMode {
-    fn label(&self) -> &'static str {
-        match self {
-            RefreshMode::All => "Core + Platform",
-            RefreshMode::PlatformOnly => "Platform Only",
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            RefreshMode::All => RefreshMode::PlatformOnly,
-            RefreshMode::PlatformOnly => RefreshMode::All,
-        }
-    }
-}
-
 pub struct WalletsBalancesScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
@@ -222,12 +190,8 @@ pub struct WalletsBalancesScreen {
     pending_platform_balance_refresh: Option<WalletSeedHash>,
     /// Whether we should refresh the wallet after it's unlocked
     pending_refresh_after_unlock: bool,
-    /// The refresh mode to use after unlock (if pending_refresh_after_unlock is true)
-    pending_refresh_mode: RefreshMode,
     /// Current page for single key wallet UTXO pagination (0-indexed)
     utxo_page: usize,
-    /// Selected refresh mode (only shown in dev mode)
-    refresh_mode: RefreshMode,
     /// Currently selected account tab in the Accounts & Addresses section
     selected_account_tab: AccountTab,
     /// Shielded tab view component (lazily initialized per wallet)
@@ -366,9 +330,7 @@ impl WalletsBalancesScreen {
             show_zero_balance_addresses: false,
             pending_platform_balance_refresh: None,
             pending_refresh_after_unlock: false,
-            pending_refresh_mode: RefreshMode::default(),
             utxo_page: 0,
-            refresh_mode: RefreshMode::default(),
             selected_account_tab: AccountTab::default(),
             shielded_tab_view,
             pending_wallet_refresh_on_switch: false,
@@ -1277,20 +1239,6 @@ impl WalletsBalancesScreen {
                             .clicked()
                         {
                             self.open_mine_dialog();
-                        }
-
-                        if ui
-                            .button(
-                                RichText::new(format!(
-                                    "Refresh mode: {}",
-                                    self.refresh_mode.label()
-                                ))
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                            )
-                            .clicked()
-                        {
-                            self.refresh_mode = self.refresh_mode.next();
                         }
                     },
                 );
@@ -2252,46 +2200,20 @@ impl WalletsBalancesScreen {
         }
     }
 
-    /// Creates the appropriate refresh action based on the current refresh mode
+    /// Refresh the wallet: Core (event-bridge push, effectively a no-op reconcile)
+    /// plus a DAPI-sourced Platform-address balance sync. There is no manual
+    /// "Core only" mode — Core wallet state (balances/UTXOs) is kept current
+    /// continuously by the upstream runtime and pushed via the EventBridge, so
+    /// there is nothing to reconcile on demand beyond the Platform sync.
+    ///
+    /// Shielded balances are kept current by the upstream coordinator's
+    /// 60-second sync loop and the post-op snapshot refresh — DET no longer
+    /// dispatches a manual shielded sync from the refresh chain.
     fn create_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
-        self.create_refresh_action_for_mode(wallet_arc, self.refresh_mode)
-    }
-
-    /// Creates the appropriate refresh action using the pending refresh mode
-    fn create_pending_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
-        self.create_refresh_action_for_mode(wallet_arc, self.pending_refresh_mode)
-    }
-
-    fn create_refresh_action_for_mode(
-        &self,
-        wallet_arc: &Arc<RwLock<Wallet>>,
-        mode: RefreshMode,
-    ) -> AppAction {
-        let seed_hash = wallet_arc
-            .read()
-            .ok()
-            .map(|w| w.seed_hash())
-            .unwrap_or_default();
-
-        let core_task = match mode {
-            RefreshMode::All => {
-                // Core + Platform
-                BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet_arc.clone(), true))
-            }
-            RefreshMode::PlatformOnly => {
-                // Platform only
-                BackendTask::WalletTask(
-                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                        seed_hash,
-                    },
-                )
-            }
-        };
-
-        // Shielded balances are kept current by the upstream coordinator's
-        // 60-second sync loop and the post-op snapshot refresh — DET no longer
-        // dispatches a manual shielded sync from the refresh chain.
-        AppAction::BackendTask(core_task)
+        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
+            wallet_arc.clone(),
+            true,
+        )))
     }
 
     /// Run the single import path
@@ -2810,7 +2732,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         self.pending_refresh_after_unlock = false;
                         if let Some(wallet_arc) = &self.selected_wallet {
                             self.refreshing = true;
-                            action |= self.create_pending_refresh_action(wallet_arc);
+                            action |= self.create_refresh_action(wallet_arc);
                         }
                     }
                 }
@@ -2961,13 +2883,12 @@ impl ScreenLike for WalletsBalancesScreen {
                 if let Some(wallet_arc) = &self.selected_wallet {
                     let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {
-                        // Wallet is locked - open unlock popup and store the refresh mode
+                        // Wallet is locked - open unlock popup; refresh runs once unlocked
                         self.pending_refresh_after_unlock = true;
-                        self.pending_refresh_mode = self.refresh_mode;
                         self.wallet_unlock_popup.open();
                         action = AppAction::None;
                     } else {
-                        // Wallet is unlocked - proceed with refresh using selected mode
+                        // Wallet is unlocked - proceed with refresh
                         self.refreshing = true;
                         action = self.create_refresh_action(wallet_arc);
                     }

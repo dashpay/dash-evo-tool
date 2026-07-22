@@ -1191,12 +1191,15 @@ As a user, I want to choose between Default view, Detailed view, and Developer t
 - Same three choices and descriptions on the Network Settings "Interface mode" card and the Welcome screen onboarding row.
 - Choice persists and applies immediately, and can be changed again at any time.
 
-### NET-007: Granular refresh controls [Implemented]
+### NET-007: Granular refresh controls [Removed]
 **Persona:** Priya
 
-As a power user, I want to choose whether to refresh Core Only, Platform Only, or both so that I can save time when I only need part of the data updated.
-
-- Refresh mode selector available in detailed/developer view.
+Withdrawn after the platform-wallet migration. Core wallet state is kept current
+by the platform-wallet runtime and pushed through the EventBridge, so there was
+never a real "Core Only" mode. The selector only switched between "Core +
+Platform" and "Platform Only", and both ran the same Platform DAPI balance sync.
+It added no functional value and has been removed; refresh now runs Core +
+Platform unconditionally.
 
 ### NET-008: Select Core backend mode [Removed]
 **Persona:** Priya, Jordan

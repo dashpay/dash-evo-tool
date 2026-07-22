@@ -5,7 +5,8 @@ use dash_evo_tool::*;
 use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
 use crate::logging::{
-    capture_stderr_to_file, install_fatal_signal_handler, report_startup_failure_to_terminal,
+    capture_stderr_to_file, install_alt_signal_stack, install_fatal_signal_handler,
+    report_startup_failure_to_terminal,
 };
 
 fn main() -> eframe::Result<()> {
@@ -27,6 +28,8 @@ fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(12)
+        // Each worker/blocking thread needs its own alternate signal stack.
+        .on_thread_start(install_alt_signal_stack)
         .enable_all()
         .build()
         .expect("multi-threading runtime cannot be initialized");

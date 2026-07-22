@@ -124,7 +124,8 @@ impl AppContext {
     ) {
         let ctx = Arc::clone(self);
         let wallet = Arc::clone(wallet);
-        self.subtasks
+        let _ = self
+            .subtasks
             .spawn_sync("wallet_unlock_registration", async move {
                 let lease = lease;
                 ctx.bootstrap_wallet_addresses_jit(&wallet).await;

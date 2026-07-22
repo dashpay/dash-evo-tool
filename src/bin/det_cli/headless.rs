@@ -9,7 +9,7 @@
 /// for the race analysis.
 pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
     use dash_evo_tool::logging::initialize_logger;
-    use dash_evo_tool::mcp::server::init_app_context;
+    use dash_evo_tool::mcp::server::{init_app_context, shutdown_app_context_wallet_backend};
     use dash_evo_tool::mcp::{McpConfig, start_http_server};
 
     // Require MCP_API_KEY -- headless without auth is not allowed.
@@ -52,9 +52,7 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
         // src/mcp/tools/network.rs), so only the current context needs
         // draining here.
         let current_ctx = swappable.load_full();
-        if let Ok(backend) = current_ctx.wallet_backend() {
-            backend.shutdown().await;
-        }
+        shutdown_app_context_wallet_backend(&current_ctx).await;
 
         result
     });

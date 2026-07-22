@@ -8,6 +8,59 @@ use rmcp::model::*;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, service::RequestContext};
 use std::sync::Arc;
 
+#[cfg(feature = "cli")]
+use crate::utils::tasks::TaskShutdownOutcome;
+
+#[cfg(feature = "cli")]
+trait StandaloneShutdownWalletBackend: Send + Sync {
+    fn forget_all_secrets(&self);
+    fn shutdown(&self) -> futures::future::BoxFuture<'_, ()>;
+}
+
+#[cfg(feature = "cli")]
+impl StandaloneShutdownWalletBackend for crate::wallet_backend::WalletBackend {
+    fn forget_all_secrets(&self) {
+        crate::wallet_backend::WalletBackend::forget_all_secrets(self);
+    }
+
+    fn shutdown(&self) -> futures::future::BoxFuture<'_, ()> {
+        Box::pin(crate::wallet_backend::WalletBackend::shutdown(self))
+    }
+}
+
+/// Drain managed backend work before tearing down a standalone wallet backend.
+#[cfg(feature = "cli")]
+pub async fn shutdown_app_context_wallet_backend(ctx: &Arc<AppContext>) {
+    let task_shutdown_outcome = ctx.subtasks.shutdown_async().await.ok();
+    let wallet_backend = ctx.wallet_backend().ok();
+    finish_app_context_wallet_backend_shutdown(task_shutdown_outcome, wallet_backend).await;
+}
+
+#[cfg(feature = "cli")]
+async fn finish_app_context_wallet_backend_shutdown<B: StandaloneShutdownWalletBackend>(
+    task_shutdown_outcome: Option<TaskShutdownOutcome>,
+    wallet_backend: Option<Arc<B>>,
+) {
+    if let Some(backend) = wallet_backend.as_ref() {
+        backend.forget_all_secrets();
+    }
+
+    match task_shutdown_outcome {
+        Some(TaskShutdownOutcome::Complete) => {
+            if let Some(backend) = wallet_backend {
+                backend.shutdown().await;
+                backend.forget_all_secrets();
+            }
+        }
+        Some(TaskShutdownOutcome::BackendTasksTimedOut) => {
+            tracing::warn!("Managed backend work timed out; skipping standalone wallet teardown")
+        }
+        None => {
+            tracing::warn!("Managed task shutdown failed; skipping standalone wallet teardown")
+        }
+    }
+}
+
 /// Abstracts how the MCP service stores and swaps its AppContext.
 /// Both variants support `load` and `store` for network switching.
 #[derive(Clone)]
@@ -209,11 +262,7 @@ impl DashMcpService {
     #[cfg(feature = "cli")]
     pub async fn shutdown_wallet_backend(&self) {
         let Some(ctx) = self.ctx.load() else { return };
-        let Ok(backend) = ctx.wallet_backend() else {
-            return;
-        };
-        // Drain in-flight persister writes.  Does not join coordinator threads.
-        backend.shutdown().await;
+        shutdown_app_context_wallet_backend(&ctx).await;
     }
 
     /// Build the tool router using trait-based tool composition.
@@ -445,5 +494,63 @@ fn available_network_names(config: &crate::config::Config) -> String {
         "none".to_string()
     } else {
         names.join(", ")
+    }
+}
+
+#[cfg(all(test, feature = "cli"))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct MockStandaloneShutdownBackend {
+        forget_calls: AtomicUsize,
+        secret_cached: AtomicBool,
+        shutdown_calls: AtomicUsize,
+    }
+
+    impl StandaloneShutdownWalletBackend for MockStandaloneShutdownBackend {
+        fn forget_all_secrets(&self) {
+            self.forget_calls.fetch_add(1, Ordering::Relaxed);
+            self.secret_cached.store(false, Ordering::Release);
+        }
+
+        fn shutdown(&self) -> futures::future::BoxFuture<'_, ()> {
+            self.shutdown_calls.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async {})
+        }
+    }
+
+    fn mock_wallet_backend() -> Arc<MockStandaloneShutdownBackend> {
+        Arc::new(MockStandaloneShutdownBackend {
+            forget_calls: AtomicUsize::new(0),
+            secret_cached: AtomicBool::new(true),
+            shutdown_calls: AtomicUsize::new(0),
+        })
+    }
+
+    #[tokio::test]
+    async fn backend_task_timeout_forgets_standalone_wallet_secrets_without_teardown() {
+        let backend = mock_wallet_backend();
+
+        finish_app_context_wallet_backend_shutdown(
+            Some(TaskShutdownOutcome::BackendTasksTimedOut),
+            Some(Arc::clone(&backend)),
+        )
+        .await;
+
+        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
+        assert!(!backend.secret_cached.load(Ordering::Acquire));
+        assert_eq!(backend.shutdown_calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn task_manager_failure_forgets_standalone_wallet_secrets_without_teardown() {
+        let backend = mock_wallet_backend();
+
+        finish_app_context_wallet_backend_shutdown(None, Some(Arc::clone(&backend))).await;
+
+        assert_eq!(backend.forget_calls.load(Ordering::Relaxed), 1);
+        assert!(!backend.secret_cached.load(Ordering::Acquire));
+        assert_eq!(backend.shutdown_calls.load(Ordering::Relaxed), 0);
     }
 }

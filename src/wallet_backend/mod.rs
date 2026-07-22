@@ -1613,7 +1613,7 @@ impl WalletBackend {
         // flag a still-live worker or orphan, which teardown proceeds past
         // regardless — log it rather than surface it.
         //
-        // TODO(platform-pr3968): `shutdown()` returns `()` at this rev (no
+        // TODO(platform-pr3954): `shutdown()` returns `()` at this rev (no
         // clean-shutdown report type yet) — the report check below is
         // commented out rather than dropped outright; restore once platform
         // re-adds the report type. User-confirmed removal of the
@@ -2761,7 +2761,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
 
         // Every remaining variant → generic WalletBackend wrapper.
         //
-        // TODO(platform-pr3968): `ShieldedShutdownIncomplete` doesn't exist on
+        // TODO(platform-pr3954): `ShieldedShutdownIncomplete` doesn't exist on
         // `PlatformWalletError` at this rev; it belongs in this bucket once
         // platform re-adds it.
         other @ (P::WalletCreation(_)
@@ -2995,7 +2995,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::TransactionBroadcastUnconfirmed(_)
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. } => IdentityOpErrorKind::Other,
-        // TODO(platform-pr3968): `ShieldedShutdownIncomplete` doesn't exist on
+        // TODO(platform-pr3954): `ShieldedShutdownIncomplete` doesn't exist on
         // `PlatformWalletError` at this rev; it belongs in the `Other` bucket
         // once platform re-adds it.
     }

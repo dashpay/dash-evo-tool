@@ -266,38 +266,63 @@ pub fn install_fatal_signal_handler() {
 /// in this project, every Tokio worker/blocking thread, via
 /// `Builder::on_thread_start` in `src/main.rs`.
 ///
-/// The backing buffer is intentionally leaked: the alternate stack must
-/// stay valid for the entire lifetime of the thread that registered it,
-/// since a fatal signal can arrive at any time. Best-effort no-op (with a
-/// warning on failure) on Unix; a true no-op on non-Unix targets, since
-/// `sigaltstack` and the fatal-signal handler itself are Unix-only.
+/// The backing buffer is owned by a thread-local, not leaked: Tokio's
+/// blocking-pool threads are not one-time (idle ones are reaped after a
+/// short keep-alive and fresh ones are spawned per task on demand), and this
+/// function runs on every one of them via `Builder::on_thread_start`, so a
+/// process-lifetime leak (`Box::leak`) would grow unboundedly over a long
+/// session instead of costing a fixed, one-time amount. Storing the buffer
+/// in a `thread_local!` frees it via the TLS destructor at thread exit --
+/// exactly when the registration stops mattering, since a dead thread can't
+/// receive signals. Best-effort no-op (with a warning on failure) on Unix; a
+/// true no-op on non-Unix targets, since `sigaltstack` and the fatal-signal
+/// handler itself are Unix-only.
 pub fn install_alt_signal_stack() {
     install_alt_signal_stack_impl();
 }
 
 #[cfg(unix)]
+thread_local! {
+    /// Backing buffer for this thread's alternate signal stack. Kept alive
+    /// for the thread's lifetime by owning it here rather than leaking it;
+    /// freed by the TLS destructor at thread exit, after `sigaltstack`
+    /// registration for this thread has stopped mattering.
+    static ALT_SIGNAL_STACK_BUF: std::cell::RefCell<Option<Box<[u8]>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(unix)]
 fn install_alt_signal_stack_impl() {
-    // Leaked intentionally -- see doc comment on `install_alt_signal_stack`.
-    let stack = vec![0u8; ALT_SIGNAL_STACK_SIZE].into_boxed_slice();
-    let stack_ptr = Box::leak(stack).as_mut_ptr();
+    ALT_SIGNAL_STACK_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        // `get_or_insert_with` keeps a prior call's buffer (and its already
+        // -registered address) if this runs twice on the same thread, rather
+        // than allocating and registering a second one.
+        let stack = buf.get_or_insert_with(|| vec![0u8; ALT_SIGNAL_STACK_SIZE].into_boxed_slice());
+        let stack_ptr = stack.as_mut_ptr();
 
-    let alt_stack = nix::libc::stack_t {
-        ss_sp: stack_ptr as *mut nix::libc::c_void,
-        ss_flags: 0,
-        ss_size: ALT_SIGNAL_STACK_SIZE,
-    };
+        let alt_stack = nix::libc::stack_t {
+            ss_sp: stack_ptr as *mut nix::libc::c_void,
+            ss_flags: 0,
+            ss_size: ALT_SIGNAL_STACK_SIZE,
+        };
 
-    // SAFETY: `stack_ptr` points at a leaked buffer of exactly
-    // `ALT_SIGNAL_STACK_SIZE` bytes. `sigaltstack` copies `alt_stack`, and the
-    // retained `ss_sp` remains valid for the rest of the process.
-    let ret = unsafe { nix::libc::sigaltstack(&alt_stack, std::ptr::null_mut()) };
-    if ret != 0 {
-        let err = std::io::Error::last_os_error();
-        tracing::warn!(
-            error = %err,
-            "Could not install alternate signal stack; a stack-overflow SIGSEGV on this thread may leave no crash marker"
-        );
-    }
+        // SAFETY: `stack_ptr` points into `stack`, owned by this thread's
+        // `ALT_SIGNAL_STACK_BUF` cell for as long as the thread lives (a
+        // `Box`'s heap allocation does not move when the `Box` itself does).
+        // `sigaltstack` copies `alt_stack` by value; the kernel only needs
+        // `ss_sp` to stay valid while this thread could still fault, which
+        // holds until the thread exits and the buffer is freed together with
+        // it.
+        let ret = unsafe { nix::libc::sigaltstack(&alt_stack, std::ptr::null_mut()) };
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            tracing::warn!(
+                error = %err,
+                "Could not install alternate signal stack; a stack-overflow SIGSEGV on this thread may leave no crash marker"
+            );
+        }
+    });
 }
 
 #[cfg(not(unix))]

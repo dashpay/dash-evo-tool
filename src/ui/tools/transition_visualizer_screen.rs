@@ -104,16 +104,18 @@ impl TransitionVisualizerScreen {
                 .collect::<Result<Vec<u8>, _>>()
                 .map_err(|error| {
                     tracing::debug!(?error, "Transition byte-list parsing failed");
-                    "The comma-separated values are not valid bytes. Use numbers from 0 to 255."
-                        .to_string()
+                    format!(
+                        "The comma-separated values are not valid bytes. Use numbers from 0 to 255. ({error})"
+                    )
                 })
         } else {
             // Try to decode the input as hex first
             hex::decode(self.input_data.trim()).or_else(|_| {
                 STANDARD.decode(self.input_data.trim()).map_err(|error| {
                     tracing::debug!(?error, "Transition base64 decoding failed");
-                    "The input is not valid hexadecimal or base64 data. Check it and try again."
-                        .to_string()
+                    format!(
+                        "The input is not valid hexadecimal or base64 data. Check it and try again. ({error})"
+                    )
                 })
             })
         };
@@ -139,8 +141,9 @@ impl TransitionVisualizerScreen {
                             Err(error) => {
                                 tracing::debug!(?error, "Transition JSON serialization failed");
                                 self.parse_error = Some((
-                                    "The transition could not be displayed as JSON. Check the input and try again."
-                                        .to_string(),
+                                    format!(
+                                        "The transition could not be displayed as JSON. Check the input and try again. ({error})"
+                                    ),
                                     Instant::now(),
                                 ));
                             }
@@ -149,8 +152,9 @@ impl TransitionVisualizerScreen {
                     Err(error) => {
                         tracing::debug!(?error, "State-transition deserialization failed");
                         self.parse_error = Some((
-                            "The state transition could not be read. Check the input format and try again."
-                                .to_string(),
+                            format!(
+                                "The state transition could not be read. Check the input format and try again. ({error})"
+                            ),
                             Instant::now(),
                         ));
                     }

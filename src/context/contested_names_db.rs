@@ -262,17 +262,33 @@ impl AppContext {
         };
 
         let contests = self.ongoing_contested_names()?;
-        let open_contest_count = contests
-            .iter()
-            .filter(|contest| contest.is_open_for_voter(&voter_id))
-            .count();
-        let states = contests
+        let open_polls: Vec<Option<Identifier>> = contests
             .iter()
             .filter(|contest| contest.is_open_for_voter(&voter_id))
             .map(|contest| {
                 self.dpns_vote_poll_id(&contest.normalized_contested_name)
                     .ok()
-                    .and_then(|poll_id| self.dpns_current_vote_state(voter_id, poll_id).ok())
+            })
+            .collect();
+        let open_contest_count = open_polls.len();
+
+        // One storage read per node for every open contest's proved state
+        // (VOTE-NFR-007), instead of one read per contest. A read failure
+        // degrades each contest to `Unavailable`, matching the prior
+        // per-contest fallback.
+        let poll_states = {
+            let poll_ids: Vec<Identifier> = open_polls.iter().flatten().copied().collect();
+            if poll_ids.is_empty() {
+                BTreeMap::new()
+            } else {
+                self.dpns_current_vote_states(voter_id, poll_ids)
+                    .unwrap_or_default()
+            }
+        };
+        let states = open_polls
+            .iter()
+            .map(|poll| {
+                poll.and_then(|poll_id| poll_states.get(&poll_id).copied())
                     .unwrap_or(DpnsCurrentVoteState::Unavailable)
             })
             .collect::<Vec<_>>();
@@ -475,7 +491,9 @@ mod tests {
     use super::*;
     use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -710,6 +728,90 @@ mod tests {
         assert_eq!(
             scheduled_vote_journal_summary(&[failed, confirmed], voter_id),
             (false, false)
+        );
+    }
+
+    /// Counts reads of the per-node current-vote snapshot key so a test can
+    /// prove how many snapshot loads a caller performs. The `v2:` prefix is
+    /// the active snapshot key (`current_votes_key`), one per node.
+    #[derive(Default)]
+    struct CurrentVotesReadCounter {
+        inner: InMemoryKv,
+        snapshot_reads: AtomicUsize,
+    }
+
+    impl KvStore for CurrentVotesReadCounter {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            if key.starts_with("det:dpns_current_votes:v2:") {
+                self.snapshot_reads.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.get(scope, key)
+        }
+
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            self.inner.list_keys(scope, prefix)
+        }
+    }
+
+    /// VOTE-NFR-007 / VOTE-TC-005: the masternode-card summary reads a node's
+    /// proved current-vote snapshot once, not once per open contest.
+    #[test]
+    fn masternode_summary_reads_current_votes_once_per_node() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(CurrentVotesReadCounter::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv.clone());
+
+        let voter = Identifier::from([1; 32]);
+
+        // Seed several open (Ongoing) contests: a contestant dated in the deep
+        // past pushes each contest past the joinable half-window, and a missing
+        // `end_time` keeps it in the ongoing set.
+        for name in ["alice", "bob", "carol", "dave", "erin"] {
+            let stored = StoredContestedName {
+                normalized_contested_name: name.to_string(),
+                contestants: vec![contestant(1, Some(1))],
+                ..Default::default()
+            };
+            kv.put(DetScope::Global, &contested_name_key(name), &stored)
+                .unwrap();
+        }
+
+        // Seed a proved snapshot so each summary read decodes a real record.
+        context
+            .cache_confirmed_dpns_vote(
+                voter,
+                Identifier::from([9; 32]),
+                dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Abstain,
+            )
+            .expect("seed current-vote snapshot");
+
+        let before = store.snapshot_reads.load(Ordering::Relaxed);
+        let summary = context
+            .masternode_contest_summary(Some(voter))
+            .expect("summary");
+        let reads = store.snapshot_reads.load(Ordering::Relaxed) - before;
+
+        assert_eq!(summary.open_contest_count, 5);
+        assert_eq!(
+            reads, 1,
+            "expected one snapshot read per node, got {reads} for 5 open contests"
         );
     }
 }

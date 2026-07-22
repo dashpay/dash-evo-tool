@@ -21,6 +21,16 @@ use dash_sdk::{
 };
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
+
+fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
+    match error {
+        TaskError::PlatformEntryConflict { source_error } => {
+            TaskError::DpnsUsernameAlreadyTaken { source_error }
+        }
+        other => other,
+    }
+}
+
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
@@ -154,7 +164,8 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
-            .await?;
+            .await
+            .map_err(|error| rebrand_dpns_domain_conflict(TaskError::from(error)))?;
 
         let dpns_names_document_query = DocumentQuery {
             select: SelectProjection::documents(),
@@ -239,5 +250,65 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::DuplicateUniqueIndexError;
+    use dash_sdk::dpp::consensus::state::state_error::StateError;
+    use dash_sdk::dpp::consensus::{
+        ConsensusError, ConsensusError::StateError as ConsensusStateError,
+    };
+    use dash_sdk::platform::Identifier;
+
+    fn duplicate_unique_index_conflict(properties: Vec<&str>) -> TaskError {
+        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
+            Identifier::random(),
+            properties.into_iter().map(str::to_string).collect(),
+        ));
+        let source_error = Box::new(dash_sdk::Error::StateTransitionBroadcastError(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 40105,
+                message: "duplicate unique index".to_string(),
+                cause: Some(consensus),
+            },
+        ));
+
+        TaskError::PlatformEntryConflict { source_error }
+    }
+
+    #[test]
+    fn rebrand_dpns_domain_conflict_maps_platform_entry_conflict() {
+        let error =
+            duplicate_unique_index_conflict(vec!["normalizedParentDomainName", "normalizedLabel"]);
+
+        let rebranded = rebrand_dpns_domain_conflict(error);
+
+        assert_eq!(
+            rebranded.to_string(),
+            "This username is already taken. Please choose a different username and try again."
+        );
+        let TaskError::DpnsUsernameAlreadyTaken { source_error } = rebranded else {
+            panic!("expected DpnsUsernameAlreadyTaken");
+        };
+        let dash_sdk::Error::StateTransitionBroadcastError(broadcast_error) = source_error.as_ref()
+        else {
+            panic!("expected StateTransitionBroadcastError source");
+        };
+        let Some(ConsensusStateError(StateError::DuplicateUniqueIndexError(error))) =
+            broadcast_error.cause.as_ref()
+        else {
+            panic!("expected DuplicateUniqueIndexError cause");
+        };
+        assert_eq!(error.duplicating_properties().len(), 2);
+    }
+
+    #[test]
+    fn rebrand_dpns_domain_conflict_passes_through_other_errors() {
+        let error = rebrand_dpns_domain_conflict(TaskError::DataContractNotFound);
+
+        assert!(matches!(error, TaskError::DataContractNotFound));
     }
 }

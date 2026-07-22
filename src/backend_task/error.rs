@@ -1178,6 +1178,24 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A DPNS username conflicts with an existing domain document.
+    #[error(
+        "This username is already taken. Please choose a different username and try again."
+    )]
+    DpnsUsernameAlreadyTaken {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A document's unique values conflict with an existing entry.
+    #[error(
+        "This request conflicts with an existing entry. Please use different values and try again."
+    )]
+    PlatformEntryConflict {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Platform accepted the request, but its result could not be confirmed.
     #[error(
         "Your request was submitted, but its result could not be confirmed. Check whether it completed before trying again."
@@ -1218,6 +1236,13 @@ pub enum TaskError {
     /// Unclassified SDK error — the operation failed for an unrecognised reason.
     #[error("An unexpected error occurred. Please try again later.")]
     SdkError {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Proof verification ran before SPV had synchronized quorum keys.
+    #[error("The network is still syncing. Please wait a moment and try again.")]
+    MasternodeListNotReady {
         #[source]
         source_error: Box<SdkError>,
     },
@@ -2736,6 +2761,12 @@ impl From<dashcore_rpc::Error> for TaskError {
 
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
+        if sdk_error_is_masternode_list_not_ready(&error) {
+            return TaskError::MasternodeListNotReady {
+                source_error: Box::new(error),
+            };
+        }
+
         // Check DapiClientError for domain errors carried as gRPC Internal status.
         // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
         // metadata, but some platform errors arrive as plain Internal with descriptive
@@ -2916,6 +2947,11 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::StateError(StateError::DuplicateUniqueIndexError(_)) => {
+                        Some(Box::new(|source_error| TaskError::PlatformEntryConflict {
+                            source_error,
+                        }))
+                    }
                     _ => None,
                 }
             });
@@ -3036,6 +3072,16 @@ impl From<SdkError> for TaskError {
     }
 }
 
+fn sdk_error_is_masternode_list_not_ready(error: &SdkError) -> bool {
+    // Matches the `SpvProvider::get_quorum_public_key` payload from `context_provider`.
+    matches!(
+        error,
+        SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config(detail)
+        )) if detail == crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL
+    )
+}
+
 fn sdk_error_is_dapi_reachability_failure(error: &SdkError) -> bool {
     match error {
         SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(status))) => {
@@ -3058,6 +3104,7 @@ mod tests {
         InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
     };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
+    use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::DuplicateUniqueIndexError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
@@ -3096,6 +3143,20 @@ mod tests {
             TaskError::DapiAllAddressesExhausted { source } => dapi_sdk_source_ptr(source),
             other => panic!("expected a DAPI reachability error, got {other:?}"),
         }
+    }
+
+    fn assert_duplicate_unique_index_broadcast_source(source_error: &SdkError) {
+        assert!(matches!(
+            source_error,
+            SdkError::StateTransitionBroadcastError(broadcast_error)
+                if broadcast_error.code == 40105
+                    && matches!(
+                        broadcast_error.cause.as_ref(),
+                        Some(ConsensusError::StateError(
+                            StateError::DuplicateUniqueIndexError(_)
+                        ))
+                    )
+        ));
     }
 
     #[test]
@@ -3523,6 +3584,86 @@ mod tests {
     }
 
     #[test]
+    fn from_sdk_error_duplicate_unique_index_dpns_named_fields_is_generic() {
+        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
+            Identifier::random(),
+            vec![
+                "normalizedParentDomainName".to_string(),
+                "normalizedLabel".to_string(),
+            ],
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40105,
+            message: "duplicate unique index".to_string(),
+            cause: Some(consensus),
+        };
+        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+        assert_eq!(
+            err.to_string(),
+            "This request conflicts with an existing entry. Please use different values and try again."
+        );
+        match &err {
+            TaskError::PlatformEntryConflict { source_error } => {
+                assert_duplicate_unique_index_broadcast_source(source_error);
+            }
+            other => panic!("expected PlatformEntryConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_unique_index_other_document_is_actionable() {
+        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
+            Identifier::random(),
+            vec![
+                "normalizedParentDomainName".to_string(),
+                "normalizedLabel".to_string(),
+                "serialNumber".to_string(),
+            ],
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40105,
+            message: "duplicate unique index".to_string(),
+            cause: Some(consensus),
+        };
+        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+        assert_eq!(
+            err.to_string(),
+            "This request conflicts with an existing entry. Please use different values and try again."
+        );
+        match &err {
+            TaskError::PlatformEntryConflict { source_error } => {
+                assert_duplicate_unique_index_broadcast_source(source_error);
+            }
+            other => panic!("expected PlatformEntryConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_unique_index_boundary_property_counts_are_generic() {
+        for properties in [vec![], vec!["normalizedLabel".to_string()]] {
+            let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
+                Identifier::random(),
+                properties,
+            ));
+            let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+                code: 40105,
+                message: "duplicate unique index".to_string(),
+                cause: Some(consensus),
+            };
+            let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+            match &err {
+                TaskError::PlatformEntryConflict { source_error } => {
+                    assert_duplicate_unique_index_broadcast_source(source_error);
+                }
+                other => panic!("expected PlatformEntryConflict, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn from_sdk_error_missing_signing_key_maps_to_no_withdrawal_signing_key() {
         let sdk_err = SdkError::Protocol(
             ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(
@@ -3610,6 +3751,24 @@ mod tests {
             matches!(err, TaskError::SdkError { .. }),
             "Expected SdkError, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn quorum_startup_error_maps_to_transient_task_error() {
+        // Recheck this upstream-format contract on every dash-sdk bump.
+        let sdk_detail = "masternode list not yet synced (quorums unavailable)";
+        assert_eq!(
+            crate::context_provider::MASTERNODE_LIST_NOT_READY_DETAIL,
+            sdk_detail
+        );
+        let sdk_error = SdkError::Proof(dash_sdk::ProofVerifierError::ContextProviderError(
+            dash_sdk::error::ContextProviderError::Config(sdk_detail.to_string()),
+        ));
+
+        assert!(matches!(
+            TaskError::from(sdk_error),
+            TaskError::MasternodeListNotReady { .. }
+        ));
     }
 
     #[test]

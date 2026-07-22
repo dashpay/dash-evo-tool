@@ -25,6 +25,8 @@ mod register_dpns_name_screen;
 mod restore_single_key;
 mod role_indicator;
 mod secret_prompt;
+#[cfg(feature = "testing")]
+mod send_screen;
 mod startup;
 mod support;
 mod tokens_screen;

@@ -632,6 +632,18 @@ impl Typography {
         FontId::new(Self::SCALE_XS, FontFamily::Proportional)
     }
 
+    /// Font for instructional hint text: the short "what to do / why" line shown
+    /// directly beneath a primary label (e.g. an onboarding step or an error).
+    ///
+    /// Use this — not egui's built-in `RichText::small()` — for that category.
+    /// `.small()` renders at egui's ~9px default, which is too small to read as
+    /// guidance; this token pins the size to the centralized scale instead. Do
+    /// not repurpose it for timestamps, tags, or other incidental small text —
+    /// `caption()` / `body_small()` cover those.
+    pub fn hint() -> FontId {
+        FontId::new(Self::SCALE_SM, FontFamily::Proportional)
+    }
+
     pub fn monospace() -> FontId {
         FontId::new(Self::SCALE_BASE, FontFamily::Monospace)
     }
@@ -1213,6 +1225,24 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `hint()` token must be larger than egui's built-in `.small()` (the
+    /// style that made the instructional subtext too small to read) and pinned
+    /// to the centralized scale — never a hard-coded ad-hoc size.
+    #[test]
+    fn hint_token_is_larger_than_egui_small_and_on_scale() {
+        let egui_small = egui::TextStyle::Small.resolve(&egui::Style::default()).size;
+        let hint = Typography::hint().size;
+        assert!(
+            hint > egui_small,
+            "hint() ({hint}) must be larger than egui's default .small() ({egui_small})"
+        );
+        assert_eq!(
+            hint,
+            Typography::SCALE_SM,
+            "hint() must use the SCALE_SM token"
+        );
+    }
 
     #[test]
     fn theme_detection_failure_logs_once_until_reset() {

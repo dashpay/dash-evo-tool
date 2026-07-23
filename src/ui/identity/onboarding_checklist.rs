@@ -18,7 +18,7 @@
 //! response struct implementing [`ComponentResponse`].
 
 use crate::ui::components::component_trait::ComponentResponse;
-use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing};
+use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing, Typography};
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Ui};
 
 /// The three canonical onboarding steps. `Hidden` is applied by the caller
@@ -172,6 +172,11 @@ pub struct OnboardingChecklist {
     /// subtext for `PickUsername` reads "You are @{handle}." instead of a
     /// generic fallback. Set via [`with_handle`](Self::with_handle).
     handle: Option<String>,
+    /// A DPNS username the identity has requested but not yet been awarded
+    /// (without the `.dash` suffix). When set, `PickUsername` is complete and
+    /// shows voting-status subtext instead of the generic completion copy. Set via
+    /// [`with_pending_username`](Self::with_pending_username).
+    pending_username: Option<String>,
 }
 
 impl OnboardingChecklist {
@@ -183,6 +188,7 @@ impl OnboardingChecklist {
             steps: ChecklistStep::ALL.to_vec(),
             completed: Vec::new(),
             handle: None,
+            pending_username: None,
         }
     }
 
@@ -195,6 +201,23 @@ impl OnboardingChecklist {
             self.handle = Some(h);
         }
         self
+    }
+
+    /// Attach a DPNS username the identity has requested but not yet been
+    /// awarded (without the `.dash` suffix). This completes `PickUsername`,
+    /// shows voting-status subtext, and hides the action button.
+    pub fn with_pending_username(mut self, name: impl Into<String>) -> Self {
+        let name = name.into();
+        if !name.trim().is_empty() {
+            self.pending_username = Some(name);
+            self = self.mark_complete(ChecklistStep::PickUsername);
+        }
+        self
+    }
+
+    /// Whether `PickUsername` has a requested-but-unawarded username attached.
+    fn pick_username_has_pending_request(&self, step: ChecklistStep) -> bool {
+        step == ChecklistStep::PickUsername && self.pending_username.is_some()
     }
 
     /// Mark a step as complete. No-op if the step was already complete.
@@ -355,7 +378,15 @@ impl OnboardingChecklist {
                     ui.label(rich);
 
                     // Descriptive subtext (V3).
-                    let subtext: String = if complete {
+                    let subtext: String = if self.pick_username_has_pending_request(step) {
+                        let name =
+                            crate::model::contested_name::sanitize_pending_username_for_display(
+                                self.pending_username.as_deref().unwrap_or_default(),
+                            );
+                        format!(
+                            "Your request for {name}.dash is pending while Dash masternodes vote."
+                        )
+                    } else if complete {
                         // For PickUsername done, prefer "You are @{handle}."
                         if step == ChecklistStep::PickUsername {
                             match handle {
@@ -370,7 +401,7 @@ impl OnboardingChecklist {
                     };
                     ui.label(
                         RichText::new(subtext)
-                            .small()
+                            .font(Typography::hint())
                             .color(DashColors::text_secondary(dark_mode)),
                     );
                 });
@@ -379,9 +410,10 @@ impl OnboardingChecklist {
 
         // The inline action button for pending items is placed outside the
         // scope so it gets its own visual affordance, but its click still
-        // counts as a row activation.
+        // counts as a row activation. A username whose request is already in
+        // flight hides its button — re-picking is not the next action.
         let mut action_clicked = false;
-        if !complete {
+        if !complete && !self.pick_username_has_pending_request(step) {
             ui.horizontal(|ui| {
                 ui.add_space(20.0 + Spacing::SM); // align with content column
                 let btn_resp = ui
@@ -517,6 +549,74 @@ mod tests {
         assert_eq!(
             ChecklistStep::AddFirstContact.label(),
             "Add your first contact"
+        );
+    }
+
+    #[test]
+    fn with_pending_username_ignores_blank_and_flags_only_pick_username() {
+        let checklist = OnboardingChecklist::new().with_pending_username("  ");
+        assert!(checklist.pending_username.is_none());
+
+        let checklist = OnboardingChecklist::new().with_pending_username("det1");
+        assert!(checklist.pick_username_has_pending_request(ChecklistStep::PickUsername));
+        assert!(!checklist.pick_username_has_pending_request(ChecklistStep::SetDisplayName));
+    }
+
+    #[test]
+    fn pending_username_marks_pick_username_complete() {
+        let checklist = OnboardingChecklist::new().with_pending_username("det1");
+
+        assert!(checklist.is_complete(ChecklistStep::PickUsername));
+    }
+
+    #[test]
+    fn pending_username_contributes_to_all_complete() {
+        let checklist = OnboardingChecklist::new()
+            .with_pending_username("det1")
+            .mark_complete(ChecklistStep::SetDisplayName)
+            .mark_complete(ChecklistStep::AddFirstContact);
+
+        assert!(checklist.all_complete());
+    }
+
+    /// A pending username request renders completed styling with voting-status
+    /// copy instead of either completion or action prompts.
+    #[test]
+    fn pending_username_swaps_the_pick_username_subtext() {
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let checklist = OnboardingChecklist::new().with_pending_username("det1");
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            checklist.show(ui);
+        });
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label(
+                    "Your request for det1.dash is pending while Dash masternodes vote."
+                )
+                .is_some(),
+            "pending PickUsername must explain its voting status"
+        );
+        assert!(harness.query_by_label("Your username is set.").is_none());
+        assert!(
+            harness
+                .query_by_label(ChecklistStep::PickUsername.subtext_pending())
+                .is_none(),
+            "the default 'pick a name' nag subtext must be gone while pending"
+        );
+        assert!(
+            harness
+                .query_all_by_role_and_label(
+                    Role::Button,
+                    ChecklistStep::PickUsername.action_label()
+                )
+                .next()
+                .is_none(),
+            "the pick-name action must be hidden while a request is pending"
         );
     }
 }

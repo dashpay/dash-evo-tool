@@ -225,6 +225,7 @@ impl AppContext {
         // completed refresh snapshot. Per-node failures are stored explicitly
         // as unavailable instead of being mistaken for "Not voted".
         self.refresh_dpns_vote_states(sdk).await;
+        self.refresh_pending_dpns_usernames()?;
 
         sender
             .send(TaskResult::unattributed_success(

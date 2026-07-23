@@ -4,10 +4,40 @@
 //! pipeline so every DPNS lookup uses the same logic, and provides shared
 //! extraction utilities for DPNS domain documents.
 
+use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeV0Methods;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::voting::vote_polls::VotePoll;
 use dash_sdk::platform::{Document, Identifier};
+
+/// The immediate result of submitting a DPNS registration document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsRegistrationOutcome {
+    /// The submitted username was registered without a community vote.
+    Registered,
+    /// The submitted username entered a community vote before it can be awarded.
+    PendingCommunityVote,
+}
+
+/// Classify a submitted DPNS document using its document type's contest rules.
+pub fn classify_dpns_registration_outcome(
+    document_type: &impl DocumentTypeV0Methods,
+    document: &Document,
+    platform_version: &PlatformVersion,
+) -> Result<DpnsRegistrationOutcome, Box<ProtocolError>> {
+    match document_type
+        .contested_vote_poll_for_document(document, platform_version)
+        .map_err(Box::new)?
+    {
+        Some(VotePoll::ContestedDocumentResourceVotePoll(_)) => {
+            Ok(DpnsRegistrationOutcome::PendingCommunityVote)
+        }
+        None => Ok(DpnsRegistrationOutcome::Registered),
+    }
+}
 
 /// The `.dash` parent domain suffix (case-insensitive match target).
 const DASH_SUFFIX: &str = ".dash";
@@ -104,6 +134,90 @@ pub fn extract_identity_id_from_dpns_document(document: &Document) -> Option<Ide
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contracts::SystemDataContract;
+    use dash_sdk::dpp::document::DocumentV0;
+    use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    fn domain_document(label: &str) -> Document {
+        let owner_id = Identifier::from([1; 32]);
+        Document::V0(DocumentV0 {
+            id: Identifier::from([2; 32]),
+            owner_id,
+            creator_id: None,
+            properties: BTreeMap::from([
+                ("parentDomainName".to_string(), "dash".into()),
+                ("normalizedParentDomainName".to_string(), "dash".into()),
+                ("label".to_string(), label.into()),
+                (
+                    "normalizedLabel".to_string(),
+                    convert_to_homograph_safe_chars(label).into(),
+                ),
+                ("preorderSalt".to_string(), [0_u8; 32].into()),
+                (
+                    "records".to_string(),
+                    BTreeMap::from([("identity".to_string(), Value::from(owner_id))]).into(),
+                ),
+                (
+                    "subdomainRules".to_string(),
+                    BTreeMap::from([("allowSubdomains".to_string(), Value::Bool(false))]).into(),
+                ),
+            ]),
+            revision: None,
+            created_at: None,
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+        })
+    }
+
+    #[test]
+    fn registration_outcome_is_pending_for_contested_dpns_document() {
+        let platform_version = PlatformVersion::latest();
+        let contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+            .expect("bundled DPNS contract");
+        let document_type = contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+
+        assert_eq!(
+            classify_dpns_registration_outcome(
+                &document_type,
+                &domain_document("alice"),
+                platform_version,
+            )
+            .expect("classification succeeds"),
+            DpnsRegistrationOutcome::PendingCommunityVote
+        );
+    }
+
+    #[test]
+    fn registration_outcome_is_registered_for_non_contested_dpns_document() {
+        let platform_version = PlatformVersion::latest();
+        let contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+            .expect("bundled DPNS contract");
+        let document_type = contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+
+        assert_eq!(
+            classify_dpns_registration_outcome(
+                &document_type,
+                &domain_document("alice2"),
+                platform_version,
+            )
+            .expect("classification succeeds"),
+            DpnsRegistrationOutcome::Registered
+        );
+    }
 
     #[test]
     fn normalize_bare_label() {

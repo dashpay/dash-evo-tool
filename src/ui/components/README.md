@@ -30,6 +30,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | Component | File | DomainType | Description |
 |-----------|------|------------|-------------|
 | `Avatar` | `avatar.rs` | N/A (display) | DashPay contact/profile avatar from a URL. Renders image / spinner / `👤` fallback, decoding + uploading the texture on the UI thread. Backed by `ui/state/avatar_cache.rs` (`AvatarCache`), which fetches off-frame via `DashPayTask::FetchAvatar`. `show(ui, &mut AvatarCache)` returns `AvatarResponse { fetch, clicked }`; the caller dispatches `fetch`. Builders: `corner_radius`, `clickable(tooltip)`. |
+| `accent_pill()` / `pending_username_pill()` | `pill.rs` | N/A (display) | Shared accent-badge renderer plus the DPNS-specific pending-name pill. `IdentityHeroCard`, Settings, and the Identities list delegate their badges to these renderers. |
 
 ## Placement Rule
 

@@ -364,7 +364,7 @@ async fn register_dpns_name(
         )
     });
     assert!(
-        matches!(result, BackendTaskSuccessResult::RegisteredDpnsName(_)),
+        matches!(result, BackendTaskSuccessResult::RegisteredDpnsName { .. }),
         "SharedDashPayPair: expected RegisteredDpnsName for {}, got: {:?}",
         label,
         result

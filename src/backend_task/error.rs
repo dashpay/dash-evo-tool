@@ -3164,7 +3164,6 @@ mod tests {
         InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
     };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
-    use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::DuplicateUniqueIndexError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
@@ -3645,19 +3644,9 @@ mod tests {
 
     #[test]
     fn from_sdk_error_duplicate_unique_index_dpns_named_fields_is_generic() {
-        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-            Identifier::random(),
-            vec![
-                "normalizedParentDomainName".to_string(),
-                "normalizedLabel".to_string(),
-            ],
+        let err = TaskError::from(crate::test_support::duplicate_unique_index_broadcast_error(
+            vec!["normalizedParentDomainName", "normalizedLabel"],
         ));
-        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
-            code: 40105,
-            message: "duplicate unique index".to_string(),
-            cause: Some(consensus),
-        };
-        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
 
         assert_eq!(
             err.to_string(),
@@ -3673,20 +3662,13 @@ mod tests {
 
     #[test]
     fn from_sdk_error_duplicate_unique_index_other_document_is_actionable() {
-        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-            Identifier::random(),
+        let err = TaskError::from(crate::test_support::duplicate_unique_index_broadcast_error(
             vec![
-                "normalizedParentDomainName".to_string(),
-                "normalizedLabel".to_string(),
-                "serialNumber".to_string(),
+                "normalizedParentDomainName",
+                "normalizedLabel",
+                "serialNumber",
             ],
         ));
-        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
-            code: 40105,
-            message: "duplicate unique index".to_string(),
-            cause: Some(consensus),
-        };
-        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
 
         assert_eq!(
             err.to_string(),
@@ -3702,17 +3684,10 @@ mod tests {
 
     #[test]
     fn from_sdk_error_duplicate_unique_index_boundary_property_counts_are_generic() {
-        for properties in [vec![], vec!["normalizedLabel".to_string()]] {
-            let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-                Identifier::random(),
+        for properties in [vec![], vec!["normalizedLabel"]] {
+            let err = TaskError::from(crate::test_support::duplicate_unique_index_broadcast_error(
                 properties,
             ));
-            let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
-                code: 40105,
-                message: "duplicate unique index".to_string(),
-                cause: Some(consensus),
-            };
-            let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
 
             match &err {
                 TaskError::PlatformEntryConflict { source_error } => {

@@ -9,10 +9,9 @@
 use super::breadcrumb_switcher::{self, BreadcrumbEffect};
 use super::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::UnreadableContactInfoPolicy;
 use crate::ui::components::component_trait::Component;
@@ -528,13 +527,12 @@ impl ScreenLike for IdentityHubScreen {
             // Settings tab so the Save button re-enables only after the next
             // edit. Guard by identity ID to reject stale results.
             BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) => {
-                let matches = self
-                    .settings_tab
-                    .selected_identity()
-                    .is_some_and(|qi| qi.identity.id() == saved_id);
-                if matches {
-                    self.settings_tab.on_profile_saved();
-                }
+                handle_profile_updated(
+                    &mut self.settings_tab,
+                    &mut self.profile_cache,
+                    self.app_context.egui_ctx(),
+                    *saved_id,
+                );
             }
             // Populate the Received/Sent request caches so the Contacts tab
             // can render real RequestCard rows instead of hardcoded empties.
@@ -581,6 +579,13 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if let Some(identity_id) = context.dashpay_profile_update_identity() {
+            self.settings_tab
+                .clear_pending_save_for_identity(&identity_id);
+        }
+    }
+
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         if self.handle_contact_request_error(error) {
             return matches!(
@@ -600,14 +605,6 @@ impl ScreenLike for IdentityHubScreen {
             self.pending_contact_info_tasks.remove(&key);
         }
         release_request_guard_for_error(&mut self.contacts_state, error);
-
-        // Clear any dangling pending_save so a failed UpdateProfile doesn't
-        // leave a stale snapshot around. If a later DashPayProfileUpdated from
-        // a different path (e.g. the legacy ProfileScreen) arrives it would
-        // otherwise commit the stale submitted values as the new baseline.
-        // Clearing on any error is safe: pending_save is None most of the time,
-        // and clearing it while it's None is a no-op.
-        self.settings_tab.clear_pending_save();
 
         // Let AppState render the default error banner — the hub has no
         // other special-case error handling of its own yet.
@@ -778,6 +775,25 @@ fn applies_to_selected_identity(
     selected.as_ref() == Some(result_identity)
 }
 
+fn handle_profile_updated(
+    settings: &mut SettingsTab,
+    profiles: &mut super::profile_cache::ProfileCache,
+    ctx: &egui::Context,
+    saved_id: Identifier,
+) {
+    let matches = settings
+        .selected_identity()
+        .is_some_and(|identity| identity.identity.id() == saved_id);
+    if matches && let Some(fields) = settings.on_profile_saved() {
+        profiles.record_saved(saved_id, fields);
+        MessageBanner::set_global(
+            ctx,
+            crate::ui::identity::settings::PROFILE_SAVED,
+            MessageType::Success,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,6 +847,20 @@ mod tests {
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    #[test]
+    fn stale_profile_success_does_not_show_confirmation() {
+        let ctx = egui::Context::default();
+        let mut settings = SettingsTab::new();
+        let mut profiles = crate::ui::identity::profile_cache::ProfileCache::default();
+
+        handle_profile_updated(&mut settings, &mut profiles, &ctx, id(1));
+
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "a stale result has no pending save to confirm"
+        );
     }
 
     async fn wired_test_context() -> (tempfile::TempDir, Arc<AppContext>) {

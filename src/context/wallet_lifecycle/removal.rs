@@ -10,6 +10,7 @@ fn show_wallet_data_removal_warning(ctx: &egui::Context, error: TaskError) {
     let handle = MessageBanner::set_global(ctx, WALLET_DATA_REMOVAL_WARNING, MessageType::Warning);
     handle.with_details(error);
     handle.disable_auto_dismiss();
+    ctx.request_repaint();
 }
 
 impl AppContext {
@@ -82,5 +83,28 @@ impl AppContext {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn wallet_data_removal_warning_requests_repaint() {
+        let ctx = egui::Context::default();
+        let repaint_requests = Arc::new(AtomicUsize::new(0));
+        let callback_requests = Arc::clone(&repaint_requests);
+        ctx.set_request_repaint_callback(move |_| {
+            callback_requests.fetch_add(1, Ordering::Relaxed);
+        });
+
+        show_wallet_data_removal_warning(&ctx, TaskError::TaskManagerShuttingDown);
+
+        assert!(
+            repaint_requests.load(Ordering::Relaxed) > 0,
+            "showing an asynchronous warning must wake an idle UI"
+        );
     }
 }

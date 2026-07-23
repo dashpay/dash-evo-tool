@@ -1747,6 +1747,16 @@ async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {
         0,
         "upstream deletion must cascade to the native FVK row"
     );
+    assert!(
+        !source_dir
+            .path()
+            .join("spv")
+            .join("testnet")
+            .join("backups")
+            .join("auto")
+            .exists(),
+        "explicit wallet removal must not create an automatic backup"
+    );
     backend.shutdown().await;
 }
 

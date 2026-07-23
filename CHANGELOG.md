@@ -70,12 +70,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   plus DashPay address used-state updates. On Unix, DET now tightens app and
   per-network storage directories to owner-only before opening the hardened
   upstream database, so permissive system defaults do not prevent startup. New
-  wallet passwords must now be at least eight characters after trimming;
-  existing wallets with shorter passwords that are still in DET's legacy
-  encrypted format remain usable instead of failing during lazy migration.
-  Wallets already migrated to Tier-2 storage by a July 2026 weekly build with
-  a shorter password cannot be opened at this upstream tip; do not upgrade
-  those profiles until upstream provides a compatibility reader.
+  wallet passwords must now be at least eight UTF-8 bytes after trimming
+  (measured in bytes, not characters, so a 4-character non-ASCII password like
+  `öäüß` — 8 bytes — is accepted); existing wallets with shorter passwords
+  that are still in DET's legacy encrypted format remain usable instead of
+  failing during lazy migration. Protected (Tier-2) shielded wallets now
+  prompt for their passphrase on every shielded transfer, unshield, or
+  withdraw, rather than once per session as before.
+
+  **Compatibility note:** wallets already migrated to Tier-2 storage by a
+  July 2026 weekly build with a shorter password cannot be opened at this
+  upstream tip; do not upgrade those profiles until upstream provides a
+  compatibility reader.
+
   Development builds between `f7ca95f` and `69b7546` stored shielded viewing
   keys in an interim metadata row that this final pin does not migrate; those
   commits were never released, and unlocking the wallet safely re-derives and

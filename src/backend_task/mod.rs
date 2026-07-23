@@ -567,6 +567,20 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         address: String,
     },
+    /// An HD wallet's alias was renamed and persisted to the wallet-meta
+    /// sidecar. Carries the new alias so the screen updates its in-memory label
+    /// only after the write succeeds.
+    WalletAliasRenamed {
+        seed_hash: WalletSeedHash,
+        alias: String,
+    },
+    /// An imported single-key wallet's alias was renamed and persisted to the
+    /// single-key sidecar. Carries the new alias so the screen updates its
+    /// in-memory label only after the write succeeds.
+    SingleKeyAliasRenamed {
+        address: String,
+        alias: String,
+    },
     /// The wallet's tracked asset locks, read off the UI thread through the
     /// upstream `AssetLockManager`. Carries the `seed_hash` so screens cache
     /// and match the result per wallet.
@@ -1265,6 +1279,12 @@ impl AppContext {
                     fee_deduct_from_output,
                 )
                 .await
+            }
+            WalletTask::RenameHdWallet { seed_hash, alias } => {
+                self.rename_hd_wallet(seed_hash, alias)
+            }
+            WalletTask::RenameSingleKeyWallet { address, alias } => {
+                self.rename_single_key_wallet(address, alias)
             }
         };
 

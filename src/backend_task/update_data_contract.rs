@@ -74,7 +74,10 @@ impl AppContext {
             .await
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
-        match state_transition.broadcast_and_wait(sdk, None).await {
+        match state_transition
+            .broadcast_and_wait_for_affected_state(sdk, None)
+            .await
+        {
             Ok(returned_contract) => {
                 self.replace_contract(data_contract.id(), &returned_contract)?;
                 Ok(BackendTaskSuccessResult::UpdatedContract(

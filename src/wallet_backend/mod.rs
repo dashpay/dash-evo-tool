@@ -2125,18 +2125,16 @@ impl WalletBackend {
     /// Register every established contact's DIP-15 receiving account so the SPV
     /// layer watches the addresses each contact pays us at.
     ///
-    /// The receiving-account path `m/9'/coin'/15'/0'/owner/friend` is hardened,
-    /// so the upstream `IdentityWallet::register_contact_account` — which derives
-    /// from the live wallet — returns a watch-only error on the wallets DET
-    /// rehydrates at boot (they cannot do hardened derivation). This derives the
-    /// account xpub from a seed-built (signable) wallet instead and inserts the
-    /// managed `DashpayReceivingFunds` account directly: the contained
-    /// seed-bearing dual-insert exception, sibling to
+    /// The receiving-account path `m/9'/coin'/15'/0'/owner/friend` is hardened.
+    /// DET derives its xpub from a seed-built wallet inside the JIT seed scope,
+    /// then adds it to the rehydrated managed state through
+    /// `ManagedAccountOperations`: the contained seed-bearing derivation
+    /// exception, sibling to
     /// [`Self::provision_identity_funding_account`].
     ///
-    /// Upstream keeps the managed account in runtime state only, so this re-runs
-    /// on every cold boot / unlock and is idempotent (the account-map insert
-    /// overwrites in place). Only **newly-added** accounts trigger a
+    /// DET rebuilds these monitored accounts from established contacts on every
+    /// cold boot / unlock and skips keys already in the account map. Only
+    /// **newly-added** accounts trigger a
     /// `bump_monitor_revision`: the `dash-spv` mempool sync manager (shared via
     /// one `Arc`) checks the aggregate revision on each 100ms tick and rebuilds
     /// the peer bloom filter when it changes. The tick only runs when the mempool
@@ -2159,9 +2157,7 @@ impl WalletBackend {
             dash_sdk::platform::Identifier,
         )],
     ) -> Result<usize, TaskError> {
-        use dash_sdk::dpp::key_wallet::Account;
         use dash_sdk::dpp::key_wallet::AccountType;
-        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
         use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::managed_account::managed_account_type::ManagedAccountType;
         if contacts.is_empty() {
@@ -2193,13 +2189,7 @@ impl WalletBackend {
                 }
             };
             match seed_wallet.derive_extended_public_key(&path) {
-                Ok(account_xpub) => accounts.push(Account {
-                    parent_wallet_id: Some(wallet_id),
-                    account_type,
-                    network,
-                    account_xpub,
-                    is_watch_only: false,
-                }),
+                Ok(account_xpub) => accounts.push((account_type, account_xpub)),
                 Err(error) => {
                     tracing::debug!(%error, "Skipping contact account: xpub derivation failed");
                 }
@@ -2209,31 +2199,22 @@ impl WalletBackend {
             return Ok(0);
         }
 
-        // Insert under the manager write lock — purely synchronous, no await
-        // held. Track accounts that are genuinely new (map len growth) so we
-        // only bump monitor_revision — and thus trigger a bloom-filter rebuild
-        // — when the set actually changes, not on every idempotent re-run.
+        // Register under the manager write lock, invalidating prior filter
+        // coverage only for genuinely new accounts.
         let mut wm = wallet.wallet_manager().write().await;
         let info = wm
             .get_wallet_info_mut(&wallet_id)
             .ok_or(TaskError::WalletStateInconsistent)?;
-        let before = info.core_wallet.accounts.dashpay_receival_accounts.len();
-        for account in &accounts {
-            let managed = ManagedCoreFundsAccount::from_account(account);
-            if let Err(error) = info
-                .core_wallet
-                .accounts
-                .insert_funds_bearing_account(managed)
-            {
-                tracing::debug!(%error, "Skipping contact account: managed insert failed");
+        let mut newly_inserted = 0;
+        for (account_type, account_xpub) in accounts {
+            match add_contact_receiving_account(&mut info.core_wallet, account_type, account_xpub) {
+                Ok(true) => newly_inserted += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::debug!(%error, "Skipping contact account: managed insert failed");
+                }
             }
         }
-        let newly_inserted = info
-            .core_wallet
-            .accounts
-            .dashpay_receival_accounts
-            .len()
-            .saturating_sub(before);
         // Only bump the monitor revision when new accounts were added: a
         // revision bump on every unlock would cause a spurious bloom-filter
         // rebuild on each boot even when the contact set is unchanged.
@@ -2680,6 +2661,37 @@ impl WalletBackend {
     }
 }
 
+fn add_contact_receiving_account(
+    info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    account_type: dash_sdk::dpp::key_wallet::AccountType,
+    account_xpub: dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
+) -> Result<bool, dash_sdk::dpp::key_wallet::error::Error> {
+    use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedAccountOperations;
+
+    let dash_sdk::dpp::key_wallet::AccountType::DashpayReceivingFunds {
+        index,
+        user_identity_id,
+        friend_identity_id,
+    } = account_type
+    else {
+        return Err(dash_sdk::dpp::key_wallet::error::Error::InvalidParameter(
+            "contact receiving account type required".to_owned(),
+        ));
+    };
+    let key = DashpayAccountKey {
+        index,
+        user_identity_id,
+        friend_identity_id,
+    };
+    if info.accounts.dashpay_receival_accounts.contains_key(&key) {
+        return Ok(false);
+    }
+
+    info.add_managed_account_from_xpub(account_type, account_xpub)?;
+    Ok(true)
+}
+
 /// The BIP44 account-0 extended public key among `accounts`, or `None` when
 /// there is no BIP44 account-0.
 ///
@@ -3023,6 +3035,50 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_account_registration_invalidates_filter_coverage_once() {
+        use dash_sdk::dpp::key_wallet::account::AccountType;
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+
+        let network = Network::Testnet;
+        let wallet = UpstreamWallet::from_seed_bytes(
+            [0x5Au8; 64],
+            network,
+            WalletAccountCreationOptions::Default,
+        )
+        .expect("build seeded wallet");
+        let account_type = AccountType::DashpayReceivingFunds {
+            index: 0,
+            user_identity_id: [1u8; 32],
+            friend_identity_id: [2u8; 32],
+        };
+        let path = account_type
+            .derivation_path(network)
+            .expect("derive contact account path");
+        let account_xpub = wallet
+            .derive_extended_public_key(&path)
+            .expect("derive contact account xpub");
+        let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
+        info.update_synced_height(500);
+
+        assert!(
+            add_contact_receiving_account(&mut info, account_type, account_xpub)
+                .expect("register new contact account")
+        );
+        assert_eq!(info.account_generation(), 1);
+        assert_eq!(info.synced_height(), 0);
+
+        assert!(
+            !add_contact_receiving_account(&mut info, account_type, account_xpub)
+                .expect("re-register contact account")
+        );
+        assert_eq!(info.account_generation(), 1);
+        assert_eq!(info.synced_height(), 0);
+    }
 
     #[cfg(unix)]
     #[test]

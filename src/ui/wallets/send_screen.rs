@@ -57,6 +57,24 @@ pub enum SourceSelection {
     Shielded(WalletSeedHash, u64),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum ValidatedSendRoute {
+    CoreToCore,
+    CoreToPlatform,
+    PlatformToPlatform(Vec<(PlatformAddress, Address, u64)>),
+    PlatformToCore(Vec<(PlatformAddress, Address, u64)>),
+    ShieldedToShielded(WalletSeedHash),
+    ShieldedToPlatform(WalletSeedHash),
+    CoreToShielded,
+    CoreToIdentity,
+    PlatformToShielded(Vec<(PlatformAddress, Address, u64)>),
+    PlatformToIdentity(Vec<(PlatformAddress, Address, u64)>),
+    ShieldedToCore(WalletSeedHash),
+    IdentityToCore(Box<QualifiedIdentity>),
+    IdentityToPlatform(Box<QualifiedIdentity>),
+    IdentityToIdentity(Box<QualifiedIdentity>),
+}
+
 /// Optional preset that opens the send screen pre-configured for one of the
 /// shielded flows launched from the Shielded tab.
 ///
@@ -706,6 +724,77 @@ impl WalletSendScreen {
             .unwrap_or_default()
     }
 
+    fn validated_send_route(&self) -> Result<ValidatedSendRoute, String> {
+        let source = self
+            .selected_source
+            .as_ref()
+            .ok_or("Please select a source")?;
+        let destination = self.validated_destination.as_ref().ok_or_else(|| {
+            "Invalid destination address. Use a Dash address (X.../y...) or Platform address (dash1.../tdash1...)"
+                .to_string()
+        })?;
+        let amount = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Please enter an amount".to_string())?;
+        if amount.value() == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        match (source, destination.kind()) {
+            (SourceSelection::CoreWallet, AddressKind::Core) => Ok(ValidatedSendRoute::CoreToCore),
+            (SourceSelection::CoreWallet, AddressKind::Platform) => {
+                Ok(ValidatedSendRoute::CoreToPlatform)
+            }
+            (SourceSelection::PlatformAddresses(addresses), AddressKind::Platform) => {
+                Ok(ValidatedSendRoute::PlatformToPlatform(addresses.clone()))
+            }
+            (SourceSelection::PlatformAddresses(addresses), AddressKind::Core) => {
+                Ok(ValidatedSendRoute::PlatformToCore(addresses.clone()))
+            }
+            (SourceSelection::Shielded(seed_hash, _), AddressKind::Shielded) => {
+                Ok(ValidatedSendRoute::ShieldedToShielded(*seed_hash))
+            }
+            (SourceSelection::Shielded(seed_hash, _), AddressKind::Platform) => {
+                Ok(ValidatedSendRoute::ShieldedToPlatform(*seed_hash))
+            }
+            (SourceSelection::CoreWallet, AddressKind::Shielded) => {
+                Ok(ValidatedSendRoute::CoreToShielded)
+            }
+            (SourceSelection::CoreWallet, AddressKind::Identity) => {
+                Ok(ValidatedSendRoute::CoreToIdentity)
+            }
+            (SourceSelection::PlatformAddresses(addresses), AddressKind::Shielded) => {
+                Ok(ValidatedSendRoute::PlatformToShielded(addresses.clone()))
+            }
+            (SourceSelection::PlatformAddresses(addresses), AddressKind::Identity) => {
+                Ok(ValidatedSendRoute::PlatformToIdentity(addresses.clone()))
+            }
+            (SourceSelection::Shielded(seed_hash, _), AddressKind::Core) => {
+                Ok(ValidatedSendRoute::ShieldedToCore(*seed_hash))
+            }
+            (SourceSelection::Identity(identity), AddressKind::Core) => {
+                Ok(ValidatedSendRoute::IdentityToCore(identity.clone()))
+            }
+            (SourceSelection::Identity(identity), AddressKind::Platform) => {
+                Ok(ValidatedSendRoute::IdentityToPlatform(identity.clone()))
+            }
+            (SourceSelection::Identity(identity), AddressKind::Identity) => {
+                Ok(ValidatedSendRoute::IdentityToIdentity(identity.clone()))
+            }
+            (SourceSelection::Identity(_), AddressKind::Shielded) => Err(
+                "Sending from an identity to the shielded pool is not yet supported. \
+                 Transfer to a Platform address first, then shield from there."
+                    .to_string(),
+            ),
+            (SourceSelection::Shielded(..), AddressKind::Identity) => Err(
+                "Sending from the shielded pool to an identity is not yet supported. \
+                 Transfer to a Platform address first, then top up the identity."
+                    .to_string(),
+            ),
+        }
+    }
+
     /// Clear the current send banner and show a new "Sending transaction..." progress banner.
     ///
     /// Called before dispatching any send backend task so the elapsed counter always starts fresh.
@@ -728,88 +817,33 @@ impl WalletSendScreen {
 
         let seed_hash = wallet_guard.seed_hash();
 
-        // Validate source
-        let source = self
-            .selected_source
-            .as_ref()
-            .ok_or("Please select a source")?;
-
-        // Validate destination
-        let dest_kind = self.destination_kind();
-        if dest_kind.is_none() {
-            return Err(
-                "Invalid destination address. Use a Dash address (X.../y...) or Platform address (dash1.../tdash1...)"
-                    .to_string(),
-            );
-        }
-
-        // Validate amount
-        let amount = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Please enter an amount".to_string())?;
-        if amount.value() == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
+        let route = self.validated_send_route()?;
 
         drop(wallet_guard);
 
-        // Route to appropriate handler based on source and destination types
-        match (source.clone(), dest_kind) {
-            // === Existing 6 combinations ===
-            (SourceSelection::CoreWallet, Some(AddressKind::Core)) => self.send_core_to_core(),
-            (SourceSelection::CoreWallet, Some(AddressKind::Platform)) => {
-                self.send_core_to_platform(seed_hash)
-            }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Platform)) => {
+        match route {
+            ValidatedSendRoute::CoreToCore => self.send_core_to_core(),
+            ValidatedSendRoute::CoreToPlatform => self.send_core_to_platform(seed_hash),
+            ValidatedSendRoute::PlatformToPlatform(addresses) => {
                 self.send_platform_to_platform(seed_hash, addresses)
             }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Core)) => {
+            ValidatedSendRoute::PlatformToCore(addresses) => {
                 self.send_platform_to_core(seed_hash, addresses)
             }
-            (SourceSelection::Shielded(sh, _), Some(AddressKind::Shielded)) => {
-                self.send_shielded_to_shielded(sh)
-            }
-            (SourceSelection::Shielded(sh, _), Some(AddressKind::Platform)) => {
-                self.send_shielded_to_platform(sh)
-            }
-            // === New 8 combinations ===
-            (SourceSelection::CoreWallet, Some(AddressKind::Shielded)) => {
-                self.send_core_to_shielded(seed_hash)
-            }
-            (SourceSelection::CoreWallet, Some(AddressKind::Identity)) => {
-                self.send_core_to_identity(seed_hash)
-            }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Shielded)) => {
+            ValidatedSendRoute::ShieldedToShielded(sh) => self.send_shielded_to_shielded(sh),
+            ValidatedSendRoute::ShieldedToPlatform(sh) => self.send_shielded_to_platform(sh),
+            ValidatedSendRoute::CoreToShielded => self.send_core_to_shielded(seed_hash),
+            ValidatedSendRoute::CoreToIdentity => self.send_core_to_identity(seed_hash),
+            ValidatedSendRoute::PlatformToShielded(addresses) => {
                 self.send_platform_to_shielded(seed_hash, addresses)
             }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Identity)) => {
+            ValidatedSendRoute::PlatformToIdentity(addresses) => {
                 self.send_platform_to_identity(seed_hash, addresses)
             }
-            (SourceSelection::Shielded(sh, _), Some(AddressKind::Core)) => {
-                self.send_shielded_to_core(sh)
-            }
-            (SourceSelection::Identity(qi), Some(AddressKind::Core)) => {
-                self.send_identity_to_core(*qi)
-            }
-            (SourceSelection::Identity(qi), Some(AddressKind::Platform)) => {
-                self.send_identity_to_platform(*qi)
-            }
-            (SourceSelection::Identity(qi), Some(AddressKind::Identity)) => {
-                self.send_identity_to_identity(*qi)
-            }
-            // === Unsupported combinations (defer to v2) ===
-            (SourceSelection::Identity(_), Some(AddressKind::Shielded)) => Err(
-                "Sending from an identity to the shielded pool is not yet supported. \
-                     Transfer to a Platform address first, then shield from there."
-                    .to_string(),
-            ),
-            (SourceSelection::Shielded(..), Some(AddressKind::Identity)) => Err(
-                "Sending from the shielded pool to an identity is not yet supported. \
-                     Transfer to a Platform address first, then top up the identity."
-                    .to_string(),
-            ),
-            _ => Err("Invalid source/destination combination".to_string()),
+            ValidatedSendRoute::ShieldedToCore(sh) => self.send_shielded_to_core(sh),
+            ValidatedSendRoute::IdentityToCore(qi) => self.send_identity_to_core(*qi),
+            ValidatedSendRoute::IdentityToPlatform(qi) => self.send_identity_to_platform(*qi),
+            ValidatedSendRoute::IdentityToIdentity(qi) => self.send_identity_to_identity(*qi),
         }
     }
 
@@ -3148,6 +3182,34 @@ impl WalletSendScreen {
         });
 
         action
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Replaces the simple-send fields for headless integration tests.
+    pub fn set_simple_send_input_for_test(
+        &mut self,
+        source: Option<SourceSelection>,
+        destination: Option<ValidatedAddress>,
+        amount: Option<Amount>,
+    ) {
+        self.selected_source = source;
+        self.validated_destination = destination;
+        self.amount = amount;
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Runs the production simple-send validation and dispatch selection.
+    pub fn validate_and_send_for_test(&mut self) -> Result<AppAction, String> {
+        self.validate_and_send()
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
+    /// Renders the production simple-send button in a headless harness.
+    pub fn render_simple_send_button_for_test(&mut self, ui: &mut Ui) -> AppAction {
+        self.render_send_button(ui)
     }
 
     /// Render the advanced send UI with multiple inputs/outputs

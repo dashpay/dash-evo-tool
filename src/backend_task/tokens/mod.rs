@@ -258,6 +258,11 @@ impl AppContext {
                 signing_key,
                 params,
             } => {
+                params
+                    .contract_keywords
+                    .iter()
+                    .try_for_each(|keyword| crate::model::token::validate_contract_keyword(keyword))
+                    .map_err(|source| TaskError::InvalidContractKeywordLength { source })?;
                 let alias = params.token_names[0].0.clone();
                 let data_contract = self
                     .build_data_contract_v1_with_one_token(identity.identity.id(), *params)

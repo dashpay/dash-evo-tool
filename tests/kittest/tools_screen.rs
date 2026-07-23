@@ -21,9 +21,9 @@
 //! `with_app_default_inert_when_global_id_not_in_candidate_list`.
 //! No additional kittest is added here to avoid duplicating component-level coverage.
 //!
-//! # Note — `send_screen` (READ-only R1)
-//! `SendScreen` seeds `selected_identity` at render-time from the wallet-membership
-//! list. Testing requires a HD wallet fixture (TI-1 gap); deferred.
+//! # Note — `send_screen` identity preselection (READ-only R1)
+//! Routing and validation are covered in `send_screen.rs`. Testing render-time
+//! identity preselection still requires an associated-identity fixture; deferred.
 
 use crate::support::with_isolated_data_dir;
 use dash_evo_tool::context::AppContext;

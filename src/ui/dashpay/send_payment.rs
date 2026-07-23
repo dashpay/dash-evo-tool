@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::dashpay::{MAX_PAYMENT_MEMO_CHARS, validate_payment_memo};
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -99,36 +100,46 @@ impl SendPaymentScreen {
         }
 
         // Check wallet is available and unlocked
-        let wallet_check = if let Some(wallet) = &self.selected_wallet {
-            match wallet.read() {
-                Ok(guard) => {
-                    if guard.is_open() {
-                        Ok(())
-                    } else {
-                        Err("Wallet must be unlocked to send a payment".to_string())
-                    }
-                }
-                Err(e) => Err(format!("Failed to access wallet: {}", e)),
-            }
-        } else {
-            Err("No wallet associated with this identity".to_string())
-        };
-
-        if let Err(e) = wallet_check {
-            MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+        let Some(wallet) = &self.selected_wallet else {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No wallet is associated with this identity. Load its wallet and try again.",
+                MessageType::Error,
+            );
             return AppAction::None;
+        };
+        match wallet.read() {
+            Ok(guard) if guard.is_open() => {}
+            Ok(_) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Unlock the wallet before sending this payment, then try again.",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+            Err(error) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "The wallet could not be opened for this payment. Wait a moment and try again.",
+                    MessageType::Error,
+                )
+                .with_details(error);
+                return AppAction::None;
+            }
         }
 
         // Resolve the amount in duffs at the UI edge — no floating-point value
         // crosses into the backend.
         let amount_duffs = match self.amount.dash_to_duffs() {
             Ok(duffs) => duffs,
-            Err(e) => {
+            Err(error) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Invalid amount: {}", e),
+                    "The payment amount is not valid. Check the amount and try again.",
                     MessageType::Error,
-                );
+                )
+                .with_details(error);
                 return AppAction::None;
             }
         };
@@ -151,17 +162,20 @@ impl SendPaymentScreen {
     }
 
     fn show_success(&self, ui: &mut Ui) -> AppAction {
+        let message = if let Some(tx_id) = &self.tx_id {
+            format!(
+                "Payment of {amount} sent successfully!\n\nTransaction ID: {tx_id}",
+                amount = self.amount
+            )
+        } else {
+            format!(
+                "Payment of {amount} sent successfully!",
+                amount = self.amount
+            )
+        };
         crate::ui::helpers::show_success_screen(
             ui,
-            format!(
-                "Payment of {} sent successfully!{}",
-                self.amount,
-                if let Some(tx_id) = &self.tx_id {
-                    format!("\n\nTransaction ID: {}", tx_id)
-                } else {
-                    String::new()
-                }
-            ),
+            message,
             vec![
                 ("Back to DashPay".to_string(), AppAction::GoToMainScreen),
                 ("Send Another Payment".to_string(), AppAction::PopScreen),
@@ -257,7 +271,7 @@ impl SendPaymentScreen {
                         0.0
                     };
                     ui.label(
-                        RichText::new(format!("{:.8} DASH", balance_dash))
+                        RichText::new(format!("{balance_dash:.8} DASH"))
                             .color(DashColors::text_primary(dark_mode)),
                     );
                 });
@@ -278,7 +292,7 @@ impl SendPaymentScreen {
                     } else {
                         let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
-                            RichText::new(format!("{}", self.to_contact_id))
+                            RichText::new(self.to_contact_id.to_string(Encoding::Base58))
                                 .color(DashColors::text_primary(dark_mode)),
                         );
                     }
@@ -334,7 +348,11 @@ impl SendPaymentScreen {
                 );
                 let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
-                    RichText::new(format!("{}/100 characters", self.memo.len()))
+                    RichText::new(format!(
+                        "{count}/{max} characters",
+                        count = self.memo.chars().count(),
+                        max = MAX_PAYMENT_MEMO_CHARS
+                    ))
                         .small()
                         .color(DashColors::text_secondary(dark_mode)),
                 );
@@ -358,12 +376,13 @@ impl SendPaymentScreen {
                         });
 
                         if ui.add_enabled(send_enabled, send_button).clicked() {
-                            if self.memo.len() > 100 {
+                            if let Err(error) = validate_payment_memo(&self.memo) {
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    "Memo must be 100 characters or less",
+                                    "The memo is too long. Use 100 characters or fewer and try again.",
                                     MessageType::Error,
-                                );
+                                )
+                                .with_details(error);
                             } else {
                                 action = self.send_payment();
                             }
@@ -457,7 +476,7 @@ impl ScreenLike for SendPaymentScreen {
         self.sending = false;
         if let BackendTaskSuccessResult::DashPayPaymentSent(_recipient, address, _amount) = result {
             self.payment_success = true;
-            self.tx_id = Some(format!("Sent to {}", address));
+            self.tx_id = Some(format!("Sent to {address}"));
         }
     }
 }
@@ -693,12 +712,12 @@ impl PaymentHistory {
                                     let amount_str = format_duffs_as_dash(payment.amount);
                                     if payment.is_incoming {
                                         ui.label(
-                                            RichText::new(format!("+{}", amount_str))
+                                            RichText::new(format!("+{amount_str}"))
                                                 .color(egui::Color32::DARK_GREEN),
                                         );
                                     } else {
                                         ui.label(
-                                            RichText::new(format!("-{}", amount_str))
+                                            RichText::new(format!("-{amount_str}"))
                                                 .color(egui::Color32::DARK_RED),
                                         );
                                     }
@@ -707,7 +726,7 @@ impl PaymentHistory {
                                 // Memo
                                 if let Some(memo) = &payment.memo {
                                     ui.label(
-                                        RichText::new(format!("\"{}\"", memo))
+                                        RichText::new(format!("\"{memo}\""))
                                             .italics()
                                             .color(DashColors::text_secondary(dark_mode)),
                                     );
@@ -723,7 +742,7 @@ impl PaymentHistory {
 
                                     // Timestamp
                                     let payment_time_text = format_relative_time(payment.timestamp)
-                                        .map(|t| format!("• {}", t))
+                                        .map(|transaction| format!("• {transaction}"))
                                         .unwrap_or_default();
                                     if !payment_time_text.is_empty() {
                                         ui.label(

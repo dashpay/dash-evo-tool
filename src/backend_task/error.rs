@@ -1187,6 +1187,35 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// A DPNS label failed the shared registration-format validator.
+    #[error(
+        "The DPNS name format is not valid. Use 3 to 63 letters, numbers, or hyphens, without a hyphen at either end."
+    )]
+    InvalidDpnsName {
+        validation: crate::model::dpns::DpnsNameValidationResult,
+    },
+
+    /// A DashPay memo exceeded the shared character limit.
+    #[error("The payment memo is too long. Use 100 characters or fewer and try again.")]
+    DashPayMemoTooLong {
+        #[source]
+        source: crate::model::validation::TextLengthError,
+    },
+
+    /// A searchable contract keyword fell outside the shared character range.
+    #[error("A contract keyword has an invalid length. Use 3 to 50 characters and try again.")]
+    InvalidContractKeywordLength {
+        #[source]
+        source: crate::model::validation::TextLengthError,
+    },
+
+    /// A wallet alias exceeded the shared character limit.
+    #[error("The wallet name is too long. Use 64 characters or fewer and try again.")]
+    InvalidWalletAliasLength {
+        #[source]
+        source: crate::model::validation::TextLengthError,
+    },
+
     /// A document's unique values conflict with an existing entry.
     #[error(
         "This request conflicts with an existing entry. Please use different values and try again."
@@ -2619,9 +2648,8 @@ pub fn is_empty_tree_proof(error: &SdkError) -> bool {
     leaf.is_some_and(|s| s.to_lowercase().contains(EMPTY_TREE_PROOF_MARKER))
 }
 
-// TODO: Replace string parsing with a pre-check on amount + fee > spendable
-// before calling the SDK builder, or wait for upstream to add a typed
-// ProtocolError variant (currently ProtocolError::ShieldedBuildError(String)).
+// TODO: workaround — replace with a typed shielded-build error or a local
+// amount-plus-fee pre-check when the SDK exposes one (see issue #714).
 
 /// Parse the "amount + fee exceeds spendable" pattern from DPP builder errors.
 ///
@@ -2632,18 +2660,22 @@ pub fn is_empty_tree_proof(error: &SdkError) -> bool {
 ///
 /// Returns `(amount, fee, spendable)` on match.
 fn parse_fee_exceeds_spendable(detail: &str) -> Option<(u64, u64, u64)> {
+    const AMOUNT_MARKER: &str = "amount ";
+    const FEE_MARKER: &str = "fee ";
+    const SPENDABLE_MARKER: &str = "exceeds total spendable value ";
+
     // Pattern: "{type} amount {A} + fee {F} = {sum} exceeds total spendable value {S}"
-    let amount_start = detail.find("amount ")? + 7;
+    let amount_start = detail.find(AMOUNT_MARKER)? + AMOUNT_MARKER.len();
     let amount_end = detail[amount_start..].find(' ')? + amount_start;
     let amount: u64 = detail[amount_start..amount_end].parse().ok()?;
 
-    let fee_marker = detail.find("fee ")?;
-    let fee_start = fee_marker + 4;
+    let fee_marker = detail.find(FEE_MARKER)?;
+    let fee_start = fee_marker + FEE_MARKER.len();
     let fee_end = detail[fee_start..].find(' ')? + fee_start;
     let fee: u64 = detail[fee_start..fee_end].parse().ok()?;
 
-    let spendable_marker = detail.find("exceeds total spendable value ")?;
-    let spendable_start = spendable_marker + 30;
+    let spendable_marker = detail.find(SPENDABLE_MARKER)?;
+    let spendable_start = spendable_marker + SPENDABLE_MARKER.len();
     let spendable: u64 = detail[spendable_start..].trim().parse().ok()?;
 
     Some((amount, fee, spendable))
@@ -2662,6 +2694,8 @@ pub fn shielded_build_error(detail: String) -> TaskError {
             fee,
             spendable,
         }
+    // TODO: workaround — replace this upstream wording match with a typed
+    // shielded anchor error when the SDK exposes one (see issue #714).
     } else if detail.contains("AnchorMismatch") {
         TaskError::ShieldedAnchorMismatch { detail }
     } else {
@@ -3112,7 +3146,6 @@ mod tests {
         InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
     };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
-    use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::DuplicateUniqueIndexError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
@@ -3601,19 +3634,9 @@ mod tests {
 
     #[test]
     fn from_sdk_error_duplicate_unique_index_dpns_named_fields_is_generic() {
-        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-            Identifier::random(),
-            vec![
-                "normalizedParentDomainName".to_string(),
-                "normalizedLabel".to_string(),
-            ],
+        let err = TaskError::from(crate::test_support::duplicate_unique_index_broadcast_error(
+            vec!["normalizedParentDomainName", "normalizedLabel"],
         ));
-        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
-            code: 40105,
-            message: "duplicate unique index".to_string(),
-            cause: Some(consensus),
-        };
-        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
 
         assert_eq!(
             err.to_string(),
@@ -3629,20 +3652,13 @@ mod tests {
 
     #[test]
     fn from_sdk_error_duplicate_unique_index_other_document_is_actionable() {
-        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-            Identifier::random(),
+        let err = TaskError::from(crate::test_support::duplicate_unique_index_broadcast_error(
             vec![
-                "normalizedParentDomainName".to_string(),
-                "normalizedLabel".to_string(),
-                "serialNumber".to_string(),
+                "normalizedParentDomainName",
+                "normalizedLabel",
+                "serialNumber",
             ],
         ));
-        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
-            code: 40105,
-            message: "duplicate unique index".to_string(),
-            cause: Some(consensus),
-        };
-        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
 
         assert_eq!(
             err.to_string(),
@@ -3658,17 +3674,10 @@ mod tests {
 
     #[test]
     fn from_sdk_error_duplicate_unique_index_boundary_property_counts_are_generic() {
-        for properties in [vec![], vec!["normalizedLabel".to_string()]] {
-            let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-                Identifier::random(),
+        for properties in [vec![], vec!["normalizedLabel"]] {
+            let err = TaskError::from(crate::test_support::duplicate_unique_index_broadcast_error(
                 properties,
             ));
-            let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
-                code: 40105,
-                message: "duplicate unique index".to_string(),
-                cause: Some(consensus),
-            };
-            let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
 
             match &err {
                 TaskError::PlatformEntryConflict { source_error } => {

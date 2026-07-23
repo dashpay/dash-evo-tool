@@ -14,6 +14,7 @@ use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
@@ -320,6 +321,8 @@ pub enum BackendTaskContext {
     FetchDocumentsPage(Box<DocumentQuery>),
     /// A refresh of all tracked token balances.
     TokenBalanceRefresh,
+    /// A DashPay social-profile update for one identity.
+    DashPayProfileUpdate(Identifier),
     /// A perpetual-reward estimate for one identity-token pair.
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
@@ -355,6 +358,13 @@ impl BackendTaskContext {
 
     pub(crate) fn is_fetch_documents_page(&self) -> bool {
         matches!(self.operation(), Self::FetchDocumentsPage(_))
+    }
+
+    pub(crate) fn dashpay_profile_update_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::DashPayProfileUpdate(identity_id) => Some(*identity_id),
+            _ => None,
+        }
     }
 
     pub(crate) fn dispatched_document_fetch(&self) -> bool {
@@ -401,6 +411,12 @@ impl From<&BackendTask> for BackendTaskContext {
                     identity_id: *identity_id,
                     token_id: *token_id,
                 }),
+                _ => Self::Other,
+            },
+            BackendTask::DashPayTask(task) => match task.as_ref() {
+                DashPayTask::UpdateProfile { identity, .. } => {
+                    Self::DashPayProfileUpdate(identity.identity.id())
+                }
                 _ => Self::Other,
             },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
@@ -668,7 +684,14 @@ pub enum BackendTaskSuccessResult {
     AddedKeyToIdentity(FeeResult),
     TransferredCredits(FeeResult),
     WithdrewFromIdentity(FeeResult),
-    RegisteredDpnsName(FeeResult),
+    RegisteredDpnsName {
+        outcome: crate::model::dpns::DpnsRegistrationOutcome,
+        fee_result: FeeResult,
+    },
+    RemovedIdentities {
+        identity_ids: Vec<Identifier>,
+        associated_cleanup_failed: bool,
+    },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
     /// This identity's keys were sealed under a password (opt-in).

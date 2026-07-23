@@ -342,9 +342,7 @@ fn render_state(
     }
 }
 
-/// Centered gate card. The `Why?` panel toggle is a caller-owned boolean
-/// persisted on the hub screen in a follow-up task; rendering it collapsed
-/// here is the correct default for first paint.
+/// Centered gate card shown when the active identity has no social profile.
 ///
 /// Exposed to integration tests so IT-CONTACTS-01 can mount the gated view
 /// without constructing a full `AppContext`.
@@ -366,12 +364,6 @@ pub fn render_gated(ui: &mut Ui, handle: Option<&str>) -> AppAction {
                 unreachable!("GateSetUpProfile should not map to OpenScreen");
             }
         }
-    }
-    if response.why_toggled {
-        // TODO(identity-hub): persist the expanded flag on the hub screen so
-        // the panel stays open across frames. Until then the card is
-        // re-rendered collapsed each frame; the click still surfaces a
-        // visible press so the affordance is not dead.
     }
     AppAction::None
 }

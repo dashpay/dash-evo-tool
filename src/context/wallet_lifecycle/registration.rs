@@ -107,6 +107,16 @@ impl AppContext {
         let seed_hash = wallet.seed_hash();
         let uses_password = wallet.uses_password;
 
+        // 0. Reject an invalid alias FIRST — this is pure input validation and
+        // must fail before any secret-critical write. A rejection at the
+        // `write_wallet_meta` layer would land AFTER `write_seed_envelope`,
+        // orphaning the encrypted seed (no meta row → never hydrated, no
+        // cleanup path). Mirrors the single-key import path.
+        if let Some(alias) = wallet.alias.as_deref() {
+            crate::model::wallet::validate_wallet_alias(alias)
+                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        }
+
         // 1. Reject a duplicate import. The upstream `platform-wallet.sqlite`
         // persistor is the system of record now; DET no longer writes the
         // legacy `data.db.wallet` row (the fresh-install schema gates that

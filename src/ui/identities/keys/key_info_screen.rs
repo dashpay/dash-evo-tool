@@ -848,12 +848,13 @@ impl KeyInfoScreen {
         let validation_result = self
             .key
             .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
-        if let Err(err) = validation_result {
+        if let Err(error) = validation_result {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                format!("Issue verifying private key {}", err),
+                "The private key could not be verified. Check the key and try again.",
                 MessageType::Error,
-            );
+            )
+            .with_details(error);
         } else if validation_result.expect("invariant: Err handled in the preceding branch") {
             // If valid, store the private key in the context and reset the input field
             self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
@@ -861,16 +862,17 @@ impl KeyInfoScreen {
                 (self.key.purpose().into(), self.key.id()),
                 (self.key.clone().into(), private_key_bytes),
             );
-            if let Err(e) = self
+            if let Err(error) = self
                 .app_context
                 .update_local_qualified_identity(&self.identity)
             {
-                MessageBanner::set_global(
+                let handle = MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Issue saving: {}", e),
+                    "The private key could not be saved. Check available disk space and try again.",
                     MessageType::Error,
-                )
-                .disable_auto_dismiss();
+                );
+                handle.with_details(error);
+                handle.disable_auto_dismiss();
             }
         } else {
             MessageBanner::set_global(
@@ -1062,16 +1064,17 @@ impl KeyInfoScreen {
                         .private_keys
                         .private_keys
                         .remove(&(self.key.purpose().into(), self.key.id()));
-                    if let Err(e) = self
+                    if let Err(error) = self
                         .app_context
                         .update_local_qualified_identity(&self.identity)
                     {
-                        MessageBanner::set_global(
+                        let handle = MessageBanner::set_global(
                             ui.ctx(),
-                            format!("Issue saving: {}", e),
+                            "The private-key change could not be saved. Check available disk space and try again.",
                             MessageType::Error,
-                        )
-                        .disable_auto_dismiss();
+                        );
+                        handle.with_details(error);
+                        handle.disable_auto_dismiss();
                     }
                 }
             }

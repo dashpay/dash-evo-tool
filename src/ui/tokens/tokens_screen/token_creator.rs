@@ -17,6 +17,7 @@ use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::model::token::validate_contract_keyword;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::Component;
@@ -74,9 +75,12 @@ impl TokensScreen {
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
                             Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
-                            Err(e) => {
-                                tracing::error!(err=?e, "Error loading identities from local DB.");
-                                ui.colored_label(Color32::DARK_RED,format!("Error loading identities from local DB: {}", e));
+                            Err(error) => {
+                                tracing::error!(?error, "Token-creator identity loading failed");
+                                ui.colored_label(
+                                    Color32::DARK_RED,
+                                    "Saved identities could not be loaded. Refresh the screen and try again.",
+                                );
                                 return;
                             }
                         };
@@ -401,7 +405,7 @@ impl TokensScreen {
                                                 if ui.selectable_value(
                                                     &mut self.selected_token_preset,
                                                     Some(variant),
-                                                    format!("{} - {}", text, description),
+                                                    format!("{text} - {description}"),
                                                 ).clicked() {
                                                     let preset = TokenConfigurationPreset {
                                                         features: variant,
@@ -438,7 +442,7 @@ impl TokensScreen {
                                     // Auto-set plural name if empty (singular + "s")
                                     let singular = self.token_names_input[0].0.trim().to_string();
                                     if self.token_names_input[0].1.trim().is_empty() {
-                                        self.token_names_input[0].1 = format!("{}s", singular);
+                                        self.token_names_input[0].1 = format!("{singular}s");
                                     }
 
                                     // Trigger the token creation confirmation
@@ -464,7 +468,7 @@ impl TokensScreen {
                                     "token preset"
                                 };
                                 ui.label(
-                                    RichText::new(format!("Please select a {}", missing))
+                                    RichText::new(format!("Please select a {missing}"))
                                         .color(egui::Color32::GRAY)
                                         .italics(),
                                 );
@@ -491,8 +495,8 @@ impl TokensScreen {
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
                                     ui.horizontal(|ui| {
                                         let allow_all_languages = i != 0;
-                                        ui.push_id(format!("combo_{}", i), |ui| {
-                                            let combo_id = format!("token_name_language_selector_{}", i);
+                                        ui.push_id(format!("combo_{i}"), |ui| {
+                                            let combo_id = format!("token_name_language_selector_{i}");
                                             Self::render_token_name_language_selector(
                                                 ui,
                                                 &mut self.token_names_input[i].2,
@@ -565,7 +569,7 @@ impl TokensScreen {
                                         seen_keywords.insert(name.0.clone());
                                         for keyword in contract_keywords.iter() {
                                             if seen_keywords.contains(*keyword) {
-                                                ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {}", keyword));
+                                                ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {keyword}"));
                                             }
                                             seen_keywords.insert(keyword.to_string());
                                         }
@@ -649,9 +653,9 @@ impl TokensScreen {
                                                 .unwrap_or("<Token Name>");
 
                                             let message = if self.decimals_input == "0" {
-                                                format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {})", token_name)
+                                                format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {token_name})")
                                             } else {
-                                                format!("Fractional Token (i.e. 0.2 {})", token_name)
+                                                format!("Fractional Token (i.e. 0.2 {token_name})")
                                             };
 
                                             ui.label(RichText::new(message).color(Color32::GRAY));
@@ -810,10 +814,9 @@ impl TokensScreen {
                                 ui.horizontal(|ui| {
                                     ui.label("Allow main control group change:");
                                     ComboBox::from_id_salt("main_control_group_change_selector")
-                                        .selected_text(format!(
-                                            "{}",
-                                            self.authorized_main_control_group_change
-                                        ))
+                                        .selected_text(
+                                            self.authorized_main_control_group_change.to_string(),
+                                        )
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(
                                                 &mut self.authorized_main_control_group_change,
@@ -915,8 +918,13 @@ impl TokensScreen {
                                             args.into_contract_params(),
                                         ) {
                                             Ok(dc) => dc,
-                                            Err(e) => {
-                                                MessageBanner::set_global(context, format!("Error building contract V1: {e}"), MessageType::Error);
+                                            Err(error) => {
+                                                MessageBanner::set_global(
+                                                    context,
+                                                    "The token contract could not be prepared. Review its settings and try again.",
+                                                    MessageType::Error,
+                                                )
+                                                .with_details(error);
                                                 return;
                                             }
                                         };
@@ -1032,7 +1040,7 @@ impl TokensScreen {
             .size = 12.0;
 
         ComboBox::from_id_salt(id_salt)
-            .selected_text(format!("{}", current_language))
+            .selected_text(current_language.to_string())
             .width(100.0)
             .show_ui(ui, |ui| {
                 ui.style_mut()
@@ -1201,10 +1209,12 @@ impl TokensScreen {
             .split(',')
             .map(|s| {
                 let trimmed = s.trim().to_string();
-                if trimmed.len() < 3 || trimmed.len() > 50 {
+                if let Err(error) = validate_contract_keyword(&trimmed) {
                     Err(format!(
-                        "Invalid contract keyword {}, keyword must be between 3 and 50 characters",
-                        trimmed
+                        "Contract keyword '{keyword}' must contain between {min} and {max} characters.",
+                        keyword = trimmed,
+                        min = error.min,
+                        max = error.max
                     ))
                 } else {
                     Ok(trimmed)
@@ -1225,8 +1235,8 @@ impl TokensScreen {
         for name_with_language in &self.token_names_input {
             if seen_languages.contains(&name_with_language.2) {
                 return Err(format!(
-                    "Duplicate token name language: {:?}",
-                    name_with_language.1
+                    "Duplicate token name language: {language:?}",
+                    language = name_with_language.2
                 ));
             }
             seen_languages.insert(name_with_language.2);
@@ -1236,15 +1246,15 @@ impl TokensScreen {
         for name_with_language in &self.token_names_input {
             if name_with_language.0.len() < 3 || name_with_language.0.len() > 50 {
                 return Err(format!(
-                    "The name in {:?} must be between 3 and 50 characters",
-                    name_with_language.2
+                    "The name in {language:?} must be between 3 and 50 characters",
+                    language = name_with_language.2
                 ));
             }
 
             if name_with_language.1.len() < 3 || name_with_language.1.len() > 50 {
                 return Err(format!(
-                    "The plural form in {:?} must be between 3 and 50 characters",
-                    name_with_language.2
+                    "The plural form in {language:?} must be between 3 and 50 characters",
+                    language = name_with_language.2
                 ));
             }
 
@@ -1393,10 +1403,6 @@ impl TokensScreen {
     fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Prepare the confirmation message
-        let mut confirmation_message =
-            "Are you sure you want to register a new token contract with these settings?\n\n"
-                .to_string();
         let base_supply_display = self
             .base_supply_amount
             .as_ref()
@@ -1409,33 +1415,32 @@ impl TokensScreen {
             .map(|amount| amount.to_string_opts(true, false))
             .unwrap_or_else(|| "None".to_string());
 
-        confirmation_message.push_str(&format!(
-            "Name: {}\nBase Supply: {}\nMax Supply: {}\n\n",
-            self.token_names_input[0].0, base_supply_display, max_supply_display,
-        ));
-
-        confirmation_message.push_str(&format!(
-            "Estimated cost to register this token is {} Dash",
-            self.estimate_registration_cost() as f64 / 100_000_000_000.0
-        ));
-
         // Tokens are always created NotTradeable; warn if that can never change.
-        let mut is_danger_mode = false;
-        if let Some(args) = &self.cached_build_args {
-            let marketplace_rules_locked = matches!(
+        let is_danger_mode = self.cached_build_args.as_ref().is_some_and(|args| {
+            matches!(
                 args.marketplace_rules,
                 ChangeControlRules::V0(ChangeControlRulesV0 {
                     authorized_to_make_change: AuthorizedActionTakers::NoOne,
                     admin_action_takers: AuthorizedActionTakers::NoOne,
                     ..
                 })
-            );
-
-            if marketplace_rules_locked {
-                confirmation_message.push_str("\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!");
-                is_danger_mode = true;
-            }
-        }
+            )
+        });
+        let name = &self.token_names_input[0].0;
+        let cost = self.estimate_registration_cost() as f64 / 100_000_000_000.0;
+        let confirmation_message = if is_danger_mode {
+            format!(
+                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n\nEstimated cost to register this token is {cost} Dash\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!",
+                base_supply = base_supply_display,
+                max_supply = max_supply_display,
+            )
+        } else {
+            format!(
+                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n\nEstimated cost to register this token is {cost} Dash",
+                base_supply = base_supply_display,
+                max_supply = max_supply_display,
+            )
+        };
 
         let confirmation_dialog = self
             .token_creator_confirmation_dialog
@@ -1568,14 +1573,14 @@ impl TokensScreen {
                 if let Some(ref error) = self.document_schemas_error {
                     ui.colored_label(
                         Color32::DARK_RED,
-                        format!("Schema validation error: {}", error),
+                        format!("Schema validation error: {error}"),
                     );
                 } else if let Some(parsed_document_schemas) = self.parsed_document_schemas.as_ref() {
                     let schema_count = parsed_document_schemas.len();
                     if schema_count > 0 {
                         ui.colored_label(
                             Color32::DARK_GREEN,
-                            format!("✓ {} valid document schema(s) parsed", schema_count),
+                            format!("✓ {schema_count} valid document schema(s) parsed"),
                         );
                     }
                 }
@@ -1605,14 +1610,13 @@ impl TokensScreen {
                                     schemas.insert(key.clone(), value.clone());
                                 } else {
                                     self.document_schemas_error = Some(format!(
-                                        "Document schema '{}' missing required 'type' field",
-                                        key
+                                        "Document schema '{key}' is missing the required 'type' field"
                                     ));
                                     return;
                                 }
                             } else {
                                 self.document_schemas_error =
-                                    Some(format!("Document schema '{}' must be an object", key));
+                                    Some(format!("Document schema '{key}' must be an object"));
                                 return;
                             }
                         }
@@ -1625,8 +1629,12 @@ impl TokensScreen {
                     }
                 }
             }
-            Err(e) => {
-                self.document_schemas_error = Some(format!("Invalid JSON: {}", e));
+            Err(error) => {
+                tracing::debug!(?error, "Token document-schema JSON parsing failed");
+                self.document_schemas_error = Some(
+                    "The document schema JSON is not valid. Check its syntax and try again."
+                        .to_string(),
+                );
             }
         }
     }

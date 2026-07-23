@@ -1027,12 +1027,13 @@ impl DocumentActionScreen {
                     identity_key: key.clone(),
                 }))
             }
-            Err(e) => {
+            Err(error) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Failed to build document: {}", e),
+                    "The document could not be built. Check its fields and try again.",
                     crate::ui::MessageType::Error,
-                );
+                )
+                .with_details(error);
                 BackendTask::None
             }
         }
@@ -1133,12 +1134,13 @@ impl DocumentActionScreen {
                         token_payment_info,
                     }))
                 }
-                Err(e) => {
+                Err(error) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Failed to build updated document: {}", e),
+                        "The updated document could not be built. Check its fields and try again.",
                         crate::ui::MessageType::Error,
-                    );
+                    )
+                    .with_details(error);
                     BackendTask::None
                 }
             }

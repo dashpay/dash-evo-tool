@@ -109,22 +109,22 @@ use super::tokens::tokens_screen::IdentityTokenInfo;
 /// Returns a string like "Key 0 | AUTHENTICATION | CRITICAL | ECDSA_SECP256K1"
 pub fn format_key_label(key: &IdentityPublicKey) -> String {
     format!(
-        "Key {} | {} | {} | {}",
-        key.id(),
-        key.purpose(),
-        key.security_level(),
-        key.key_type()
+        "Key {key_id} | {purpose} | {security_level} | {key_type}",
+        key_id = key.id(),
+        purpose = key.purpose(),
+        security_level = key.security_level(),
+        key_type = key.key_type()
     )
 }
 
 /// Formats a key label with a [DEV] suffix for dev mode display.
 pub fn format_key_label_dev(key: &IdentityPublicKey) -> String {
     format!(
-        "Key {} | {} | {} | {} [DEV]",
-        key.id(),
-        key.purpose(),
-        key.security_level(),
-        key.key_type()
+        "Key {key_id} | {purpose} | {security_level} | {key_type} [DEV]",
+        key_id = key.id(),
+        purpose = key.purpose(),
+        security_level = key.security_level(),
+        key_type = key.key_type()
     )
 }
 
@@ -195,7 +195,7 @@ pub fn check_token_authorization(
 
     let group = match action_takers {
         AuthorizedActionTakers::NoOne => {
-            error_message = Some(format!("{} is not allowed on this token", action_name));
+            error_message = Some(format!("{action_name} is not allowed on this token"));
             None
         }
         AuthorizedActionTakers::ContractOwner => {
@@ -203,8 +203,8 @@ pub fn check_token_authorization(
                 != identity_token_info.identity.identity.id()
             {
                 error_message = Some(format!(
-                    "You are not allowed to {} this token. Only the contract owner is.",
-                    action_name.to_lowercase()
+                    "You are not allowed to {action} this token. Only the contract owner is.",
+                    action = action_name.to_lowercase()
                 ));
             }
             None
@@ -212,8 +212,8 @@ pub fn check_token_authorization(
         AuthorizedActionTakers::Identity(identifier) => {
             if identifier != &identity_token_info.identity.identity.id() {
                 error_message = Some(format!(
-                    "You are not allowed to {} this token",
-                    action_name.to_lowercase()
+                    "You are not allowed to {action} this token",
+                    action = action_name.to_lowercase()
                 ));
             }
             None
@@ -234,8 +234,12 @@ pub fn check_token_authorization(
                         .expected_group(group_pos)
                     {
                         Ok(group) => Some((group_pos, group.clone())),
-                        Err(e) => {
-                            error_message = Some(format!("Invalid contract: {}", e));
+                        Err(error) => {
+                            tracing::debug!(?error, "Main token control group lookup failed");
+                            error_message = Some(
+                                "The token contract does not contain its main control group. Refresh the token and try again."
+                                    .to_string(),
+                            );
                             None
                         }
                     }
@@ -249,8 +253,12 @@ pub fn check_token_authorization(
                 .expected_group(*group_pos)
             {
                 Ok(group) => Some((*group_pos, group.clone())),
-                Err(e) => {
-                    error_message = Some(format!("Invalid contract: {}", e));
+                Err(error) => {
+                    tracing::debug!(?error, "Token control group lookup failed");
+                    error_message = Some(
+                        "The token contract does not contain the required control group. Refresh the token and try again."
+                            .to_string(),
+                    );
                     None
                 }
             }
@@ -442,7 +450,7 @@ fn render_no_eligible_key_group(
         ui.set_min_width(220.0);
         ui.vertical(|ui| {
             ui.label("No eligible key. This transaction type requires:");
-            ui.label(format!("{} key", transaction_type.label()));
+            ui.label(format!("{transaction_type} key", transaction_type = transaction_type.label()));
 
             if has_eligible_public_keys_without_private {
                 ui.label(
@@ -906,11 +914,11 @@ pub fn render_group_action_text(
 
         ui.add_space(10.0);
         ui.label(format!(
-            "You are signing an active {} group action (Action ID {})",
-            group_action_type_str,
-            group_action_id.to_string(Encoding::Base58)
+            "You are signing an active {action_type} group action (Action ID {action_id})",
+            action_type = group_action_type_str,
+            action_id = group_action_id.to_string(Encoding::Base58)
         ));
-        format!("Sign {}", group_action_type_str)
+        format!("Sign {group_action_type_str}")
     } else if let Some((_, group)) = group.as_ref() {
         let your_power = group
             .members()
@@ -928,11 +936,11 @@ pub fn render_group_action_text(
             ui.colored_label(
                 Color32::DARK_RED,
                 format!(
-                    "You are not a valid group member for {} on this token",
-                    group_action_type_str
+                    "You are not a valid group member for {action_type} on this token",
+                    action_type = group_action_type_str
                 ),
             );
-            return format!("Test {} (Should fail)", group_action_type_str);
+            return format!("Test {group_action_type_str} (Should fail)");
         }
 
         ui.add_space(10.0);
@@ -941,17 +949,17 @@ pub fn render_group_action_text(
                 ui.label("You are a unilateral group member.\nYou do not need other group members to sign off on this action for it to process.".to_string());
                 group_action_type_str.to_string()
             } else {
-                ui.label(format!("You are not a unilateral group member.\nYou can initiate the {group_action_type_str} action but will need other group members to sign off on it for it to process.\nThis action requires a total power of {}.\nYour power is {your_power}.", group.required_power()));
+                ui.label(format!("You are not a unilateral group member.\nYou can initiate the {group_action_type_str} action but will need other group members to sign off on it for it to process.\nThis action requires a total power of {required_power}.\nYour power is {your_power}.", required_power = group.required_power()));
 
                 ui.add_space(10.0);
                 ui.label(format!(
-                    "Other group members are : \n{}",
-                    group
+                    "Other group members are: \n{members}",
+                    members = group
                         .members()
                         .iter()
                         .filter_map(|(member, power)| {
                             if member != &identity_token_info.identity.identity.id() {
-                                Some(format!(" - {} with power {}", member, power))
+                                Some(format!(" - {member} with power {power}"))
                             } else {
                                 None
                             }
@@ -959,10 +967,10 @@ pub fn render_group_action_text(
                         .collect::<Vec<_>>()
                         .join(", \n")
                 ));
-                format!("Initiate Group {}", group_action_type_str)
+                format!("Initiate Group {group_action_type_str}")
             }
         } else {
-            format!("Test {} (It should fail)", group_action_type_str)
+            format!("Test {group_action_type_str} (It should fail)")
         }
     } else {
         group_action_type_str.to_string()
@@ -1055,11 +1063,11 @@ pub fn show_group_token_success_screen_with_fee(
 
         // Determine the success message based on the action type
         if is_group_action_signing {
-            ui.heading(format!("Group {} Signing Successful.", action_name));
+            ui.heading(format!("Group {action_name} Signing Successful."));
         } else if !is_unilateral_group_member && has_group {
-            ui.heading(format!("Group {} Initiated.", action_name));
+            ui.heading(format!("Group {action_name} Initiated."));
         } else {
-            ui.heading(format!("{} Successful.", action_name));
+            ui.heading(format!("{action_name} Successful."));
         }
 
         // Optional fee info section

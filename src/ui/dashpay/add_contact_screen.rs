@@ -4,6 +4,7 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::validate_account_label;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ResultBannerExt;
@@ -20,7 +21,7 @@ use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, Typography};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
@@ -143,10 +144,10 @@ impl AddContactScreen {
             }
 
             // Validate account label length
-            if self.account_label.len() > 100 {
+            if let Err(error) = validate_account_label(&self.account_label) {
                 let error = DashPayError::AccountLabelTooLong {
-                    length: self.account_label.len(),
-                    max: 100,
+                    length: error.actual,
+                    max: error.max,
                 };
                 self.status = ContactRequestStatus::Error(error);
                 return AppAction::None;
@@ -386,20 +387,20 @@ impl ScreenLike for AddContactScreen {
 
                         // Show retry suggestion for recoverable errors
                         if err.is_recoverable() {
-                            ui.label(RichText::new("You can try again.").small().color(DashColors::text_secondary(dark_mode)));
+                            ui.label(RichText::new("You can try again.").font(Typography::hint()).color(DashColors::text_secondary(dark_mode)));
                         }
 
                         // Show action suggestion for user errors
                         if err.requires_user_action() {
                             match err {
                                 DashPayError::UsernameResolutionFailed { .. } => {
-                                    ui.label(RichText::new("Tip: Make sure the username is spelled correctly and exists on Dash Platform.").small().color(DashColors::text_secondary(dark_mode)));
+                                    ui.label(RichText::new("Tip: Make sure the username is spelled correctly and exists on Dash Platform.").font(Typography::hint()).color(DashColors::text_secondary(dark_mode)));
                                 }
                                 DashPayError::InvalidUsername { .. } => {
-                                    ui.label(RichText::new("Tip: Usernames must end with '.dash' (e.g., alice).").small().color(DashColors::text_secondary(dark_mode)));
+                                    ui.label(RichText::new("Tip: Usernames must end with '.dash' (e.g., alice).").font(Typography::hint()).color(DashColors::text_secondary(dark_mode)));
                                 }
                                 DashPayError::AccountLabelTooLong { .. } => {
-                                    ui.label(RichText::new("Tip: Try a shorter, more descriptive label.").small().color(DashColors::text_secondary(dark_mode)));
+                                    ui.label(RichText::new("Tip: Try a shorter, more descriptive label.").font(Typography::hint()).color(DashColors::text_secondary(dark_mode)));
                                 }
                                 DashPayError::MissingEncryptionKey => {
                                     ui.add_space(5.0);

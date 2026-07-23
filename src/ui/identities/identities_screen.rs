@@ -3,12 +3,14 @@ use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
+use crate::model::contested_name::PendingUsername;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::pill::pending_username_pill;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
@@ -52,6 +54,44 @@ enum IdentitiesSortColumn {
 enum IdentitiesSortOrder {
     Ascending,
     Descending,
+}
+
+/// Render the Name column for one identity: its alias (or a "Set Alias" button
+/// when unset) followed by a "Pending" pill when the identity has a DPNS name
+/// request that has not yet been awarded. Returns `true` when the "Set Alias"
+/// button was clicked. Free of screen state so it is unit-testable with an
+/// injected pending value.
+fn render_identity_name_cell(
+    ui: &mut Ui,
+    alias: Option<&str>,
+    pending_username: Option<&PendingUsername>,
+    dark_mode: bool,
+) -> bool {
+    let mut set_alias_clicked = false;
+    if let Some(alias) = alias {
+        ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
+    } else {
+        let button = egui::Button::new(
+            RichText::new("Set Alias")
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        )
+        .small()
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(egui::Stroke::new(
+            1.0,
+            DashColors::text_secondary(dark_mode),
+        ))
+        .corner_radius(egui::CornerRadius::same(3));
+        if ui.add(button).clicked() {
+            set_alias_clicked = true;
+        }
+    }
+    // Requested-but-unawarded DPNS name → "Pending" pill next to the name.
+    if let Some(pending) = pending_username {
+        pending_username_pill(ui, pending);
+    }
+    set_alias_clicked
 }
 
 pub struct IdentitiesScreen {
@@ -222,30 +262,22 @@ impl IdentitiesScreen {
         "".to_owned()
     }
 
-    fn show_alias(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+    fn show_alias(
+        &mut self,
+        ui: &mut Ui,
+        qualified_identity: &QualifiedIdentity,
+        pending_username: Option<&PendingUsername>,
+    ) {
         let dark_mode = ui.style().visuals.dark_mode;
-
-        if let Some(alias) = &qualified_identity.alias {
-            ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
-        } else {
-            let button = egui::Button::new(
-                RichText::new("Set Alias")
-                    .small()
-                    .color(DashColors::text_secondary(dark_mode)),
-            )
-            .small()
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(
-                1.0,
-                DashColors::text_secondary(dark_mode),
-            ))
-            .corner_radius(egui::CornerRadius::same(3));
-
-            if ui.add(button).clicked() {
-                self.editing_alias_identity = Some(qualified_identity.identity.id());
-                self.editing_alias_opening_guard.arm();
-                self.editing_alias_value.clear();
-            }
+        if render_identity_name_cell(
+            ui,
+            qualified_identity.alias.as_deref(),
+            pending_username,
+            dark_mode,
+        ) {
+            self.editing_alias_identity = Some(qualified_identity.identity.id());
+            self.editing_alias_opening_guard.arm();
+            self.editing_alias_value.clear();
         }
     }
 
@@ -355,14 +387,14 @@ impl IdentitiesScreen {
         };
 
         ui.add(egui::Label::new(message).sense(egui::Sense::hover()))
-            .info_tooltip(format!("{}", qualified_identity.identity.balance()));
+            .info_tooltip(qualified_identity.identity.balance().to_string());
     }
 
     fn show_balance(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
-        let formatted_balance = format!("{:.4} DASH", balance_in_dash);
+        let formatted_balance = format!("{balance_in_dash:.4} DASH");
         ui.add(egui::Label::new(formatted_balance).sense(egui::Sense::hover()))
-            .info_tooltip(format!("{}", qualified_identity.identity.balance()));
+            .info_tooltip(qualified_identity.identity.balance().to_string());
     }
 
     fn format_key_name(&self, key: &IdentityPublicKey) -> String {
@@ -381,7 +413,10 @@ impl IdentitiesScreen {
             SecurityLevel::HIGH => "High",
             SecurityLevel::MEDIUM => "Medium",
         };
-        format!("{} - {} - {}", key.id(), purpose_letter, security_level)
+        format!(
+            "{key_id} - {purpose_letter} - {security_level}",
+            key_id = key.id()
+        )
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
@@ -496,6 +531,13 @@ impl IdentitiesScreen {
             self.sort_vec(&mut local_identities);
         }
 
+        // Pending DPNS username requests (requested but not yet awarded), keyed
+        // by identity id. One cache read serves every row; a failure yields an
+        // empty map so the list still renders.
+        let pending_usernames = self
+            .app_context
+            .pending_dpns_usernames_for_identities(&local_identities);
+
         // Space allocation for UI elements is handled by the layout system
 
         egui::ScrollArea::both().show(ui, |ui| {
@@ -503,7 +545,7 @@ impl IdentitiesScreen {
                         .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
-                        .column(Column::initial(80.0).resizable(true))   // Name
+                        .column(Column::initial(150.0).resizable(true))  // Name (+ pending pill)
                         .column(Column::initial(330.0).resizable(true))  // Identity ID
                         .column(Column::initial(60.0).resizable(true))   // In Wallet
                         .column(Column::initial(80.0).resizable(true))   // Type
@@ -551,13 +593,20 @@ impl IdentitiesScreen {
                                 // Check if identity is active
                                 let is_active = qualified_identity.status == IdentityStatus::Active;
 
+                                let pending_username =
+                                    pending_usernames.get(&qualified_identity.identity.id());
+
                                 body.row(30.0, |mut row| {
                                     row.col(|ui| {
                                         ui.vertical_centered(|ui| {
                                             ui.horizontal_centered(|ui| {
                                                 // Disable UI elements if identity is not active
                                                 ui.add_enabled_ui(is_active, |ui| {
-                                                    self.show_alias(ui, qualified_identity);
+                                                    self.show_alias(
+                                                        ui,
+                                                        qualified_identity,
+                                                        pending_username,
+                                                    );
                                                 });
                                             });
                                         });
@@ -583,7 +632,7 @@ impl IdentitiesScreen {
                                         ui.vertical_centered(|ui| {
                                             ui.horizontal_centered(|ui| {
                                                 // Show identity type and status
-                                                let type_text = format!("{}", qualified_identity.identity_type);
+                                                let type_text = qualified_identity.identity_type.to_string();
                                                 let status = qualified_identity.status;
                                                 // Always show status information (don't disable this column)
                                                 ui.add_enabled_ui(true, |ui|{
@@ -617,21 +666,26 @@ impl IdentitiesScreen {
                                                         .clickable_tooltip("Manage identity credits")
                                                         .disabled_tooltip("Identity actions are unavailable until this identity becomes active");
 
-                                                    let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+                                                    let actions_popup_id = ui.make_persistent_id(format!(
+                                                        "actions_popup_{identity_id}",
+                                                        identity_id = qualified_identity.identity.id().to_string(Encoding::Base58)
+                                                    ));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
-                                                        // Minimum balance needed for withdrawal (0.005 DASH fee in credits)
-                                                        let min_withdrawal_balance: u64 = 500_000_000; // 0.005 DASH in credits
+                                                        let min_withdrawal_balance = self
+                                                            .app_context
+                                                            .fee_estimator()
+                                                            .estimate_credit_withdrawal();
                                                         let can_withdraw = qualified_identity.identity.balance() > min_withdrawal_balance;
 
                                                         let withdraw_hover = if can_withdraw {
                                                             "Withdraw credits from this identity to a Dash Core address"
                                                         } else {
-                                                            "Insufficient balance for withdrawal (need at least 0.005 DASH for fees)"
+                                                            "Insufficient balance for withdrawal fees"
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {
@@ -661,14 +715,16 @@ impl IdentitiesScreen {
                                                             );
                                                         }
 
-                                                        // Minimum balance needed for transfer (0.0002 DASH fee in credits)
-                                                        let min_transfer_balance: u64 = 20_000_000;
+                                                        let min_transfer_balance = self
+                                                            .app_context
+                                                            .fee_estimator()
+                                                            .estimate_credit_transfer();
                                                         let can_transfer = qualified_identity.identity.balance() > min_transfer_balance;
 
                                                         let transfer_hover = if can_transfer {
                                                             "Transfer credits from this identity to another identity"
                                                         } else {
-                                                            "Insufficient balance for transfer (need at least 0.0002 DASH for fees)"
+                                                            "Insufficient balance for transfer fees"
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {
@@ -728,7 +784,10 @@ impl IdentitiesScreen {
 
                                                     let button_response = ui.add(button).clickable_tooltip("View and manage keys for this identity");
 
-                                                    let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
+                                                    let popup_id = ui.make_persistent_id(format!(
+                                                        "keys_popup_{identity_id}",
+                                                        identity_id = qualified_identity.identity.id().to_string(Encoding::Base58)
+                                                    ));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
@@ -812,9 +871,9 @@ impl IdentitiesScreen {
                                                 // Remove
                                                 if ui.button("Remove").clickable_tooltip("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
                                                     let message = format!(
-                                                        "Are you sure you want to no longer track this {} identity?\n\nIdentity ID: {}",
-                                                        qualified_identity.identity_type,
-                                                        qualified_identity.identity.id().to_string(
+                                                        "Are you sure you want to no longer track this {identity_type} identity?\n\nIdentity ID: {identity_id}",
+                                                        identity_type = qualified_identity.identity_type,
+                                                        identity_id = qualified_identity.identity.id().to_string(
                                                             qualified_identity.identity_type.default_encoding()
                                                         )
                                                     );
@@ -884,43 +943,9 @@ impl IdentitiesScreen {
                         }
                         if let Some(identity_to_remove) = self.identity_to_remove.take() {
                             let identity_id = identity_to_remove.identity.id();
-
-                            match self
-                                .app_context
-                                .delete_local_qualified_identity(&identity_id)
-                            {
-                                Ok(_) => {
-                                    let mut lock = self.identities.lock_recover();
-                                    lock.shift_remove(&identity_id);
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to delete identity from database: {}",
-                                        e
-                                    );
-                                    MessageBanner::set_global(
-                                        self.app_context.egui_ctx(),
-                                        format!("Failed to remove identity: {}", e),
-                                        MessageType::Error,
-                                    )
-                                    .disable_auto_dismiss();
-                                }
-                            }
-
-                            if let Some((voter_identity, _)) =
-                                &identity_to_remove.associated_voter_identity
-                            {
-                                let voter_identity_id = voter_identity.id();
-                                if let Err(e) = self
-                                    .app_context
-                                    .delete_local_qualified_identity(&voter_identity_id)
-                                {
-                                    tracing::warn!(
-                                        "Failed to delete voter identity from database: {}",
-                                        e
-                                    );
-                                }
-                            }
+                            return AppAction::BackendTask(BackendTask::IdentityTask(
+                                IdentityTask::RemoveIdentity { identity_id },
+                            ));
                         }
                     }
                     ConfirmationStatus::Canceled => {
@@ -1018,7 +1043,7 @@ impl IdentitiesScreen {
                             Err(e) => {
                                 MessageBanner::set_global(
                                     ctx,
-                                    "Failed to save alias",
+                                    "The alias could not be saved. Check available disk space and try again.",
                                     MessageType::Error,
                                 )
                                 .with_details(e);
@@ -1073,26 +1098,51 @@ impl ScreenLike for IdentitiesScreen {
         &mut self,
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
-        if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
-            backend_task_success_result
-        {
-            self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
-            if self.pending_refresh_count == 0 {
-                self.refresh_banner.take_and_clear();
-                let message = if self.total_refresh_count == 1 {
-                    "Successfully refreshed identity".to_string()
-                } else {
-                    format!(
-                        "Successfully refreshed {} identities",
-                        self.total_refresh_count
-                    )
-                };
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    &message,
-                    MessageType::Success,
-                );
+        match backend_task_success_result {
+            crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) => {
+                self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
+                if self.pending_refresh_count == 0 {
+                    self.refresh_banner.take_and_clear();
+                    let message = if self.total_refresh_count == 1 {
+                        "Successfully refreshed identity".to_string()
+                    } else {
+                        format!(
+                            "Successfully refreshed {count} identities",
+                            count = self.total_refresh_count
+                        )
+                    };
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &message,
+                        MessageType::Success,
+                    );
+                }
             }
+            crate::ui::BackendTaskSuccessResult::RemovedIdentities {
+                identity_ids,
+                associated_cleanup_failed,
+            } => {
+                let mut identities = self.identities.lock_recover();
+                for identity_id in identity_ids {
+                    identities.shift_remove(&identity_id);
+                }
+                drop(identities);
+                if associated_cleanup_failed {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.",
+                        MessageType::Warning,
+                    )
+                    .disable_auto_dismiss();
+                } else {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The identity was removed from this device.",
+                        MessageType::Success,
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1194,5 +1244,56 @@ impl ScreenLike for IdentitiesScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_identity_name_cell;
+    use crate::model::contested_name::PendingUsername;
+    use crate::ui::components::pill::PENDING_USERNAME_PILL_LABEL;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    /// The Identities list Name cell shows the identity's name and, when a DPNS
+    /// registration is pending, a "Pending" pill beside it.
+    #[test]
+    fn name_cell_shows_alias_and_pending_pill() {
+        let pending = PendingUsername {
+            name: "det1".to_string(),
+            decided_at: None,
+        };
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            render_identity_name_cell(ui, Some("det1.dash"), Some(&pending), false);
+        });
+        harness.run();
+
+        assert!(
+            harness.query_by_label("det1.dash").is_some(),
+            "the identity name must render"
+        );
+        assert!(
+            harness
+                .query_by_label(PENDING_USERNAME_PILL_LABEL)
+                .is_some(),
+            "a pending registration must render the 'Pending' pill in the list"
+        );
+    }
+
+    /// With no pending registration, the Name cell renders no pill.
+    #[test]
+    fn name_cell_without_pending_has_no_pill() {
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            render_identity_name_cell(ui, Some("alex.dash"), None, false);
+        });
+        harness.run();
+
+        assert!(harness.query_by_label("alex.dash").is_some());
+        assert!(
+            harness
+                .query_by_label(PENDING_USERNAME_PILL_LABEL)
+                .is_none(),
+            "no pending registration → no pill"
+        );
     }
 }

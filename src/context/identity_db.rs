@@ -946,29 +946,27 @@ impl AppContext {
                 source: Arc::new(source),
             },
         )?;
+        let mut cleanup_error = None;
         match self.wallet_backend() {
             Ok(backend) => {
-                backend
-                    .dashpay_clear_owner_overlays(identifier)
-                    .map_err(|source| TaskError::IdentityUnloadCleanupFailed {
-                        identity_id: *identifier,
-                        source: Box::new(source),
-                    })?;
+                let mut record_cleanup_result = |result: std::result::Result<(), TaskError>| {
+                    if cleanup_error.is_none() {
+                        cleanup_error =
+                            result
+                                .err()
+                                .map(|source| TaskError::IdentityUnloadCleanupFailed {
+                                    identity_id: *identifier,
+                                    source: Box::new(source),
+                                });
+                    }
+                };
+
+                record_cleanup_result(backend.dashpay_clear_owner_overlays(identifier));
                 // Conversation/payment timestamps that are not keyed by this identity
                 // may be shared; full-wallet teardown is the safe reclamation boundary.
-                backend
-                    .dashpay_clear_identity_timestamps(identifier)
-                    .map_err(|source| TaskError::IdentityUnloadCleanupFailed {
-                        identity_id: *identifier,
-                        source: Box::new(source),
-                    })?;
-                backend
-                    .dashpay_clear_identity_addr_map(identifier)
-                    .map_err(|source| TaskError::IdentityUnloadCleanupFailed {
-                        identity_id: *identifier,
-                        source: Box::new(source),
-                    })?;
-                backend.identity_meta().delete(self.network, &id)?;
+                record_cleanup_result(backend.dashpay_clear_identity_timestamps(identifier));
+                record_cleanup_result(backend.dashpay_clear_identity_addr_map(identifier));
+                record_cleanup_result(backend.identity_meta().delete(self.network, &id));
             }
             Err(TaskError::WalletBackendNotYetWired) => {
                 tracing::warn!(
@@ -987,6 +985,9 @@ impl AppContext {
         index_remove_identity(&kv, &id)?;
         self.clear_identity_vault_keys(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
+        if let Some(error) = cleanup_error {
+            return Err(error);
+        }
         load_guard.loaded();
         Ok(())
     }
@@ -2034,6 +2035,155 @@ mod tests {
             "wallet seed.raw.v1 must survive identity removal"
         );
 
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_unload_continues_cleanup_and_wipes_vault_after_overlay_failure() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::model::dashpay::ContactPrivateInfo;
+        use crate::model::qualified_identity::identity_meta::IdentityMeta;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let target_id = Identifier::from([0xA1; 32]);
+        let contact_id = Identifier::from([0xA2; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0xA3; 32], [0xA4; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+
+        let target_buf = target_id.to_buffer();
+        let target_vault = IdentityKeyView::new(backend.secret_store(), target_buf);
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read target key")
+                .is_some(),
+            "target key must exist before removal"
+        );
+
+        backend
+            .dashpay_set_private_info(
+                &target_id,
+                &contact_id,
+                &ContactPrivateInfo {
+                    nickname: "target contact".into(),
+                    notes: "target note".into(),
+                    is_hidden: false,
+                },
+            )
+            .expect("seed target owner overlay");
+        backend
+            .dashpay_set_timestamps(&target_id, 11, 12)
+            .expect("seed target timestamps");
+        backend
+            .dashpay_set_address_mapping(&target_id, "target-address", &contact_id, 1)
+            .expect("seed target address mapping");
+        backend
+            .identity_meta()
+            .set(
+                ctx.network(),
+                &target_buf,
+                &IdentityMeta {
+                    password_hint: Some("target hint".into()),
+                },
+            )
+            .expect("seed target identity metadata");
+
+        let kv = backend.kv();
+        let overlay_keys = kv
+            .list(
+                DetScope::Identity(&target_buf),
+                Some("det:dashpay:private:"),
+            )
+            .expect("list target owner overlays");
+        let [overlay_key] = overlay_keys.as_slice() else {
+            panic!("exactly one target owner overlay must be seeded");
+        };
+        let timestamps_key = format!(
+            "det:dashpay:timestamps:{}",
+            target_id.to_string(Encoding::Base58)
+        );
+
+        let persister_path = backend.spv_storage_dir().join("platform-wallet.sqlite");
+        let fault_connection =
+            rusqlite::Connection::open(&persister_path).expect("open persister second handle");
+        let trigger_name = "fail_target_owner_overlay_delete";
+        let trigger_sql = format!(
+            "CREATE TRIGGER {trigger_name}
+             BEFORE DELETE ON meta_identity
+             WHEN OLD.identity_id = X'{}' AND OLD.key = '{}'
+             BEGIN
+                 SELECT RAISE(FAIL, 'injected owner overlay delete failure');
+             END;",
+            hex::encode(target_buf),
+            overlay_key.replace('\'', "''"),
+        );
+        fault_connection
+            .execute_batch(&trigger_sql)
+            .expect("install owner-overlay delete trigger");
+
+        match ctx.delete_local_qualified_identity(&target_id) {
+            Err(TaskError::IdentityUnloadCleanupFailed {
+                identity_id,
+                source,
+            }) => {
+                assert_eq!(identity_id, target_id);
+                assert!(
+                    matches!(*source, TaskError::DashpaySidecarStorage { .. }),
+                    "the first cleanup failure must preserve its DashPay source"
+                );
+            }
+            other => panic!("expected identity-unload cleanup failure, got {other:?}"),
+        }
+
+        assert!(
+            kv.get::<ContactPrivateInfo>(DetScope::Identity(&target_buf), overlay_key)
+                .expect("read retained owner overlay")
+                .is_some(),
+            "the targeted owner overlay must survive its injected delete failure"
+        );
+        assert!(
+            kv.get::<(i64, i64)>(DetScope::Global, &timestamps_key)
+                .expect("read target timestamps")
+                .is_none(),
+            "timestamp cleanup must continue after the owner-overlay failure"
+        );
+        assert!(
+            backend
+                .dashpay_get_address_mapping(&target_id, "target-address")
+                .expect("read target address mapping")
+                .is_none(),
+            "address-map cleanup must continue after the owner-overlay failure"
+        );
+        assert!(
+            backend
+                .identity_meta()
+                .get(ctx.network(), &target_buf)
+                .is_none(),
+            "identity-metadata cleanup must continue after the owner-overlay failure"
+        );
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read removed target key")
+                .is_none(),
+            "target vault keys must be removed despite the cleanup failure"
+        );
+
+        fault_connection
+            .execute_batch(&format!("DROP TRIGGER {trigger_name};"))
+            .expect("remove owner-overlay delete trigger");
         backend.shutdown().await;
     }
 

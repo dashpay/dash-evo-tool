@@ -670,9 +670,9 @@ pub enum TaskError {
         source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
 
-    /// Owner-attributable local state could not be fully removed while
-    /// unloading an identity. The identity id identifies the affected local
-    /// record; the nested typed error preserves the storage failure for logs.
+    /// Owner-attributable local state could not be fully removed while unloading
+    /// an identity. Cleanup continues after failures, but only the first failure
+    /// is preserved in the nested typed error for logs.
     #[error(
         "Some local data for identity {identity_id} could not be fully removed. Try unloading it again."
     )]

@@ -23,6 +23,11 @@ use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::Addre
 use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
+
+/// Subtract an estimated fee from a credit balance without floating-point conversion.
+pub const fn max_spendable_credits(balance: u64, estimated_fee: u64) -> u64 {
+    balance.saturating_sub(estimated_fee)
+}
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
 use std::collections::BTreeMap;
@@ -1100,6 +1105,13 @@ mod tests {
     fn test_credit_transfer_estimate() {
         let estimator = PlatformFeeEstimator::new();
         assert_eq!(estimator.estimate_credit_transfer(), 100_000);
+    }
+
+    #[test]
+    fn max_spendable_credits_is_exact_above_f64_integer_precision() {
+        let balance = (1_u64 << 53) + 17;
+        assert_eq!(max_spendable_credits(balance, 11), balance - 11);
+        assert_eq!(max_spendable_credits(10, 11), 0);
     }
 
     #[test]

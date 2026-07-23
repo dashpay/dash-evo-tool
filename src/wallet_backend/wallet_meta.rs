@@ -127,6 +127,26 @@ impl<'a> WalletMetaView<'a> {
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
+        crate::model::wallet::validate_wallet_alias(&meta.alias)
+            .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        self.0.set(network, seed_hash, meta)
+    }
+
+    /// Preserve metadata imported from legacy storage, including aliases that
+    /// predate the current length limit. New writes must use [`Self::set`].
+    pub(crate) fn set_migrated(
+        &self,
+        network: Network,
+        seed_hash: &WalletSeedHash,
+        meta: &WalletMeta,
+    ) -> Result<(), TaskError> {
+        if let Err(error) = crate::model::wallet::validate_wallet_alias(&meta.alias) {
+            tracing::warn!(
+                alias_chars = error.actual,
+                max_alias_chars = error.max,
+                "Preserving an overlong legacy wallet alias during migration"
+            );
+        }
         self.0.set(network, seed_hash, meta)
     }
 
@@ -203,6 +223,29 @@ mod tests {
             view.get(Network::Mainnet, &seed),
             Some(meta("new", true, None))
         );
+    }
+
+    #[test]
+    fn set_rejects_overlong_alias() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+        let seed: WalletSeedHash = [0x23; 32];
+        let error = view
+            .set(Network::Mainnet, &seed, &meta(&"w".repeat(65), false, None))
+            .expect_err("overlong alias must fail");
+        assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
+        assert_eq!(view.get(Network::Mainnet, &seed), None);
+    }
+
+    #[test]
+    fn migration_preserves_legacy_overlong_alias() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+        let seed: WalletSeedHash = [0x24; 32];
+        let legacy_meta = meta(&"w".repeat(65), false, None);
+        view.set_migrated(Network::Mainnet, &seed, &legacy_meta)
+            .expect("legacy alias must be preserved");
+        assert_eq!(view.get(Network::Mainnet, &seed), Some(legacy_meta));
     }
 
     /// W-META-VIEW-003 — `list` does not leak entries from other

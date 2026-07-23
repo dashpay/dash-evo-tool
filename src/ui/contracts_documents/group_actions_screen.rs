@@ -267,14 +267,15 @@ impl GroupActionsScreen {
                                         };
                                         let identity_token_info = match IdentityTokenInfo::try_from_identity_token_balance_with_lookup(&identity_token_balance, &self.app_context) {
                                             Ok(identity_token_info) => identity_token_info,
-                                            Err(e) => {
+                                            Err(error) => {
                                                 self.fetch_group_actions_status =
                                                     FetchGroupActionsStatus::Error;
                                                 MessageBanner::set_global(
                                                     ui.ctx(),
-                                                    format!("Failed to get identity token info: {}", e),
+                                                    "Token information for this identity could not be loaded. Refresh and try again.",
                                                     MessageType::Error,
-                                                );
+                                                )
+                                                .with_details(error);
                                                 return;
                                             }
                                         };

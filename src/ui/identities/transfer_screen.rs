@@ -3,7 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -144,12 +144,17 @@ impl TransferScreen {
     fn render_amount_input(&mut self, ui: &mut Ui) {
         // Show available balance
         let balance_in_dash = self.max_amount as f64 / 100_000_000_000.0;
-        ui.label(format!("Available balance: {:.8} DASH", balance_in_dash));
+        ui.label(format!("Available balance: {balance_in_dash:.8} DASH"));
         ui.add_space(5.0);
 
-        // Calculate max amount minus fee for the "Max" button
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0002).max(0.0);
-        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        let fee_estimator = self.app_context.fee_estimator();
+        let estimated_fee = match self.destination_type {
+            TransferDestinationType::Identity => fee_estimator.estimate_credit_transfer(),
+            TransferDestinationType::PlatformAddress => {
+                fee_estimator.estimate_credit_transfer_to_addresses(1)
+            }
+        };
+        let max_amount_credits = max_spendable_credits(self.max_amount, estimated_fee);
 
         let amount_input = self.amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
@@ -282,21 +287,22 @@ impl TransferScreen {
         // Try to parse as Bech32m Platform address first (dash1.../tdash1... per DIP-18)
         if crate::ui::helpers::is_platform_address_string(input) {
             let addr = PlatformAddress::from_bech32m_string(input)
-                .map_err(|e| format!("Invalid Bech32m address: {}", e))?;
+                .map_err(|error| format!("Invalid Bech32m address: {error}"))?;
             return Ok(addr);
         }
 
         // Fall back to base58 parsing for backwards compatibility
         let unchecked_addr: Address<NetworkUnchecked> = input
             .parse()
-            .map_err(|e| format!("Invalid address format: {}", e))?;
+            .map_err(|error| format!("Invalid address format: {error}"))?;
 
         // Platform addresses use the same version byte (0x5a / prefix 'd') for
         // testnet, devnet, and regtest per DIP-18. We use assume_checked() here
         // because require_network() would fail on regtest (address parses as testnet).
         let address = unchecked_addr.assume_checked();
 
-        PlatformAddress::try_from(address).map_err(|e| format!("Invalid Platform address: {}", e))
+        PlatformAddress::try_from(address)
+            .map_err(|error| format!("Invalid Platform address: {error}"))
     }
 
     /// Handle the confirmation action for Platform address transfer
@@ -307,8 +313,14 @@ impl TransferScreen {
         // Validate Platform address
         let platform_address = match self.validate_platform_address() {
             Ok(addr) => addr,
-            Err(error) => {
-                self.set_error_state(error);
+            Err(details) => {
+                self.transfer_credits_status = TransferCreditsStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "The Platform address is not valid. Check the address and try again.",
+                    MessageType::Error,
+                )
+                .with_details(details);
                 return AppAction::None;
             }
         };
@@ -343,8 +355,8 @@ impl TransferScreen {
             (self.identity.identity.balance() as u128).saturating_sub(estimated_fee as u128);
         if credits > max_transferable {
             self.set_error_state(format!(
-                "Amount plus estimated fee exceeds available balance (max transferable: {})",
-                format_credits_as_dash(max_transferable as u64)
+                "Amount plus estimated fee exceeds available balance (max transferable: {max_amount})",
+                max_amount = format_credits_as_dash(max_transferable as u64)
             ));
             return AppAction::None;
         }
@@ -414,8 +426,8 @@ impl TransferScreen {
             (self.identity.identity.balance() as u128).saturating_sub(estimated_fee as u128);
         if credits > max_transferable {
             self.set_error_state(format!(
-                "Amount plus estimated fee exceeds available balance (max transferable: {})",
-                format_credits_as_dash(max_transferable as u64)
+                "Amount plus estimated fee exceeds available balance (max transferable: {max_amount})",
+                max_amount = format_credits_as_dash(max_transferable as u64)
             ));
             self.confirmation_popup = false;
             return AppAction::None;
@@ -474,10 +486,7 @@ impl TransferScreen {
 
         let receiver_id = self.receiver_identity_id.clone();
 
-        let msg = format!(
-            "Are you sure you want to transfer {} to {}?",
-            amount, receiver_id
-        );
+        let msg = format!("Are you sure you want to transfer {amount} to {receiver_id}?");
 
         // Lazy initialization of the confirmation dialog
         let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
@@ -506,8 +515,7 @@ impl TransferScreen {
         let platform_address = self.platform_address_input.clone();
 
         let msg = format!(
-            "Are you sure you want to transfer {} to Platform address {}?",
-            amount, platform_address
+            "Are you sure you want to transfer {amount} to Platform address {platform_address}?"
         );
 
         // Lazy initialization of the confirmation dialog
@@ -564,13 +572,14 @@ impl ScreenLike for TransferScreen {
         let identities = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap_or_else(|e| {
-                MessageBanner::set_global(
+            .unwrap_or_else(|error| {
+                let handle = MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Failed to load local identities: {e}"),
+                    "Saved identities could not be loaded. Refresh the screen and try again.",
                     MessageType::Error,
-                )
-                .disable_auto_dismiss();
+                );
+                handle.with_details(error);
+                handle.disable_auto_dismiss();
                 vec![]
             });
         if let Some(refreshed) = identities
@@ -632,8 +641,8 @@ impl ScreenLike for TransferScreen {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
                     format!(
-                        "You do not have any transfer keys loaded for this {} identity.",
-                        self.identity.identity_type
+                        "You do not have any transfer keys loaded for this {identity_type} identity.",
+                        identity_type = self.identity.identity_type
                     ),
                 );
                 ui.add_space(10.0);
@@ -698,9 +707,9 @@ impl ScreenLike for TransferScreen {
                 // Show identity info
                 let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
                 let identity_label = if let Some(alias) = &self.identity.alias {
-                    format!("From: {} ({})", alias, identity_id_string)
+                    format!("From: {alias} ({identity_id_string})")
                 } else {
-                    format!("From: {}", identity_id_string)
+                    format!("From: {identity_id_string}")
                 };
                 ui.label(identity_label);
                 ui.add_space(5.0);
@@ -806,8 +815,8 @@ impl ScreenLike for TransferScreen {
 
                 let hover_text = if !has_enough_balance {
                     format!(
-                        "Insufficient balance for transfer fee (need at least {})",
-                        format_credits_as_dash(estimated_fee)
+                        "Insufficient balance for transfer fee (need at least {fee})",
+                        fee = format_credits_as_dash(estimated_fee)
                     )
                 } else if ready {
                     "Transfer credits to another identity or Platform address".to_string()

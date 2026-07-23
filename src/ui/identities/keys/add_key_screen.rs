@@ -193,13 +193,14 @@ impl AddKeyScreen {
                     &private_key_bytes,
                     self.app_context.network,
                 );
-                if let Err(err) = public_key_data_result {
+                if let Err(error) = public_key_data_result {
                     self.add_key_status = AddKeyStatus::Error;
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Issue verifying private key: {}", err),
+                        "The private key could not be verified. Check the key and try again.",
                         MessageType::Error,
-                    );
+                    )
+                    .with_details(error);
                 } else {
                     // Handle contract bounds if enabled
                     let contract_bounds = if self.enable_contract_bounds
@@ -216,13 +217,14 @@ impl AddKeyScreen {
                                     })
                                 }
                             }
-                            Err(e) => {
+                            Err(error) => {
                                 self.add_key_status = AddKeyStatus::Error;
                                 MessageBanner::set_global(
                                     self.app_context.egui_ctx(),
-                                    format!("Invalid contract ID: {}", e),
+                                    "The contract ID is not valid. Check the ID and try again.",
                                     MessageType::Error,
-                                );
+                                )
+                                .with_details(error);
                                 return app_action;
                             }
                         }
@@ -246,13 +248,14 @@ impl AddKeyScreen {
                     // Validate the private key against the public key
                     let validation_result = new_key
                         .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
-                    if let Err(err) = validation_result {
+                    if let Err(error) = validation_result {
                         self.add_key_status = AddKeyStatus::Error;
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
-                            format!("Issue verifying private key: {}", err),
+                            "The private key could not be verified. Check the key and try again.",
                             MessageType::Error,
-                        );
+                        )
+                        .with_details(error);
                     } else if validation_result
                         .expect("invariant: Err handled in the preceding branch")
                     {
@@ -455,7 +458,7 @@ impl ScreenLike for AddKeyScreen {
                     ui.label("Purpose:");
                     let prev_purpose = self.purpose;
                     egui::ComboBox::from_id_salt("purpose_selector")
-                        .selected_text(format!("{:?}", self.purpose))
+                        .selected_text(format!("{purpose:?}", purpose = self.purpose))
                         .show_ui(ui, |ui| {
                             if self.enable_contract_bounds {
                                 // When contract bounds are enabled, only allow ENCRYPTION and DECRYPTION
@@ -524,7 +527,10 @@ impl ScreenLike for AddKeyScreen {
                     let has_multiple_security_levels = self.purpose == Purpose::AUTHENTICATION;
                     let inner_response = ui.add_enabled_ui(has_multiple_security_levels, |ui| {
                         egui::ComboBox::from_id_salt("security_level_selector")
-                            .selected_text(format!("{:?}", self.security_level))
+                            .selected_text(format!(
+                                "{security_level:?}",
+                                security_level = self.security_level
+                            ))
                             .show_ui(ui, |ui| {
                                 if self.enable_contract_bounds {
                                     // When contract bounds are enabled, only allow MEDIUM
@@ -576,8 +582,9 @@ impl ScreenLike for AddKeyScreen {
                             egui::Sense::hover(),
                         );
                         hover_response.info_tooltip(format!(
-                            "{:?} purpose requires {:?} security level",
-                            self.purpose, self.security_level
+                            "{purpose:?} purpose requires {security_level:?} security level",
+                            purpose = self.purpose,
+                            security_level = self.security_level
                         ));
                     }
                     ui.end_row();
@@ -585,7 +592,7 @@ impl ScreenLike for AddKeyScreen {
                     // Key Type
                     ui.label("Key Type:");
                     egui::ComboBox::from_id_salt("key_type_selector")
-                        .selected_text(format!("{:?}", self.key_type))
+                        .selected_text(format!("{key_type:?}", key_type = self.key_type))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut self.key_type,

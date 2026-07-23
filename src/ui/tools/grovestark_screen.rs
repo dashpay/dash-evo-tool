@@ -463,12 +463,13 @@ impl GroveSTARKScreen {
                 let task = BackendTask::GroveSTARKTask(GroveSTARKTask::VerifyProof { proof_data });
                 AppAction::BackendTask(task)
             }
-            Err(e) => {
+            Err(error) => {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    format!("Failed to parse proof: {}", e),
+                    "The proof could not be parsed. Check its encoding and try again.",
                     MessageType::Error,
-                );
+                )
+                .with_details(error);
                 self.is_verifying = false;
                 AppAction::None
             }

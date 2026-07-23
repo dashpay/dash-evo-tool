@@ -15,7 +15,9 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
 use crate::model::user_role::UserRole;
-use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
+use crate::model::wallet::{
+    TransactionStatus, Wallet, WalletSeedHash, WalletTransaction, validate_wallet_alias,
+};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -551,9 +553,8 @@ impl WalletsBalancesScreen {
                 let balance_dash =
                     (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
                 let label = format!(
-                    "HD: {} ({:.4} DASH)",
-                    guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string()),
-                    balance_dash
+                    "HD: {alias} ({balance_dash:.4} DASH)",
+                    alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
                 );
                 items.push((label, WalletItem::Hd(wallet.clone())));
             }
@@ -565,9 +566,8 @@ impl WalletsBalancesScreen {
                 let guard = wallet.read_recover();
                 let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
                 let label = format!(
-                    "SK: {} ({:.4} DASH)",
-                    guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string()),
-                    balance_dash
+                    "SK: {alias} ({balance_dash:.4} DASH)",
+                    alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
                 );
                 items.push((label, WalletItem::SingleKey(wallet.clone())));
             }
@@ -585,8 +585,8 @@ impl WalletsBalancesScreen {
                 .ok()
                 .map(|guard| {
                     format!(
-                        "HD: {}",
-                        guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
+                        "HD: {alias}",
+                        alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
                     )
                 })
                 .unwrap_or_else(|| "Select a wallet".to_string())
@@ -596,8 +596,8 @@ impl WalletsBalancesScreen {
                 .ok()
                 .map(|guard| {
                     format!(
-                        "SK: {}",
-                        guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
+                        "SK: {alias}",
+                        alias = guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string())
                     )
                 })
                 .unwrap_or_else(|| "Select a wallet".to_string())
@@ -661,7 +661,10 @@ impl WalletsBalancesScreen {
 
                     ui.colored_label(
                         DashColors::text_primary(ui.style().visuals.dark_mode),
-                        format!(" Balance: {}", format_duffs_as_dash(current_balance)),
+                        format!(
+                            " Balance: {balance}",
+                            balance = format_duffs_as_dash(current_balance)
+                        ),
                     );
                 });
 
@@ -832,8 +835,7 @@ impl WalletsBalancesScreen {
                 .clone()
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
             let message = format!(
-                "Removing wallet \"{}\" clears the data used by this version, including its addresses, balances, and asset locks. Identities linked to it will remain, but keys derived from this wallet will not work unless the wallet is imported again. If this wallet came from an earlier version, that version's read-only recovery database stays on this device. Continue?",
-                alias
+                "Removing wallet \"{alias}\" clears the data used by this version, including its addresses, balances, and asset locks. Identities linked to it will remain, but keys derived from this wallet will not work unless the wallet is imported again. If this wallet came from an earlier version, that version's read-only recovery database stays on this device. Continue?"
             );
             (
                 PendingWalletRemoval::Hd {
@@ -849,8 +851,7 @@ impl WalletsBalancesScreen {
                 .clone()
                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
             let message = format!(
-                "Removing wallet \"{}\" will delete its imported private key and local wallet data from this device. Make sure you have a backup of the private key before continuing. Continue?",
-                alias
+                "Removing wallet \"{alias}\" will delete its imported private key and local wallet data from this device. Make sure you have a backup of the private key before continuing. Continue?"
             );
             (
                 PendingWalletRemoval::SingleKey {
@@ -900,7 +901,7 @@ impl WalletsBalancesScreen {
         self.persist_selected_single_key_hash(None);
         MessageBanner::set_global(
             self.app_context.egui_ctx(),
-            format!("Removed wallet \"{}\" successfully.", alias),
+            format!("Removed wallet \"{alias}\" successfully."),
             MessageType::Success,
         );
     }
@@ -924,16 +925,17 @@ impl WalletsBalancesScreen {
 
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Removed wallet \"{}\" successfully", alias),
+                    format!("Removed wallet \"{alias}\" successfully"),
                     MessageType::Success,
                 );
             }
-            Err(err) => {
+            Err(error) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Failed to remove wallet: {}", err),
+                    "The wallet could not be removed. Close any open wallet actions and try again.",
                     MessageType::Error,
-                );
+                )
+                .with_details(error);
             }
         }
     }
@@ -1032,13 +1034,13 @@ impl WalletsBalancesScreen {
     fn format_duration_ago(duration: std::time::Duration) -> String {
         let secs = duration.as_secs();
         if secs < 60 {
-            format!("{}s ago", secs)
+            format!("{secs}s ago")
         } else if secs < 3600 {
-            format!("{}m ago", secs / 60)
+            format!("{minutes}m ago", minutes = secs / 60)
         } else if secs < 86400 {
-            format!("{}h ago", secs / 3600)
+            format!("{hours}h ago", hours = secs / 3600)
         } else {
-            format!("{}d ago", secs / 86400)
+            format!("{days}d ago", days = secs / 86400)
         }
     }
 
@@ -1055,9 +1057,9 @@ impl WalletsBalancesScreen {
     fn transaction_amount_display(tx: &WalletTransaction, dark_mode: bool) -> (String, Color32) {
         let amount = format_duffs_as_dash(tx.amount_abs());
         if tx.is_incoming() {
-            (format!("+{}", amount), DashColors::SUCCESS)
+            (format!("+{amount}"), DashColors::SUCCESS)
         } else if tx.is_outgoing() {
-            (format!("-{}", amount), DashColors::ERROR)
+            (format!("-{amount}"), DashColors::ERROR)
         } else {
             (amount, DashColors::text_primary(dark_mode))
         }
@@ -1069,11 +1071,11 @@ impl WalletsBalancesScreen {
             TransactionStatus::InstantSendLocked => "⚡ InstantSend".to_string(),
             TransactionStatus::Confirmed => tx
                 .height
-                .map(|h| format!("Confirmed @{}", h))
+                .map(|height| format!("Confirmed @{height}"))
                 .unwrap_or_else(|| "Confirmed".to_string()),
             TransactionStatus::ChainLocked => tx
                 .height
-                .map(|h| format!("🔒 ChainLocked @{}", h))
+                .map(|height| format!("🔒 ChainLocked @{height}"))
                 .unwrap_or_else(|| "🔒 ChainLocked".to_string()),
         }
     }
@@ -1352,9 +1354,9 @@ impl WalletsBalancesScreen {
     fn format_tab_balance(duffs: u64) -> String {
         let dash = duffs as f64 / 100_000_000.0;
         // Format with 4 decimal places, then trim trailing zeros
-        let formatted = format!("{:.4}", dash);
+        let formatted = format!("{dash:.4}");
         let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
-        format!("{} DASH", trimmed)
+        format!("{trimmed} DASH")
     }
 
     /// Render the Accounts & Addresses tab bar and content.
@@ -1418,12 +1420,11 @@ impl WalletsBalancesScreen {
                     }
                 };
                 let label = if balance_duffs == 0 {
-                    format!("{} (empty)", base_label)
+                    format!("{base_label} (empty)")
                 } else {
                     format!(
-                        "{} ({})",
-                        base_label,
-                        Self::format_tab_balance(balance_duffs)
+                        "{base_label} ({balance})",
+                        balance = Self::format_tab_balance(balance_duffs)
                     )
                 };
                 let is_selected = &self.selected_account_tab == tab;
@@ -1503,13 +1504,16 @@ impl WalletsBalancesScreen {
                 self.selected_account = Some((cat.clone(), idx));
 
                 // Addresses (collapsible)
-                let addresses_heading = format!("Addresses ({})", cat.label(idx));
+                let addresses_heading = format!("Addresses ({label})", label = cat.label(idx));
                 let addr_header = egui::CollapsingHeader::new(
                     RichText::new(addresses_heading)
                         .size(16.0)
                         .color(DashColors::text_primary(dark_mode)),
                 )
-                .id_salt(format!("addresses_{}_{:?}", cat.tab_label(idx), idx))
+                .id_salt(format!(
+                    "addresses_{label}_{idx:?}",
+                    label = cat.tab_label(idx)
+                ))
                 .default_open(true);
                 addr_header.show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -1612,17 +1616,15 @@ impl WalletsBalancesScreen {
                 Self::format_tab_balance(*balance)
             };
             let heading = format!(
-                "{} ({} addresses, {})",
-                cat.label(*idx),
-                addr_count,
-                balance_text
+                "{category} ({addr_count} addresses, {balance_text})",
+                category = cat.label(*idx)
             );
             let header = egui::CollapsingHeader::new(
                 RichText::new(heading)
                     .size(14.0)
                     .color(DashColors::text_primary(dark_mode)),
             )
-            .id_salt(format!("system_section_{:?}_{:?}", cat, idx))
+            .id_salt(format!("system_section_{cat:?}_{idx:?}"))
             .default_open(false);
             header.show(ui, |ui| {
                 if let Some(description) = cat.description() {
@@ -1849,8 +1851,7 @@ impl WalletsBalancesScreen {
                                         .clicked()
                                 {
                                     ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
-                                        "{}{}",
-                                        base_url, full_txid
+                                        "{base_url}{full_txid}"
                                     )));
                                 }
                             });
@@ -1911,8 +1912,8 @@ impl WalletsBalancesScreen {
                                 ui.colored_label(
                                     Color32::DARK_GREEN,
                                     RichText::new(format!(
-                                        "Synced — {} peers",
-                                        snapshot.connected_peers
+                                        "Synced — {peer_count} peers",
+                                        peer_count = snapshot.connected_peers
                                     ))
                                     .size(sz),
                                 );
@@ -1982,8 +1983,10 @@ impl WalletsBalancesScreen {
                     ui.label(RichText::new("•").size(sz).color(secondary));
                     let shielded_text = match shielded_seed_hash {
                         Some(hash) => format!(
-                            "Shielded: {}",
-                            format_duffs_as_dash(self.app_context.shielded_balance_duffs(&hash))
+                            "Shielded: {balance}",
+                            balance = format_duffs_as_dash(
+                                self.app_context.shielded_balance_duffs(&hash)
+                            )
                         ),
                         None => "Shielded: unavailable".to_string(),
                     };
@@ -2003,10 +2006,13 @@ impl WalletsBalancesScreen {
         let total = core_balance + platform_balance + shielded_balance;
 
         ui.label(
-            RichText::new(format!("Balance: {}", format_duffs_as_dash(total)))
-                .color(DashColors::text_primary(dark_mode))
-                .size(20.0)
-                .strong(),
+            RichText::new(format!(
+                "Balance: {balance}",
+                balance = format_duffs_as_dash(total)
+            ))
+            .color(DashColors::text_primary(dark_mode))
+            .size(20.0)
+            .strong(),
         );
     }
 
@@ -2028,16 +2034,19 @@ impl WalletsBalancesScreen {
 
         header.show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Core: {}", format_duffs_as_dash(core_balance)));
-                ui.label(" | ");
                 ui.label(format!(
-                    "Platform: {}",
-                    format_duffs_as_dash(platform_balance)
+                    "Core: {balance}",
+                    balance = format_duffs_as_dash(core_balance)
                 ));
                 ui.label(" | ");
                 ui.label(format!(
-                    "Shielded: {}",
-                    format_duffs_as_dash(shielded_balance)
+                    "Platform: {balance}",
+                    balance = format_duffs_as_dash(platform_balance)
+                ));
+                ui.label(" | ");
+                ui.label(format!(
+                    "Shielded: {balance}",
+                    balance = format_duffs_as_dash(shielded_balance)
                 ));
             });
         });
@@ -2172,12 +2181,13 @@ impl WalletsBalancesScreen {
         let locked = {
             let mut wallet = match wallet_arc.write() {
                 Ok(guard) => guard,
-                Err(err) => {
+                Err(error) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Failed to lock wallet: {}", err),
+                        "The wallet could not be locked. Finish any active wallet action and try again.",
                         MessageType::Error,
-                    );
+                    )
+                    .with_details(error);
                     return;
                 }
             };
@@ -2273,7 +2283,10 @@ impl WalletsBalancesScreen {
                 Ok(_) => {
                     MessageBanner::set_global(
                         ctx,
-                        format!("Imported key added for {}.", request.address_preview),
+                        format!(
+                            "Imported key added for {address}.",
+                            address = request.address_preview
+                        ),
                         MessageType::Success,
                     );
                     self.import_single_key_dialog.open = false;
@@ -2596,16 +2609,18 @@ impl ScreenLike for WalletsBalancesScreen {
                             ui.add_space(8.0);
 
                             if ComponentStyles::add_primary_button(ui, "Save").clicked() {
-                                // Limit the alias length to 64 characters
-                                if self.rename_input.len() > 64 {
-                                    self.rename_input.truncate(64);
+                                if let Err(error) = validate_wallet_alias(&self.rename_input) {
+                                    MessageBanner::set_global(
+                                        ctx,
+                                        "The wallet name is too long. Use 64 characters or fewer and try again.",
+                                        MessageType::Error,
+                                    )
+                                    .with_details(error);
+                                    return;
                                 }
 
                                 // Handle HD wallet rename
                                 if let Some(selected_wallet) = &self.selected_wallet {
-                                    let mut wallet = selected_wallet.write_recover();
-                                    wallet.alias = Some(self.rename_input.clone());
-
                                     // T-W-01: alias persistence goes
                                     // through the wallet-meta sidecar.
                                     // The cold-boot picker reads from
@@ -2613,37 +2628,50 @@ impl ScreenLike for WalletsBalancesScreen {
                                     // name surfaces on the next launch
                                     // without touching the legacy
                                     // `wallet` table.
-                                    let seed_hash = wallet.seed_hash();
-                                    if let Ok(backend) = self.app_context.wallet_backend() {
-                                        let meta_view = backend.wallet_meta();
-                                        let mut meta = meta_view
-                                            .get(self.app_context.network, &seed_hash)
-                                            .unwrap_or_default();
-                                        meta.alias = self.rename_input.clone();
-                                        // Backfill the xpub on first
-                                        // rename after migration so old
-                                        // entries written before T-W-00.5
-                                        // get a non-empty picker hint.
-                                        if meta.xpub_encoded.is_empty() {
-                                            meta.xpub_encoded = wallet
+                                    let (seed_hash, xpub_encoded) = {
+                                        let wallet = selected_wallet.read_recover();
+                                        (
+                                            wallet.seed_hash(),
+                                            wallet
                                                 .master_bip44_ecdsa_extended_public_key
                                                 .encode()
-                                                .to_vec();
+                                                .to_vec(),
+                                        )
+                                    };
+                                    let new_alias = self.rename_input.clone();
+                                    let persisted = match self.app_context.wallet_backend() {
+                                        Ok(backend) => {
+                                            let meta_view = backend.wallet_meta();
+                                            let mut meta = meta_view
+                                                .get(self.app_context.network, &seed_hash)
+                                                .unwrap_or_default();
+                                            meta.alias = new_alias.clone();
+                                            if meta.xpub_encoded.is_empty() {
+                                                meta.xpub_encoded = xpub_encoded;
+                                            }
+                                            meta_view.set(
+                                                self.app_context.network,
+                                                &seed_hash,
+                                                &meta,
+                                            )
                                         }
-                                        if let Err(e) = meta_view.set(
-                                            self.app_context.network,
-                                            &seed_hash,
-                                            &meta,
-                                        ) {
-                                            tracing::warn!(
-                                                wallet = %hex::encode(seed_hash),
-                                                error = ?e,
-                                                "Failed to persist wallet alias to sidecar",
-                                            );
+                                        Err(error) => Err(error),
+                                    };
+                                    match persisted {
+                                        Ok(()) => {
+                                            selected_wallet.write_recover().alias = Some(new_alias);
+                                            self.show_rename_dialog = false;
+                                            self.rename_input.clear();
+                                        }
+                                        Err(error) => {
+                                            MessageBanner::set_global(
+                                                ctx,
+                                                "The wallet name could not be saved. Check available disk space and try again.",
+                                                MessageType::Error,
+                                            )
+                                            .with_details(error);
                                         }
                                     }
-                                    self.show_rename_dialog = false;
-                                    self.rename_input.clear();
                                 }
                                 // Handle single key wallet rename
                                 else if let Some(selected_sk_wallet) =
@@ -2764,8 +2792,7 @@ impl ScreenLike for WalletsBalancesScreen {
                             && let Ok(wallet) = wallet_arc.read() {
                                 if let Some(alias) = &wallet.alias {
                                     ui.label(format!(
-                                        "Wallet \"{}\" is locked. Please enter the password to unlock it:",
-                                        alias
+                                        "Wallet \"{alias}\" is locked. Please enter the password to unlock it:"
                                     ));
                                 } else {
                                     ui.label("This wallet is locked. Please enter the password to unlock it:");
@@ -2971,17 +2998,14 @@ impl ScreenLike for WalletsBalancesScreen {
                 let msg = if recipients.len() == 1 {
                     let (address, amount) = &recipients[0];
                     format!(
-                        "Sent {} to {}\nTxID: {}",
-                        format_duffs_as_dash(*amount),
-                        address,
-                        txid
+                        "Sent {amount} to {address}\nTxID: {txid}",
+                        amount = format_duffs_as_dash(*amount)
                     )
                 } else {
                     format!(
-                        "Sent {} total to {} recipients\nTxID: {}",
-                        format_duffs_as_dash(total_amount),
-                        recipients.len(),
-                        txid
+                        "Sent {total_amount} total to {recipient_count} recipients\nTxID: {txid}",
+                        total_amount = format_duffs_as_dash(total_amount),
+                        recipient_count = recipients.len()
                     )
                 };
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
@@ -3101,7 +3125,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.refreshing = false;
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Mined {} block(s)", count),
+                    format!("Mined {count} block(s)"),
                     MessageType::Success,
                 );
             }

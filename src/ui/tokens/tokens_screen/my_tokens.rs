@@ -166,8 +166,13 @@ impl TokensScreen {
                 // Otherwise, show the list of all tokens
                 match self.render_token_list(ui) {
                     Ok(list_action) => action |= list_action,
-                    Err(e) => {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    Err(error) => {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "The token list could not be displayed. Refresh and try again.",
+                            MessageType::Error,
+                        )
+                        .with_details(error);
                     }
                 }
             }
@@ -734,12 +739,13 @@ impl TokensScreen {
                             MessageType::Error,
                         );
                     }
-                    Err(e) => {
+                    Err(error) => {
                         MessageBanner::set_global(
                             ui.ctx(),
-                            format!("Error fetching token contract: {e}"),
+                            "The token contract could not be loaded. Refresh and try again.",
                             MessageType::Error,
-                        );
+                        )
+                        .with_details(error);
                     }
                 }
             }

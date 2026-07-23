@@ -89,13 +89,14 @@ impl QRScannerScreen {
                     MessageType::Success,
                 );
             }
-            Err(e) => {
+            Err(error) => {
                 self.parsed_qr_data = None;
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Invalid QR code: {}", e),
+                    "The QR code is not valid for DashPay. Scan a DashPay code and try again.",
                     MessageType::Error,
-                );
+                )
+                .with_details(error);
             }
         }
     }

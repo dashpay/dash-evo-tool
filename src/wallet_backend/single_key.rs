@@ -177,6 +177,10 @@ impl<'a> SingleKeyView<'a> {
         alias: Option<String>,
         passphrase: ImportPassphrase,
     ) -> Result<ImportedKey, TaskError> {
+        if let Some(alias) = alias.as_deref() {
+            crate::model::wallet::validate_wallet_alias(alias)
+                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        }
         let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
             source: Box::new(source),
         })?;
@@ -272,6 +276,10 @@ impl<'a> SingleKeyView<'a> {
     /// construction path) — the in-memory index is still updated so the
     /// rename is visible in-session.
     pub fn set_alias(&self, address: &str, alias: Option<String>) -> Result<(), TaskError> {
+        if let Some(alias) = alias.as_deref() {
+            crate::model::wallet::validate_wallet_alias(alias)
+                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        }
         let mut idx = write_recover(self.index);
         let entry = idx.get_mut(address).ok_or(TaskError::ImportedKeyNotFound)?;
         entry.alias = alias;
@@ -1016,6 +1024,25 @@ mod tests {
         // bytes. Generated locally with `PrivateKey::new(SecretKey::from_byte_array(&[0;31].chain(&[1])).unwrap(), Testnet).to_wif()`
         // and pinned here to keep tests offline + reproducible.
         "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
+    }
+
+    #[test]
+    fn import_wif_rejects_overlong_alias_before_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: None,
+        };
+
+        let error = view
+            .import_wif(known_wif(), Some("w".repeat(65)))
+            .expect_err("overlong alias must fail");
+
+        assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
+        assert!(view.list().is_empty());
     }
 
     /// TC-SK-003: importing a WIF writes exactly one entry whose label
@@ -1763,6 +1790,33 @@ mod tests {
             .set_alias("yNeverImported", Some("x".into()))
             .expect_err("unknown address must fail");
         assert!(matches!(err, TaskError::ImportedKeyNotFound), "got {err:?}");
+    }
+
+    #[test]
+    fn set_alias_rejects_overlong_alias_before_persisting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let imported = view
+            .import_wif(known_wif(), Some("old name".into()))
+            .expect("import");
+
+        let error = view
+            .set_alias(&imported.address, Some("w".repeat(65)))
+            .expect_err("overlong alias must fail");
+
+        assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
+        assert_eq!(view.list()[0].alias.as_deref(), Some("old name"));
     }
 
     /// Legacy 32-byte raw vault payloads (pre per-key-passphrase)

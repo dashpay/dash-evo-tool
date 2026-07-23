@@ -688,6 +688,10 @@ pub enum BackendTaskSuccessResult {
         outcome: crate::model::dpns::DpnsRegistrationOutcome,
         fee_result: FeeResult,
     },
+    RemovedIdentities {
+        identity_ids: Vec<Identifier>,
+        associated_cleanup_failed: bool,
+    },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
     /// This identity's keys were sealed under a password (opt-in).

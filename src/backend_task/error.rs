@@ -1967,6 +1967,17 @@ pub enum TaskError {
     )]
     VotePollNotFound { name: String },
 
+    /// The masternode has used every vote allowed for a contested name.
+    #[error(
+        "This node has already cast the maximum {max_times_allowed} votes allowed for this contest and can't vote again. Choose another contest to vote on."
+    )]
+    MasternodeVoteLimitReached {
+        times_already_voted: u16,
+        max_times_allowed: u16,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The identity does not have an authentication key required to sign documents.
     #[error(
         "This identity does not have a key for signing documents. Please add an authentication key."
@@ -2900,6 +2911,17 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::StateError(StateError::MasternodeVotedTooManyTimesError(e)) => {
+                        let (times_already_voted, max_times_allowed) =
+                            (e.times_already_voted(), e.max_times_allowed());
+                        Some(Box::new(move |source_error| {
+                            TaskError::MasternodeVoteLimitReached {
+                                times_already_voted,
+                                max_times_allowed,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::BasicError(
                         BasicError::InvalidInstantAssetLockProofSignatureError(_),
                     ) => Some(Box::new(|source_error| {
@@ -3168,6 +3190,7 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::consensus::state::voting::masternode_voted_too_many_times::MasternodeVotedTooManyTimesError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
 
@@ -4079,6 +4102,63 @@ mod tests {
         assert!(
             msg.contains("top up"),
             "Expected actionable guidance in message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_vote_limit_via_consensus_is_specific() {
+        let consensus = ConsensusError::from(MasternodeVotedTooManyTimesError::new(
+            Identifier::random(),
+            6,
+            5,
+        ));
+        let err = TaskError::from(SdkError::from(consensus));
+
+        assert!(
+            matches!(
+                &err,
+                TaskError::MasternodeVoteLimitReached {
+                    times_already_voted: 6,
+                    max_times_allowed: 5,
+                    ..
+                }
+            ),
+            "Expected MasternodeVoteLimitReached, got: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "This node has already cast the maximum 5 votes allowed for this contest and can't vote again. Choose another contest to vote on."
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_vote_limit_via_broadcast_is_specific() {
+        let consensus = ConsensusError::from(MasternodeVotedTooManyTimesError::new(
+            Identifier::random(),
+            6,
+            5,
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40303,
+            message: "vote limit reached".to_string(),
+            cause: Some(consensus),
+        };
+        let err = TaskError::from(SdkError::StateTransitionBroadcastError(broadcast_err));
+
+        assert!(
+            matches!(
+                &err,
+                TaskError::MasternodeVoteLimitReached {
+                    times_already_voted: 6,
+                    max_times_allowed: 5,
+                    ..
+                }
+            ),
+            "Expected MasternodeVoteLimitReached, got: {err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "This node has already cast the maximum 5 votes allowed for this contest and can't vote again. Choose another contest to vote on."
         );
     }
 

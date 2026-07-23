@@ -6,10 +6,10 @@ mod single_key_view;
 pub(crate) use single_key_view::SINGLE_KEY_SEND_UNAVAILABLE;
 
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::context::feature_gate::FeatureGate;
@@ -82,6 +82,29 @@ enum PendingWalletRemoval {
         address: String,
         alias: String,
     },
+}
+
+fn rename_result_matches_task(
+    task: &WalletTask,
+    result: &crate::ui::BackendTaskSuccessResult,
+) -> bool {
+    match (task, result) {
+        (
+            WalletTask::RenameHdWallet {
+                seed_hash: task_seed_hash,
+                alias: task_alias,
+            },
+            crate::ui::BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias },
+        ) => task_seed_hash == seed_hash && task_alias == alias,
+        (
+            WalletTask::RenameSingleKeyWallet {
+                address: task_address,
+                alias: task_alias,
+            },
+            crate::ui::BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias },
+        ) => task_address == address && task_alias == alias,
+        _ => false,
+    }
 }
 
 impl Default for AccountTab {
@@ -168,19 +191,6 @@ fn plan_account_tabs(
     tabs
 }
 
-/// A wallet rename confirmed in the dialog, pending dispatch as a backend task.
-/// Distinguishes the two wallet kinds by the identifier each rename task needs.
-enum PendingWalletRename {
-    Hd {
-        seed_hash: WalletSeedHash,
-        alias: String,
-    },
-    SingleKey {
-        address: String,
-        alias: String,
-    },
-}
-
 pub struct WalletsBalancesScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
@@ -188,14 +198,12 @@ pub struct WalletsBalancesScreen {
     sort_column: SortColumn,
     sort_order: SortOrder,
     refreshing: bool,
-    show_rename_dialog: bool,
     rename_dialog_opening_guard: ModalOpeningGuard,
-    rename_input: String,
-    /// A confirmed rename awaiting dispatch as a backend task. Set when the user
-    /// confirms the rename dialog; drained into a `WalletTask` so the sidecar
-    /// write runs off the UI thread. The in-memory alias updates only from the
-    /// task's success result.
-    pending_rename: Option<PendingWalletRename>,
+    /// The complete rename request shown in the dialog, including its stable
+    /// target identifier and editable alias.
+    rename_task: Option<WalletTask>,
+    /// The exact in-flight dispatch whose result may close or re-enable the dialog.
+    pending_rename_context: Option<BackendTaskContext>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
     sk_password_input: PasswordInput,
@@ -335,10 +343,9 @@ impl WalletsBalancesScreen {
             sort_column: SortColumn::Index,
             sort_order: SortOrder::Ascending,
             refreshing: false,
-            show_rename_dialog: false,
             rename_dialog_opening_guard: ModalOpeningGuard::default(),
-            rename_input: String::new(),
-            pending_rename: None,
+            rename_task: None,
+            pending_rename_context: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_sk_unlock_dialog: false,
             sk_password_input: PasswordInput::new().with_hint_text("Enter password"),
@@ -374,9 +381,21 @@ impl WalletsBalancesScreen {
     }
 
     fn open_rename_dialog(&mut self, alias: Option<String>) {
-        self.show_rename_dialog = true;
+        self.rename_task = if let Some(wallet) = &self.selected_wallet {
+            Some(WalletTask::RenameHdWallet {
+                seed_hash: wallet.read_recover().seed_hash(),
+                alias: alias.unwrap_or_default(),
+            })
+        } else {
+            self.selected_single_key_wallet.as_ref().map(|wallet| {
+                WalletTask::RenameSingleKeyWallet {
+                    address: wallet.read_recover().address.to_string(),
+                    alias: alias.unwrap_or_default(),
+                }
+            })
+        };
+        self.pending_rename_context = None;
         self.rename_dialog_opening_guard.arm();
-        self.rename_input = alias.unwrap_or_default();
     }
 
     fn persist_selected_single_key_hash(&self, hash: Option<[u8; 32]>) {
@@ -692,6 +711,7 @@ impl WalletsBalancesScreen {
                     // Clone wallet arcs before using to avoid borrow conflicts
                     let hd_wallet_opt = self.selected_wallet.clone();
                     let single_key_wallet_opt = self.selected_single_key_wallet.clone();
+                    let rename_enabled = self.pending_rename_context.is_none();
 
                     // Buttons for HD wallet
                     if let Some(wallet_arc) = hd_wallet_opt {
@@ -721,7 +741,10 @@ impl WalletsBalancesScreen {
                             self.lock_selected_wallet();
                         }
                         ui.add_space(8.0);
-                        if ui.button("Rename").clicked() {
+                        if ui
+                            .add_enabled(rename_enabled, egui::Button::new("Rename"))
+                            .clicked()
+                        {
                             self.open_rename_dialog(alias);
                         }
                     }
@@ -750,8 +773,10 @@ impl WalletsBalancesScreen {
 
                         ui.add_space(8.0);
 
-                        // Rename button
-                        if ui.button("Rename").clicked() {
+                        if ui
+                            .add_enabled(rename_enabled, egui::Button::new("Rename"))
+                            .clicked()
+                        {
                             self.open_rename_dialog(alias);
                         }
                     }
@@ -938,8 +963,8 @@ impl WalletsBalancesScreen {
 
                 self.set_selected_hd_wallet(next_wallet);
 
-                self.show_rename_dialog = false;
-                self.rename_input.clear();
+                self.rename_task = None;
+                self.pending_rename_context = None;
                 self.wallet_unlock_popup.close();
                 self.refreshing = false;
 
@@ -2599,8 +2624,10 @@ impl ScreenLike for WalletsBalancesScreen {
             ));
         }
 
-        // Rename dialog
-        if self.show_rename_dialog {
+        if let Some(mut rename_task) = self.rename_task.take() {
+            let is_saving = self.pending_rename_context.is_some();
+            let mut cancel = false;
+            let mut save = false;
             let window_response = egui::Window::new("Rename Wallet")
                 .collapsible(false)
                 .resizable(false)
@@ -2611,87 +2638,66 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.label("Enter new wallet name:");
                         ui.add_space(5.0);
 
-                        let text_edit = egui::TextEdit::singleline(&mut self.rename_input)
-                            .hint_text("Enter wallet name")
-                            .desired_width(250.0);
-                        ui.add(text_edit);
+                        ui.add_enabled_ui(!is_saving, |ui| {
+                            let alias = match &mut rename_task {
+                                WalletTask::RenameHdWallet { alias, .. }
+                                | WalletTask::RenameSingleKeyWallet { alias, .. } => alias,
+                                _ => unreachable!("rename dialog stores only rename tasks"),
+                            };
+                            let text_edit = egui::TextEdit::singleline(alias)
+                                .hint_text("Enter wallet name")
+                                .desired_width(250.0);
+                            ui.add(text_edit);
 
-                        ui.add_space(10.0);
+                            ui.add_space(10.0);
 
-                        ui.horizontal(|ui| {
-                            if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
+                            ui.horizontal(|ui| {
+                                if ComponentStyles::add_secondary_button(
+                                    ui, "Cancel", dark_mode,
+                                )
                                 .clicked()
-                            {
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
-                            }
-
-                            ui.add_space(8.0);
-
-                            if ComponentStyles::add_primary_button(ui, "Save").clicked() {
-                                if let Err(error) = validate_wallet_alias(&self.rename_input) {
-                                    MessageBanner::set_global(
-                                        ctx,
-                                        "The wallet name is too long. Use 64 characters or fewer and try again.",
-                                        MessageType::Error,
-                                    )
-                                    .with_details(error);
-                                    return;
-                                }
-
-                                // Queue the rename for dispatch as a backend
-                                // task; the sidecar write runs off the UI thread
-                                // and the in-memory alias updates only from the
-                                // task result. Persistence is identical across
-                                // wallet kinds — only the identifier differs.
-                                let new_alias = self.rename_input.clone();
-                                if let Some(selected_wallet) = &self.selected_wallet {
-                                    let seed_hash = selected_wallet.read_recover().seed_hash();
-                                    self.pending_rename = Some(PendingWalletRename::Hd {
-                                        seed_hash,
-                                        alias: new_alias,
-                                    });
-                                } else if let Some(selected_sk_wallet) =
-                                    &self.selected_single_key_wallet
                                 {
-                                    let address =
-                                        selected_sk_wallet.read_recover().address.to_string();
-                                    self.pending_rename = Some(PendingWalletRename::SingleKey {
-                                        address,
-                                        alias: new_alias,
-                                    });
+                                    cancel = true;
                                 }
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
-                            }
+
+                                ui.add_space(8.0);
+
+                                if ComponentStyles::add_primary_button(ui, "Save").clicked() {
+                                    if let Err(error) = validate_wallet_alias(alias) {
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            "The wallet name is too long. Use 64 characters or fewer and try again.",
+                                            MessageType::Error,
+                                        )
+                                        .with_details(error);
+                                    } else {
+                                        save = true;
+                                    }
+                                }
+                            });
                         });
                     });
                 });
 
-            if let Some(ref resp) = window_response
-                && clicked_outside_window_after_open(
-                    ctx,
-                    resp.response.rect,
-                    &mut self.rename_dialog_opening_guard,
-                )
-            {
-                self.show_rename_dialog = false;
-                self.rename_input.clear();
+            let clicked_outside = !is_saving
+                && window_response.as_ref().is_some_and(|response| {
+                    clicked_outside_window_after_open(
+                        ctx,
+                        response.response.rect,
+                        &mut self.rename_dialog_opening_guard,
+                    )
+                });
+            if cancel || clicked_outside {
+                self.pending_rename_context = None;
+            } else if save {
+                let task = BackendTask::WalletTask(rename_task.clone());
+                let context = BackendTaskContext::for_dispatch(&task);
+                self.pending_rename_context = Some(context.clone());
+                self.rename_task = Some(rename_task);
+                return AppAction::BackendTaskWithContext { task, context };
+            } else {
+                self.rename_task = Some(rename_task);
             }
-        }
-
-        // Drain a confirmed rename into a backend task that persists the alias
-        // off the UI thread. The in-memory label updates from the task result.
-        if let Some(pending) = self.pending_rename.take() {
-            let task = match pending {
-                PendingWalletRename::Hd { seed_hash, alias } => {
-                    WalletTask::RenameHdWallet { seed_hash, alias }
-                }
-                PendingWalletRename::SingleKey { address, alias } => {
-                    WalletTask::RenameSingleKeyWallet { address, alias }
-                }
-            };
-            action |= AppAction::BackendTask(BackendTask::WalletTask(task));
         }
 
         // HD Wallet unlock popup
@@ -2927,6 +2933,30 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        result: crate::ui::BackendTaskSuccessResult,
+    ) {
+        let rename_succeeded = self.pending_rename_context.as_ref() == Some(context)
+            && context
+                .wallet_rename_task()
+                .is_some_and(|task| rename_result_matches_task(task, &result));
+        self.display_task_result(result);
+        if rename_succeeded {
+            self.rename_task = None;
+            self.pending_rename_context = None;
+        }
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.pending_rename_context.as_ref() == Some(context)
+            && context.wallet_rename_task().is_some()
+        {
+            self.pending_rename_context = None;
+        }
+    }
+
     fn display_task_result(
         &mut self,
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
@@ -2975,22 +3005,26 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.asset_lock_cache.store(seed_hash, locks);
             }
             crate::ui::BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias } => {
-                // Update the in-memory label only now that the sidecar write
-                // succeeded. Read the guard into a local first so the read lock
-                // is released before taking the write lock on the same wallet.
-                if let Some(wallet) = &self.selected_wallet {
-                    let is_target = wallet.read_recover().seed_hash() == seed_hash;
-                    if is_target {
-                        wallet.write_recover().alias = Some(alias);
-                    }
+                let wallet = self
+                    .app_context
+                    .wallets
+                    .read_recover()
+                    .get(&seed_hash)
+                    .cloned();
+                if let Some(wallet) = wallet {
+                    wallet.write_recover().alias = Some(alias);
                 }
             }
             crate::ui::BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias } => {
-                if let Some(wallet) = &self.selected_single_key_wallet {
-                    let is_target = wallet.read_recover().address.to_string() == address;
-                    if is_target {
-                        wallet.write_recover().alias = Some(alias);
-                    }
+                let wallet = self
+                    .app_context
+                    .single_key_wallets
+                    .read_recover()
+                    .values()
+                    .find(|wallet| wallet.read_recover().address.to_string() == address)
+                    .cloned();
+                if let Some(wallet) = wallet {
+                    wallet.write_recover().alias = Some(alias);
                 }
             }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {

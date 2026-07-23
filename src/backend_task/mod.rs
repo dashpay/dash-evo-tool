@@ -331,6 +331,8 @@ pub enum BackendTaskContext {
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
+    /// One HD-wallet or imported-key alias update.
+    WalletRename(WalletTask),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -384,6 +386,13 @@ impl BackendTaskContext {
             _ => None,
         }
     }
+
+    pub(crate) fn wallet_rename_task(&self) -> Option<&WalletTask> {
+        match self.operation() {
+            Self::WalletRename(task) => Some(task),
+            _ => None,
+        }
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {
@@ -425,6 +434,10 @@ impl From<&BackendTask> for BackendTaskContext {
                     seed_hash: *seed_hash,
                 }
             }
+            BackendTask::WalletTask(
+                task @ (WalletTask::RenameHdWallet { .. }
+                | WalletTask::RenameSingleKeyWallet { .. }),
+            ) => Self::WalletRename(task.clone()),
             _ => Self::Other,
         }
     }

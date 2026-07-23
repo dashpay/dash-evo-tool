@@ -998,7 +998,10 @@ async fn tc_043_reject_contact_request() {
         .await
         .expect("TC-043: DPNS registration for C should succeed");
     assert!(
-        matches!(dpns_result, BackendTaskSuccessResult::RegisteredDpnsName(_)),
+        matches!(
+            dpns_result,
+            BackendTaskSuccessResult::RegisteredDpnsName { .. }
+        ),
         "TC-043: expected RegisteredDpnsName for C, got: {:?}",
         dpns_result
     );

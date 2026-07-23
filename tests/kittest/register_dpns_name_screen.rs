@@ -15,6 +15,7 @@ use crate::support::with_isolated_data_dir;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::backend_task::{BackendTaskSuccessResult, FeeResult};
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::dpns::DpnsRegistrationOutcome;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::ui::MessageType;
@@ -28,6 +29,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -70,14 +72,55 @@ fn dpns_success_result_clears_overlay() {
         screen.raise_progress_overlay_for_test(&ctx);
         assert!(ProgressOverlay::has_global(&ctx));
 
-        screen.display_task_result(BackendTaskSuccessResult::RegisteredDpnsName(
-            FeeResult::new(0, 0),
-        ));
+        screen.display_task_result(BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome: DpnsRegistrationOutcome::Registered,
+            fee_result: FeeResult::new(0, 0),
+        });
         assert!(
             !ProgressOverlay::has_global(&ctx),
             "a successful result must tear down the blocking overlay"
         );
     });
+}
+
+fn assert_registration_outcome_copy(outcome: DpnsRegistrationOutcome, expected: &str, wrong: &str) {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let mut screen = screen_with_context();
+        screen.display_task_result(BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result: FeeResult::new(0, 0),
+        });
+
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            screen.ui(ui);
+        });
+        harness.run();
+
+        assert!(harness.query_by_label(expected).is_some());
+        assert!(harness.query_by_label("DPNS Name Registered!").is_none());
+        assert!(harness.query_by_label(wrong).is_none());
+    });
+}
+
+#[test]
+fn dpns_registered_outcome_renders_finalized_copy() {
+    assert_registration_outcome_copy(
+        DpnsRegistrationOutcome::Registered,
+        "Your username is registered. You can use it now.",
+        "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates.",
+    );
+}
+
+#[test]
+fn dpns_pending_outcome_renders_voting_copy() {
+    assert_registration_outcome_copy(
+        DpnsRegistrationOutcome::PendingCommunityVote,
+        "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates.",
+        "Your username is registered. You can use it now.",
+    );
 }
 
 // ── W2 B2 — app-scoped seeding ───────────────────────────────────────────────

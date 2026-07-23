@@ -9,6 +9,7 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::context::feature_gate::FeatureGate;
@@ -167,6 +168,19 @@ fn plan_account_tabs(
     tabs
 }
 
+/// A wallet rename confirmed in the dialog, pending dispatch as a backend task.
+/// Distinguishes the two wallet kinds by the identifier each rename task needs.
+enum PendingWalletRename {
+    Hd {
+        seed_hash: WalletSeedHash,
+        alias: String,
+    },
+    SingleKey {
+        address: String,
+        alias: String,
+    },
+}
+
 pub struct WalletsBalancesScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
@@ -177,6 +191,11 @@ pub struct WalletsBalancesScreen {
     show_rename_dialog: bool,
     rename_dialog_opening_guard: ModalOpeningGuard,
     rename_input: String,
+    /// A confirmed rename awaiting dispatch as a backend task. Set when the user
+    /// confirms the rename dialog; drained into a `WalletTask` so the sidecar
+    /// write runs off the UI thread. The in-memory alias updates only from the
+    /// task's success result.
+    pending_rename: Option<PendingWalletRename>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
     sk_password_input: PasswordInput,
@@ -319,6 +338,7 @@ impl WalletsBalancesScreen {
             show_rename_dialog: false,
             rename_dialog_opening_guard: ModalOpeningGuard::default(),
             rename_input: String::new(),
+            pending_rename: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_sk_unlock_dialog: false,
             sk_password_input: PasswordInput::new().with_hint_text("Enter password"),
@@ -2619,103 +2639,30 @@ impl ScreenLike for WalletsBalancesScreen {
                                     return;
                                 }
 
-                                // Handle HD wallet rename
+                                // Queue the rename for dispatch as a backend
+                                // task; the sidecar write runs off the UI thread
+                                // and the in-memory alias updates only from the
+                                // task result. Persistence is identical across
+                                // wallet kinds — only the identifier differs.
+                                let new_alias = self.rename_input.clone();
                                 if let Some(selected_wallet) = &self.selected_wallet {
-                                    // T-W-01: alias persistence goes
-                                    // through the wallet-meta sidecar.
-                                    // The cold-boot picker reads from
-                                    // the same key shape, so the new
-                                    // name surfaces on the next launch
-                                    // without touching the legacy
-                                    // `wallet` table.
-                                    let (seed_hash, xpub_encoded) = {
-                                        let wallet = selected_wallet.read_recover();
-                                        (
-                                            wallet.seed_hash(),
-                                            wallet
-                                                .master_bip44_ecdsa_extended_public_key
-                                                .encode()
-                                                .to_vec(),
-                                        )
-                                    };
-                                    let new_alias = self.rename_input.clone();
-                                    let persisted = match self.app_context.wallet_backend() {
-                                        Ok(backend) => {
-                                            let meta_view = backend.wallet_meta();
-                                            let mut meta = meta_view
-                                                .get(self.app_context.network, &seed_hash)
-                                                .unwrap_or_default();
-                                            meta.alias = new_alias.clone();
-                                            if meta.xpub_encoded.is_empty() {
-                                                meta.xpub_encoded = xpub_encoded;
-                                            }
-                                            meta_view.set(
-                                                self.app_context.network,
-                                                &seed_hash,
-                                                &meta,
-                                            )
-                                        }
-                                        Err(error) => Err(error),
-                                    };
-                                    match persisted {
-                                        Ok(()) => {
-                                            selected_wallet.write_recover().alias = Some(new_alias);
-                                            self.show_rename_dialog = false;
-                                            self.rename_input.clear();
-                                        }
-                                        Err(error) => {
-                                            MessageBanner::set_global(
-                                                ctx,
-                                                "The wallet name could not be saved. Check available disk space and try again.",
-                                                MessageType::Error,
-                                            )
-                                            .with_details(error);
-                                        }
-                                    }
-                                }
-                                // Handle single key wallet rename
-                                else if let Some(selected_sk_wallet) =
+                                    let seed_hash = selected_wallet.read_recover().seed_hash();
+                                    self.pending_rename = Some(PendingWalletRename::Hd {
+                                        seed_hash,
+                                        alias: new_alias,
+                                    });
+                                } else if let Some(selected_sk_wallet) =
                                     &self.selected_single_key_wallet
                                 {
-                                    // Persist FIRST so the in-memory display
-                                    // alias and the "renamed" outcome only
-                                    // reflect a durable change. Alias
-                                    // persistence goes through the modern
-                                    // single-key sidecar (matching the
-                                    // HD-wallet rename path above), so the
-                                    // new name survives a restart without
-                                    // touching the legacy `single_key_wallet`
-                                    // table.
                                     let address =
                                         selected_sk_wallet.read_recover().address.to_string();
-                                    let new_alias = self.rename_input.clone();
-                                    let persisted = match self.app_context.wallet_backend() {
-                                        Ok(backend) => backend
-                                            .single_key()
-                                            .set_alias(&address, Some(new_alias.clone())),
-                                        Err(e) => Err(e),
-                                    };
-                                    match persisted {
-                                        Ok(()) => {
-                                            selected_sk_wallet.write_recover().alias =
-                                                Some(new_alias);
-                                            self.show_rename_dialog = false;
-                                            self.rename_input.clear();
-                                        }
-                                        Err(e) => {
-                                            MessageBanner::set_global(
-                                                ctx,
-                                                "Could not rename the imported key. Check available disk space and try again."
-                                                    .to_string(),
-                                                MessageType::Error,
-                                            )
-                                            .with_details(&e);
-                                        }
-                                    }
-                                } else {
-                                    self.show_rename_dialog = false;
-                                    self.rename_input.clear();
+                                    self.pending_rename = Some(PendingWalletRename::SingleKey {
+                                        address,
+                                        alias: new_alias,
+                                    });
                                 }
+                                self.show_rename_dialog = false;
+                                self.rename_input.clear();
                             }
                         });
                     });
@@ -2731,6 +2678,20 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.show_rename_dialog = false;
                 self.rename_input.clear();
             }
+        }
+
+        // Drain a confirmed rename into a backend task that persists the alias
+        // off the UI thread. The in-memory label updates from the task result.
+        if let Some(pending) = self.pending_rename.take() {
+            let task = match pending {
+                PendingWalletRename::Hd { seed_hash, alias } => {
+                    WalletTask::RenameHdWallet { seed_hash, alias }
+                }
+                PendingWalletRename::SingleKey { address, alias } => {
+                    WalletTask::RenameSingleKeyWallet { address, alias }
+                }
+            };
+            action |= AppAction::BackendTask(BackendTask::WalletTask(task));
         }
 
         // HD Wallet unlock popup
@@ -3012,6 +2973,25 @@ impl ScreenLike for WalletsBalancesScreen {
             }
             crate::ui::BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } => {
                 self.asset_lock_cache.store(seed_hash, locks);
+            }
+            crate::ui::BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias } => {
+                // Update the in-memory label only now that the sidecar write
+                // succeeded. Read the guard into a local first so the read lock
+                // is released before taking the write lock on the same wallet.
+                if let Some(wallet) = &self.selected_wallet {
+                    let is_target = wallet.read_recover().seed_hash() == seed_hash;
+                    if is_target {
+                        wallet.write_recover().alias = Some(alias);
+                    }
+                }
+            }
+            crate::ui::BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias } => {
+                if let Some(wallet) = &self.selected_single_key_wallet {
+                    let is_target = wallet.read_recover().address.to_string() == address;
+                    if is_target {
+                        wallet.write_recover().alias = Some(alias);
+                    }
+                }
             }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
                 let is_selected = self

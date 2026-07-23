@@ -47,7 +47,7 @@ use dash_sdk::platform::Identifier;
 use egui::Context;
 use migration_status::MigrationStatus;
 use platform_wallet_storage::secrets::SecretStore;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -127,6 +127,9 @@ pub struct AppContext {
     /// Cached settings to avoid repeated k/v reads + bincode decoding.
     /// Use RwLock to allow multiple readers but exclusive writers for cache invalidation.
     cached_settings: RwLock<Option<AppSettings>>,
+    /// Frame-safe pending DPNS names rebuilt after the contest cache changes.
+    pending_dpns_usernames:
+        RwLock<HashMap<Identifier, crate::model::contested_name::PendingUsername>>,
     /// Shared app-level k/v store at `<data_dir>/det-app.sqlite`.
     /// Cross-network, global-scoped slot used for `AppSettings` and other
     /// DET-owned application data that must outlive a single network's
@@ -425,6 +428,7 @@ impl AppContext {
             single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
+            pending_dpns_usernames: RwLock::new(HashMap::new()),
             app_kv,
             secret_store,
             subtasks,
@@ -1083,6 +1087,12 @@ impl AppContext {
         .await?;
         self.wallet_backend.store(Some(Arc::new(backend)));
         drop(_build_guard);
+        if let Err(error) = self.refresh_pending_dpns_usernames() {
+            tracing::warn!(
+                ?error,
+                "Pending DPNS username cache could not be warmed from stored contests"
+            );
+        }
         self.restore_selected_wallet_from_kv();
         self.restore_selected_identity_from_kv();
         // Render the platform section (per-address tab, total, "Addresses synced"

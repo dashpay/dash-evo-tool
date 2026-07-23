@@ -2609,6 +2609,23 @@ impl From<MigrationError> for TaskError {
     }
 }
 
+/// Test-only synchronization helper: `run` deliberately detaches its DAPI
+/// refresh onto a spawned task that queues for `migration_run` behind the
+/// caller's own guard (see [`spawn_dapi_refresh`]). A test that calls another
+/// `migration_run`-guarded operation (e.g. `delete_local_qualified_identity`)
+/// right after `run` returns races that detached task — yield so it queues
+/// for the guard, then acquire the same guard after the refresh releases it.
+///
+/// `pub(crate)` (not private to this module's `tests`) so sibling test
+/// modules — e.g. `v093_upgrade`'s cross-subsystem regression — can reuse it
+/// instead of re-deriving the same race-avoidance dance.
+#[cfg(test)]
+pub(crate) async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
+    tokio::task::yield_now().await;
+    let guard = app_context.migration_run.lock().await;
+    drop(guard);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2631,14 +2648,6 @@ mod tests {
             )
             .expect("read DAPI refresh sentinel")
             .is_some()
-    }
-
-    async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
-        // `run` deliberately detaches this work; yield so it queues for the guard,
-        // then acquire the same guard after the refresh releases it.
-        tokio::task::yield_now().await;
-        let guard = app_context.migration_run.lock().await;
-        drop(guard);
     }
 
     fn seed_legacy_single_key(app_context: &AppContext) {

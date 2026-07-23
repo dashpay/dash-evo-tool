@@ -13,7 +13,7 @@
 //!
 //! The assertions cover the test-spec expectations:
 //! - Heading `Set up a social profile first.` present.
-//! - Primary button `Add a display name` present.
+//! - Primary button `Set up your social profile` present.
 //! - No request cards or active contacts list rendered (the populated-state
 //!   section headings and the search placeholder must be absent).
 
@@ -39,10 +39,17 @@ fn it_contacts_01_gated_renders_when_no_social_profile() {
         "gated Contacts tab must show the `{GATE_HEADING}` heading"
     );
 
-    // Primary CTA present.
+    // Primary CTA present, with the reworded label.
+    assert_eq!(GATE_PRIMARY, "Set up your social profile");
     assert!(
         harness.query_by_label(GATE_PRIMARY).is_some(),
         "gated Contacts tab must show the `{GATE_PRIMARY}` primary button"
+    );
+
+    // The dead `Why?` button was removed — it must not render.
+    assert!(
+        harness.query_by_label("Why?").is_none(),
+        "the non-functional `Why?` button must be gone"
     );
 
     // Populated-state copy must NOT appear when gated.

@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::dpns::DpnsRegistrationOutcome;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -61,6 +62,7 @@ pub struct RegisterDpnsNameScreen {
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    registration_outcome: Option<DpnsRegistrationOutcome>,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
     /// Bucket A overlay-adoption pattern: a button-less full-window block raised
@@ -139,6 +141,7 @@ impl RegisterDpnsNameScreen {
             wallet_open_attempted: false,
             show_advanced_options: false,
             completed_fee_result: None,
+            registration_outcome: None,
             source,
             op_overlay: None,
         }
@@ -319,9 +322,20 @@ impl RegisterDpnsNameScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(outcome) = self.registration_outcome else {
+            return AppAction::None;
+        };
+        let success_message = match outcome {
+            DpnsRegistrationOutcome::Registered => {
+                "Your username is registered. You can use it now."
+            }
+            DpnsRegistrationOutcome::PendingCommunityVote => {
+                "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates."
+            }
+        };
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "DPNS Name Registered!".to_string(),
+            success_message.to_string(),
             vec![
                 ("Back".to_string(), AppAction::PopScreenAndRefresh),
                 (
@@ -339,6 +353,7 @@ impl RegisterDpnsNameScreen {
             self.name_input = String::new();
             self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
             self.completed_fee_result = None;
+            self.registration_outcome = None;
             return AppAction::None;
         }
 
@@ -359,11 +374,14 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         // Tear down the blocking overlay on the success terminal path.
-        if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
-            backend_task_success_result
+        if let BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        } = backend_task_success_result
         {
             self.op_overlay.take_and_clear();
             self.completed_fee_result = Some(fee_result);
+            self.registration_outcome = Some(outcome);
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
     }

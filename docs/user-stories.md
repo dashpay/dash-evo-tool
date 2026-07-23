@@ -657,6 +657,7 @@ As a user, I want to register a human-readable username on DPNS so that others c
 - Choose identity, enter desired name.
 - Cost estimate displayed before confirmation.
 - While registration runs, a full-window blocking overlay (UX-001) is shown so the same name cannot be submitted twice; it lowers automatically on success or error.
+- Completion feedback distinguishes a username registered for immediate use from a request submitted for community voting.
 
 ### DPN-002: View owned usernames [Implemented]
 **Persona:** Alex, Priya
@@ -720,6 +721,16 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 - The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner, with the recovery action, rather than dropped silently — and never blocks the wallet migration that restores access to funds.
 - A single unreadable vote row costs only itself: the readable votes in the same batch still import.
 - The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
+
+### DPN-010: See a pending username registration [Implemented]
+**Persona:** Alex
+
+As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to "pick a username" for a name I have already chosen.
+
+- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identities list and the Identity Home hero card.
+- The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
+- The onboarding checklist counts the submitted request as completing "Pick a username" while clearly stating that Dash masternodes are voting.
+- The pill's tooltip explains that Dash masternodes decide who receives the username and, when the decision time is known, gives an estimated decision time.
 
 ---
 

@@ -28,6 +28,7 @@ use super::identity_hero_card::{HeroIdentityKind, IdentityHeroCard};
 use super::onboarding_checklist::{ChecklistAction, ChecklistStep, OnboardingChecklist};
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::contested_name::PendingUsername;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
@@ -278,6 +279,13 @@ pub fn render(
         }
     };
 
+    // A DPNS username requested but not yet awarded — surfaced on the hero and
+    // the onboarding checklist so a pending request is not mistaken for "no
+    // username". Only meaningful when the identity owns no name yet; the cache
+    // read is best-effort, so a failure simply omits the indicator.
+    let pending_username: Option<PendingUsername> =
+        app_context.pending_dpns_username_for_identity(&identity);
+
     // A tiny local closure that dispatches via the pure
     // `home_button_action` function and merges the result into the
     // `(action, outcome)` pair. Using this at every click site keeps the UI
@@ -291,7 +299,7 @@ pub fn render(
     };
 
     // --- Hero card ----------------------------------------------------
-    let hero = build_hero(app_context, &identity, profiles);
+    let hero = build_hero(app_context, &identity, profiles, pending_username.clone());
     let hero_has_social_profile = hero.has_social_profile();
     let hero_response = hero.show(ui);
     if hero_response.pick_username_clicked() {
@@ -432,6 +440,10 @@ pub fn render(
         }
         if primary_handle.is_some() {
             checklist = checklist.mark_complete(ChecklistStep::PickUsername);
+        } else if let Some(pending) = &pending_username {
+            // Requested but not yet awarded — reflect the pending state instead
+            // of nagging the user to pick a name they already chose.
+            checklist = checklist.with_pending_username(pending.name.clone());
         }
         if hero_has_social_profile {
             checklist = checklist.mark_complete(ChecklistStep::SetDisplayName);
@@ -608,6 +620,7 @@ fn build_hero(
     app_context: &Arc<AppContext>,
     qi: &QualifiedIdentity,
     profiles: &mut super::profile_cache::ProfileCache,
+    pending_username: Option<PendingUsername>,
 ) -> IdentityHeroCard {
     let kind: HeroIdentityKind = qi.identity_type.into();
     let balance_dash = format_credits_short(qi.identity.balance());
@@ -623,8 +636,14 @@ fn build_hero(
     let display_name = load_display_name_opt(profiles, qi);
 
     let mut card = IdentityHeroCard::new(kind, balance_dash);
-    if let Some(handle) = handle {
-        card = card.with_dpns_handle(handle);
+    match handle {
+        Some(handle) => card = card.with_dpns_handle(handle),
+        // No owned name: show a pending request when one exists.
+        None => {
+            if let Some(pending) = pending_username {
+                card = card.with_pending_username(pending);
+            }
+        }
     }
     if let Some(name) = display_name {
         card = card.with_display_name(name);

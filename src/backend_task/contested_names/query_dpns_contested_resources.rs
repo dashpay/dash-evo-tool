@@ -221,6 +221,8 @@ impl AppContext {
             }
         }
 
+        self.refresh_pending_dpns_usernames()?;
+
         sender
             .send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::RefreshedDpnsContests,

@@ -3,9 +3,8 @@
 //!
 //! The card has:
 //! - A heading (`Set up a social profile first.`),
-//! - A body paragraph that interpolates the user's `@handle` when known,
-//! - A primary button (`Add a display name`), and
-//! - A secondary `Why?` button that toggles an inline explanation panel.
+//! - A body paragraph that interpolates the user's `@handle` when known, and
+//! - A primary button (`Set up your social profile`).
 //!
 //! Follows the project's lazy-init component pattern
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
@@ -18,9 +17,7 @@ use eframe::egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
 /// Copy constants, kept as `pub const` so tests and sibling callsites share a
 /// single source of truth and any future i18n extraction touches one line.
 pub const HEADING: &str = "Set up a social profile first.";
-pub const PRIMARY_LABEL: &str = "Add a display name";
-pub const WHY_LABEL: &str = "Why?";
-pub const WHY_EXPANDED_LABEL: &str = "Hide details";
+pub const PRIMARY_LABEL: &str = "Set up your social profile";
 
 /// Body text when the caller knows the identity's DPNS handle. The `{handle}`
 /// placeholder is i18n-ready (named, no positional assumptions).
@@ -34,12 +31,6 @@ pub const BODY_NO_HANDLE: &str = "Contacts use your display name and avatar to l
      only unlocks contacts. Without a social profile, you cannot add contacts or \
      receive contact requests.";
 
-/// Text shown inside the expanded "Why?" panel.
-pub const WHY_PANEL_BODY: &str = "Your username is already yours — it's on Platform and anyone who knows it can pay \
-     you. A social profile is different: it adds a display name and avatar, and unlocks \
-     the contacts feature so your friends can find you, send you money by name, and see \
-     your recent activity if you allow it.";
-
 /// Interpolate `{handle}` into a template. Public for unit tests. Missing
 /// placeholder returns the template unchanged — callers that pass a template
 /// without a placeholder still get a sensible output.
@@ -47,42 +38,30 @@ pub(crate) fn interpolate_handle(template: &str, handle: &str) -> String {
     template.replace("{handle}", handle)
 }
 
-/// Typed action emitted by [`SocialProfileGateCard`] (T12). Replaces the
-/// meaning of the raw booleans with an explicit discriminant while keeping the
-/// booleans for backward-compat call sites.
+/// Typed action emitted by [`SocialProfileGateCard`]. Kept as an enum (rather
+/// than a bare bool) so the [`ComponentResponse`] contract has a domain type
+/// and future actions extend it without a signature break.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GateCardAction {
-    /// The primary CTA ("Add a display name") was clicked.
+    /// The primary CTA ("Set up your social profile") was clicked.
     PrimaryClicked,
-    /// The "Why?" / "Hide details" toggle was clicked.
-    WhyToggled,
 }
 
-/// Response returned by [`SocialProfileGateCard::show`]. The raw booleans
-/// (`primary_clicked`, `why_toggled`) are kept for backward-compat call sites.
-/// The typed [`GateCardAction`] (T12) is available via
-/// [`action`](Self::action) and via the [`ComponentResponse`] impl.
+/// Response returned by [`SocialProfileGateCard::show`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SocialProfileGateCardResponse {
     /// The primary button was clicked this frame.
     pub primary_clicked: bool,
-    /// The `Why?` toggle was clicked this frame.
-    pub why_toggled: bool,
     /// Typed action cache populated by [`SocialProfileGateCard::show`] so that
     /// `ComponentResponse::changed_value()` can return a borrow. Private.
     action_cache: Option<GateCardAction>,
 }
 
 impl SocialProfileGateCardResponse {
-    /// Derive the typed [`GateCardAction`] from the raw booleans, if any.
+    /// Derive the typed [`GateCardAction`] from the raw boolean, if any.
     pub fn action(&self) -> Option<GateCardAction> {
-        if self.primary_clicked {
-            Some(GateCardAction::PrimaryClicked)
-        } else if self.why_toggled {
-            Some(GateCardAction::WhyToggled)
-        } else {
-            None
-        }
+        self.primary_clicked
+            .then_some(GateCardAction::PrimaryClicked)
     }
 }
 
@@ -91,7 +70,7 @@ impl ComponentResponse for SocialProfileGateCardResponse {
     type DomainType = GateCardAction;
 
     fn has_changed(&self) -> bool {
-        self.primary_clicked || self.why_toggled
+        self.primary_clicked
     }
 
     fn is_valid(&self) -> bool {
@@ -107,13 +86,11 @@ impl ComponentResponse for SocialProfileGateCardResponse {
     }
 }
 
-/// The centered no-profile gate card. Interactive-only state is the `expanded`
-/// flag for the explanation panel, which the caller owns so the card can stay
-/// stateless between frames and is trivial to test.
+/// The centered no-profile gate card. Stateless between frames so it is trivial
+/// to test.
 #[derive(Clone, Debug, Default)]
 pub struct SocialProfileGateCard {
     handle: Option<String>,
-    expanded: bool,
     max_width: Option<f32>,
 }
 
@@ -127,16 +104,8 @@ impl SocialProfileGateCard {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
-            expanded: false,
             max_width: None,
         }
-    }
-
-    /// Set whether the "Why?" explanation panel is expanded. Caller-owned so
-    /// the card has no cross-frame mutable state.
-    pub fn with_expanded(mut self, expanded: bool) -> Self {
-        self.expanded = expanded;
-        self
     }
 
     /// Clamp the card body width. Defaults to a reasonable reading width.
@@ -153,18 +122,8 @@ impl SocialProfileGateCard {
         }
     }
 
-    /// Resolved secondary-button label: flips between "Why?" and a collapse
-    /// affordance when the panel is expanded. Exposed for tests.
-    pub fn resolved_why_label(&self) -> &'static str {
-        if self.expanded {
-            WHY_EXPANDED_LABEL
-        } else {
-            WHY_LABEL
-        }
-    }
-
-    /// Render the card. Returns a response describing which buttons were
-    /// clicked this frame; the caller owns the expansion state.
+    /// Render the card. Returns a response describing whether the primary button
+    /// was clicked this frame.
     pub fn show(&self, ui: &mut Ui) -> SocialProfileGateCardResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let max_width = self.max_width.unwrap_or(520.0);
@@ -198,36 +157,11 @@ impl SocialProfileGateCard {
                             .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.add_space(16.0);
-                    ui.horizontal(|ui| {
-                        // Spacer to center-align the two buttons inside the
-                        // vertical_centered column.
-                        ui.add_space(0.0);
-                        if ui
-                            .add(ComponentStyles::primary_button(PRIMARY_LABEL))
-                            .clicked()
-                        {
-                            response.primary_clicked = true;
-                        }
-                        ui.add_space(8.0);
-                        if ui
-                            .add(ComponentStyles::secondary_button(
-                                self.resolved_why_label(),
-                                dark_mode,
-                            ))
-                            .clicked()
-                        {
-                            response.why_toggled = true;
-                        }
-                    });
-                    if self.expanded {
-                        ui.add_space(12.0);
-                        ui.separator();
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new(WHY_PANEL_BODY)
-                                .color(DashColors::text_secondary(dark_mode))
-                                .small(),
-                        );
+                    if ui
+                        .add(ComponentStyles::primary_button(PRIMARY_LABEL))
+                        .clicked()
+                    {
+                        response.primary_clicked = true;
                     }
                 });
             });
@@ -236,7 +170,7 @@ impl SocialProfileGateCard {
         });
 
         // Populate the typed action cache so ComponentResponse::changed_value()
-        // can return a borrow (T12).
+        // can return a borrow.
         response.action_cache = response.action();
         response
     }
@@ -247,7 +181,7 @@ mod tests {
     use super::*;
 
     /// UT-GATE-01 — No-social-profile gate card: interpolates `{handle}`
-    /// correctly and the primary button label is `Add a display name`.
+    /// correctly and the primary button label is `Set up your social profile`.
     #[test]
     fn ut_gate_01_interpolates_handle_and_primary_label() {
         let card = SocialProfileGateCard::new(Some("alex.dash"));
@@ -260,7 +194,7 @@ mod tests {
             !body.contains("{handle}"),
             "body must not contain the raw placeholder after interpolation"
         );
-        assert_eq!(PRIMARY_LABEL, "Add a display name");
+        assert_eq!(PRIMARY_LABEL, "Set up your social profile");
     }
 
     #[test]
@@ -301,23 +235,26 @@ mod tests {
     }
 
     #[test]
-    fn why_label_flips_when_expanded() {
-        let collapsed = SocialProfileGateCard::new(None);
-        let expanded = SocialProfileGateCard::new(None).with_expanded(true);
-        assert_eq!(collapsed.resolved_why_label(), WHY_LABEL);
-        assert_eq!(expanded.resolved_why_label(), WHY_EXPANDED_LABEL);
-    }
-
-    #[test]
     fn heading_is_complete_sentence() {
         assert!(HEADING.ends_with('.'));
         assert!(HEADING.chars().next().unwrap().is_ascii_uppercase());
     }
 
     #[test]
+    fn primary_click_maps_to_typed_action() {
+        let resp = SocialProfileGateCardResponse {
+            primary_clicked: true,
+            action_cache: None,
+        };
+        assert_eq!(resp.action(), Some(GateCardAction::PrimaryClicked));
+        assert!(resp.has_changed());
+    }
+
+    #[test]
     fn default_response_has_no_clicks() {
         let resp = SocialProfileGateCardResponse::default();
         assert!(!resp.primary_clicked);
-        assert!(!resp.why_toggled);
+        assert!(!resp.has_changed());
+        assert!(resp.action().is_none());
     }
 }

@@ -50,7 +50,7 @@ async fn test_register_dpns_name() {
         .expect("DPNS registration should succeed");
 
     match result {
-        BackendTaskSuccessResult::RegisteredDpnsName(fee_result) => {
+        BackendTaskSuccessResult::RegisteredDpnsName { fee_result, .. } => {
             tracing::info!("DPNS name registered, fee: {:?}", fee_result);
         }
         other => panic!("Expected RegisteredDpnsName, got: {:?}", other),

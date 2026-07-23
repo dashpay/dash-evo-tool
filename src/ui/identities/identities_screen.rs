@@ -3,12 +3,14 @@ use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
+use crate::model::contested_name::PendingUsername;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::pill::pending_username_pill;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
@@ -52,6 +54,44 @@ enum IdentitiesSortColumn {
 enum IdentitiesSortOrder {
     Ascending,
     Descending,
+}
+
+/// Render the Name column for one identity: its alias (or a "Set Alias" button
+/// when unset) followed by a "Pending" pill when the identity has a DPNS name
+/// request that has not yet been awarded. Returns `true` when the "Set Alias"
+/// button was clicked. Free of screen state so it is unit-testable with an
+/// injected pending value.
+fn render_identity_name_cell(
+    ui: &mut Ui,
+    alias: Option<&str>,
+    pending_username: Option<&PendingUsername>,
+    dark_mode: bool,
+) -> bool {
+    let mut set_alias_clicked = false;
+    if let Some(alias) = alias {
+        ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
+    } else {
+        let button = egui::Button::new(
+            RichText::new("Set Alias")
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        )
+        .small()
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(egui::Stroke::new(
+            1.0,
+            DashColors::text_secondary(dark_mode),
+        ))
+        .corner_radius(egui::CornerRadius::same(3));
+        if ui.add(button).clicked() {
+            set_alias_clicked = true;
+        }
+    }
+    // Requested-but-unawarded DPNS name → "Pending" pill next to the name.
+    if let Some(pending) = pending_username {
+        pending_username_pill(ui, pending);
+    }
+    set_alias_clicked
 }
 
 pub struct IdentitiesScreen {
@@ -222,30 +262,22 @@ impl IdentitiesScreen {
         "".to_owned()
     }
 
-    fn show_alias(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
+    fn show_alias(
+        &mut self,
+        ui: &mut Ui,
+        qualified_identity: &QualifiedIdentity,
+        pending_username: Option<&PendingUsername>,
+    ) {
         let dark_mode = ui.style().visuals.dark_mode;
-
-        if let Some(alias) = &qualified_identity.alias {
-            ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
-        } else {
-            let button = egui::Button::new(
-                RichText::new("Set Alias")
-                    .small()
-                    .color(DashColors::text_secondary(dark_mode)),
-            )
-            .small()
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(
-                1.0,
-                DashColors::text_secondary(dark_mode),
-            ))
-            .corner_radius(egui::CornerRadius::same(3));
-
-            if ui.add(button).clicked() {
-                self.editing_alias_identity = Some(qualified_identity.identity.id());
-                self.editing_alias_opening_guard.arm();
-                self.editing_alias_value.clear();
-            }
+        if render_identity_name_cell(
+            ui,
+            qualified_identity.alias.as_deref(),
+            pending_username,
+            dark_mode,
+        ) {
+            self.editing_alias_identity = Some(qualified_identity.identity.id());
+            self.editing_alias_opening_guard.arm();
+            self.editing_alias_value.clear();
         }
     }
 
@@ -496,6 +528,13 @@ impl IdentitiesScreen {
             self.sort_vec(&mut local_identities);
         }
 
+        // Pending DPNS username requests (requested but not yet awarded), keyed
+        // by identity id. One cache read serves every row; a failure yields an
+        // empty map so the list still renders.
+        let pending_usernames = self
+            .app_context
+            .pending_dpns_usernames_for_identities(&local_identities);
+
         // Space allocation for UI elements is handled by the layout system
 
         egui::ScrollArea::both().show(ui, |ui| {
@@ -503,7 +542,7 @@ impl IdentitiesScreen {
                         .striped(false)
                         .resizable(true)
                         .cell_layout(egui::Layout::left_to_right(Align::Center))
-                        .column(Column::initial(80.0).resizable(true))   // Name
+                        .column(Column::initial(150.0).resizable(true))  // Name (+ pending pill)
                         .column(Column::initial(330.0).resizable(true))  // Identity ID
                         .column(Column::initial(60.0).resizable(true))   // In Wallet
                         .column(Column::initial(80.0).resizable(true))   // Type
@@ -551,13 +590,20 @@ impl IdentitiesScreen {
                                 // Check if identity is active
                                 let is_active = qualified_identity.status == IdentityStatus::Active;
 
+                                let pending_username =
+                                    pending_usernames.get(&qualified_identity.identity.id());
+
                                 body.row(30.0, |mut row| {
                                     row.col(|ui| {
                                         ui.vertical_centered(|ui| {
                                             ui.horizontal_centered(|ui| {
                                                 // Disable UI elements if identity is not active
                                                 ui.add_enabled_ui(is_active, |ui| {
-                                                    self.show_alias(ui, qualified_identity);
+                                                    self.show_alias(
+                                                        ui,
+                                                        qualified_identity,
+                                                        pending_username,
+                                                    );
                                                 });
                                             });
                                         });
@@ -1194,5 +1240,56 @@ impl ScreenLike for IdentitiesScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_identity_name_cell;
+    use crate::model::contested_name::PendingUsername;
+    use crate::ui::components::pill::PENDING_USERNAME_PILL_LABEL;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    /// The Identities list Name cell shows the identity's name and, when a DPNS
+    /// registration is pending, a "Pending" pill beside it.
+    #[test]
+    fn name_cell_shows_alias_and_pending_pill() {
+        let pending = PendingUsername {
+            name: "det1".to_string(),
+            decided_at: None,
+        };
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            render_identity_name_cell(ui, Some("det1.dash"), Some(&pending), false);
+        });
+        harness.run();
+
+        assert!(
+            harness.query_by_label("det1.dash").is_some(),
+            "the identity name must render"
+        );
+        assert!(
+            harness
+                .query_by_label(PENDING_USERNAME_PILL_LABEL)
+                .is_some(),
+            "a pending registration must render the 'Pending' pill in the list"
+        );
+    }
+
+    /// With no pending registration, the Name cell renders no pill.
+    #[test]
+    fn name_cell_without_pending_has_no_pill() {
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            render_identity_name_cell(ui, Some("alex.dash"), None, false);
+        });
+        harness.run();
+
+        assert!(harness.query_by_label("alex.dash").is_some());
+        assert!(
+            harness
+                .query_by_label(PENDING_USERNAME_PILL_LABEL)
+                .is_none(),
+            "no pending registration → no pill"
+        );
     }
 }

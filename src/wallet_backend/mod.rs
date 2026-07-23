@@ -2158,8 +2158,6 @@ impl WalletBackend {
         )],
     ) -> Result<usize, TaskError> {
         use dash_sdk::dpp::key_wallet::AccountType;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_type::ManagedAccountType;
         if contacts.is_empty() {
             return Ok(0);
         }
@@ -2205,29 +2203,8 @@ impl WalletBackend {
         let info = wm
             .get_wallet_info_mut(&wallet_id)
             .ok_or(TaskError::WalletStateInconsistent)?;
-        let mut newly_inserted = 0;
-        for (account_type, account_xpub) in accounts {
-            match add_contact_receiving_account(&mut info.core_wallet, account_type, account_xpub) {
-                Ok(true) => newly_inserted += 1,
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::debug!(%error, "Skipping contact account: managed insert failed");
-                }
-            }
-        }
-        // Only bump the monitor revision when new accounts were added: a
-        // revision bump on every unlock would cause a spurious bloom-filter
-        // rebuild on each boot even when the contact set is unchanged.
-        if newly_inserted > 0 {
-            for account in info.core_wallet.accounts.all_funding_accounts_mut() {
-                if matches!(
-                    account.managed_account_type(),
-                    ManagedAccountType::DashpayReceivingFunds { .. }
-                ) {
-                    account.bump_monitor_revision();
-                }
-            }
-        }
+        let newly_inserted =
+            register_contact_accounts_in_managed_wallet(&mut info.core_wallet, accounts);
         Ok(newly_inserted)
     }
 
@@ -2661,6 +2638,46 @@ impl WalletBackend {
     }
 }
 
+/// Registers contact accounts and bumps their aggregate monitor revision for real insertions.
+fn register_contact_accounts_in_managed_wallet(
+    info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    accounts: impl IntoIterator<
+        Item = (
+            dash_sdk::dpp::key_wallet::AccountType,
+            dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
+        ),
+    >,
+) -> usize {
+    use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    use dash_sdk::dpp::key_wallet::managed_account::managed_account_type::ManagedAccountType;
+
+    let mut newly_inserted = 0;
+    for (account_type, account_xpub) in accounts {
+        match add_contact_receiving_account(info, account_type, account_xpub) {
+            Ok(true) => newly_inserted += 1,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::debug!(%error, "Skipping contact account: managed insert failed");
+            }
+        }
+    }
+    if newly_inserted > 0 {
+        for account in info.accounts.all_funding_accounts_mut() {
+            if matches!(
+                account.managed_account_type(),
+                ManagedAccountType::DashpayReceivingFunds { .. }
+            ) {
+                account.bump_monitor_revision();
+            }
+        }
+    }
+    newly_inserted
+}
+
+/// Adds one `DashpayReceivingFunds` account to managed state.
+///
+/// Returns `true` for a new insertion and `false` when the contact key already exists.
+/// Any other account variant returns `InvalidParameter`.
 fn add_contact_receiving_account(
     info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     account_type: dash_sdk::dpp::key_wallet::AccountType,
@@ -2675,6 +2692,7 @@ fn add_contact_receiving_account(
         friend_identity_id,
     } = account_type
     else {
+        // Validate at this seam so future callers cannot register a non-contact account.
         return Err(dash_sdk::dpp::key_wallet::error::Error::InvalidParameter(
             "contact receiving account type required".to_owned(),
         ));
@@ -2684,6 +2702,7 @@ fn add_contact_receiving_account(
         user_identity_id,
         friend_identity_id,
     };
+    // Convert upstream's duplicate InvalidParameter into DET's idempotent false result.
     if info.accounts.dashpay_receival_accounts.contains_key(&key) {
         return Ok(false);
     }
@@ -3036,9 +3055,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 mod tests {
     use super::*;
 
+    /// Covers the managed-state seam after contact xpub derivation, including revision gating.
+    /// Wallet resolution and manager-lock wiring still require backend-e2e infrastructure.
     #[test]
-    fn contact_account_registration_invalidates_filter_coverage_once() {
+    fn contact_registration_bumps_monitor_revision_only_for_new_keys() {
         use dash_sdk::dpp::key_wallet::account::AccountType;
+        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
@@ -3051,33 +3073,63 @@ mod tests {
             WalletAccountCreationOptions::Default,
         )
         .expect("build seeded wallet");
-        let account_type = AccountType::DashpayReceivingFunds {
-            index: 0,
-            user_identity_id: [1u8; 32],
-            friend_identity_id: [2u8; 32],
+        let contact_account = |friend_identity_id| {
+            let account_type = AccountType::DashpayReceivingFunds {
+                index: 0,
+                user_identity_id: [1u8; 32],
+                friend_identity_id,
+            };
+            let path = account_type
+                .derivation_path(network)
+                .expect("derive contact account path");
+            let account_xpub = wallet
+                .derive_extended_public_key(&path)
+                .expect("derive contact account xpub");
+            (account_type, account_xpub)
         };
-        let path = account_type
-            .derivation_path(network)
-            .expect("derive contact account path");
-        let account_xpub = wallet
-            .derive_extended_public_key(&path)
-            .expect("derive contact account xpub");
+        let first_contact = contact_account([2u8; 32]);
+        let second_contact = contact_account([3u8; 32]);
+        let max_monitor_revision = |info: &ManagedWalletInfo| {
+            info.accounts
+                .dashpay_receival_accounts
+                .values()
+                .map(ManagedAccountTrait::monitor_revision)
+                .max()
+                .unwrap_or_default()
+        };
         let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
         info.update_synced_height(500);
 
-        assert!(
-            add_contact_receiving_account(&mut info, account_type, account_xpub)
-                .expect("register new contact account")
+        assert_eq!(
+            register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
+            1
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
+        assert_eq!(max_monitor_revision(&info), 1);
 
-        assert!(
-            !add_contact_receiving_account(&mut info, account_type, account_xpub)
-                .expect("re-register contact account")
+        assert_eq!(
+            register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
+            0
         );
         assert_eq!(info.account_generation(), 1);
         assert_eq!(info.synced_height(), 0);
+        assert_eq!(max_monitor_revision(&info), 1);
+
+        assert_eq!(
+            register_contact_accounts_in_managed_wallet(&mut info, [first_contact, second_contact]),
+            1
+        );
+        assert_eq!(info.account_generation(), 2);
+        assert_eq!(max_monitor_revision(&info), 2);
+        let mut revisions = info
+            .accounts
+            .dashpay_receival_accounts
+            .values()
+            .map(ManagedAccountTrait::monitor_revision)
+            .collect::<Vec<_>>();
+        revisions.sort_unstable();
+        assert_eq!(revisions, [1, 2]);
     }
 
     #[cfg(unix)]

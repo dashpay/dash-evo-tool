@@ -1922,7 +1922,7 @@ pub enum TaskError {
 
     /// A new wallet password is shorter than the persistent secret store's
     /// minimum and therefore could not be migrated to Tier-2 protection.
-    #[error("Wallet passwords must be at least {min} characters after trimming.")]
+    #[error("Wallet passwords must be at least {min} characters. Pick a longer one and try again.")]
     WalletPasswordTooShort { min: u32 },
 
     /// Wallet key derivation failed during construction.
@@ -3181,6 +3181,14 @@ mod tests {
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn wallet_password_too_short_display_matches_model_guidance() {
+        assert_eq!(
+            TaskError::WalletPasswordTooShort { min: 8 }.to_string(),
+            "Wallet passwords must be at least 8 characters. Pick a longer one and try again."
+        );
     }
 
     #[test]

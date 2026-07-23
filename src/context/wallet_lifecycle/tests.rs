@@ -1750,6 +1750,75 @@ async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {
     backend.shutdown().await;
 }
 
+/// A failed upstream delete must keep the native FVK row and warn the user
+/// that wallet data may remain on disk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_warns_when_persisted_shielded_viewing_key_delete_fails() {
+    let _guard = backend_reopen_lock().await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let seed = [0xA3u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    let (ctx, sender) = offline_testnet_context_at(source_dir.path());
+
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("wire wallet backend");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("persist upstream wallet");
+    backend
+        .ensure_shielded_bound(&seed_hash, &seed)
+        .await
+        .expect("persist wallet viewing key");
+    let wallet_id = backend
+        .registered_wallet_id(&seed_hash)
+        .expect("registered upstream wallet id");
+    let persister_path = source_dir
+        .path()
+        .join("spv")
+        .join("testnet")
+        .join("platform-wallet.sqlite");
+    let connection =
+        rusqlite::Connection::open(&persister_path).expect("open persister fault injector");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_wallet_delete \
+             BEFORE DELETE ON wallets \
+             BEGIN \
+                 SELECT RAISE(ABORT, 'forced wallet delete failure'); \
+             END;",
+        )
+        .expect("install wallet-delete failure trigger");
+    crate::ui::components::MessageBanner::clear_all_global(ctx.egui_ctx());
+
+    ctx.remove_wallet(&seed_hash).expect("remove DET wallet");
+    let _ = ctx.subtasks.shutdown_async().await;
+
+    let viewing_key_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM shielded_viewing_keys WHERE wallet_id = ?1",
+            [wallet_id.as_slice()],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count retained viewing keys");
+    assert_eq!(
+        viewing_key_count, 1,
+        "the failed wallet delete must leave its cascaded FVK row in place"
+    );
+    assert!(
+        crate::ui::components::MessageBanner::has_global(ctx.egui_ctx()),
+        "the asynchronous deletion failure must raise a user-visible warning"
+    );
+
+    backend.shutdown().await;
+}
+
 /// The receive-address snapshot is empty until a bind publishes into it, so a
 /// wallet that is locked or not yet bound reports `None` and the Shielded tab
 /// falls back to its "not ready yet" copy instead of rendering a wrong address.
@@ -3652,6 +3721,179 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
         .expect("second call must be idempotent (both accounts already present)");
 
     backend2.shutdown().await;
+}
+
+/// A malformed Orchard viewing key must be isolated to its own wallet during
+/// the real seedless cold-boot load.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_boot_skips_corrupt_fvk_for_one_wallet_and_restores_healthy_wallet() {
+    let _guard = backend_reopen_lock().await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let corrupt_seed = [0xD5u8; 64];
+    let healthy_seed = [0xD6u8; 64];
+
+    let (corrupt_hash, corrupt_wallet_id, healthy_hash, healthy_wallet_id) = {
+        let password = Secret::new("cold-boot-fvk-password");
+        let corrupt_wallet = crate::model::wallet::Wallet::new_from_seed(
+            corrupt_seed,
+            Network::Testnet,
+            Some("corrupt-fvk".to_string()),
+            Some(&password),
+        )
+        .expect("build corrupt-fixture wallet");
+        let corrupt_hash = corrupt_wallet.seed_hash();
+        let healthy_wallet = crate::model::wallet::Wallet::new_from_seed(
+            healthy_seed,
+            Network::Testnet,
+            Some("healthy-fvk".to_string()),
+            Some(&password),
+        )
+        .expect("build healthy wallet");
+        let healthy_hash = healthy_wallet.seed_hash();
+        let (ctx, sender) = offline_testnet_context_at(source_dir.path());
+
+        ctx.register_wallet(corrupt_wallet, &corrupt_seed, WalletOrigin::Fresh)
+            .expect("register corrupt-fixture DET wallet");
+        ctx.register_wallet(healthy_wallet, &healthy_seed, WalletOrigin::Fresh)
+            .expect("register healthy DET wallet");
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire boot-1 backend");
+        let backend = ctx.wallet_backend().expect("boot-1 backend");
+
+        backend
+            .register_wallet_from_seed(&corrupt_hash, &corrupt_seed, Some(0))
+            .await
+            .expect("persist corrupt-fixture upstream wallet");
+        backend
+            .register_wallet_from_seed(&healthy_hash, &healthy_seed, Some(0))
+            .await
+            .expect("persist healthy upstream wallet");
+        backend
+            .ensure_shielded_bound(&corrupt_hash, &corrupt_seed)
+            .await
+            .expect("persist corrupt-fixture viewing key");
+        backend
+            .ensure_shielded_bound(&healthy_hash, &healthy_seed)
+            .await
+            .expect("persist healthy viewing key");
+        assert!(
+            backend
+                .bind_shielded_from_persisted_for_test(&corrupt_hash)
+                .await
+                .expect("read corrupt-fixture viewing key before corruption"),
+            "precondition: the first wallet has a restorable FVK"
+        );
+        assert!(
+            backend
+                .bind_shielded_from_persisted_for_test(&healthy_hash)
+                .await
+                .expect("read healthy viewing key"),
+            "precondition: the second wallet has a restorable FVK"
+        );
+        let corrupt_wallet_id = backend
+            .registered_wallet_id(&corrupt_hash)
+            .expect("corrupt-fixture upstream wallet id");
+        let healthy_wallet_id = backend
+            .registered_wallet_id(&healthy_hash)
+            .expect("healthy upstream wallet id");
+
+        let persister_path = source_dir
+            .path()
+            .join("spv")
+            .join("testnet")
+            .join("platform-wallet.sqlite");
+        let connection = rusqlite::Connection::open_with_flags(
+            &persister_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open boot-1 persister inspection connection");
+        for wallet_id in [corrupt_wallet_id, healthy_wallet_id] {
+            let count = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM shielded_viewing_keys WHERE wallet_id = ?1",
+                    [wallet_id.as_slice()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count boot-1 viewing keys");
+            assert_eq!(count, 1, "precondition: each wallet has one FVK row");
+        }
+        drop(connection);
+
+        backend.shutdown().await;
+        let _ = ctx.subtasks.shutdown_async().await;
+        (
+            corrupt_hash,
+            corrupt_wallet_id,
+            healthy_hash,
+            healthy_wallet_id,
+        )
+    };
+
+    let cold_dir = tempfile::tempdir().expect("cold tempdir");
+    copy_dir_recursive(source_dir.path(), cold_dir.path());
+    let persister_path = cold_dir
+        .path()
+        .join("spv")
+        .join("testnet")
+        .join("platform-wallet.sqlite");
+    let connection =
+        rusqlite::Connection::open(&persister_path).expect("open cold-boot persister fixture");
+    assert_eq!(
+        connection
+            .execute(
+                "UPDATE shielded_viewing_keys SET viewing_key = X'00' WHERE wallet_id = ?1",
+                [corrupt_wallet_id.as_slice()],
+            )
+            .expect("corrupt one persisted viewing key"),
+        1,
+        "the corruption fixture must update exactly one FVK row"
+    );
+    drop(connection);
+
+    let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("one corrupt FVK must not prevent cold boot");
+    let backend = ctx.wallet_backend().expect("cold-boot backend");
+
+    assert!(
+        ctx.wallets.read_recover().contains_key(&corrupt_hash),
+        "the corrupt-FVK DET wallet must remain registered"
+    );
+    assert!(
+        ctx.wallets.read_recover().contains_key(&healthy_hash),
+        "the healthy DET wallet must remain registered"
+    );
+    assert!(
+        backend.is_wallet_registered(&corrupt_hash),
+        "the corrupt-FVK wallet must remain registered upstream"
+    );
+    assert!(
+        backend.is_wallet_registered(&healthy_hash),
+        "the healthy wallet must remain registered upstream"
+    );
+    assert!(
+        !backend
+            .bind_shielded_from_persisted_for_test(&corrupt_hash)
+            .await
+            .expect("probe skipped corrupt viewing key"),
+        "the corrupt wallet must not restore a shielded binding"
+    );
+    assert!(
+        backend
+            .bind_shielded_from_persisted_for_test(&healthy_hash)
+            .await
+            .expect("restore healthy viewing key"),
+        "the healthy wallet must restore its shielded binding"
+    );
+    assert_ne!(
+        corrupt_wallet_id, healthy_wallet_id,
+        "fixture wallets must have distinct upstream ids"
+    );
+
+    backend.shutdown().await;
+    let _ = ctx.subtasks.shutdown_async().await;
 }
 
 /// A corrupt persisted Core transaction must not hide the wallet or prevent

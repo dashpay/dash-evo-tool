@@ -862,13 +862,9 @@ impl SecretAccess {
                         let seed = decrypt_hd_seed(&envelope, passphrase)?;
                         if envelope.uses_password {
                             let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
-                            if let Err(e) = view.set_protected(seed_hash, &seed, pw) {
-                                tracing::warn!(
-                                    target = "wallet_backend::secret_access",
-                                    error = ?e,
-                                    "HD seed lazy Tier-2 re-wrap deferred (storage rejected write)",
-                                );
-                            }
+                            handle_lazy_tier2_rewrap_result(
+                                view.set_protected(seed_hash, &seed, pw),
+                            )?;
                         } else {
                             view.set_raw(seed_hash, &seed)?;
                         }
@@ -1135,6 +1131,22 @@ pub(crate) fn identity_key_from_bytes(bytes: &[u8]) -> Result<[u8; SINGLE_KEY_LE
         );
         TaskError::IdentityKeyMalformed
     })
+}
+
+fn handle_lazy_tier2_rewrap_result(result: Result<(), TaskError>) -> Result<(), TaskError> {
+    match result {
+        Err(TaskError::SecretSeam { source })
+            if matches!(source.as_ref(), SecretStoreError::BlankPassphrase) =>
+        {
+            tracing::warn!(
+                target = "wallet_backend::secret_access",
+                error = ?source,
+                "HD seed lazy Tier-2 re-wrap deferred because the legacy password is below the storage floor",
+            );
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Whether `e` is the "wrong passphrase" condition that the re-ask loop
@@ -2694,6 +2706,33 @@ mod tests {
             view.get(&seed_hash).unwrap().is_some(),
             "the legacy envelope must remain for the next unlock"
         );
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_defers_blank_passphrase() {
+        let result = handle_lazy_tier2_rewrap_result(Err(TaskError::SecretSeam {
+            source: Box::new(SecretStoreError::BlankPassphrase),
+        }));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_propagates_non_blank_storage_error() {
+        let result = handle_lazy_tier2_rewrap_result(Err(TaskError::SecretSeam {
+            source: Box::new(SecretStoreError::Corruption),
+        }));
+
+        assert!(matches!(
+            result,
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::Corruption)
+        ));
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_accepts_success() {
+        assert!(handle_lazy_tier2_rewrap_result(Ok(())).is_ok());
     }
 
     /// TS-T2-02 — a Tier-2 seed re-asks on a wrong object password (upstream

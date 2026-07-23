@@ -52,7 +52,7 @@ pub enum PaymentValidationError {
 #[derive(Debug, Error)]
 pub enum WalletCreationError {
     /// The password cannot satisfy the persistent secret store's minimum.
-    #[error("Wallet passwords must be at least {min} characters after trimming.")]
+    #[error("Wallet passwords must be at least {min} characters. Pick a longer one and try again.")]
     PasswordTooShort { min: u32 },
     /// Encrypting the seed with the supplied password failed.
     #[error("Could not process encrypted data. Please check your keys and try again.")]
@@ -436,7 +436,7 @@ impl Wallet {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
-                if pw.expose_secret().trim().chars().count() < MIN_PASSPHRASE_LEN {
+                if pw.expose_secret().trim().len() < MIN_PASSPHRASE_LEN {
                     return Err(WalletCreationError::PasswordTooShort {
                         min: MIN_PASSPHRASE_LEN as u32,
                     });
@@ -2644,6 +2644,30 @@ mod tests {
             Err(WalletCreationError::PasswordTooShort { min })
                 if min == MIN_PASSPHRASE_LEN as u32
         ));
+    }
+
+    #[test]
+    fn new_wallet_accepts_password_meeting_utf8_byte_storage_floor() {
+        let multibyte_password = Secret::new("öäüß");
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("multibyte-password".to_string()),
+            Some(&multibyte_password),
+        );
+
+        assert!(
+            result.is_ok(),
+            "four two-byte characters meet the eight-byte storage floor"
+        );
+    }
+
+    #[test]
+    fn password_too_short_display_is_actionable() {
+        assert_eq!(
+            WalletCreationError::PasswordTooShort { min: 8 }.to_string(),
+            "Wallet passwords must be at least 8 characters. Pick a longer one and try again."
+        );
     }
 
     /// R3 capstone: an open wallet retains NO plaintext seed.

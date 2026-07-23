@@ -266,3 +266,63 @@ impl WalletBackend {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::model::fee_estimation::core_max_send_amount_duffs;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PublicKey, TxOut, Txid};
+    use dash_sdk::dpp::key_wallet::Utxo;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
+
+    /// Reproduces <https://github.com/dashpay/dash-evo-tool/issues/909>.
+    /// The root cause is upstream in `dashpay/rust-dashcore` key-wallet's
+    /// `coin_selection.rs`, pinned at revision `be6e776`, tracked at
+    /// <https://github.com/dashpay/rust-dashcore/issues/911>.
+    ///
+    /// Asserts the *correct* behavior (a Max send folds the zero/dust remainder
+    /// into its fee), so it stays RED until the upstream fix lands. `#[ignore]`
+    /// keeps it out of the CI gate meanwhile; run it manually with:
+    ///
+    /// ```sh
+    /// cargo test --lib -- core_max_send_with_single_utxo_builds_without_change --ignored
+    /// ```
+    ///
+    /// Remove `#[ignore]` once the pinned key-wallet revision contains the fix.
+    #[test]
+    #[ignore = "RED until upstream key-wallet coin-selection fix lands (rust-dashcore#911); run with --ignored"]
+    fn core_max_send_with_single_utxo_builds_without_change() {
+        const BALANCE_DUFFS: u64 = 10_000_000;
+
+        let address = Address::p2pkh(
+            &PublicKey::from_slice(&[0x02; 33]).expect("valid compressed public key"),
+            Network::Testnet,
+        );
+        let utxo = Utxo::new(
+            OutPoint::new(Txid::all_zeros(), 0),
+            TxOut {
+                value: BALANCE_DUFFS,
+                script_pubkey: address.script_pubkey(),
+            },
+            address.clone(),
+            1,
+            false,
+        );
+        let max_amount = core_max_send_amount_duffs(BALANCE_DUFFS, 1, 1)
+            .expect("the balance covers the Max-send fee reserve");
+
+        assert_eq!(max_amount, 9_999_780);
+        let (transaction, fee) = TransactionBuilder::new()
+            .set_current_height(200)
+            .set_selection_strategy(SelectionStrategy::LargestFirst)
+            .add_inputs([utxo])
+            .add_output(&address, max_amount)
+            .set_change_address(address)
+            .build_unsigned()
+            .expect("a Max send must fold the zero/dust remainder into its fee");
+
+        assert_eq!(transaction.output.len(), 1);
+        assert_eq!(fee, BALANCE_DUFFS - max_amount);
+    }
+}

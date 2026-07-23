@@ -425,6 +425,23 @@ impl KeyStorage {
             .collect()
     }
 
+    /// Whether any stored private key lacks an available HD wallet.
+    pub(crate) fn has_keys_without_available_wallet(
+        &self,
+        wallet_is_available: impl Fn(&WalletSeedHash) -> bool,
+    ) -> bool {
+        self.private_keys.values().any(|(public_key, private_key)| {
+            let wallet_seed_hash = match private_key {
+                PrivateKeyData::AtWalletDerivationPath(path) => Some(&path.wallet_seed_hash),
+                _ => public_key
+                    .in_wallet_at_derivation_path
+                    .as_ref()
+                    .map(|path| &path.wallet_seed_hash),
+            };
+            wallet_seed_hash.is_none_or(|seed_hash| !wallet_is_available(seed_hash))
+        })
+    }
+
     /// Inserts an unencrypted key into `ClearKeyStorage`. Returns an error if the storage is closed.
     pub fn insert_non_encrypted(
         &mut self,
@@ -661,6 +678,80 @@ mod tests {
             ),
         );
         ks
+    }
+
+    #[test]
+    fn wallet_derived_keys_do_not_need_separate_recovery_information() {
+        let storage = {
+            let pv = PlatformVersion::latest();
+            let key = IdentityPublicKey::random_key(4, Some(4), pv);
+            KeyStorage::from(BTreeMap::from([(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    WalletDerivationPath {
+                        wallet_seed_hash: [0x04; 32],
+                        derivation_path: DerivationPath::from(vec![]),
+                    },
+                ),
+            )]))
+        };
+
+        assert!(
+            !storage.has_keys_without_available_wallet(|seed_hash| { *seed_hash == [0x04; 32] })
+        );
+    }
+
+    #[test]
+    fn wallet_derived_key_needs_recovery_when_its_wallet_is_unavailable() {
+        let pv = PlatformVersion::latest();
+        let key = IdentityPublicKey::random_key(6, Some(6), pv);
+        let storage = KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key),
+                WalletDerivationPath {
+                    wallet_seed_hash: [0x06; 32],
+                    derivation_path: DerivationPath::from(vec![]),
+                },
+            ),
+        )]));
+
+        assert!(storage.has_keys_without_available_wallet(|_| false));
+    }
+
+    #[test]
+    fn mixed_wallet_and_local_keys_need_separate_recovery_information() {
+        let local_high = distinctive_secret();
+        let mut local_medium = local_high;
+        local_medium[0] ^= 0xFF;
+        let storage = storage_with_plaintext_and_derived(local_high, local_medium);
+
+        assert!(storage.has_keys_without_available_wallet(|_| true));
+    }
+
+    #[test]
+    fn vault_key_with_wallet_metadata_does_not_need_separate_recovery_information() {
+        let pv = PlatformVersion::latest();
+        let key = IdentityPublicKey::random_key(5, Some(5), pv);
+        let wallet_path = WalletDerivationPath {
+            wallet_seed_hash: [0x05; 32],
+            derivation_path: DerivationPath::from(vec![]),
+        };
+        let storage = KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    key,
+                    Some(wallet_path),
+                ),
+                PrivateKeyData::InVault,
+            ),
+        )]));
+
+        assert!(
+            !storage.has_keys_without_available_wallet(|seed_hash| { *seed_hash == [0x05; 32] })
+        );
     }
 
     /// TS-RESID-02 — a bincode blob written BEFORE `InVault` was appended

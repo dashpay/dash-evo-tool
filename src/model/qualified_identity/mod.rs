@@ -600,6 +600,14 @@ impl QualifiedIdentity {
         presence
     }
 
+    /// Whether unloading would remove a key that no loaded HD wallet can restore.
+    pub fn requires_recovery_information_after_unload(&self) -> bool {
+        self.private_keys
+            .has_keys_without_available_wallet(|seed_hash| {
+                self.associated_wallets.contains_key(seed_hash)
+            })
+    }
+
     /// Resolve the 32-byte private key for `(target, key_id)` without ever
     /// reading a wallet's parked seed.
     ///

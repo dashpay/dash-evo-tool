@@ -12,8 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   working "Unload this identity from this device" action. It removes every
   piece of locally stored data for that identity (keys, cached profile,
   DashPay data) while leaving your other identities untouched. The identity
-  itself is unaffected on the network, but because unloading deletes its local
-  private keys you will need its recovery information to load it again.
+  itself is unaffected on the network. Wallet-derived private keys can be
+  restored from the wallet. To load the identity again, you need recovery
+  information for any keys stored only on this device.
 
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.

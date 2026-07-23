@@ -58,8 +58,10 @@ const TIP_ADD_KEY: &str =
 const TIP_MANAGE_KEYS: &str = "View this identity's keys and their security settings.";
 const TIP_VIEW_USERNAMES: &str = "Open the complete list of your registered usernames.";
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
-const TIP_UNLOAD: &str = "Remove this identity from this device, deleting its private keys and local data. It \
-     remains on Dash Platform, but you will need its recovery information to load it again.";
+const TIP_UNLOAD_WALLET_DERIVED: &str = "Remove this identity and its local data from this device. It remains on \
+     Dash Platform, and its wallet-derived private keys can be restored when you load it again.";
+const TIP_UNLOAD_RECOVERY_REQUIRED: &str = "Remove this identity from this device, deleting its private keys and \
+     local data. It remains on Dash Platform, but you will need its recovery information to load it again.";
 const TIP_SAVE_ALIAS: &str = "Save this name on this device.";
 const TIP_ID_COPY: &str = "Copy the full identity ID to your clipboard.";
 
@@ -716,19 +718,13 @@ impl SettingsTab {
                 ui.add_space(6.0);
                 let unload =
                     ComponentStyles::add_danger_button(ui, "Unload this identity from this device")
-                        .clickable_tooltip(TIP_UNLOAD);
+                        .clickable_tooltip(identity_unload_tip(identity));
                 if unload.clicked() {
                     let target_id = identity.identity.id();
-                    let identity_label = identity_unload_label(identity);
                     self.confirm_unload = Some(PendingIdentityUnload {
                         dialog: ConfirmationDialog::new(
                             "Unload this identity",
-                            format!(
-                                "Identity \"{identity_label}\" will be permanently unloaded from \
-                                 this device, deleting its private keys and local data. It remains \
-                                 on Dash Platform, but you will need its recovery information to \
-                                 load it again."
-                            ),
+                            identity_unload_confirmation_message(identity),
                         )
                         .confirm_text(Some("Permanently unload"))
                         .cancel_text(Some("Keep identity"))
@@ -946,6 +942,45 @@ fn identity_unload_label(identity: &QualifiedIdentity) -> String {
         .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58))
 }
 
+fn identity_unload_tip(identity: &QualifiedIdentity) -> &'static str {
+    identity_unload_tip_for(identity.requires_recovery_information_after_unload())
+}
+
+fn identity_unload_tip_for(recovery_information_required: bool) -> &'static str {
+    if recovery_information_required {
+        TIP_UNLOAD_RECOVERY_REQUIRED
+    } else {
+        TIP_UNLOAD_WALLET_DERIVED
+    }
+}
+
+fn identity_unload_confirmation_message(identity: &QualifiedIdentity) -> String {
+    let identity_label = identity_unload_label(identity);
+    identity_unload_confirmation_message_for(
+        &identity_label,
+        identity.requires_recovery_information_after_unload(),
+    )
+}
+
+fn identity_unload_confirmation_message_for(
+    identity_label: &str,
+    recovery_information_required: bool,
+) -> String {
+    if recovery_information_required {
+        format!(
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its private keys and local data. It remains on Dash Platform, but you will \
+             need its recovery information to load it again."
+        )
+    } else {
+        format!(
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its local data. It remains on Dash Platform, and its wallet-derived private \
+             keys can be restored when you load it again."
+        )
+    }
+}
+
 fn confirmed_unload_action(target_id: Identifier) -> AppAction {
     AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::UnloadIdentity {
         identity_id: target_id,
@@ -1031,9 +1066,16 @@ fn identity_type_badge(kind: IdentityType) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::model::qualified_identity::encrypted_key_storage::{
+        PrivateKeyData, WalletDerivationPath,
+    };
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Identifier, IdentityPublicKey};
     use std::collections::BTreeMap;
@@ -1163,6 +1205,49 @@ mod tests {
             identity_unload_label(&unaliased),
             unaliased.identity.id().to_string(Encoding::Base58)
         );
+    }
+
+    #[test]
+    fn unload_dialog_omits_recovery_warning_for_wallet_derived_keys() {
+        assert_eq!(
+            identity_unload_confirmation_message_for("Wallet identity", false),
+            "Identity \"Wallet identity\" will be permanently unloaded from this device, \
+             deleting its local data. It remains on Dash Platform, and its wallet-derived \
+             private keys can be restored when you load it again."
+        );
+        assert_eq!(identity_unload_tip_for(false), TIP_UNLOAD_WALLET_DERIVED);
+    }
+
+    #[test]
+    fn unload_dialog_warns_about_recovery_information_for_mixed_keys() {
+        let mut identity = qualified_identity_with(12, Some("Mixed identity"));
+        let derived_key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+        identity.private_keys.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(derived_key),
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: [0x12; 32],
+                    derivation_path: DerivationPath::from(vec![]),
+                }),
+            ),
+        );
+        let local_key = IdentityPublicKey::random_key(2, Some(2), PlatformVersion::latest());
+        identity.private_keys.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, local_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(local_key),
+                PrivateKeyData::InVault,
+            ),
+        );
+
+        assert_eq!(
+            identity_unload_confirmation_message(&identity),
+            "Identity \"Mixed identity\" will be permanently unloaded from this device, deleting \
+             its private keys and local data. It remains on Dash Platform, but you will need its \
+             recovery information to load it again."
+        );
+        assert_eq!(identity_unload_tip(&identity), TIP_UNLOAD_RECOVERY_REQUIRED);
     }
 
     #[test]

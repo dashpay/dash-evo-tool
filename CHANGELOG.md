@@ -57,6 +57,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   does not support shielded sending from when the current interface mode does
   not unlock it.
 
+- **Identity Home actions simplified**: the action row previously had six
+  buttons — several of which opened the same screen (`Send`/`Send to another
+  identity`, `Receive`/`Add funds`). It's now one row of four: **Add funds**,
+  **Send to wallet**, **Send to another identity**, and **Add contact**.
+  **Send to wallet** is disabled with an explanation when the identity has no
+  withdrawal key loaded. The funding screen it opens, and its wording
+  throughout, now consistently says "Add funds" instead of "Top Up Identity",
+  and its step-by-step deposit messages no longer use technical wording.
+
 ### Changed
 
 - **Shielded transactions are available on supported networks**: sending,

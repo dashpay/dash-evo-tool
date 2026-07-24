@@ -41,6 +41,30 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+fn identity_removal_message(
+    primary_cleanup_failed: bool,
+    associated_cleanup_failed: bool,
+) -> (&'static str, MessageType) {
+    match (primary_cleanup_failed, associated_cleanup_failed) {
+        (false, false) => (
+            "The identity was removed from this device.",
+            MessageType::Success,
+        ),
+        (true, false) => (
+            "The identity was removed, but some local data could not be cleaned up. Load and remove it again to retry.",
+            MessageType::Warning,
+        ),
+        (false, true) => (
+            "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.",
+            MessageType::Warning,
+        ),
+        (true, true) => (
+            "The identity was removed, but some local data could not be cleaned up and its associated voter identity could not be removed. Restart the app, then load and remove the identity again to retry.",
+            MessageType::Warning,
+        ),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IdentitiesSortColumn {
     Alias,
@@ -1120,6 +1144,7 @@ impl ScreenLike for IdentitiesScreen {
             }
             crate::ui::BackendTaskSuccessResult::RemovedIdentities {
                 identity_ids,
+                primary_cleanup_failed,
                 associated_cleanup_failed,
             } => {
                 let mut identities = self.identities.lock_recover();
@@ -1127,19 +1152,12 @@ impl ScreenLike for IdentitiesScreen {
                     identities.shift_remove(&identity_id);
                 }
                 drop(identities);
-                if associated_cleanup_failed {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.",
-                        MessageType::Warning,
-                    )
-                    .disable_auto_dismiss();
-                } else {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "The identity was removed from this device.",
-                        MessageType::Success,
-                    );
+                let (message, message_type) =
+                    identity_removal_message(primary_cleanup_failed, associated_cleanup_failed);
+                let banner =
+                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
+                if primary_cleanup_failed || associated_cleanup_failed {
+                    banner.disable_auto_dismiss();
                 }
             }
             _ => {}
@@ -1249,11 +1267,33 @@ impl ScreenLike for IdentitiesScreen {
 
 #[cfg(test)]
 mod tests {
-    use super::render_identity_name_cell;
+    use super::{identity_removal_message, render_identity_name_cell};
     use crate::model::contested_name::PendingUsername;
     use crate::ui::components::pill::PENDING_USERNAME_PILL_LABEL;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn identity_removal_messages_distinguish_cleanup_outcomes() {
+        let (message, message_type) = identity_removal_message(false, false);
+        assert_eq!(message, "The identity was removed from this device.");
+        assert_eq!(message_type, crate::ui::MessageType::Success);
+
+        let (message, message_type) = identity_removal_message(true, false);
+        assert!(message.contains("some local data could not be cleaned up"));
+        assert!(!message.contains("associated voter identity"));
+        assert_eq!(message_type, crate::ui::MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(false, true);
+        assert!(!message.contains("some local data could not be cleaned up"));
+        assert!(message.contains("associated voter identity could not be removed"));
+        assert_eq!(message_type, crate::ui::MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(true, true);
+        assert!(message.contains("some local data could not be cleaned up"));
+        assert!(message.contains("associated voter identity could not be removed"));
+        assert_eq!(message_type, crate::ui::MessageType::Warning);
+    }
 
     /// The Identities list Name cell shows the identity's name and, when a DPNS
     /// registration is pending, a "Pending" pill beside it.

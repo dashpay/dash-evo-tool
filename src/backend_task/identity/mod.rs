@@ -1,6 +1,7 @@
 mod add_key_to_identity;
 mod auth_pubkey_resolve;
 mod discover_identities;
+mod load_guard;
 mod load_identity;
 mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;

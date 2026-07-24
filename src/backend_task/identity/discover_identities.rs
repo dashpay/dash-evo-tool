@@ -318,6 +318,7 @@ impl AppContext {
         let identity_id = qualified_identity.identity.id();
         let load_guard = self.begin_identity_load(identity_id, None)?;
         if self.is_identity_forgotten(&identity_id)? && !explicit_reload {
+            load_guard.loaded();
             return Ok(false);
         }
 
@@ -338,9 +339,10 @@ impl AppContext {
             }
         }
         if explicit_reload {
-            self.clear_forgotten_identity_after_explicit_load(&identity_id)?;
+            self.finish_identity_load_after_persist(&identity_id, load_guard);
+        } else {
+            load_guard.loaded();
         }
-        load_guard.loaded();
         Ok(true)
     }
 
@@ -507,6 +509,7 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::app::TaskResult;
+    use crate::context::identity_load_registry::IdentityLoadPhase;
     use crate::context::test_support::test_app_context;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
     use crate::utils::egui_mpsc::SenderAsync;
@@ -574,6 +577,11 @@ mod tests {
             .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
             .expect("simulate discovery persistence");
         assert!(!stored, "discovery must skip a forgotten identity");
+        assert_eq!(
+            ctx.latest_identity_load_phase(&identity_id),
+            Some(IdentityLoadPhase::Loaded),
+            "intentionally skipping a forgotten identity is a successful load no-op"
+        );
         assert!(
             ctx.get_identity_by_id(&identity_id)
                 .expect("read identity")
@@ -594,7 +602,7 @@ mod tests {
         ctx.delete_local_qualified_identity(&identity_id)
             .expect("remove identity without recording another unload");
         assert!(
-            ctx.persist_discovered_identity(identity, wallet_seed_hash, 4, false)
+            ctx.persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
                 .expect("simulate discovery after explicit reload"),
             "discovery must work normally after the explicit load clears the marker"
         );
@@ -602,6 +610,34 @@ mod tests {
             ctx.get_identity_by_id(&identity_id)
                 .expect("read rediscovered identity")
                 .is_some()
+        );
+
+        ctx.db()
+            .record_forgotten_identity(Network::Testnet, &identity_id)
+            .expect("record forgotten marker");
+        ctx.db()
+            .execute(
+                "CREATE TRIGGER fail_discovery_marker_cleanup
+                 BEFORE DELETE ON forgotten_identities
+                 BEGIN
+                     SELECT RAISE(FAIL, 'injected discovery marker cleanup failure');
+                 END;",
+                [],
+            )
+            .expect("install marker cleanup failure trigger");
+        assert!(
+            ctx.persist_discovered_identity(identity, wallet_seed_hash, 4, true)
+                .expect("persist despite marker cleanup failure"),
+            "durable persistence remains successful when marker cleanup fails"
+        );
+        assert_eq!(
+            ctx.latest_identity_load_phase(&identity_id),
+            Some(IdentityLoadPhase::Loaded)
+        );
+        assert!(
+            ctx.is_identity_forgotten(&identity_id)
+                .expect("read retained marker"),
+            "the injected cleanup fault must leave the marker in place"
         );
 
         backend.shutdown().await;

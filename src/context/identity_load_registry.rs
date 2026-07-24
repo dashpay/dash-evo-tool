@@ -288,6 +288,19 @@ impl AppContext {
             .filter(|record| record.token == token)
             .map(|record| record.phase)
     }
+
+    #[cfg(test)]
+    pub(crate) fn latest_identity_load_phase(
+        &self,
+        identity_id: &Identifier,
+    ) -> Option<IdentityLoadPhase> {
+        self.identity_loads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .records
+            .get(identity_id)
+            .map(|record| record.phase)
+    }
 }
 
 #[cfg(test)]

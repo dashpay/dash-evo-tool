@@ -66,8 +66,8 @@ impl AppContext {
             Ok(None) => return Err(TaskError::IdentityNotFound),
             Err(e) => return Err(TaskError::from(e)),
         };
-        super::load_identity::validate_loaded_identity_type(IdentityType::User, &identity)?;
-        let load_guard = self.begin_identity_load(identity_id, None)?;
+        let load_guard =
+            self.begin_identity_load_and_validate_type(IdentityType::User, &identity, None)?;
 
         // Get the label from the document for display
         let label = domain_doc
@@ -160,8 +160,7 @@ impl AppContext {
 
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
-        self.clear_forgotten_identity_after_explicit_load(&identity_id)?;
-        load_guard.loaded();
+        self.finish_identity_load_after_persist(&identity_id, load_guard);
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }

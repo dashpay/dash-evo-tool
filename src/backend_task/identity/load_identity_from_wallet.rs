@@ -99,8 +99,8 @@ impl AppContext {
         let matching_identity_key_id = matching_identity_key.id();
 
         let identity_id = identity.id();
-        super::load_identity::validate_loaded_identity_type(IdentityType::User, &identity)?;
-        let load_guard = self.begin_identity_load(identity_id, None)?;
+        let load_guard =
+            self.begin_identity_load_and_validate_type(IdentityType::User, &identity, None)?;
 
         let dpns_names_document_query = DocumentQuery {
             select: SelectProjection::documents(),
@@ -268,8 +268,7 @@ impl AppContext {
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
         }
-        self.clear_forgotten_identity_after_explicit_load(&identity_id)?;
-        load_guard.loaded();
+        self.finish_identity_load_after_persist(&identity_id, load_guard);
 
         Ok(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 })
     }

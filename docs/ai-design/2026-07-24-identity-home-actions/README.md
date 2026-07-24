@@ -172,8 +172,17 @@ not defer them:
    (by_receive_deposit.rs:187/190, by_using_unused_balance.rs:156/160,
    by_using_unused_asset_lock.rs:117), and `"Wallet Balance: {:.8} DASH"`
    (by_using_unused_balance.rs:28). Rewrite per the error-messages / i18n-ready
-   string rules in CLAUDE.md, matching the sibling fix already applied to
-   `add_new_identity_screen` in PR #869.
+   string rules in CLAUDE.md.
+
+   **Correction (QA finding, 2026-07-24):** this item originally claimed the
+   rewrite would match "the sibling fix already applied to
+   `add_new_identity_screen` in PR #869." That claim is false — independently
+   verified that `add_new_identity_screen` (plus `wallets/create_asset_lock_screen.rs`
+   and `dashpay/send_payment.rs`) still contain the identical unfixed jargon
+   today. PR #869 touched those files but did not fix these specific strings
+   (or they regressed since). The rewrite in `top_up_identity_screen` proceeded
+   on its own merits against the CLAUDE.md rules directly, not by mirroring
+   another screen. See §7 for the resulting follow-up.
 4. Label→title discontinuity: `Add funds` opens a screen whose breadcrumb and
    heading say *Top Up Identity*. Align the screen's visible title/breadcrumb
    with the button label (pick one direction and make both match).
@@ -183,3 +192,29 @@ not defer them:
    but are not recorded as `[Gap]` stories anywhere. Add `[Gap]` entries so the
    catalog reflects that these were designed but never built, distinct from the
    redesigned action row documented here.
+
+## 7. Implementation status and follow-ups
+
+Items 1–6 above (and §3/§5) landed in commit `398ee3f4`. QA (independent
+adversarial pass) caught two problems in the first implementation attempt,
+both since fixed and re-verified: a kittest regression in
+`withdraw_screen.rs` (two tests substring-matched the old dead-end message
+text — updated to match the new wording without weakening what they guard),
+and item 4 initially renaming only the breadcrumb while every heading and CTA
+button downstream still said "Top Up Identity" (now fully aligned to "Add
+funds"/"Add Funds" throughout).
+
+Two items QA found are explicitly **not** part of this fix, left for a
+separate follow-up:
+
+- The jargon in `add_new_identity_screen`, `wallets/create_asset_lock_screen.rs`,
+  and `dashpay/send_payment.rs` (see the correction in item 3 above) — same
+  category of fix, different screens, kept out to avoid scope creep on an
+  already-large change.
+- Withdrawal-key gating is now checked three different ways across three
+  surfaces: Home's `Send to wallet` button (this fix, `available_withdrawal_keys().is_empty()`),
+  the `identities_screen.rs` "Withdraw" popup action (gated on balance only,
+  no key check), and `WithdrawalScreen`'s own internal check (role-aware —
+  Developer-role users need only *any* public key, not specifically
+  TRANSFER/OWNER). Not a dead end in practice, just an inconsistency across
+  entry points. Not requested by this fix's scope, not fixed here.

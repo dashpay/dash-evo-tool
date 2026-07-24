@@ -43,8 +43,8 @@ use egui::{ComboBox, ScrollArea, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
-const WALLET_SELECTION_TOOLTIP: &str = "This wallet will provide the address for receiving funds \
-and create the asset lock transaction to top up your identity.";
+const WALLET_SELECTION_TOOLTIP: &str =
+    "Choose the wallet that will supply or receive the Dash used to add funds to this identity.";
 
 fn pending_backend_tasks_action(
     mut lock_fetches: Vec<BackendTask>,
@@ -569,7 +569,7 @@ impl TopUpIdentityScreen {
         amount_input.set_max_exceeded_hint(fee_hint);
 
         // Pre-fill (once) with the fee-reserve-capped maximum when a deposit just
-        // arrived, so the amount and Top Up button are populated but still editable.
+        // arrived, so the amount and Add funds button are populated but still editable.
         if should_prefill && let Some(max) = max_amount {
             amount_input.set_value(Amount::dash_from_credits(max));
         }
@@ -668,7 +668,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 minimum_credits,
             );
             // Pre-fill the amount with the fee-reserve-capped balance when the
-            // deposit lands, so the field and Top Up button populate.
+            // deposit lands, so the field and Add funds button populate.
             if prefill.is_some() {
                 self.prefill_funding_amount = true;
             }
@@ -731,7 +731,7 @@ impl ScreenLike for TopUpIdentityScreen {
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
-                ("Top Up Identity", AppAction::None),
+                ("Add Funds", AppAction::None),
             ],
             vec![],
         );
@@ -777,7 +777,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                ui.heading("Follow these steps to top up your identity:");
+                ui.heading("Follow these steps to add funds to your identity:");
                 ui.add_space(15.0);
 
                 let mut step_number = 1;
@@ -813,8 +813,8 @@ impl ScreenLike for TopUpIdentityScreen {
                     if wallet_count > 1 {
                         ui.horizontal(|ui| {
                             ui.heading(format!(
-                                "{}. Choose the wallet to use to top up this identity.",
-                                step_number
+                                "{step_number}. Choose the wallet to use to add funds to this \
+                                 identity."
                             ));
                             ui.add_space(10.0);
 

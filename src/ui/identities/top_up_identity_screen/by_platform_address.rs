@@ -169,7 +169,7 @@ impl TopUpIdentityScreen {
 
         ui.add_space(20.0);
 
-        // Top Up button
+        // Add funds button
         let has_valid_amount = self
             .platform_top_up_amount
             .as_ref()
@@ -182,8 +182,8 @@ impl TopUpIdentityScreen {
 
         ui.horizontal(|ui| {
             let button_text = match step {
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => "Topping Up...",
-                _ => "Top Up Identity",
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => "Adding funds...",
+                _ => "Add funds",
             };
 
             let button = egui::Button::new(

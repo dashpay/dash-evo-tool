@@ -541,6 +541,24 @@ As a user, I want to transfer credits from one identity to another so that I can
 - Select source and destination identities.
 - Enter transfer amount.
 
+### IDN-018: Start an identity payment without choosing a contact first [Gap]
+**Persona:** Alex
+
+As an everyday user, I want to start a payment from my identity before choosing a recipient so that I can send Dash without first opening a contact.
+
+- The Identity Home screen offers the recipient-less Send payment sheet specified in design-spec §B.2 and §B.7.
+- The payment sheet lets the user choose a contact, username, or supported address.
+- The existing transfer screen does not satisfy this story because it only moves funds to another identity or a Platform address.
+
+### IDN-019: Receive Dash directly into an identity [Gap]
+**Persona:** Alex
+
+As an everyday user, I want to open a Receive view for my identity so that another person can scan a QR code or use an address to pay me.
+
+- Design-spec §B.2 and tooltip catalog §D #72–76 specify an identity Receive view that shares a username and a one-time Dash address or QR code.
+- An identity cannot receive Dash directly and has no receiving address, so this flow is not buildable as specified.
+- Funding must start from a wallet: Dash arrives in the wallet first, then the user adds those funds to the identity.
+
 ### IDN-007: Add key to identity [Implemented]
 **Persona:** Priya, Jordan
 
@@ -603,7 +621,7 @@ As a user, I want to register a new identity using Platform address credits so t
 - Alternative funding method in identity registration wizard.
 - Uses existing Platform address balance.
 
-### IDN-013: Top up identity from Platform addresses [Implemented]
+### IDN-017: Top up identity from Platform addresses [Implemented]
 **Persona:** Priya, Jordan
 
 As a user, I want to top up identity credits from a Platform address so that I can fund identities from my Platform balance.

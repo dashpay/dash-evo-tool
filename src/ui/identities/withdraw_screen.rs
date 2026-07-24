@@ -444,10 +444,10 @@ impl ScreenLike for WithdrawalScreen {
             if !has_keys {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    format!(
-                        "You do not have any withdrawal keys loaded for this {identity_type} identity. Note that TRANSFER or OWNER keys are used for withdrawals.",
-                        identity_type = self.identity.identity_type
-                    ));
+                    "This identity has no loaded key that can approve a withdrawal. Load or \
+                     import a key that can send funds from this identity, or use a different \
+                     identity.",
+                );
                 ui.add_space(10.0);
 
                 if self.identity.identity_type != IdentityType::User {

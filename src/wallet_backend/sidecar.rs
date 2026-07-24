@@ -126,6 +126,17 @@ impl<'a, V: SidecarValue> SidecarView<'a, V> {
         }
     }
 
+    /// Fetch the value for `id`, distinguishing "genuinely absent" (`Ok(None)`)
+    /// from "the blob is present but could not be read" (`Err`). Unlike
+    /// [`Self::get`], a read/decode/schema failure is surfaced through the
+    /// view's error envelope instead of degrading to `None`. Callers that must
+    /// not blindly overwrite existing fields on a failed read use this so a
+    /// storage fault aborts the write rather than clobbering the stored blob.
+    pub(crate) fn try_get(&self, network: Network, id: &SidecarId) -> Result<Option<V>, TaskError> {
+        let key = sidecar_key(network, self.infix, id);
+        V::read(self.kv, self.scope.det_scope(id), &key).map_err(self.map_err)
+    }
+
     /// Upsert the value for `id`. Re-writing the same value is an idempotent
     /// overwrite (DetKv upserts by key).
     pub(crate) fn set(&self, network: Network, id: &SidecarId, value: &V) -> Result<(), TaskError> {

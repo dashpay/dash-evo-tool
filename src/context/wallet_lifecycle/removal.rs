@@ -57,6 +57,7 @@ impl AppContext {
                     error = ?e,
                     "Failed to wipe local wallet secret state on removal"
                 );
+                show_wallet_data_removal_warning(self.egui_ctx(), e);
             }
 
             // The upstream (watch-only, seedless) persistor row removal is the

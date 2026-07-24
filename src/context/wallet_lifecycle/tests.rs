@@ -1691,6 +1691,35 @@ async fn remove_wallet_wipes_seed_envelope() {
     backend.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_warns_when_local_secret_wipe_fails() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xA4u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+    backend.set_forget_wallet_local_state_test_failure(true);
+    crate::ui::components::MessageBanner::clear_all_global(ctx.egui_ctx());
+
+    ctx.remove_wallet(&seed_hash).expect("remove wallet");
+
+    assert!(
+        crate::ui::components::MessageBanner::has_global(ctx.egui_ctx()),
+        "a local secret-wipe failure must raise a user-visible warning"
+    );
+
+    let _ = ctx.subtasks.shutdown_async().await;
+    backend.shutdown().await;
+}
+
 /// Removing a wallet drives upstream's native viewing-key cascade.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {

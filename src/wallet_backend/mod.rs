@@ -339,6 +339,8 @@ struct Inner {
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -526,6 +528,8 @@ impl WalletBackend {
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1036,6 +1040,13 @@ impl WalletBackend {
             .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_forget_wallet_local_state_test_failure(&self, fail: bool) {
+        self.inner
+            .forget_wallet_local_state_test_failure
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Resolve one just-registered upstream wallet into the DET-keyed maps via
     /// the account-xpub fund-routing gate, identical in spirit to the gate the
     /// seedless loader applies per wallet.
@@ -1268,6 +1279,15 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         wallet_id: Option<WalletId>,
     ) -> Result<(), TaskError> {
+        #[cfg(test)]
+        if self
+            .inner
+            .forget_wallet_local_state_test_failure
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(TaskError::WalletDataClearUnavailable);
+        }
+
         let mut first_error: Option<TaskError> = None;
 
         // Seed vault — delete BOTH the raw `seed.raw.v1` (the current form) and

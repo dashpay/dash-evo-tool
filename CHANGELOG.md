@@ -59,6 +59,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
+  the `dashpay/platform` dependency is bumped to the PR #3968 tip
+  (`d18020f` → `288a6ca`), which lands an embeddable SQLite persistence backend with
+  *seedless rehydration*. The wallet manager now restores watch-only wallet state
+  (accounts, balances, identities, platform addresses) from the on-disk store
+  without the HD seed, re-deriving spend authority just-in-time from the seed only
+  when an operation actually signs — so private key material is never left resident
+  between operations. DET's shielded operations were updated to match: each now
+  resolves the HD seed through the secret-seam chokepoint for the single operation
+  and drops it on return. The update also adds persistence and
+  rehydration for provider (masternode / evonode) platform-node key pools and for
+  DashPay invitations. The later review tip also retries transient startup
+  rehydration, selects platform-address transfer and withdrawal inputs from
+  hydrated candidates with authoritative on-chain balances, freezes the SPV sync
+  watermark when persistence fails, and persists address-reservation timestamps
+  plus DashPay address used-state updates. On Unix, DET now tightens app and
+  per-network storage directories to owner-only before opening the hardened
+  upstream database, so permissive system defaults do not prevent startup. New
+  wallet passwords must now be at least eight UTF-8 bytes after trimming
+  (measured in bytes, not characters, so a 4-character non-ASCII password like
+  `öäüß` — 8 bytes — is accepted); existing wallets with shorter passwords
+  that are still in DET's legacy encrypted format remain usable instead of
+  failing during lazy migration. Protected (Tier-2) shielded wallets now resolve
+  their seed just in time for every operation that spends or binds their Orchard
+  keys (initialization, shield from Core, shield from Platform, transfer,
+  unshield, and withdraw). Each operation prompts for the passphrase unless the
+  user explicitly keeps the wallet unlocked for the session, replacing the
+  previous implicit once-per-session reuse.
+
+  **Compatibility note:** wallets already migrated to Tier-2 storage by a
+  July 2026 weekly build with a shorter password cannot be opened at this
+  upstream tip; do not upgrade those profiles until upstream provides a
+  compatibility reader.
+
+  Development builds between `f7ca95f` and `69b7546` stored shielded viewing
+  keys in an interim metadata row that this final pin does not migrate; those
+  commits were never released, and unlocking the wallet safely re-derives and
+  persists the same viewing key in upstream's native table.
+  SPV broadcasts are now pure peer-to-peer and report success only after peer
+  echo, InstantSend, or confirmation; an ambiguous outcome keeps the input
+  reservation until sync or its TTL reconciles it. Adding a DashPay contact
+  receiving account also invalidates prior compact-filter coverage, preventing
+  an in-flight scan from certifying a wallet account set it did not scan.
+  Transitively, the pinned dashpay git dependencies advance with it:
+  `rust-dashcore` (`be6e776` → `18c68d4`, which lands the reserve-on-hand-out
+  receive-address APIs and SPV acceptance tracking), `grovedb` (`v5.0.0` →
+  `v5.0.1`), and the `orchard`
+  shielded-crypto fork (`dashified-0.14.0` → `dashified-0.14.1`); no crates.io
+  dependencies change.
+
 - **Shielded transactions are available on supported networks**: sending,
   receiving, shielding, and unshielding are enabled when the connected network's
   protocol version supports them, including mainnet. These operations were

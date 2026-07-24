@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.35.0", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "288a6cae4f9653d6085d2b3d6c7410210a0c95ba", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -28,12 +28,12 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8e
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "288a6cae4f9653d6085d2b3d6c7410210a0c95ba" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "288a6cae4f9653d6085d2b3d6c7410210a0c95ba", features = [
     "serde",
     "shielded",
 ] }
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "d18020f526e2a8eb1d1e868b436a7a9735795abb", features = [
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "288a6cae4f9653d6085d2b3d6c7410210a0c95ba", features = [
     "shielded",
 ] }
 zip32 = "0.2.0"
@@ -179,4 +179,3 @@ check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\",
 
 [lints.clippy]
 uninlined_format_args = "allow"
-

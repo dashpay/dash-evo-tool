@@ -1,6 +1,17 @@
 //! Wallet removal: evicting a wallet and wiping its at-rest secrets.
 
 use super::*;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
+
+const WALLET_DATA_REMOVAL_WARNING: &str = "Some wallet data could not be deleted and may remain on this device. Open Network settings and clear this network's database to remove it.";
+
+fn show_wallet_data_removal_warning(ctx: &egui::Context, error: TaskError) {
+    let handle = MessageBanner::set_global(ctx, WALLET_DATA_REMOVAL_WARNING, MessageType::Warning);
+    handle.with_details(error);
+    handle.disable_auto_dismiss();
+    ctx.request_repaint();
+}
 
 impl AppContext {
     pub fn remove_wallet(self: &Arc<Self>, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
@@ -46,22 +57,55 @@ impl AppContext {
                     error = ?e,
                     "Failed to wipe local wallet secret state on removal"
                 );
+                show_wallet_data_removal_warning(self.egui_ctx(), e);
             }
 
             // The upstream (watch-only, seedless) persistor row removal is the
             // sole async step; it carries no secret, so drive it off-thread.
             if let Some(wallet_id) = upstream_id {
                 let backend = Arc::clone(&backend);
-                let _ = self
+                let egui_ctx = self.egui_ctx().clone();
+                let removal = async move {
+                    if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
+                        show_wallet_data_removal_warning(&egui_ctx, error);
+                    }
+                };
+                if self
                     .subtasks
-                    .spawn_sync("wallet_upstream_removal", async move {
-                        if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
-                            tracing::warn!(%error, "Upstream wallet removal failed");
-                        }
-                    });
+                    .spawn_sync("wallet_upstream_removal", removal)
+                    .is_err()
+                {
+                    show_wallet_data_removal_warning(
+                        self.egui_ctx(),
+                        TaskError::TaskManagerShuttingDown,
+                    );
+                }
             }
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn wallet_data_removal_warning_requests_repaint() {
+        let ctx = egui::Context::default();
+        let repaint_requests = Arc::new(AtomicUsize::new(0));
+        let callback_requests = Arc::clone(&repaint_requests);
+        ctx.set_request_repaint_callback(move |_| {
+            callback_requests.fetch_add(1, Ordering::Relaxed);
+        });
+
+        show_wallet_data_removal_warning(&ctx, TaskError::TaskManagerShuttingDown);
+
+        assert!(
+            repaint_requests.load(Ordering::Relaxed) > 0,
+            "showing an asynchronous warning must wake an idle UI"
+        );
     }
 }

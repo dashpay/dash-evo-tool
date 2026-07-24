@@ -52,6 +52,24 @@ det-cli --addr http://127.0.0.1:9000/mcp core-wallets-list
 
 Force standalone mode with `--standalone` even when an API key is present.
 
+## Protected wallets and shielded operations
+
+Every shielded operation that spends or binds the wallet's Orchard keys
+(initialization, shield from Core, shield from Platform, transfer, unshield, and
+withdraw) resolves the wallet seed just in time. A password-protected (Tier-2)
+wallet therefore requires an interactive passphrase session.
+
+Standalone `det-cli`, its stdio MCP server, and the headless HTTP server use a
+null secret prompt because no authorized GUI session is available. These modes
+return `SecretPromptUnavailable` when a protected wallet needs to authorize a
+shielded operation. There is currently no environment-variable or
+CLI-passphrase workaround, so unattended shielded operations from a protected
+wallet are not supported. Use an unprotected wallet for that automation.
+
+This limitation does not apply in the same way when `det-cli` connects to MCP
+embedded in a running GUI. The embedded server can use the GUI's existing
+interactive prompt and authorized secret session.
+
 ## Usage
 
 Commands use hyphens (`core-wallets-list`, not `core_wallets_list`). Parameters are passed as `key=value` pairs:
@@ -185,8 +203,10 @@ det-cli masternode-credits-withdraw \
 ## Shielded self-verification loop (testnet)
 
 The shielded read/control tools let an agent drive and verify a full shielded
-lifecycle headlessly — no GUI. Onboard a pre-funded testnet seed, prepare the
-wallet, then move funds and confirm each balance change with `shielded-sync`.
+lifecycle headlessly — no GUI. This loop intentionally imports an unprotected
+wallet because standalone `det-cli` cannot prompt for a protected wallet's
+passphrase. Onboard a pre-funded testnet seed, prepare the wallet, then move
+funds and confirm each balance change with `shielded-sync`.
 
 ```bash
 # 1. Import the funded testnet seed (returns its seed_hash; idempotent)

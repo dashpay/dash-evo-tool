@@ -12,8 +12,26 @@ use crate::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 
 use super::{
-    DetPlatformSigner, DetSigner, PlatformPathIndex, WalletBackend, map_shielded_op_error,
+    DetPlatformSigner, DetSigner, PlatformPathIndex, SecretPlaintext, WalletBackend,
+    map_shielded_op_error,
 };
+
+/// Borrow the 64-byte HD seed from a resolved secret session for a shielded
+/// spend. Upstream re-derives the Orchard spend keyset from this seed on every
+/// `shielded_*_to` call.
+///
+/// A resolved secret that is not an HD seed indicates inconsistent wallet
+/// structure and maps to [`TaskError::WalletStateInconsistent`]. This is
+/// distinct from the protected-wallet path: `with_secret_session` prompts for
+/// that wallet, and a dismissed or headless prompt surfaces as
+/// [`TaskError::SecretPromptCancelled`] / [`TaskError::SecretPromptUnavailable`].
+fn hd_seed_for_shielded_spend<'a>(
+    plaintext: &'a SecretPlaintext<'_>,
+) -> Result<&'a [u8; 64], TaskError> {
+    plaintext
+        .expose_hd_seed()
+        .ok_or(TaskError::WalletStateInconsistent)
+}
 
 impl WalletBackend {
     /// Resolve the network-scoped shielded coordinator.
@@ -56,6 +74,21 @@ impl WalletBackend {
             .await
             .map_err(|e| TaskError::WalletBackend {
                 source: Arc::new(e),
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn bind_shielded_from_persisted_for_test(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<bool, TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let coordinator = self.shielded_coordinator_arc().await?;
+        wallet
+            .bind_shielded_from_persisted(&[0], &coordinator)
+            .await
+            .map_err(|error| TaskError::WalletBackend {
+                source: Arc::new(error),
             })
     }
 
@@ -197,8 +230,17 @@ impl WalletBackend {
 
     /// Shielded → shielded transfer from `account`'s notes to `recipient`.
     ///
-    /// No seed scope needed — the Orchard ASK is already resident in the
-    /// wallet's bound `shielded_keys` slot from `ensure_shielded_bound`.
+    /// The HD seed is resolved just-in-time through the
+    /// [`SecretAccess`](super::SecretAccess) chokepoint: upstream re-derives the
+    /// Orchard spend keyset (ASK included) from it for this call only and drops
+    /// it on return, so the spend authority is never left resident. An
+    /// unprotected wallet resolves prompt-free; a protected one is prompted for
+    /// its passphrase unless already cached, and a dismissed or headless prompt
+    /// surfaces as [`TaskError::SecretPromptCancelled`] /
+    /// [`TaskError::SecretPromptUnavailable`]. A non-HD secret at this HD scope
+    /// is a structural invariant failure and returns
+    /// [`TaskError::WalletStateInconsistent`] — see
+    /// `hd_seed_for_shielded_spend`.
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
@@ -210,26 +252,41 @@ impl WalletBackend {
         amount: u64,
         memo: [u8; 36],
     ) -> Result<(), TaskError> {
+        // coordinator / wallet / prover need no seed, so resolve them before the
+        // secret session to trim its front edge and fail fast (ShieldedNotConfigured
+        // / WalletNotLoaded) without prompting for a passphrase.
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
-            .shielded_transfer_to(
-                &coordinator,
-                account,
-                recipient_raw_43,
-                amount,
-                memo,
-                &prover,
-            )
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let plaintext = session.plaintext();
+                let seed = hd_seed_for_shielded_spend(&plaintext)?;
+                wallet
+                    .shielded_transfer_to(
+                        &coordinator,
+                        seed,
+                        account,
+                        recipient_raw_43,
+                        amount,
+                        memo,
+                        &prover,
+                    )
+                    .await
+                    .map_err(map_shielded_op_error)
+            })
             .await
-            .map_err(map_shielded_op_error)
     }
 
     /// Unshield from `account`'s notes to a transparent platform address
     /// (bech32m `"dash1…"` / `"tdash1…"` string).
     ///
-    /// No seed scope needed — keys are already bound.
+    /// The HD seed is resolved just-in-time through the
+    /// [`SecretAccess`](super::SecretAccess) chokepoint (see
+    /// [`shielded_transfer`](Self::shielded_transfer) for the spend-authority
+    /// lifetime and the prompt / failure-mode behaviour).
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
@@ -243,21 +300,33 @@ impl WalletBackend {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
-            .shielded_unshield_to(
-                &coordinator,
-                account,
-                to_platform_addr_bech32m,
-                amount,
-                &prover,
-            )
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let plaintext = session.plaintext();
+                let seed = hd_seed_for_shielded_spend(&plaintext)?;
+                wallet
+                    .shielded_unshield_to(
+                        &coordinator,
+                        seed,
+                        account,
+                        to_platform_addr_bech32m,
+                        amount,
+                        &prover,
+                    )
+                    .await
+                    .map_err(map_shielded_op_error)
+            })
             .await
-            .map_err(map_shielded_op_error)
     }
 
     /// Withdraw from `account`'s notes to a Core L1 address (Base58Check).
     ///
-    /// No seed scope needed — keys are already bound.
+    /// The HD seed is resolved just-in-time through the
+    /// [`SecretAccess`](super::SecretAccess) chokepoint (see
+    /// [`shielded_transfer`](Self::shielded_transfer) for the spend-authority
+    /// lifetime and the prompt / failure-mode behaviour).
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
@@ -272,17 +341,26 @@ impl WalletBackend {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
-            .shielded_withdraw_to(
-                &coordinator,
-                account,
-                to_core_address,
-                amount,
-                core_fee_per_byte,
-                &prover,
-            )
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let plaintext = session.plaintext();
+                let seed = hd_seed_for_shielded_spend(&plaintext)?;
+                wallet
+                    .shielded_withdraw_to(
+                        &coordinator,
+                        seed,
+                        account,
+                        to_core_address,
+                        amount,
+                        core_fee_per_byte,
+                        &prover,
+                    )
+                    .await
+                    .map_err(map_shielded_op_error)
+            })
             .await
-            .map_err(map_shielded_op_error)
     }
 
     /// Per-account unspent shielded balance for `seed_hash`'s wallet.
@@ -329,5 +407,35 @@ impl WalletBackend {
     /// was never configured (empty coordinator → empty pass).
     pub async fn sync_shielded_now(&self, force: bool) {
         self.inner.pwm.shielded_sync_arc().sync_now(force).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zeroize::Zeroizing;
+
+    /// An HD-seed secret resolves to its 64 raw bytes — the common shielded-spend
+    /// path.
+    #[test]
+    fn hd_seed_for_shielded_spend_accepts_hd_seed() {
+        let seed = Zeroizing::new([0x11u8; 64]);
+        let plaintext = SecretPlaintext::HdSeed(&seed);
+        let got = hd_seed_for_shielded_spend(&plaintext).expect("an HD seed must resolve");
+        assert_eq!(got, &[0x11u8; 64]);
+    }
+
+    /// A non-HD-seed secret at an HD scope is a structural wallet inconsistency,
+    /// distinct from the protected-wallet prompt path.
+    #[test]
+    fn hd_seed_for_shielded_spend_rejects_non_hd_secret_as_wallet_state_inconsistent() {
+        let key = Zeroizing::new([0x22u8; 32]);
+        let plaintext = SecretPlaintext::SingleKey(&key);
+        let err = hd_seed_for_shielded_spend(&plaintext)
+            .expect_err("a non-HD-seed secret must not yield a shielded spend key");
+        assert!(
+            matches!(err, TaskError::WalletStateInconsistent),
+            "got {err:?}"
+        );
     }
 }

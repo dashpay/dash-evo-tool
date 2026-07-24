@@ -1686,6 +1686,15 @@ pub enum TaskError {
     #[error("The contract structure is unexpected. Please update the application.")]
     ContractSchemaMismatch { detail: &'static str },
 
+    /// Platform returned a different contract after accepting an update.
+    #[error(
+        "The platform returned contract {returned} instead of {expected}. Please try the update again."
+    )]
+    UpdatedContractIdMismatch {
+        expected: Identifier,
+        returned: Identifier,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Withdrawal document parsing errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -1951,7 +1960,9 @@ pub enum TaskError {
 
     /// A new wallet password is shorter than the persistent secret store's
     /// minimum and therefore could not be migrated to Tier-2 protection.
-    #[error("Wallet passwords must be at least {min} characters. Pick a longer one and try again.")]
+    #[error(
+        "Wallet passwords must be at least {min} UTF-8 bytes after trimming. Pick a longer one and try again."
+    )]
     WalletPasswordTooShort { min: u32 },
 
     /// Wallet key derivation failed during construction.
@@ -3220,7 +3231,7 @@ mod tests {
     fn wallet_password_too_short_display_matches_model_guidance() {
         assert_eq!(
             TaskError::WalletPasswordTooShort { min: 8 }.to_string(),
-            "Wallet passwords must be at least 8 characters. Pick a longer one and try again."
+            "Wallet passwords must be at least 8 UTF-8 bytes after trimming. Pick a longer one and try again."
         );
     }
 

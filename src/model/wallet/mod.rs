@@ -61,7 +61,9 @@ pub enum PaymentValidationError {
 #[derive(Debug, Error)]
 pub enum WalletCreationError {
     /// The password cannot satisfy the persistent secret store's minimum.
-    #[error("Wallet passwords must be at least {min} characters. Pick a longer one and try again.")]
+    #[error(
+        "Wallet passwords must be at least {min} UTF-8 bytes after trimming. Pick a longer one and try again."
+    )]
     PasswordTooShort { min: u32 },
     /// Encrypting the seed with the supplied password failed.
     #[error("Could not process encrypted data. Please check your keys and try again.")]
@@ -2675,7 +2677,7 @@ mod tests {
     fn password_too_short_display_is_actionable() {
         assert_eq!(
             WalletCreationError::PasswordTooShort { min: 8 }.to_string(),
-            "Wallet passwords must be at least 8 characters. Pick a longer one and try again."
+            "Wallet passwords must be at least 8 UTF-8 bytes after trimming. Pick a longer one and try again."
         );
     }
 

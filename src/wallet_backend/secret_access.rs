@@ -833,12 +833,12 @@ impl SecretAccess {
                     //
                     // TODO(v1.1): `get_protected` rejects any password below
                     // `platform_wallet_storage::secrets::MIN_PASSPHRASE_LEN`
-                    // (8 chars) on READ, not just write (see
+                    // (8 UTF-8 bytes after trimming) on READ, not just write (see
                     // `rs-platform-wallet-storage/src/secrets/wire/envelope.rs`,
                     // `unwrap_password_payload`, comment `(a0)` — intentional,
                     // mirrors the write floor so a backend-write attacker can't
                     // plant a weakly sealed envelope). A wallet already migrated
-                    // to Tier-2 with a <8-char password by the July 17/21 weekly
+                    // to Tier-2 with a password below that floor by the July 17/21 weekly
                     // builds (see CHANGELOG "Compatibility blocker" entry) has no
                     // downstream escape hatch here and stays permanently
                     // unreadable until upstream adds a scoped migration-read

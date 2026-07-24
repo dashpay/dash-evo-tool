@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
 use dash_evo_tool::*;
 
 use crate::boot::prepare_environment;
@@ -28,7 +29,7 @@ fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(12)
-        .thread_stack_size(4 * 1024 * 1024) // 4 MiB stack size for each worker thread
+        .thread_stack_size(SDK_THREAD_STACK_SIZE) // 4 MiB stack size for each worker thread
         // Each worker/blocking thread needs its own alternate signal stack.
         .on_thread_start(install_alt_signal_stack)
         .enable_all()

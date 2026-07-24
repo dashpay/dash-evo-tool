@@ -57,6 +57,7 @@ use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
 
 /// A guard that ensures settings cache invalidation happens atomically
 ///

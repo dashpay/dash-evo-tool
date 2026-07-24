@@ -2813,9 +2813,16 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
 /// `register_identity_with_funding` into a typed `TaskError`. Network /
 /// broadcast rejections become `IdentityCreateRejected`; asset-lock
 /// finality failures become `AssetLockFinalityTimeout`; everything else
-/// falls through to the generic `WalletBackend` wrapper. Structural match
+/// falls through to the generic `WalletBackend` wrapper. SDK errors use the
+/// richer `TaskError` classifier before this coarse mapping. Structural match
 /// — never parses error strings.
 fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+    let e = match e {
+        platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
+            return TaskError::from(sdk_error);
+        }
+        other => other,
+    };
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
@@ -2833,11 +2840,18 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
 
 /// Same as [`map_identity_register_error`] but for the top-up façade —
 /// the `identity_id` is carried into the rejection variant so the user-
-/// facing message can reference the affected identity.
+/// facing message can reference the affected identity. SDK errors use the
+/// richer `TaskError` classifier before the coarse identity-operation mapping.
 fn map_identity_top_up_error(
     identity_id: dash_sdk::platform::Identifier,
     e: platform_wallet::error::PlatformWalletError,
 ) -> TaskError {
+    let e = match e {
+        platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
+            return TaskError::from(sdk_error);
+        }
+        other => other,
+    };
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
@@ -2996,6 +3010,25 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 mod tests {
     use super::*;
 
+    fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        let consensus = dash_sdk::dpp::consensus::ConsensusError::from(
+            IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
+                dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+            ),
+        );
+        let broadcast_error = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40000,
+            message: "already consumed".to_string(),
+            cause: Some(consensus),
+        };
+        platform_wallet::error::PlatformWalletError::Sdk(
+            dash_sdk::Error::StateTransitionBroadcastError(broadcast_error),
+        )
+    }
+
     #[tokio::test]
     async fn token_balance_sync_reports_an_already_running_upstream_pass() {
         let sync_called = std::cell::Cell::new(false);
@@ -3121,6 +3154,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn map_identity_register_error_classifies_already_consumed_asset_lock() {
+        let mapped = map_identity_register_error(already_consumed_wallet_error());
+        assert!(
+            matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
+        );
+    }
+
     /// I3: an asset-lock finality failure surfaced during identity register
     /// maps to `AssetLockFinalityTimeout`, regardless of which finality
     /// sub-variant fired upstream.
@@ -3167,6 +3209,18 @@ mod tests {
             } => assert_eq!(got, identity_id, "identity_id must be preserved"),
             other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_identity_top_up_error_classifies_already_consumed_asset_lock() {
+        let mapped = map_identity_top_up_error(
+            dash_sdk::platform::Identifier::random(),
+            already_consumed_wallet_error(),
+        );
+        assert!(
+            matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
+        );
     }
 
     /// A top-up against an identity the wallet has not registered

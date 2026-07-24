@@ -69,6 +69,21 @@ fn top_up_err(source: KvAdapterError) -> TaskError {
     TaskError::TopUpHistoryStorage { source }
 }
 
+fn keep_first_unload_cleanup_error(
+    cleanup_error: &mut Option<TaskError>,
+    identity_id: Identifier,
+    result: std::result::Result<(), TaskError>,
+) {
+    if cleanup_error.is_none() {
+        *cleanup_error = result
+            .err()
+            .map(|source| TaskError::IdentityUnloadCleanupFailed {
+                identity_id,
+                source: Box::new(source),
+            });
+    }
+}
+
 /// Merge `top_ups` into the stored history of `identity_id` (read-merge-write).
 ///
 /// Callers hold a partial view of the history — the top-up flow carries the
@@ -930,6 +945,42 @@ impl AppContext {
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
+        self.delete_local_qualified_identity_inner(identifier, false)
+    }
+
+    /// Delete an identity and remember a wallet-derived user's unload choice.
+    pub(crate) fn unload_local_qualified_identity(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        self.delete_local_qualified_identity_inner(identifier, true)
+    }
+
+    /// Whether automatic discovery must leave this identity unloaded.
+    pub(crate) fn is_identity_forgotten(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<bool, TaskError> {
+        self.db
+            .is_identity_forgotten(self.network, identifier)
+            .map_err(|source| TaskError::ForgottenIdentityStorage { source })
+    }
+
+    /// Clear the discovery block after a user-requested load succeeds.
+    pub(crate) fn clear_forgotten_identity_after_explicit_load(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        self.db
+            .clear_forgotten_identity(self.network, identifier)
+            .map_err(|source| TaskError::ForgottenIdentityStorage { source })
+    }
+
+    fn delete_local_qualified_identity_inner(
+        &self,
+        identifier: &Identifier,
+        remember_wallet_derived_unload: bool,
+    ) -> std::result::Result<(), TaskError> {
         // The load registry provides the existing per-identity exclusive claim.
         let load_guard = self.begin_identity_load(*identifier, None)?;
         let _migration_guard = self
@@ -941,6 +992,13 @@ impl AppContext {
         }
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
+        let should_remember_unload = remember_wallet_derived_unload
+            && kv
+                .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .map_err(identity_err)?
+                .is_some_and(|stored| {
+                    stored.wallet_hash.is_some() && stored.wallet_index.is_some()
+                });
         crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(
             |source| TaskError::IdentityDeletionMigrationRecord {
                 source: Arc::new(source),
@@ -949,24 +1007,28 @@ impl AppContext {
         let mut cleanup_error = None;
         match self.wallet_backend() {
             Ok(backend) => {
-                let mut record_cleanup_result = |result: std::result::Result<(), TaskError>| {
-                    if cleanup_error.is_none() {
-                        cleanup_error =
-                            result
-                                .err()
-                                .map(|source| TaskError::IdentityUnloadCleanupFailed {
-                                    identity_id: *identifier,
-                                    source: Box::new(source),
-                                });
-                    }
-                };
-
-                record_cleanup_result(backend.dashpay_clear_owner_overlays(identifier));
+                keep_first_unload_cleanup_error(
+                    &mut cleanup_error,
+                    *identifier,
+                    backend.dashpay_clear_owner_overlays(identifier),
+                );
                 // Conversation/payment timestamps that are not keyed by this identity
                 // may be shared; full-wallet teardown is the safe reclamation boundary.
-                record_cleanup_result(backend.dashpay_clear_identity_timestamps(identifier));
-                record_cleanup_result(backend.dashpay_clear_identity_addr_map(identifier));
-                record_cleanup_result(backend.identity_meta().delete(self.network, &id));
+                keep_first_unload_cleanup_error(
+                    &mut cleanup_error,
+                    *identifier,
+                    backend.dashpay_clear_identity_timestamps(identifier),
+                );
+                keep_first_unload_cleanup_error(
+                    &mut cleanup_error,
+                    *identifier,
+                    backend.dashpay_clear_identity_addr_map(identifier),
+                );
+                keep_first_unload_cleanup_error(
+                    &mut cleanup_error,
+                    *identifier,
+                    backend.identity_meta().delete(self.network, &id),
+                );
             }
             Err(TaskError::WalletBackendNotYetWired) => {
                 tracing::warn!(
@@ -976,15 +1038,35 @@ impl AppContext {
             }
             Err(error) => return Err(error),
         }
+        if should_remember_unload {
+            self.db
+                .record_forgotten_identity(self.network, identifier)
+                .map_err(|source| TaskError::ForgottenIdentityStorage { source })?;
+        }
         // Drop the identity from the index BEFORE the irreversible vault-key
         // clear: a fault in either of the next two steps must never leave a
         // "zombie" identity that is still visible but already missing its
         // keys. `clear_identity_vault_keys` must still run before
         // `purge_identity_scope`, since it reads the identity blob that
         // `purge_identity_scope` deletes.
-        index_remove_identity(&kv, &id)?;
-        self.clear_identity_vault_keys(&kv, &id)?;
-        purge_identity_scope(&kv, &id)?;
+        if let Err(error) = index_remove_identity(&kv, &id) {
+            if should_remember_unload {
+                self.db
+                    .clear_forgotten_identity(self.network, identifier)
+                    .map_err(|source| TaskError::ForgottenIdentityStorage { source })?;
+            }
+            return Err(error);
+        }
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            self.clear_identity_vault_keys(&kv, &id),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            purge_identity_scope(&kv, &id),
+        );
         if let Some(error) = cleanup_error {
             return Err(error);
         }
@@ -2239,7 +2321,7 @@ mod tests {
     /// simulated one — driving the actual `delete_local_qualified_identity`
     /// entry point end to end.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn code_001_a_deletion_fault_after_index_removal_leaves_no_visible_zombie() {
+    async fn deletion_fault_after_index_removal_leaves_no_visible_zombie() {
         use crate::app::TaskResult;
         use crate::context::test_support::test_app_context;
         use crate::utils::egui_mpsc::SenderAsync;

@@ -989,27 +989,49 @@ impl MasternodeDetailView {
     }
 
     /// Delete the node and its associated voter identity from local storage.
-    /// On the primary delete failing, surface an actionable error banner rather
-    /// than failing silently, and keep the detail view open so the user can
-    /// retry. The secondary voter-identity delete failing is non-fatal (the node
-    /// is already gone) and only logged.
+    /// Keep the detail view open when storage deletion does not happen. If only
+    /// follow-up cleanup fails, reconcile memory, close the removed view, and
+    /// surface the cleanup error. Voter cleanup failures remain non-fatal.
     fn remove_node(&self, ctx: &egui::Context) -> bool {
         let node_id = self.identity.identity.id();
-        if let Err(e) = self.app_context.delete_local_qualified_identity(&node_id) {
-            MessageBanner::set_global(
-                ctx,
-                "This masternode couldn't be removed from this device. Try again in a moment.",
-                MessageType::Error,
-            )
-            .with_details(e);
-            return false;
-        }
-        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref()
-            && let Err(e) = self
+        match self.app_context.unload_local_qualified_identity(&node_id) {
+            Ok(()) => self
                 .app_context
-                .delete_local_qualified_identity(&voter.id())
-        {
-            tracing::warn!("Failed to remove voter identity: {e}");
+                .reconcile_unloaded_identity_memory(&node_id),
+            Err(error) if error.identity_was_removed() => {
+                self.app_context
+                    .reconcile_unloaded_identity_memory(&node_id);
+                MessageBanner::set_global(
+                    ctx,
+                    "The masternode was removed, but some local data could not be cleaned up. Load and remove it again to retry.",
+                    MessageType::Error,
+                )
+                .with_details(error);
+            }
+            Err(error) => {
+                MessageBanner::set_global(
+                    ctx,
+                    "This masternode couldn't be removed from this device. Try again in a moment.",
+                    MessageType::Error,
+                )
+                .with_details(error);
+                return false;
+            }
+        }
+        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
+            let voter_id = voter.id();
+            let voter_result = self.app_context.delete_local_qualified_identity(&voter_id);
+            if voter_result.as_ref().is_ok()
+                || voter_result
+                    .as_ref()
+                    .is_err_and(|error| error.identity_was_removed())
+            {
+                self.app_context
+                    .reconcile_unloaded_identity_memory(&voter_id);
+            }
+            if let Err(error) = voter_result {
+                tracing::warn!(error = ?error, "Failed to remove voter identity");
+            }
         }
         true
     }

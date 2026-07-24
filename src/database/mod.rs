@@ -1,6 +1,7 @@
 mod initialization;
 #[cfg(test)]
 pub(crate) use initialization::DEFAULT_DB_VERSION;
+mod forgotten_identities;
 pub(crate) mod legacy_import;
 mod settings;
 mod single_key_wallet;

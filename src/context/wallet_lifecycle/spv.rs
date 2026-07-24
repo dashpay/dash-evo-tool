@@ -82,7 +82,11 @@ impl AppContext {
                             owner = %owner,
                             "Identity private-key wipe failed during clear: {e:?}"
                         );
-                        failures.push(e);
+                        let underlying_error = match e {
+                            TaskError::IdentityUnloadCleanupFailed { source, .. } => *source,
+                            other => other,
+                        };
+                        failures.push(underlying_error);
                     }
                 }
             }

@@ -42,9 +42,13 @@ pub struct ProfileCache {
     requested: HashSet<Identifier>,
     /// Identity of the in-flight load. The result variant carries no owner id,
     /// so it is associated with this id on arrival.
-    in_flight: Option<Identifier>,
+    in_flight: Option<(Identifier, u64, u64)>,
     /// Identities a tab asked for this frame that still need a load dispatched.
     wanted: Vec<QualifiedIdentity>,
+    /// Invalidates every request dispatched before a full reset.
+    cache_generation: u64,
+    /// Invalidates requests dispatched before one identity was unloaded.
+    identity_generations: HashMap<Identifier, u64>,
 }
 
 impl ProfileCache {
@@ -77,7 +81,8 @@ impl ProfileCache {
         };
         let id = identity.identity.id();
         self.requested.insert(id);
-        self.in_flight = Some(id);
+        let identity_generation = self.identity_generations.get(&id).copied().unwrap_or(0);
+        self.in_flight = Some((id, self.cache_generation, identity_generation));
         AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
             DashPayTask::LoadProfile { identity },
         )))
@@ -89,9 +94,15 @@ impl ProfileCache {
         let BackendTaskSuccessResult::DashPayProfile(data) = result else {
             return false;
         };
-        let Some(id) = self.in_flight.take() else {
+        let Some((id, cache_generation, identity_generation)) = self.in_flight.take() else {
             return false;
         };
+        self.requested.remove(&id);
+        let is_current = cache_generation == self.cache_generation
+            && identity_generation == self.identity_generations.get(&id).copied().unwrap_or(0);
+        if !is_current {
+            return true;
+        }
         let fields = data
             .clone()
             .map(|(display_name, bio, avatar_url)| ProfileFields {
@@ -103,11 +114,135 @@ impl ProfileCache {
         true
     }
 
+    /// Remove one identity's cached and queued profile state.
+    ///
+    /// An already-dispatched request remains the single in-flight operation,
+    /// but its generation is invalidated so a late response is discarded.
+    pub fn remove_identity(&mut self, identity_id: &Identifier) {
+        self.loaded.remove(identity_id);
+        self.requested.remove(identity_id);
+        self.wanted
+            .retain(|identity| identity.identity.id() != *identity_id);
+        let generation = self.identity_generations.entry(*identity_id).or_default();
+        *generation = generation.wrapping_add(1);
+    }
+
     /// Drop cached state and pending loads so a refresh re-resolves profiles.
     pub fn reset(&mut self) {
         self.loaded.clear();
         self.requested.clear();
-        self.in_flight = None;
         self.wanted.clear();
+        self.in_flight = None;
+        self.cache_generation = self.cache_generation.wrapping_add(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identity;
+    use std::collections::BTreeMap;
+
+    fn qualified_identity(id: Identifier) -> QualifiedIdentity {
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(id, PlatformVersion::latest())
+                .expect("create identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[test]
+    fn late_profile_result_after_unload_does_not_repopulate_cache() {
+        let id = Identifier::from([0x41; 32]);
+        let identity = qualified_identity(id);
+        let mut cache = ProfileCache::default();
+
+        assert!(cache.get_or_request(&identity).is_none());
+        assert!(matches!(
+            cache.dispatch_pending(),
+            AppAction::BackendTask(BackendTask::DashPayTask(_))
+        ));
+        cache.loaded.insert(
+            id,
+            Some(ProfileFields {
+                display_name: "Previously cached".to_string(),
+                ..Default::default()
+            }),
+        );
+
+        cache.remove_identity(&id);
+        assert!(
+            cache.record_result(&BackendTaskSuccessResult::DashPayProfile(Some((
+                "Stale name".to_string(),
+                "Stale bio".to_string(),
+                "https://example.invalid/stale.png".to_string(),
+            ))))
+        );
+
+        assert!(
+            !cache.loaded.contains_key(&id),
+            "a response started before unload must stay discarded"
+        );
+
+        assert!(cache.get_or_request(&identity).is_none());
+        assert!(matches!(
+            cache.dispatch_pending(),
+            AppAction::BackendTask(BackendTask::DashPayTask(_))
+        ));
+        assert!(
+            cache.record_result(&BackendTaskSuccessResult::DashPayProfile(Some((
+                "Fresh name".to_string(),
+                "Fresh bio".to_string(),
+                "https://example.invalid/fresh.png".to_string(),
+            ))))
+        );
+        assert_eq!(
+            cache
+                .loaded
+                .get(&id)
+                .and_then(Option::as_ref)
+                .map(|fields| fields.display_name.as_str()),
+            Some("Fresh name"),
+            "the next request after reload must populate normally"
+        );
+    }
+
+    #[test]
+    fn reset_unblocks_dispatch_after_profile_load_error() {
+        let failed_identity = qualified_identity(Identifier::from([0x42; 32]));
+        let next_identity = qualified_identity(Identifier::from([0x43; 32]));
+        let mut cache = ProfileCache::default();
+
+        assert!(cache.get_or_request(&failed_identity).is_none());
+        assert!(matches!(
+            cache.dispatch_pending(),
+            AppAction::BackendTask(BackendTask::DashPayTask(_))
+        ));
+
+        cache.reset();
+
+        assert!(cache.get_or_request(&next_identity).is_none());
+        assert!(
+            matches!(
+                cache.dispatch_pending(),
+                AppAction::BackendTask(BackendTask::DashPayTask(_))
+            ),
+            "reset must abandon an unresolved request so another identity can load"
+        );
     }
 }

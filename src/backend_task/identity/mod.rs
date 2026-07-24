@@ -14,6 +14,8 @@ mod transfer;
 mod unload_identity;
 mod withdraw_from_identity;
 
+pub(crate) use discover_identities::IdentityDiscoveryMode;
+
 use super::{BackendTaskSuccessResult, FeeResult, TaskError};
 use crate::app::TaskResult;
 use crate::context::AppContext;

@@ -885,36 +885,53 @@ impl IdentitiesScreen {
                         if let Some(identity_to_remove) = self.identity_to_remove.take() {
                             let identity_id = identity_to_remove.identity.id();
 
-                            match self
+                            let deletion_result = self
                                 .app_context
-                                .delete_local_qualified_identity(&identity_id)
-                            {
-                                Ok(_) => {
-                                    let mut lock = self.identities.lock_recover();
-                                    lock.shift_remove(&identity_id);
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to delete identity from database: {}",
-                                        e
-                                    );
-                                    MessageBanner::set_global(
-                                        self.app_context.egui_ctx(),
-                                        format!("Failed to remove identity: {}", e),
-                                        MessageType::Error,
-                                    )
-                                    .disable_auto_dismiss();
-                                }
+                                .unload_local_qualified_identity(&identity_id);
+                            let identity_was_removed = match &deletion_result {
+                                Ok(()) => true,
+                                Err(error) => error.identity_was_removed(),
+                            };
+                            if identity_was_removed {
+                                self.app_context
+                                    .reconcile_unloaded_identity_memory(&identity_id);
+                                self.identities.lock_recover().shift_remove(&identity_id);
+                            }
+                            if let Err(error) = deletion_result {
+                                tracing::warn!(
+                                    error = ?error,
+                                    "Identity removal did not finish cleanly"
+                                );
+                                let message = if identity_was_removed {
+                                    "The identity was removed, but some local data could not be cleaned up. Try loading and unloading it again."
+                                } else {
+                                    "This identity could not be removed from this device. Wait a moment and try again."
+                                };
+                                let banner = MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    message,
+                                    MessageType::Error,
+                                );
+                                banner.with_details(error);
+                                banner.disable_auto_dismiss();
                             }
 
                             if let Some((voter_identity, _)) =
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                if let Err(e) = self
+                                let voter_result = self
                                     .app_context
-                                    .delete_local_qualified_identity(&voter_identity_id)
+                                    .delete_local_qualified_identity(&voter_identity_id);
+                                if voter_result.as_ref().is_ok()
+                                    || voter_result
+                                        .as_ref()
+                                        .is_err_and(|error| error.identity_was_removed())
                                 {
+                                    self.app_context
+                                        .reconcile_unloaded_identity_memory(&voter_identity_id);
+                                }
+                                if let Err(e) = voter_result {
                                     tracing::warn!(
                                         "Failed to delete voter identity from database: {}",
                                         e

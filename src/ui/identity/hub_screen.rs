@@ -536,7 +536,8 @@ impl ScreenLike for IdentityHubScreen {
                     self.settings_tab.on_profile_saved();
                 }
             }
-            BackendTaskSuccessResult::UnloadedIdentity(_) => {
+            BackendTaskSuccessResult::UnloadedIdentity(identity_id) => {
+                self.profile_cache.remove_identity(identity_id);
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "This identity was unloaded from this device.",

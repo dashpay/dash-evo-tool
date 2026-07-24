@@ -15,6 +15,27 @@ use std::sync::{Arc, RwLock};
 /// concluding no identity is registered there.
 const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
+/// Whether discovery is automatic, follows unlock, or is user-requested.
+#[derive(Clone, Copy)]
+pub(crate) enum IdentityDiscoveryMode {
+    /// Automatic startup discovery; never prompts or restores unloaded identities.
+    Background,
+    /// Post-unlock discovery; may use the unlocked seed but never restores identities.
+    WalletUnlock,
+    /// User-started search; may deliberately restore an unloaded identity.
+    ExplicitSearch,
+}
+
+impl IdentityDiscoveryMode {
+    fn allow_prompt(self) -> bool {
+        !matches!(self, Self::Background)
+    }
+
+    fn explicitly_reloads_forgotten(self) -> bool {
+        matches!(self, Self::ExplicitSearch)
+    }
+}
+
 impl AppContext {
     /// Discover and load identities derived from a wallet by checking the
     /// network, with a rolling gap-limited lookahead.
@@ -27,10 +48,10 @@ impl AppContext {
     /// prior-session high index is never missed even if the early indices are
     /// empty.
     ///
-    /// `allow_prompt` controls the secret path: with `true` (the interactive
-    /// search) a cold auth-key cache miss prompts for the passphrase; with
-    /// `false` (the background sweep) a locked, protected wallet is skipped
-    /// instead of prompting.
+    /// `mode` controls whether a cold secret-cache miss may prompt and whether
+    /// the scan is an explicit user request that may restore an identity the
+    /// user unloaded. Startup and wallet-unlock discovery always leave forgotten
+    /// identities untouched.
     ///
     /// When `progress` is `Some`, a [`BackendTaskSuccessResult::Progress`] event
     /// is sent before each probed index.
@@ -38,7 +59,7 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
         seed_from_index: u32,
-        allow_prompt: bool,
+        mode: IdentityDiscoveryMode,
         progress: Option<&SenderAsync<TaskResult>>,
     ) -> Result<DiscoverySummary, TaskError> {
         use dash_sdk::platform::Fetch;
@@ -64,7 +85,7 @@ impl AppContext {
         tracing::info!(
             seed = %hex::encode(seed_hash),
             seed_window = ?seed_window,
-            allow_prompt,
+            allow_prompt = mode.allow_prompt(),
             "Starting gap-limited identity discovery for wallet"
         );
 
@@ -101,7 +122,12 @@ impl AppContext {
 
             for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
                 let public_key = match self
-                    .resolve_identity_auth_pubkey(wallet, allow_prompt, current_index, key_index)
+                    .resolve_identity_auth_pubkey(
+                        wallet,
+                        mode.allow_prompt(),
+                        current_index,
+                        key_index,
+                    )
                     .await
                 {
                     Ok(key) => key,
@@ -168,12 +194,13 @@ impl AppContext {
                         identity,
                         wallet,
                         scan_network,
-                        allow_prompt,
+                        mode,
                         current_index,
                     )
                     .await
                 {
-                    Ok(()) => summary.stored = summary.stored.saturating_add(1),
+                    Ok(true) => summary.stored = summary.stored.saturating_add(1),
+                    Ok(false) => {}
                     Err(e) => tracing::warn!(
                         identity_id = %identity_id,
                         error = %e,
@@ -205,8 +232,13 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         max_identity_index: u32,
     ) -> Result<(), TaskError> {
-        self.discover_identities_gap_limited(wallet, max_identity_index, true, None)
-            .await?;
+        self.discover_identities_gap_limited(
+            wallet,
+            max_identity_index,
+            IdentityDiscoveryMode::WalletUnlock,
+            None,
+        )
+        .await?;
         Ok(())
     }
 
@@ -229,26 +261,65 @@ impl AppContext {
         identity: dash_sdk::platform::Identity,
         wallet: &Arc<RwLock<Wallet>>,
         scan_network: dash_sdk::dpp::dashcore::Network,
-        allow_prompt: bool,
+        mode: IdentityDiscoveryMode,
         identity_index: u32,
-    ) -> Result<(), TaskError> {
+    ) -> Result<bool, TaskError> {
         if self.network != scan_network {
             tracing::debug!("Network changed mid-scan; skipping store of discovered identity");
-            return Ok(());
+            return Ok(false);
         }
 
         let identity_id = identity.id();
         let seed_hash = wallet.read()?.seed_hash();
 
-        let mut qualified_identity = self
+        let qualified_identity = self
             .build_qualified_identity_from_wallet(
                 sdk,
                 identity,
                 wallet,
-                allow_prompt,
+                mode.allow_prompt(),
                 identity_index,
             )
             .await?;
+
+        if !self.persist_discovered_identity(
+            qualified_identity.clone(),
+            seed_hash,
+            identity_index,
+            mode.explicitly_reloads_forgotten(),
+        )? {
+            tracing::debug!(
+                identity_id = %identity_id,
+                "Skipped a discovered identity that the user unloaded"
+            );
+            return Ok(false);
+        }
+
+        if let Ok(mut wallet_guard) = wallet.write() {
+            wallet_guard
+                .identities
+                .insert(identity_index, qualified_identity.identity.clone());
+        }
+        tracing::info!(
+            identity_id = %identity_id,
+            "Successfully loaded discovered identity"
+        );
+        Ok(true)
+    }
+
+    /// Persist one discovery result unless automatic discovery must leave it unloaded.
+    pub(crate) fn persist_discovered_identity(
+        &self,
+        mut qualified_identity: crate::model::qualified_identity::QualifiedIdentity,
+        seed_hash: crate::model::wallet::WalletSeedHash,
+        identity_index: u32,
+        explicit_reload: bool,
+    ) -> Result<bool, TaskError> {
+        let identity_id = qualified_identity.identity.id();
+        let load_guard = self.begin_identity_load(identity_id, None)?;
+        if self.is_identity_forgotten(&identity_id)? && !explicit_reload {
+            return Ok(false);
+        }
 
         match self.get_identity_by_id(&identity_id)? {
             Some(existing) => {
@@ -266,17 +337,11 @@ impl AppContext {
                 )?;
             }
         }
-
-        if let Ok(mut wallet_guard) = wallet.write() {
-            wallet_guard
-                .identities
-                .insert(identity_index, qualified_identity.identity.clone());
+        if explicit_reload {
+            self.clear_forgotten_identity_after_explicit_load(&identity_id)?;
         }
-        tracing::info!(
-            identity_id = %identity_id,
-            "Successfully loaded discovered identity"
-        );
-        Ok(())
+        load_guard.loaded();
+        Ok(true)
     }
 
     /// Build a QualifiedIdentity from a fetched Identity with wallet key derivation paths.
@@ -435,5 +500,110 @@ impl AppContext {
             status: IdentityStatus::Unknown,
             network: self.network,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::context::test_support::test_app_context;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, Identity};
+    use std::collections::BTreeMap;
+
+    fn wallet_derived_identity(
+        id: Identifier,
+        wallet: &Arc<RwLock<Wallet>>,
+        identity_index: u32,
+    ) -> QualifiedIdentity {
+        let wallet_seed_hash = wallet.read().expect("read wallet").seed_hash();
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(id, PlatformVersion::latest())
+                .expect("create identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: BTreeMap::from([(wallet_seed_hash, Arc::clone(wallet))]),
+            secret_access: None,
+            wallet_index: Some(identity_index),
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forgotten_identity_is_not_resurrected_by_discovery_and_explicit_load_clears_marker() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed([0x61; 64], Network::Testnet, None, None).expect("build wallet"),
+        ));
+        let wallet_seed_hash = wallet.read().expect("read wallet").seed_hash();
+        ctx.wallets()
+            .write()
+            .expect("write wallets")
+            .insert(wallet_seed_hash, Arc::clone(&wallet));
+        let identity_id = Identifier::from([0x62; 32]);
+        let identity = wallet_derived_identity(identity_id, &wallet, 4);
+        ctx.insert_local_qualified_identity(&identity, &Some((wallet_seed_hash, 4)))
+            .expect("insert wallet-derived identity");
+
+        ctx.unload_identity(identity_id)
+            .expect("unload wallet-derived identity");
+        assert!(
+            ctx.is_identity_forgotten(&identity_id)
+                .expect("read forgotten marker")
+        );
+
+        let stored = ctx
+            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
+            .expect("simulate discovery persistence");
+        assert!(!stored, "discovery must skip a forgotten identity");
+        assert!(
+            ctx.get_identity_by_id(&identity_id)
+                .expect("read identity")
+                .is_none(),
+            "discovery must not resurrect an unloaded identity"
+        );
+
+        assert!(
+            ctx.persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, true)
+                .expect("simulate explicit wallet load"),
+            "an explicit load must restore the identity"
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&identity_id)
+                .expect("read cleared marker")
+        );
+
+        ctx.delete_local_qualified_identity(&identity_id)
+            .expect("remove identity without recording another unload");
+        assert!(
+            ctx.persist_discovered_identity(identity, wallet_seed_hash, 4, false)
+                .expect("simulate discovery after explicit reload"),
+            "discovery must work normally after the explicit load clears the marker"
+        );
+        assert!(
+            ctx.get_identity_by_id(&identity_id)
+                .expect("read rediscovered identity")
+                .is_some()
+        );
+
+        backend.shutdown().await;
     }
 }

@@ -650,7 +650,10 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 
 As a user, I want to unload one identity from this device so that I can recover from an incorrect import or stop keeping its private keys locally without removing a shared wallet.
 
-- The Identity Hub asks for confirmation and warns that local private keys are permanently deleted before unloading.
+- The Identity Hub asks for confirmation before unloading. If the identity is
+  wallet-derived, it explains that the identity can be loaded again from the
+  wallet's recovery seed. Otherwise, it warns that keys stored only on this
+  device are permanently deleted and require separate recovery information.
 - Unloading removes only the selected identity's local keys, metadata, DashPay overlays, and device record while leaving the Platform identity unchanged.
 - Other identities on the same wallet and the wallet's recovery seed remain available.
 

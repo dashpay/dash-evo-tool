@@ -674,12 +674,22 @@ pub enum TaskError {
     /// an identity. Cleanup continues after failures, but only the first failure
     /// is preserved in the nested typed error for logs.
     #[error(
-        "Some local data for identity {identity_id} could not be fully removed. Try unloading it again."
+        "Some local data for identity {identity_id} could not be fully removed. Load the identity again, then unload it to retry."
     )]
     IdentityUnloadCleanupFailed {
         identity_id: Identifier,
         #[source]
         source: Box<TaskError>,
+    },
+
+    /// A user's choice to keep an unloaded identity off this device could not
+    /// be read or saved in the local database.
+    #[error(
+        "This identity could not be kept unloaded. Check available disk space and try again."
+    )]
+    ForgottenIdentityStorage {
+        #[source]
+        source: rusqlite::Error,
     },
 
     /// An identity top-up history record could not be persisted to the
@@ -1473,6 +1483,13 @@ pub enum TaskError {
          payout keys."
     )]
     IdentityIsMasternode { identity_id: Identifier },
+
+    /// A masternode or evonode load fetched a regular identity.
+    /// Carries the resolved identity id for structured matching.
+    #[error(
+        "This identifier belongs to a regular identity, not a masternode or evonode. Load it from the Identities page instead."
+    )]
+    IdentityIsNotMasternode { identity_id: Identifier },
 
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]
@@ -2360,6 +2377,11 @@ pub enum TaskError {
 }
 
 impl TaskError {
+    /// Whether identity storage was already removed before this error occurred.
+    pub(crate) fn identity_was_removed(&self) -> bool {
+        matches!(self, Self::IdentityUnloadCleanupFailed { .. })
+    }
+
     /// Reclassifies SDK reachability failures when every configured DAPI address is exhausted.
     pub(crate) fn contextualize_dapi_availability(
         self,

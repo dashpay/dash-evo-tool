@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 38;
+pub const DEFAULT_DB_VERSION: u16 = 39;
 
 /// Minimal view of `.env` values the v34 migration needs.
 struct V34EnvSnapshot {
@@ -239,6 +239,12 @@ impl Database {
         data_dir: Option<&Path>,
     ) -> Result<(), MigrationError> {
         match version {
+            39 => {
+                Self::initialize_forgotten_identities_table(tx).migration_err(
+                    "forgotten_identities",
+                    "v39: create forgotten identity markers",
+                )?;
+            }
             38 => {
                 // Drop the retired `core_backend_mode` settings column. The
                 // RPC/SPV backend selector it held was unwired in C3 (user
@@ -742,8 +748,8 @@ impl Database {
     /// are created. Truly-fresh DET installs pass `false` so these dormant
     /// schemas never appear in `data.db`; legacy installs and the migration
     /// ladder still pass `true` so upgrade arms keep working. Always-present
-    /// tables (`settings`, `identity`, `platform_address_balances`) are
-    /// created regardless.
+    /// tables (`settings`, `forgotten_identities`,
+    /// `platform_address_balances`) are created regardless.
     pub(crate) fn create_tables(&self, include_legacy: bool) -> rusqlite::Result<()> {
         let conn = self.locked_conn();
         // Create the settings table.
@@ -761,6 +767,7 @@ impl Database {
         )",
             [],
         )?;
+        Self::initialize_forgotten_identities_table(&conn)?;
 
         if include_legacy {
             // Create the wallet table
@@ -3122,6 +3129,49 @@ mod test {
                 "try_perform_migration should report no migration needed"
             );
             assert_eq!(db.db_schema_version().unwrap(), 38);
+        }
+    }
+
+    mod v39 {
+        #[test]
+        fn v39_creates_forgotten_identity_markers_for_existing_databases() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = super::super::Database::new(tmp.path().join("v38.db")).unwrap();
+            db.execute(
+                "CREATE TABLE settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    database_version INTEGER NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO settings (id, database_version) VALUES (1, 38)",
+                [],
+            )
+            .unwrap();
+            assert!(
+                !db.table_exists(&db.locked_conn(), "forgotten_identities")
+                    .unwrap()
+            );
+
+            db.try_perform_migration(38, 39, None).unwrap();
+
+            assert_eq!(db.db_schema_version().unwrap(), 39);
+            assert!(
+                db.table_exists(&db.locked_conn(), "forgotten_identities")
+                    .unwrap()
+            );
+            let columns: i64 = db
+                .locked_conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('forgotten_identities')
+                     WHERE name IN ('network', 'identity_id')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(columns, 2);
         }
     }
 

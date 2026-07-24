@@ -54,6 +54,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Identity unload and reload follow-ups for #889 / PR #925**: node load forms
+  now reject regular identities, wallet discovery keeps deliberately unloaded
+  identities unloaded until the user explicitly loads them again, partial
+  cleanup failures still reconcile the app's active identity state, and late
+  DashPay profile responses can no longer restore stale profile data.
+
 - **Shielded availability notice**: now distinguishes when the connected network
   does not support shielded sending from when the current interface mode does
   not unlock it.

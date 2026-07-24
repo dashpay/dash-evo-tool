@@ -1,6 +1,7 @@
 use super::{BackendTaskSuccessResult, IdentityIndex};
 use crate::app::TaskResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::identity::IdentityDiscoveryMode;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
@@ -98,6 +99,8 @@ impl AppContext {
         let matching_identity_key_id = matching_identity_key.id();
 
         let identity_id = identity.id();
+        super::load_identity::validate_loaded_identity_type(IdentityType::User, &identity)?;
+        let load_guard = self.begin_identity_load(identity_id, None)?;
 
         let dpns_names_document_query = DocumentQuery {
             select: SelectProjection::documents(),
@@ -265,6 +268,8 @@ impl AppContext {
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
         }
+        self.clear_forgotten_identity_after_explicit_load(&identity_id)?;
+        load_guard.loaded();
 
         Ok(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 })
     }
@@ -281,7 +286,7 @@ impl AppContext {
             .discover_identities_gap_limited(
                 &wallet_arc_ref.wallet,
                 seed_identity_index,
-                true,
+                IdentityDiscoveryMode::ExplicitSearch,
                 Some(&sender),
             )
             .await?;

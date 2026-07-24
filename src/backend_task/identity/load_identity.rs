@@ -77,12 +77,21 @@ fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIden
     }
 }
 
-fn validate_loaded_identity_type(
+pub(super) fn validate_loaded_identity_type(
     identity_type: IdentityType,
     identity: &Identity,
 ) -> Result<(), TaskError> {
     if identity_type == IdentityType::User && identity_carries_owner_key(identity) {
         return Err(TaskError::IdentityIsMasternode {
+            identity_id: identity.id(),
+        });
+    }
+    if matches!(
+        identity_type,
+        IdentityType::Masternode | IdentityType::Evonode
+    ) && !identity_carries_owner_key(identity)
+    {
+        return Err(TaskError::IdentityIsNotMasternode {
             identity_id: identity.id(),
         });
     }
@@ -555,6 +564,7 @@ impl AppContext {
         if let Some(password) = encryption_password {
             self.protect_identity_keys(qualified_identity.identity.id(), password, None)?;
         }
+        self.clear_forgotten_identity_after_explicit_load(&identity_id)?;
 
         // Past the last fallible step: the node is stored with its keys as
         // requested. Anything that failed before this — including a key seal that
@@ -861,6 +871,34 @@ mod tests {
         let identity = identity_with_key_purpose(Purpose::AUTHENTICATION);
 
         assert!(validate_loaded_identity_type(IdentityType::User, &identity).is_ok());
+    }
+
+    #[test]
+    fn masternode_load_rejects_regular_identity() {
+        let identity = identity_with_key_purpose(Purpose::AUTHENTICATION);
+        let expected_id = identity.id();
+
+        let error = validate_loaded_identity_type(IdentityType::Masternode, &identity)
+            .expect_err("a Masternode load must reject a regular identity");
+
+        assert!(matches!(
+            error,
+            TaskError::IdentityIsNotMasternode { identity_id } if identity_id == expected_id
+        ));
+    }
+
+    #[test]
+    fn evonode_load_rejects_regular_identity() {
+        let identity = identity_with_key_purpose(Purpose::AUTHENTICATION);
+        let expected_id = identity.id();
+
+        let error = validate_loaded_identity_type(IdentityType::Evonode, &identity)
+            .expect_err("an Evonode load must reject a regular identity");
+
+        assert!(matches!(
+            error,
+            TaskError::IdentityIsNotMasternode { identity_id } if identity_id == expected_id
+        ));
     }
 
     #[test]

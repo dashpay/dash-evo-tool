@@ -66,9 +66,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (accounts, balances, identities, platform addresses) from the on-disk store
   without the HD seed, re-deriving spend authority just-in-time from the seed only
   when an operation actually signs — so private key material is never left resident
-  between operations. DET's shielded send / unshield / withdraw were updated to
-  match: each now resolves the HD seed through the secret-seam chokepoint for the
-  single spend and drops it on return. The update also adds persistence and
+  between operations. DET's shielded operations were updated to match: each now
+  resolves the HD seed through the secret-seam chokepoint for the single operation
+  and drops it on return. The update also adds persistence and
   rehydration for provider (masternode / evonode) platform-node key pools and for
   DashPay invitations. The later review tip also retries transient startup
   rehydration, selects platform-address transfer and withdrawal inputs from
@@ -81,9 +81,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (measured in bytes, not characters, so a 4-character non-ASCII password like
   `öäüß` — 8 bytes — is accepted); existing wallets with shorter passwords
   that are still in DET's legacy encrypted format remain usable instead of
-  failing during lazy migration. Protected (Tier-2) shielded wallets now
-  prompt for their passphrase on every shielded transfer, unshield, or
-  withdraw, rather than once per session as before.
+  failing during lazy migration. Protected (Tier-2) shielded wallets now resolve
+  their seed just in time for every operation that spends or binds their Orchard
+  keys (initialization, shield from Core, shield from Platform, transfer,
+  unshield, and withdraw). Each operation prompts for the passphrase unless the
+  user explicitly keeps the wallet unlocked for the session, replacing the
+  previous implicit once-per-session reuse.
 
   **Compatibility note:** wallets already migrated to Tier-2 storage by a
   July 2026 weekly build with a shorter password cannot be opened at this

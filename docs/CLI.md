@@ -52,18 +52,19 @@ det-cli --addr http://127.0.0.1:9000/mcp core-wallets-list
 
 Force standalone mode with `--standalone` even when an API key is present.
 
-## Protected wallets and shielded spends
+## Protected wallets and shielded operations
 
-Shielded transfer, unshield, and withdraw operations resolve the wallet seed
-just in time for each operation. A password-protected (Tier-2) wallet therefore
-requires an interactive passphrase session.
+Every shielded operation that spends or binds the wallet's Orchard keys
+(initialization, shield from Core, shield from Platform, transfer, unshield, and
+withdraw) resolves the wallet seed just in time. A password-protected (Tier-2)
+wallet therefore requires an interactive passphrase session.
 
 Standalone `det-cli`, its stdio MCP server, and the headless HTTP server use a
 null secret prompt because no authorized GUI session is available. These modes
 return `SecretPromptUnavailable` when a protected wallet needs to authorize a
-shielded spend. There is currently no environment-variable or CLI-passphrase
-workaround, so unattended shielded spending from a protected wallet is not
-supported. Use an unprotected wallet for that automation.
+shielded operation. There is currently no environment-variable or
+CLI-passphrase workaround, so unattended shielded operations from a protected
+wallet are not supported. Use an unprotected wallet for that automation.
 
 This limitation does not apply in the same way when `det-cli` connects to MCP
 embedded in a running GUI. The embedded server can use the GUI's existing

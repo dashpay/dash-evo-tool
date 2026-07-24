@@ -54,18 +54,19 @@ Standalone/headless mode skips the GUI event loop and egui rendering, resulting 
 
 The GUI-embedded HTTP mode shares the app's `AppContext` and follows network switches in real time, which is useful when you want to interactively switch networks from the GUI while MCP clients remain connected.
 
-## Protected wallets and shielded spends
+## Protected wallets and shielded operations
 
-Shielded transfer, unshield, and withdraw tools resolve the wallet seed just in
-time for each operation. A password-protected (Tier-2) wallet therefore
-requires an interactive passphrase session.
+Every shielded operation that spends or binds the wallet's Orchard keys
+(initialization, shield from Core, shield from Platform, transfer, unshield, and
+withdraw) resolves the wallet seed just in time. A password-protected (Tier-2)
+wallet therefore requires an interactive passphrase session.
 
 Standalone stdio MCP and headless HTTP MCP use a null secret prompt because
 they have no authorized GUI session. These transports return
 `SecretPromptUnavailable` when a protected wallet needs to authorize a
-shielded spend. There is currently no environment-variable or CLI-passphrase
-workaround, so unattended shielded spending from a protected wallet is not
-supported. Use an unprotected wallet for that automation.
+shielded operation. There is currently no environment-variable or
+CLI-passphrase workaround, so unattended shielded operations from a protected
+wallet are not supported. Use an unprotected wallet for that automation.
 
 MCP embedded in a running GUI is not affected in the same way: it can use the
 GUI's existing interactive prompt and authorized secret session. This caveat

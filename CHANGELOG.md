@@ -62,7 +62,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identity`, `Receive`/`Add funds`). It's now one row of four: **Add funds**,
   **Send to wallet**, **Send to another identity**, and **Add contact**.
   **Send to wallet** is disabled with an explanation when the identity has no
-  withdrawal key loaded. The funding screen it opens, and its wording
+  withdrawal key loaded. The **Add funds** screen, and its wording
   throughout, now consistently says "Add funds" instead of "Top Up Identity",
   and its step-by-step deposit messages no longer use technical wording.
 

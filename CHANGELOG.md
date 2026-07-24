@@ -61,7 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip
-  (`d18020f` → `4a1ba64`), which lands an embeddable SQLite persistence backend with
+  (`d18020f` → `288a6ca`), which lands an embeddable SQLite persistence backend with
   *seedless rehydration*. The wallet manager now restores watch-only wallet state
   (accounts, balances, identities, platform addresses) from the on-disk store
   without the HD seed, re-deriving spend authority just-in-time from the seed only

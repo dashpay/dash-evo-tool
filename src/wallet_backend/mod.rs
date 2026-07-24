@@ -2896,8 +2896,15 @@ fn platform_warm_start_seed(
 /// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
 /// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
 /// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
-/// through to the generic [`TaskError::WalletBackend`] envelope.
+/// through to the generic [`TaskError::WalletBackend`] envelope. SDK errors use
+/// the richer `TaskError` classifier before this coarse mapping.
 fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+    let e = match e {
+        platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
+            return TaskError::from(sdk_error);
+        }
+        other => other,
+    };
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
@@ -3354,6 +3361,15 @@ mod tests {
         assert!(
             matches!(mapped, TaskError::PlatformAddressFundRejected { .. }),
             "Expected PlatformAddressFundRejected, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_platform_address_fund_error_classifies_already_consumed_asset_lock() {
+        let mapped = map_platform_address_fund_error(already_consumed_wallet_error());
+        assert!(
+            matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
         );
     }
 

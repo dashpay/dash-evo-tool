@@ -177,6 +177,10 @@ impl<'a> SingleKeyView<'a> {
         alias: Option<String>,
         passphrase: ImportPassphrase,
     ) -> Result<ImportedKey, TaskError> {
+        if let Some(alias) = alias.as_deref() {
+            crate::model::wallet::validate_wallet_alias(alias)
+                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        }
         let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
             source: Box::new(source),
         })?;
@@ -268,15 +272,20 @@ impl<'a> SingleKeyView<'a> {
     /// name survives a cold boot without touching the legacy
     /// `single_key_wallet` table. An empty `alias` clears the nickname.
     ///
-    /// No-op success when the view has no sidecar wired (transient
-    /// construction path) — the in-memory index is still updated so the
-    /// rename is visible in-session.
+    /// The index write guard spans persistence so same-address renames serialize.
+    /// With a sidecar, the index changes only after a successful write. Without
+    /// one, the transient in-memory index is updated directly.
     pub fn set_alias(&self, address: &str, alias: Option<String>) -> Result<(), TaskError> {
+        if let Some(alias) = alias.as_deref() {
+            crate::model::wallet::validate_wallet_alias(alias)
+                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        }
         let mut idx = write_recover(self.index);
-        let entry = idx.get_mut(address).ok_or(TaskError::ImportedKeyNotFound)?;
-        entry.alias = alias;
-        let updated = entry.clone();
-        drop(idx);
+        let mut updated = idx
+            .get(address)
+            .cloned()
+            .ok_or(TaskError::ImportedKeyNotFound)?;
+        updated.alias = alias;
 
         if let Some(kv) = self.app_kv {
             let key = meta_key_for(self.network, address);
@@ -286,6 +295,7 @@ impl<'a> SingleKeyView<'a> {
                 }
             })?;
         }
+        idx.insert(address.to_string(), updated);
         Ok(())
     }
 
@@ -1018,6 +1028,25 @@ mod tests {
         "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
     }
 
+    #[test]
+    fn import_wif_rejects_overlong_alias_before_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: None,
+        };
+
+        let error = view
+            .import_wif(known_wif(), Some("w".repeat(65)))
+            .expect_err("overlong alias must fail");
+
+        assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
+        assert!(view.list().is_empty());
+    }
+
     /// TC-SK-003: importing a WIF writes exactly one entry whose label
     /// matches `^single_key_priv\.[1-9A-HJ-NP-Za-km-z]{26,35}$` and is
     /// scoped to the per-backend single-key `WalletId` namespace.
@@ -1271,6 +1300,95 @@ mod tests {
                 .filter(|k| prefix.is_none_or(|p| k.starts_with(p)))
                 .cloned();
             Ok(it.collect())
+        }
+    }
+
+    #[derive(Default)]
+    struct AliasPutGateState {
+        armed: bool,
+        first_put_waiting: bool,
+        release_first_put: bool,
+    }
+
+    #[derive(Default)]
+    struct FirstAliasPutGate {
+        inner: InMemoryKv,
+        state: std::sync::Mutex<AliasPutGateState>,
+        changed: std::sync::Condvar,
+    }
+
+    impl FirstAliasPutGate {
+        fn arm(&self) {
+            let mut state = self.state.lock().expect("gate state");
+            *state = AliasPutGateState {
+                armed: true,
+                ..Default::default()
+            };
+        }
+
+        fn wait_until_first_put(&self) {
+            let state = self.state.lock().expect("gate state");
+            let (state, timeout) = self
+                .changed
+                .wait_timeout_while(state, std::time::Duration::from_secs(5), |state| {
+                    !state.first_put_waiting
+                })
+                .expect("gate wait");
+            assert!(
+                !timeout.timed_out() && state.first_put_waiting,
+                "first alias put gate"
+            );
+        }
+
+        fn release_first_put(&self) {
+            let mut state = self.state.lock().expect("gate state");
+            state.release_first_put = true;
+            self.changed.notify_all();
+        }
+    }
+
+    impl platform_wallet_storage::KvStore for FirstAliasPutGate {
+        fn get(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, platform_wallet_storage::KvError> {
+            self.inner.get(scope, key)
+        }
+
+        fn put(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            key: &str,
+            value: &[u8],
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            let mut state = self.state.lock().expect("gate state");
+            if state.armed && !state.first_put_waiting && key.contains(SINGLE_KEY_META_INFIX) {
+                state.first_put_waiting = true;
+                self.changed.notify_all();
+                state = self
+                    .changed
+                    .wait_while(state, |state| !state.release_first_put)
+                    .expect("gate release");
+            }
+            drop(state);
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            key: &str,
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, platform_wallet_storage::KvError> {
+            self.inner.list_keys(scope, prefix)
         }
     }
 
@@ -1763,6 +1881,118 @@ mod tests {
             .set_alias("yNeverImported", Some("x".into()))
             .expect_err("unknown address must fail");
         assert!(matches!(err, TaskError::ImportedKeyNotFound), "got {err:?}");
+    }
+
+    #[test]
+    fn set_alias_rejects_overlong_alias_before_persisting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let imported = view
+            .import_wif(known_wif(), Some("old name".into()))
+            .expect("import");
+
+        let error = view
+            .set_alias(&imported.address, Some("w".repeat(65)))
+            .expect_err("overlong alias must fail");
+
+        assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
+        assert_eq!(view.list()[0].alias.as_deref(), Some("old name"));
+    }
+
+    #[test]
+    fn overlapping_alias_updates_keep_index_and_sidecar_consistent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
+        let index = Arc::new(std::sync::RwLock::new(std::collections::BTreeMap::new()));
+        let gated_store = Arc::new(FirstAliasPutGate::default());
+        let kv = Arc::new(DetKv::from_store(gated_store.clone()));
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network: Network::Testnet,
+            app_kv: Some(&kv),
+        };
+        let address = view
+            .import_wif(known_wif(), Some("original".into()))
+            .expect("import")
+            .address;
+        gated_store.arm();
+
+        let first_store = store.clone();
+        let first_index = index.clone();
+        let first_kv = kv.clone();
+        let first_address = address.clone();
+        let first = std::thread::spawn(move || {
+            SingleKeyView {
+                secret_store: &first_store,
+                index: &first_index,
+                network: Network::Testnet,
+                app_kv: Some(&first_kv),
+            }
+            .set_alias(&first_address, Some("first".into()))
+        });
+        gated_store.wait_until_first_put();
+
+        let later_store = store.clone();
+        let later_index = index.clone();
+        let later_kv = kv.clone();
+        let later_address = address.clone();
+        let (later_tx, later_rx) = std::sync::mpsc::channel();
+        let later = std::thread::spawn(move || {
+            let result = SingleKeyView {
+                secret_store: &later_store,
+                index: &later_index,
+                network: Network::Testnet,
+                app_kv: Some(&later_kv),
+            }
+            .set_alias(&later_address, Some("later".into()));
+            later_tx.send(result).expect("send later result");
+        });
+
+        let later_while_first_blocked = later_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .ok();
+        gated_store.release_first_put();
+        first
+            .join()
+            .expect("first rename thread")
+            .expect("first rename");
+        let later_result = match later_while_first_blocked {
+            Some(result) => result,
+            None => later_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("later rename completion"),
+        };
+        later_result.expect("later rename");
+        later.join().expect("later rename thread");
+
+        let indexed_alias = read_recover(&index)
+            .get(&address)
+            .and_then(|entry| entry.alias.as_deref())
+            .map(str::to_owned);
+        let persisted_alias = kv
+            .get::<ImportedKey>(DetScope::Global, &meta_key_for(Network::Testnet, &address))
+            .expect("read persisted alias")
+            .expect("persisted entry")
+            .alias;
+        assert_eq!(indexed_alias.as_deref(), Some("later"));
+        assert_eq!(
+            persisted_alias.as_deref(),
+            Some("later"),
+            "the persisted sidecar and in-memory index must agree on the later alias"
+        );
     }
 
     /// Legacy 32-byte raw vault payloads (pre per-key-passphrase)

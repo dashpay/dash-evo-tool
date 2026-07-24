@@ -2577,12 +2577,13 @@ impl TokensScreen {
         if let Some(status) = response.dialog_response {
             match status {
                 ConfirmationStatus::Confirmed => {
-                    if let Err(e) = self.app_context.remove_token(&token_to_remove) {
+                    if let Err(error) = self.app_context.remove_token(&token_to_remove) {
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
-                            format!("Error removing token balance: {}", e),
+                            "The token balance could not be removed. Refresh and try again.",
                             MessageType::Error,
-                        );
+                        )
+                        .with_details(error);
                     } else {
                         self.refresh();
                     }

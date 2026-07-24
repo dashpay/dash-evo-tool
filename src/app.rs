@@ -201,6 +201,24 @@ fn clear_scheduled_vote_sweep_guard_on_error(
     }
 }
 
+fn clear_profile_saving_banner_after_error(ctx: &egui::Context, context: &BackendTaskContext) {
+    if let Some(identity_id) = context.dashpay_profile_update_identity() {
+        crate::ui::identity::settings::clear_profile_saving_banner(ctx, &identity_id);
+    }
+}
+
+fn clear_profile_saving_banner_after_success(
+    ctx: &egui::Context,
+    context: &BackendTaskContext,
+    result: &BackendTaskSuccessResult,
+) {
+    if let BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) = result
+        && context.dashpay_profile_update_identity() == Some(*saved_id)
+    {
+        crate::ui::identity::settings::clear_profile_saving_banner(ctx, saved_id);
+    }
+}
+
 fn unix_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -278,6 +296,15 @@ mod backend_task_join_tests {
     use crate::backend_task::tokens::TokenTask;
     use crate::utils::egui_mpsc::SenderAsync;
 
+    fn profile_update_context(dispatch_id: u64, identity_byte: u8) -> BackendTaskContext {
+        BackendTaskContext::Dispatched {
+            dispatch_id,
+            operation: Box::new(BackendTaskContext::DashPayProfileUpdate(Identifier::from(
+                [identity_byte; 32],
+            ))),
+        }
+    }
+
     #[test]
     fn backend_task_error_retains_originating_context() {
         let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
@@ -298,6 +325,125 @@ mod backend_task_join_tests {
         assert_eq!(
             BackendTaskContext::from(&BackendTask::None),
             BackendTaskContext::Other
+        );
+    }
+
+    #[test]
+    fn profile_update_error_clears_only_its_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_id = Identifier::from([1; 32]);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &profile_update_context(1, 1));
+
+        assert!(
+            saving.elapsed().is_none(),
+            "a failed profile update must dismiss its persistent progress banner"
+        );
+    }
+
+    #[test]
+    fn profile_update_success_clears_its_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_id = Identifier::from([1; 32]);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, identity_id);
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_success(
+            &ctx,
+            &profile_update_context(1, 1),
+            &BackendTaskSuccessResult::DashPayProfileUpdated(identity_id),
+        );
+
+        assert!(
+            saving.elapsed().is_none(),
+            "a successful profile update must dismiss its persistent progress banner"
+        );
+    }
+
+    #[test]
+    fn unrelated_error_does_not_clear_profile_saving_banner() {
+        let ctx = egui::Context::default();
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &BackendTaskContext::Other);
+
+        assert!(saving.elapsed().is_some());
+    }
+
+    #[test]
+    fn one_identity_error_does_not_clear_another_identity_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_a = profile_update_context(1, 1);
+        let identity_b = profile_update_context(2, 2);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &identity_a);
+
+        assert!(
+            saving.elapsed().is_some(),
+            "identity A's error must not dismiss identity B's progress banner"
+        );
+
+        clear_profile_saving_banner_after_error(&ctx, &identity_b);
+        assert!(
+            saving.elapsed().is_none(),
+            "identity B's error must dismiss identity B's progress banner"
+        );
+    }
+
+    #[test]
+    fn one_identity_success_does_not_clear_another_identity_saving_banner() {
+        let ctx = egui::Context::default();
+        let identity_a = profile_update_context(1, 1);
+        let identity_b = profile_update_context(2, 2);
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([1; 32]));
+        crate::ui::identity::settings::show_profile_saving_banner(&ctx, Identifier::from([2; 32]));
+        let saving = MessageBanner::set_global(
+            &ctx,
+            crate::ui::identity::settings::PROFILE_SAVING,
+            MessageType::Info,
+        );
+
+        clear_profile_saving_banner_after_success(
+            &ctx,
+            &identity_a,
+            &BackendTaskSuccessResult::DashPayProfileUpdated(Identifier::from([1; 32])),
+        );
+
+        assert!(
+            saving.elapsed().is_some(),
+            "identity A's success must not dismiss identity B's progress banner"
+        );
+
+        clear_profile_saving_banner_after_success(
+            &ctx,
+            &identity_b,
+            &BackendTaskSuccessResult::DashPayProfileUpdated(Identifier::from([2; 32])),
+        );
+        assert!(
+            saving.elapsed().is_none(),
+            "identity B's success must dismiss identity B's progress banner"
         );
     }
 
@@ -2355,6 +2501,7 @@ impl App for AppState {
                     result: message,
                 } => {
                     let unboxed_message = *message;
+                    clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
                     self.route_contact_request_result_to_hidden_hub(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
@@ -2602,6 +2749,7 @@ impl App for AppState {
                     context,
                     error: err,
                 } => {
+                    clear_profile_saving_banner_after_error(ctx, &context);
                     clear_scheduled_vote_sweep_guard_on_error(
                         &mut self.scheduled_vote_sweeps_in_progress,
                         &context,

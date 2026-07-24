@@ -9,6 +9,7 @@ mod refresh_identity;
 mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
 mod register_identity;
+mod remove_identity;
 mod top_up_identity;
 mod transfer;
 mod unload_identity;
@@ -517,6 +518,10 @@ pub enum IdentityTask {
         key_id: Option<KeyID>,
     },
     RegisterDpnsName(RegisterDpnsNameInput),
+    /// Remove a local identity and its associated voter identity, if present.
+    RemoveIdentity {
+        identity_id: Identifier,
+    },
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
 }
@@ -860,6 +865,7 @@ impl AppContext {
             IdentityTask::RegisterDpnsName(input) => {
                 Ok(self.register_dpns_name(sdk, input).await?)
             }
+            IdentityTask::RemoveIdentity { identity_id } => self.remove_identity(identity_id),
             IdentityTask::RefreshIdentity(qualified_identity) => {
                 self.refresh_identity(sdk, qualified_identity, sender).await
             }

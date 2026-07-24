@@ -18,12 +18,14 @@
 //! This component follows `docs/COMPONENT_DESIGN_PATTERN.md`: private fields +
 //! builder methods + a response struct implementing [`ComponentResponse`].
 
+use crate::model::contested_name::PendingUsername;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::component_trait::ComponentResponse;
+use crate::ui::components::pill;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use eframe::egui::{
-    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Response, RichText, Sense,
-    Stroke, StrokeKind, TextureHandle, TextureOptions, Ui,
+    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, RichText, Sense, Stroke,
+    TextureHandle, TextureOptions, Ui,
 };
 
 /// One of the three supported identity kinds. Maps 1:1 to the project's
@@ -181,6 +183,10 @@ pub struct IdentityHeroCard {
     /// `avatar_uses_initials_fallback()` stays honest even without a render
     /// pass.
     avatar_decode_ok: bool,
+    /// A DPNS username the identity has requested but not yet been awarded.
+    /// When set and no owned `dpns_handle` exists, the hero shows the requested
+    /// name with a "Pending" pill instead of the `No username yet` prompt.
+    pending_username: Option<PendingUsername>,
 }
 
 impl IdentityHeroCard {
@@ -197,6 +203,7 @@ impl IdentityHeroCard {
             network_tooltip: None,
             avatar_bytes: None,
             avatar_decode_ok: false,
+            pending_username: None,
         }
     }
 
@@ -215,6 +222,16 @@ impl IdentityHeroCard {
         let handle = handle.into();
         if !handle.trim().is_empty() {
             self.dpns_handle = Some(handle);
+        }
+        self
+    }
+
+    /// Attach a pending DPNS username request (requested but not yet awarded).
+    /// Shown only when the identity has no owned `dpns_handle` — an owned name
+    /// always wins.
+    pub fn with_pending_username(mut self, pending: PendingUsername) -> Self {
+        if !pending.name.trim().is_empty() {
+            self.pending_username = Some(pending);
         }
         self
     }
@@ -328,24 +345,24 @@ impl IdentityHeroCard {
                                 .color(DashColors::text_primary(dark_mode)),
                         );
                     }
-                    match (&self.display_name, &self.dpns_handle) {
-                        (_, Some(handle)) => {
+                    match (&self.dpns_handle, &self.pending_username) {
+                        (Some(handle), _) => {
+                            // Owned DPNS name always wins over a pending request.
                             ui.label(
                                 RichText::new(format!("@{handle}"))
                                     .size(16.0)
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
                         }
-                        (Some(_), None) => {
-                            // Social profile set but no DPNS handle — show
-                            // the `Pick a username` prompt.
-                            if self.paint_pick_username_prompt(ui, dark_mode) {
-                                action = Some(HeroAction::PickUsernameClicked);
-                            }
+                        (None, Some(pending)) => {
+                            // Requested but not yet awarded — show the requested
+                            // name with a `Pending` pill so it is not mistaken
+                            // for "no username requested".
+                            self.paint_pending_username_line(ui, dark_mode, pending);
                         }
                         (None, None) => {
-                            // No display name and no DPNS handle — still show
-                            // the prompt so the user has a recovery path.
+                            // No owned name and nothing pending — show the
+                            // `Pick a username` prompt so the user has a path.
                             if self.paint_pick_username_prompt(ui, dark_mode) {
                                 action = Some(HeroAction::PickUsernameClicked);
                             }
@@ -377,7 +394,7 @@ impl IdentityHeroCard {
 
                             // Identity-type + network pill row.
                             ui.horizontal(|ui| {
-                                self.paint_pill(
+                                pill::accent_pill(
                                     ui,
                                     self.kind.badge_label(),
                                     self.kind.badge_accent(),
@@ -385,7 +402,7 @@ impl IdentityHeroCard {
                                 );
                                 if let Some(label) = &self.network_label {
                                     ui.add_space(Spacing::XS);
-                                    self.paint_pill(
+                                    pill::accent_pill(
                                         ui,
                                         label,
                                         DashColors::INFO,
@@ -519,45 +536,22 @@ impl IdentityHeroCard {
         clicked
     }
 
-    /// Paint an identity-type or network pill. Fill is the accent color at
-    /// 12 % opacity, with a 1 px stroke at the accent color. See §E.
-    fn paint_pill(
-        &self,
-        ui: &mut Ui,
-        label: &str,
-        accent: Color32,
-        tooltip: Option<&str>,
-    ) -> Response {
-        let fill = Color32::from_rgba_unmultiplied(
-            accent.r(),
-            accent.g(),
-            accent.b(),
-            (0.12 * 255.0) as u8,
-        );
-        let stroke_color = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 180);
-
-        let text = RichText::new(label).color(accent).size(12.0).strong();
-        // Build as an inline pill: small frame around the label.
-        let inner = Frame::new()
-            .fill(fill)
-            .stroke(Stroke::NONE)
-            .corner_radius(CornerRadius::same(Shape::RADIUS_FULL))
-            .inner_margin(Margin::symmetric(10, 3))
-            .show(ui, |ui| {
-                ui.add(egui::Label::new(text).sense(Sense::hover()))
-            });
-        // Paint the stroke manually so the ring color matches the accent.
-        ui.painter().rect_stroke(
-            inner.response.rect,
-            CornerRadius::same(Shape::RADIUS_FULL),
-            Stroke::new(1.0, stroke_color),
-            StrokeKind::Outside,
-        );
-        if let Some(text) = tooltip {
-            inner.response.info_tooltip(text)
-        } else {
-            inner.response
-        }
+    /// Paint the pending-username line: the requested `@name` (muted, italic to
+    /// signal it is not yet final) followed by a shared `Pending` pill whose
+    /// tooltip carries the estimated ready time.
+    fn paint_pending_username_line(&self, ui: &mut Ui, dark_mode: bool, pending: &PendingUsername) {
+        let name =
+            crate::model::contested_name::sanitize_pending_username_for_display(&pending.name);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("@{name}"))
+                    .size(16.0)
+                    .italics()
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            ui.add_space(Spacing::XS);
+            pill::pending_username_pill(ui, pending);
+        });
     }
 }
 
@@ -725,6 +719,78 @@ mod tests {
         assert!(
             !hero.avatar_decode_ok,
             "avatar_decode_ok must be false for undecodable bytes"
+        );
+    }
+
+    // ─── Pending DPNS username tests ─────────────────────────
+
+    fn pending(name: &str) -> PendingUsername {
+        PendingUsername {
+            name: name.to_string(),
+            decided_at: None,
+        }
+    }
+
+    #[test]
+    fn with_pending_username_ignores_blank_names() {
+        let hero = IdentityHeroCard::new(HeroIdentityKind::User, "0.0")
+            .with_pending_username(pending("  "));
+        assert!(hero.pending_username.is_none());
+    }
+
+    /// The pending variant renders the requested name with a `Pending` pill and
+    /// suppresses the misleading `No username yet` prompt.
+    #[test]
+    fn hero_pending_variant_shows_pill_not_pick_username_prompt() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let hero = IdentityHeroCard::new(HeroIdentityKind::User, "0.0")
+            .with_pending_username(pending("det1"));
+        assert!(hero.dpns_handle.is_none(), "precondition: no owned name");
+
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            hero.show(ui);
+        });
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label(pill::PENDING_USERNAME_PILL_LABEL)
+                .is_some(),
+            "pending hero must render the 'Pending' pill"
+        );
+        assert!(
+            harness.query_by_label("No username yet").is_none(),
+            "pending hero must NOT show the 'No username yet' prompt"
+        );
+    }
+
+    /// An owned DPNS name always wins: no `Pending` pill even if a pending
+    /// request is also attached.
+    #[test]
+    fn hero_owned_handle_wins_over_pending() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let hero = IdentityHeroCard::new(HeroIdentityKind::User, "0.0")
+            .with_dpns_handle("alex")
+            .with_pending_username(pending("det1"));
+
+        let mut harness = Harness::builder().build_ui(move |ui| {
+            hero.show(ui);
+        });
+        harness.run();
+
+        assert!(
+            harness.query_by_label("@alex").is_some(),
+            "owned handle must render"
+        );
+        assert!(
+            harness
+                .query_by_label(pill::PENDING_USERNAME_PILL_LABEL)
+                .is_none(),
+            "owned name must suppress the pending pill"
         );
     }
 }

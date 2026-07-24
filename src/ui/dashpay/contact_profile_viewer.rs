@@ -375,12 +375,13 @@ impl ContactProfileViewerScreen {
                                                 MessageType::Success,
                                             );
                                         }
-                                        Err(e) => {
+                                        Err(error) => {
                                             crate::ui::components::MessageBanner::set_global(
                                                 ui.ctx(),
-                                                format!("Failed to save: {}", e),
+                                                "The private contact information could not be saved. Check available disk space and try again.",
                                                 MessageType::Error,
-                                            );
+                                            )
+                                            .with_details(error);
                                         }
                                     }
                                 }

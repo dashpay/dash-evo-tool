@@ -5,6 +5,7 @@ mod fund_platform_address_from_asset_lock;
 mod fund_platform_address_from_wallet_utxos;
 mod generate_platform_receive_address;
 mod generate_receive_address;
+mod rename_wallet;
 mod sign_message_with_identity_key;
 mod sign_message_with_key;
 mod transfer_platform_credits;
@@ -257,6 +258,22 @@ pub enum WalletTask {
         /// If true, fees are deducted from the output amount (recipient receives less).
         /// If false, fees are paid from extra wallet balance (recipient receives exact amount).
         fee_deduct_from_output: bool,
+    },
+    /// Persist a new alias for an HD wallet to the wallet-meta sidecar, off the
+    /// UI thread. Reads the existing metadata fallibly so a storage/read failure
+    /// surfaces instead of silently clobbering the other sidecar fields
+    /// (`is_main` / `core_wallet_name` / xpub / password fields); a genuinely
+    /// absent row is seeded fresh with the alias and the wallet's xpub. An empty
+    /// `alias` clears the name.
+    RenameHdWallet {
+        seed_hash: WalletSeedHash,
+        alias: String,
+    },
+    /// Persist a new alias for an imported single-key wallet to the single-key
+    /// sidecar, off the UI thread. An empty `alias` clears the name.
+    RenameSingleKeyWallet {
+        address: String,
+        alias: String,
     },
 }
 

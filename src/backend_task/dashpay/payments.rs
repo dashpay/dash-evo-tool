@@ -4,6 +4,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dashpay::{
     PaymentDirection as StoredPaymentDirection, PaymentStatus as StoredPaymentStatus,
+    validate_payment_memo,
 };
 use crate::model::dashpay_derivation::derive_payment_address;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -231,6 +232,10 @@ pub async fn send_payment_to_contact(
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+    if let Some(memo) = memo.as_deref() {
+        validate_payment_memo(memo).map_err(|source| TaskError::DashPayMemoTooLong { source })?;
+    }
 
     // Get a wallet from the identity's associated wallets
     let wallet = from_identity

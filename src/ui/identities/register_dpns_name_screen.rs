@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::dpns::{DpnsNameValidationResult, DpnsRegistrationOutcome, validate_dpns_name};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -61,6 +62,7 @@ pub struct RegisterDpnsNameScreen {
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    registration_outcome: Option<DpnsRegistrationOutcome>,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
     /// Bucket A overlay-adoption pattern: a button-less full-window block raised
@@ -139,6 +141,7 @@ impl RegisterDpnsNameScreen {
             wallet_open_attempted: false,
             show_advanced_options: false,
             completed_fee_result: None,
+            registration_outcome: None,
             source,
             op_overlay: None,
         }
@@ -319,9 +322,20 @@ impl RegisterDpnsNameScreen {
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(outcome) = self.registration_outcome else {
+            return AppAction::None;
+        };
+        let success_message = match outcome {
+            DpnsRegistrationOutcome::Registered => {
+                "Your username is registered. You can use it now."
+            }
+            DpnsRegistrationOutcome::PendingCommunityVote => {
+                "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates."
+            }
+        };
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
-            "DPNS Name Registered!".to_string(),
+            success_message.to_string(),
             vec![
                 ("Back".to_string(), AppAction::PopScreenAndRefresh),
                 (
@@ -339,6 +353,7 @@ impl RegisterDpnsNameScreen {
             self.name_input = String::new();
             self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
             self.completed_fee_result = None;
+            self.registration_outcome = None;
             return AppAction::None;
         }
 
@@ -359,11 +374,14 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         // Tear down the blocking overlay on the success terminal path.
-        if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
-            backend_task_success_result
+        if let BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        } = backend_task_success_result
         {
             self.op_overlay.take_and_clear();
             self.completed_fee_result = Some(fee_result);
+            self.registration_outcome = Some(outcome);
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
     }
@@ -453,7 +471,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
             inner_action |= self.render_identity_id_selection(ui);
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
-                ui.label(format!("Identity balance: {:.6}", identity.identity.balance() as f64 * 1e-11));
+                ui.label(format!(
+                    "Identity balance: {balance:.6}",
+                    balance = identity.identity.balance() as f64 * 1e-11
+                ));
             }
 
             ui.add_space(10.0);
@@ -581,8 +602,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
             let hover_text = if !has_enough_balance {
                 format!(
-                    "Insufficient identity balance for fee (need at least {})",
-                    format_credits_as_dash(estimated_fee)
+                    "Insufficient identity balance for fee (need at least {fee})",
+                    fee = format_credits_as_dash(estimated_fee)
                 )
             } else if !name_is_valid {
                 "Please enter a valid name".to_string()
@@ -664,64 +685,4 @@ pub fn is_contested_name(name: &str) -> bool {
         }
     }
     true
-}
-
-#[derive(Debug, PartialEq)]
-pub enum DpnsNameValidationResult {
-    Valid,
-    TooShort,
-    TooLong,
-    InvalidCharacter(char),
-    StartsWithHyphen,
-    EndsWithHyphen,
-}
-
-pub fn validate_dpns_name(name: &str) -> DpnsNameValidationResult {
-    if name.len() < 3 {
-        return DpnsNameValidationResult::TooShort;
-    }
-
-    if name.len() > 63 {
-        return DpnsNameValidationResult::TooLong;
-    }
-
-    if name.starts_with('-') {
-        return DpnsNameValidationResult::StartsWithHyphen;
-    }
-
-    if name.ends_with('-') {
-        return DpnsNameValidationResult::EndsWithHyphen;
-    }
-
-    for c in name.chars() {
-        if !c.is_ascii_alphanumeric() && c != '-' {
-            return DpnsNameValidationResult::InvalidCharacter(c);
-        }
-    }
-
-    DpnsNameValidationResult::Valid
-}
-
-impl DpnsNameValidationResult {
-    pub fn error_message(&self) -> Option<String> {
-        match self {
-            DpnsNameValidationResult::Valid => None,
-            DpnsNameValidationResult::TooShort => {
-                Some("Name must be at least 3 characters long".to_string())
-            }
-            DpnsNameValidationResult::TooLong => {
-                Some("Name must be no more than 63 characters long".to_string())
-            }
-            DpnsNameValidationResult::InvalidCharacter(c) => Some(format!(
-                "Invalid character '{}'. Only letters, numbers, and hyphens are allowed",
-                c
-            )),
-            DpnsNameValidationResult::StartsWithHyphen => {
-                Some("Name cannot start with a hyphen".to_string())
-            }
-            DpnsNameValidationResult::EndsWithHyphen => {
-                Some("Name cannot end with a hyphen".to_string())
-            }
-        }
-    }
 }

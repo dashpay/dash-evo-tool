@@ -3,7 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::user_role::UserRole;
@@ -133,8 +133,11 @@ impl WithdrawalScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.005).max(0.0);
-        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_credit_withdrawal();
+        let max_amount_credits = max_spendable_credits(self.max_amount, estimated_fee);
 
         // Lazy initialization with basic configuration
         let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {
@@ -263,7 +266,7 @@ impl WithdrawalScreen {
             .identity
             .masternode_payout_address(self.app_context.network)
         {
-            format!("masternode payout address {}", payout_address)
+            format!("masternode payout address {payout_address}")
         } else if !self.app_context.user_role().at_least(UserRole::Power) {
             self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
             MessageBanner::set_global(
@@ -292,11 +295,12 @@ impl WithdrawalScreen {
             ConfirmationDialog::new(
                 "Confirm Withdrawal".to_string(),
                 format!(
-                    "Are you sure you want to withdraw {} to {}",
-                    self.withdrawal_amount
+                    "Are you sure you want to withdraw {amount} to {address}",
+                    amount = self
+                        .withdrawal_amount
                         .as_ref()
                         .expect("Withdrawal amount should be present"),
-                    message_address
+                    address = message_address
                 ),
             )
             .danger_mode(true) // Withdrawal is a destructive operation
@@ -375,13 +379,14 @@ impl ScreenLike for WithdrawalScreen {
         if let Some(refreshed) = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap_or_else(|e| {
-                MessageBanner::set_global(
+            .unwrap_or_else(|error| {
+                let handle = MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    format!("Failed to load local identities: {e}"),
+                    "Saved identities could not be loaded. Refresh the screen and try again.",
                     MessageType::Error,
-                )
-                .disable_auto_dismiss();
+                );
+                handle.with_details(error);
+                handle.disable_auto_dismiss();
                 vec![]
             })
             .into_iter()
@@ -439,7 +444,10 @@ impl ScreenLike for WithdrawalScreen {
             if !has_keys {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    format!("You do not have any withdrawal keys loaded for this {} identity. Note that TRANSFER or OWNER keys are used for withdrawals.", self.identity.identity_type));
+                    format!(
+                        "You do not have any withdrawal keys loaded for this {identity_type} identity. Note that TRANSFER or OWNER keys are used for withdrawals.",
+                        identity_type = self.identity.identity_type
+                    ));
                 ui.add_space(10.0);
 
                 if self.identity.identity_type != IdentityType::User {
@@ -481,7 +489,7 @@ impl ScreenLike for WithdrawalScreen {
                         IdentityType::Evonode => "Payout",
                     };
                     if ui
-                        .button(format!("Check {} Address Key", key_type_name))
+                        .button(format!("Check {key_type_name} Address Key"))
                         .clicked()
                     {
                         inner_action |=
@@ -563,9 +571,9 @@ impl ScreenLike for WithdrawalScreen {
                 // Show identity info
                 let identity_id_string = self.identity.identity.id().to_string(Encoding::Base58);
                 let identity_label = if let Some(alias) = &self.identity.alias {
-                    format!("From: {} ({})", alias, identity_id_string)
+                    format!("From: {alias} ({identity_id_string})")
                 } else {
-                    format!("From: {}", identity_id_string)
+                    format!("From: {identity_id_string}")
                 };
                 ui.label(identity_label);
 
@@ -573,7 +581,7 @@ impl ScreenLike for WithdrawalScreen {
                 let balance_dash = self.max_amount as f64 / 100_000_000_000.0;
                 ui.horizontal(|ui| {
                     ui.label("Available Balance:");
-                    ui.label(RichText::new(format!("{:.4} Dash", balance_dash)));
+                    ui.label(RichText::new(format!("{balance_dash:.4} Dash")));
                 });
                 ui.add_space(5.0);
 
@@ -645,8 +653,8 @@ impl ScreenLike for WithdrawalScreen {
                     "Please enter a valid withdrawal address".to_string()
                 } else if !has_enough_balance {
                     format!(
-                        "Insufficient balance for withdrawal fee (need at least {})",
-                        format_credits_as_dash(estimated_fee)
+                        "Insufficient balance for withdrawal fee (need at least {fee})",
+                        fee = format_credits_as_dash(estimated_fee)
                     )
                 } else {
                     String::new()

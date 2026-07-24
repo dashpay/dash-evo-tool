@@ -60,6 +60,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cleanup failures still reconcile the app's active identity state, and late
   DashPay profile responses can no longer restore stale profile data.
 
+- **Wallet rename consistency**: renaming a wallet no longer overwrites other
+  saved wallet details when metadata cannot be read. Overlapping renames and
+  wallet removals also keep displayed aliases and deleted-wallet metadata
+  consistent. The rename dialog remains open with the entered name available
+  for retry when saving fails, and its controls stay disabled while a save is
+  in progress.
+
 - **Shielded availability notice**: now distinguishes when the connected network
   does not support shielded sending from when the current interface mode does
   not unlock it.

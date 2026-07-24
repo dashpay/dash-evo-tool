@@ -102,13 +102,21 @@ impl TransitionVisualizerScreen {
                 .filter(|s| !s.trim().is_empty()) // Skip empty segments
                 .map(|s| s.trim().parse::<u8>())
                 .collect::<Result<Vec<u8>, _>>()
-                .map_err(|e| format!("Failed to parse comma-separated integers: {}", e))
+                .map_err(|error| {
+                    tracing::debug!(?error, "Transition byte-list parsing failed");
+                    format!(
+                        "The comma-separated values are not valid bytes. Use numbers from 0 to 255. ({error})"
+                    )
+                })
         } else {
             // Try to decode the input as hex first
             hex::decode(self.input_data.trim()).or_else(|_| {
-                STANDARD
-                    .decode(self.input_data.trim())
-                    .map_err(|e| format!("Base64 decode error: {}", e))
+                STANDARD.decode(self.input_data.trim()).map_err(|error| {
+                    tracing::debug!(?error, "Transition base64 decoding failed");
+                    format!(
+                        "The input is not valid hexadecimal or base64 data. Check it and try again. ({error})"
+                    )
+                })
             })
         };
 
@@ -130,17 +138,25 @@ impl TransitionVisualizerScreen {
                                     );
                                 }
                             }
-                            Err(e) => {
+                            Err(error) => {
+                                tracing::debug!(?error, "Transition JSON serialization failed");
                                 self.parse_error = Some((
-                                    format!("Failed to serialize to JSON: {}", e),
+                                    format!(
+                                        "The transition could not be displayed as JSON. Check the input and try again. ({error})"
+                                    ),
                                     Instant::now(),
                                 ));
                             }
                         }
                     }
-                    Err(e) => {
-                        self.parse_error =
-                            Some((format!("Failed to parse: {}", e), Instant::now()));
+                    Err(error) => {
+                        tracing::debug!(?error, "State-transition deserialization failed");
+                        self.parse_error = Some((
+                            format!(
+                                "The state transition could not be read. Check the input format and try again. ({error})"
+                            ),
+                            Instant::now(),
+                        ));
                     }
                 }
             }
@@ -270,7 +286,7 @@ impl TransitionVisualizerScreen {
                 };
                 ui.colored_label(
                     Color32::from_rgba_premultiplied(139, 0, 0, alpha), // Dark red
-                    format!("Error: {}", msg),
+                    msg,
                 );
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             } else {
@@ -401,14 +417,14 @@ impl ScreenLike for TransitionVisualizerScreen {
             crate::ui::BackendTaskSuccessResult::FetchedContract(contract) => {
                 let contract_id = contract.id().to_string(Encoding::Base58);
                 self.contract_fetch_message = Some((
-                    format!("✅ Contract {} fetched successfully", contract_id),
+                    format!("✅ Contract {contract_id} fetched successfully"),
                     Instant::now(),
                 ));
             }
             crate::ui::BackendTaskSuccessResult::FetchedContracts(contracts) => {
                 let count = contracts.iter().filter(|c| c.is_some()).count();
                 self.contract_fetch_message = Some((
-                    format!("✅ {} contract(s) fetched successfully", count),
+                    format!("✅ {count} contract(s) fetched successfully"),
                     Instant::now(),
                 ));
             }
@@ -458,7 +474,7 @@ impl ScreenLike for TransitionVisualizerScreen {
                         ui.add_space(10.0);
 
                         if let Some(ref contract_id) = self.selected_contract_id {
-                            ui.label(format!("Contract ID: {}", contract_id));
+                            ui.label(format!("Contract ID: {contract_id}"));
                             ui.add_space(10.0);
 
                             // Check if contract already exists

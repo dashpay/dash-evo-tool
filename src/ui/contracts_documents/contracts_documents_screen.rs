@@ -251,14 +251,15 @@ impl DocumentQueryScreen {
                             FetchDocumentsPage(parsed_query),
                         )));
                     }
-                    Err(e) => {
+                    Err(error) => {
                         self.query_banner.take_and_clear();
                         self.document_query_status = DocumentQueryStatus::Error;
                         MessageBanner::set_global(
                             ui.ctx(),
-                            format!("Failed to parse query properly: {}", e),
+                            "The document query is not valid. Check its fields and try again.",
                             MessageType::Error,
-                        );
+                        )
+                        .with_details(error);
                     }
                 }
             }

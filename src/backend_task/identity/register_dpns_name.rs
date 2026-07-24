@@ -2,10 +2,16 @@ use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
-use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
+use crate::{
+    context::AppContext,
+    model::{
+        dpns::{DpnsNameValidationResult, classify_dpns_registration_outcome, validate_dpns_name},
+        qualified_identity::DPNSNameInfo,
+    },
+};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
-    Sdk,
+    Error as SdkError, Sdk,
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
@@ -37,6 +43,11 @@ impl AppContext {
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let validation = validate_dpns_name(&input.name_input);
+        if validation != DpnsNameValidationResult::Valid {
+            return Err(TaskError::InvalidDpnsName { validation });
+        }
+
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
@@ -132,6 +143,12 @@ impl AppContext {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
         });
+        let outcome = classify_dpns_registration_outcome(
+            &domain_document_type,
+            &domain_document,
+            sdk.version(),
+        )
+        .map_err(|error| SdkError::Protocol(*error))?;
 
         let public_key = qualified_identity
             .document_signing_key(&preorder_document_type)
@@ -152,6 +169,8 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
+            // Not rebranded: preorder's only unique index, `saltedDomainHash`, is unrelated to
+            // usernames, so conflicts keep the generic `PlatformEntryConflict` message.
             .await?;
 
         let _ = domain_document
@@ -217,7 +236,7 @@ impl AppContext {
         qualified_identity.dpns_names = owned_dpns_names;
 
         if qualified_identity.alias.is_none() {
-            qualified_identity.alias = Some(format!("{}.dash", input.name_input));
+            qualified_identity.alias = Some(format!("{name}.dash", name = input.name_input));
         }
 
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
@@ -249,31 +268,22 @@ impl AppContext {
         self.update_local_qualified_identity(&qualified_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
-        Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))
+        Ok(BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::consensus::state::document::duplicate_unique_index_error::DuplicateUniqueIndexError;
+    use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
     use dash_sdk::dpp::consensus::state::state_error::StateError;
-    use dash_sdk::dpp::consensus::{
-        ConsensusError, ConsensusError::StateError as ConsensusStateError,
-    };
-    use dash_sdk::platform::Identifier;
 
     fn duplicate_unique_index_conflict(properties: Vec<&str>) -> TaskError {
-        let consensus = ConsensusError::from(DuplicateUniqueIndexError::new(
-            Identifier::random(),
-            properties.into_iter().map(str::to_string).collect(),
-        ));
-        let source_error = Box::new(dash_sdk::Error::StateTransitionBroadcastError(
-            dash_sdk::error::StateTransitionBroadcastError {
-                code: 40105,
-                message: "duplicate unique index".to_string(),
-                cause: Some(consensus),
-            },
+        let source_error = Box::new(crate::test_support::duplicate_unique_index_broadcast_error(
+            properties,
         ));
 
         TaskError::PlatformEntryConflict { source_error }

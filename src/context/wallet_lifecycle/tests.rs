@@ -3977,10 +3977,10 @@ async fn cold_boot_skips_corrupt_fvk_for_one_wallet_and_restores_healthy_wallet(
     let _ = ctx.subtasks.shutdown_async().await;
 }
 
-/// A corrupt persisted Core transaction must not hide the wallet or prevent
-/// valid history from populating its first seedless cold-boot snapshot.
+/// A corrupt persisted Core transaction must surface the dedicated fatal
+/// local-data load error during seedless cold boot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corrupt() {
+async fn cold_boot_surfaces_typed_error_when_persisted_transaction_txid_is_corrupt() {
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{BlockHash, Transaction};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
@@ -3998,7 +3998,7 @@ async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corru
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let seed = [0xD4u8; 64];
 
-    let (seed_hash, wallet_id) = {
+    let (_seed_hash, wallet_id) = {
         let wallet =
             crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
                 .expect("build wallet");
@@ -4046,8 +4046,6 @@ async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corru
         Vec::new(),
         250_000,
     );
-    let expected_txid = record.txid;
-
     let cold_dir = tempfile::tempdir().expect("cold tempdir");
     copy_dir_recursive(source_dir.path(), cold_dir.path());
 
@@ -4089,37 +4087,14 @@ async fn cold_boot_keeps_wallet_visible_when_persisted_transaction_txid_is_corru
     drop(connection);
 
     let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
-    ctx.ensure_wallet_backend(sender)
+    let error = ctx
+        .ensure_wallet_backend(sender)
         .await
-        .expect("corrupt history must not prevent cold-boot registration");
-    let backend = ctx.wallet_backend().expect("cold-boot backend");
-    let history = backend.transaction_history(&seed_hash);
-
+        .expect_err("corrupt persisted transaction id must fail cold-boot loading");
     assert!(
-        backend.is_wallet_registered(&seed_hash),
-        "the wallet must remain registered when one history row is corrupt"
+        matches!(error, TaskError::WalletLocalDataLoadFailed { .. }),
+        "fatal persisted-wallet corruption must use the dedicated error, got: {error:?}"
     );
-    assert!(
-        backend.has_snapshot(&seed_hash),
-        "the wallet must remain visible when one history row is corrupt"
-    );
-    assert_eq!(
-        history.len(),
-        1,
-        "the corrupt row must be skipped without dropping valid history"
-    );
-    assert_eq!(history[0].txid, expected_txid);
-    assert_eq!(history[0].timestamp, u64::from(timestamp));
-    assert_eq!(history[0].net_amount, 250_000);
-    assert!(matches!(
-        backend.transaction_history_status(&seed_hash),
-        crate::wallet_backend::TransactionHistoryStatus::Partial {
-            skipped_rows: 1,
-            ..
-        }
-    ));
-
-    backend.shutdown().await;
 }
 
 /// Build a minimal basic identity for manager-reconcile tests — only its

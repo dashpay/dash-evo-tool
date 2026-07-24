@@ -691,12 +691,22 @@ impl WalletBackend {
         //    already holds the wallets, so the upstream load (which rejects
         //    duplicates) is skipped and only the resolution below runs.
         if self.inner.pwm.wallet_ids().await.is_empty() {
+            use platform_wallet::changeset::{PersistenceError, PersistenceErrorKind};
+
             self.inner
                 .pwm
                 .load_from_persistor()
                 .await
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Arc::new(e),
+                .map_err(|source| match source {
+                    source @ PlatformWalletError::PersisterLoad(PersistenceError::Backend {
+                        kind: PersistenceErrorKind::Fatal,
+                        ..
+                    }) => TaskError::WalletLocalDataLoadFailed {
+                        source: Arc::new(source),
+                    },
+                    source => TaskError::WalletBackend {
+                        source: Arc::new(source),
+                    },
                 })?;
         }
 

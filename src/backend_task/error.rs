@@ -204,6 +204,16 @@ pub enum TaskError {
     )]
     WalletPaymentOptionUnsupported,
 
+    /// A fatal persisted-load failure prevented the wallet backend from
+    /// restoring locally saved wallet state during startup.
+    #[error(
+        "Saved wallet data appears damaged and cannot be loaded. Restore the wallet from its recovery phrase to keep using it."
+    )]
+    WalletLocalDataLoadFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// A wallet operation failed inside the upstream wallet runtime.
     #[error("The wallet service could not complete this operation. Please retry in a moment.")]
     WalletBackend {

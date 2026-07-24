@@ -336,6 +336,8 @@ pub enum BackendTaskContext {
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
+    /// One HD-wallet or imported-key alias update.
+    WalletRename(WalletTask),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -386,6 +388,13 @@ impl BackendTaskContext {
     pub(crate) fn generated_receive_address_wallet(&self) -> Option<WalletSeedHash> {
         match self.operation() {
             Self::GenerateReceiveAddress { seed_hash } => Some(*seed_hash),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn wallet_rename_task(&self) -> Option<&WalletTask> {
+        match self.operation() {
+            Self::WalletRename(task) => Some(task),
             _ => None,
         }
     }
@@ -445,6 +454,10 @@ impl From<&BackendTask> for BackendTaskContext {
                     seed_hash: *seed_hash,
                 }
             }
+            BackendTask::WalletTask(
+                task @ (WalletTask::RenameHdWallet { .. }
+                | WalletTask::RenameSingleKeyWallet { .. }),
+            ) => Self::WalletRename(task.clone()),
             _ => Self::Other,
         }
     }
@@ -589,6 +602,20 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         address: String,
     },
+    /// An HD wallet's alias was renamed and persisted to the wallet-meta
+    /// sidecar. Carries the new alias so the screen updates its in-memory label
+    /// only after the write succeeds.
+    WalletAliasRenamed {
+        seed_hash: WalletSeedHash,
+        alias: String,
+    },
+    /// An imported single-key wallet's alias was renamed and persisted to the
+    /// single-key sidecar. Carries the new alias so the screen updates its
+    /// in-memory label only after the write succeeds.
+    SingleKeyAliasRenamed {
+        address: String,
+        alias: String,
+    },
     /// The wallet's tracked asset locks, read off the UI thread through the
     /// upstream `AssetLockManager`. Carries the `seed_hash` so screens cache
     /// and match the result per wallet.
@@ -709,6 +736,10 @@ pub enum BackendTaskSuccessResult {
     RegisteredDpnsName {
         outcome: crate::model::dpns::DpnsRegistrationOutcome,
         fee_result: FeeResult,
+    },
+    RemovedIdentities {
+        identity_ids: Vec<Identifier>,
+        associated_cleanup_failed: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
@@ -1267,6 +1298,12 @@ impl AppContext {
                     fee_deduct_from_output,
                 )
                 .await
+            }
+            WalletTask::RenameHdWallet { seed_hash, alias } => {
+                self.rename_hd_wallet(seed_hash, alias)
+            }
+            WalletTask::RenameSingleKeyWallet { address, alias } => {
+                self.rename_single_key_wallet(address, alias)
             }
         };
 

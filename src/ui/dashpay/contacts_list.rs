@@ -795,9 +795,14 @@ impl ContactsList {
                                                     existing.notes,
                                                     new_hidden,
                                                 );
-                                                if let Err(e) = sidecar_result {
+                                                if let Err(error) = sidecar_result {
+                                                    tracing::warn!(
+                                                        ?error,
+                                                        "Failed to update private contact information"
+                                                    );
                                                     self.message = Some((
-                                                        format!("Failed to update contact: {}", e),
+                                                        "The contact could not be updated. Check available disk space and try again."
+                                                            .to_string(),
                                                         MessageType::Error,
                                                     ));
                                                 } else {

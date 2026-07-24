@@ -240,6 +240,16 @@ pub async fn send_contact_request_with_proof(
     account_label: Option<String>,
     qr_auto_accept: Option<AutoAcceptProofData>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    if let Some(label) = account_label.as_deref()
+        && let Err(error) = crate::model::dashpay::validate_account_label(label)
+    {
+        return Err(DashPayError::AccountLabelTooLong {
+            length: error.actual,
+            max: error.max,
+        }
+        .into());
+    }
+
     // Step 1: Resolve the recipient identity
     let to_username_or_id = to_username_or_id.trim().to_string();
 

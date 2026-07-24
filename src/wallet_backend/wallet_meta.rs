@@ -119,6 +119,21 @@ impl<'a> WalletMetaView<'a> {
         self.0.get(network, seed_hash)
     }
 
+    /// Fetch the metadata for a single wallet, surfacing a read failure instead
+    /// of degrading it to absence. `Ok(None)` means the row was never written;
+    /// `Err(`[`TaskError::KvSidecarStorage`]`)` means the blob is present but
+    /// unreadable (storage fault, schema mismatch, corrupt bytes). A rename that
+    /// only edits the alias must not overwrite the row on a failed read — a
+    /// blind `set` after a swallowed error would drop every other stored field —
+    /// so it reads through this fallible path.
+    pub fn try_get(
+        &self,
+        network: Network,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<WalletMeta>, TaskError> {
+        self.0.try_get(network, seed_hash)
+    }
+
     /// Upsert the metadata for a single wallet. Re-writing the same value is an
     /// idempotent overwrite (DetKv upserts by key).
     pub fn set(
@@ -127,6 +142,26 @@ impl<'a> WalletMetaView<'a> {
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
+        crate::model::wallet::validate_wallet_alias(&meta.alias)
+            .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        self.0.set(network, seed_hash, meta)
+    }
+
+    /// Preserve metadata imported from legacy storage, including aliases that
+    /// predate the current length limit. New writes must use [`Self::set`].
+    pub(crate) fn set_migrated(
+        &self,
+        network: Network,
+        seed_hash: &WalletSeedHash,
+        meta: &WalletMeta,
+    ) -> Result<(), TaskError> {
+        if let Err(error) = crate::model::wallet::validate_wallet_alias(&meta.alias) {
+            tracing::warn!(
+                alias_chars = error.actual,
+                max_alias_chars = error.max,
+                "Preserving an overlong legacy wallet alias during migration"
+            );
+        }
         self.0.set(network, seed_hash, meta)
     }
 
@@ -205,6 +240,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_rejects_overlong_alias() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+        let seed: WalletSeedHash = [0x23; 32];
+        let error = view
+            .set(Network::Mainnet, &seed, &meta(&"w".repeat(65), false, None))
+            .expect_err("overlong alias must fail");
+        assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
+        assert_eq!(view.get(Network::Mainnet, &seed), None);
+    }
+
+    #[test]
+    fn migration_preserves_legacy_overlong_alias() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+        let seed: WalletSeedHash = [0x24; 32];
+        let legacy_meta = meta(&"w".repeat(65), false, None);
+        view.set_migrated(Network::Mainnet, &seed, &legacy_meta)
+            .expect("legacy alias must be preserved");
+        assert_eq!(view.get(Network::Mainnet, &seed), Some(legacy_meta));
+    }
+
     /// W-META-VIEW-003 — `list` does not leak entries from other
     /// networks (the `<network>:` prefix is the partition). Mirrors
     /// the per-network isolation contract from `kv.rs::list`.
@@ -271,6 +329,61 @@ mod tests {
             .unwrap();
         let listed = view.list(Network::Testnet);
         assert_eq!(listed, vec![(seed, meta("ok", false, None))]);
+    }
+
+    /// W-META-VIEW-008 — `try_get` distinguishes the three outcomes that
+    /// `get` collapses to `None`: a genuinely absent row (`Ok(None)`), a
+    /// present readable row (`Ok(Some)`), and a present-but-unreadable blob
+    /// (`Err(KvSidecarStorage)`). A rename that only edits the alias relies on
+    /// this to abort rather than overwrite the other stored fields on a failed
+    /// read.
+    #[test]
+    fn try_get_distinguishes_absent_present_and_read_failure() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+
+        // Absent: never written.
+        let absent: WalletSeedHash = [0x01; 32];
+        assert_eq!(
+            view.try_get(Network::Testnet, &absent)
+                .expect("absent read"),
+            None
+        );
+
+        // Present: round-trips as the stored value.
+        let present: WalletSeedHash = [0x02; 32];
+        let m = meta("paycheque", true, Some("local-dashd"));
+        view.set(Network::Testnet, &present, &m).expect("set");
+        assert_eq!(
+            view.try_get(Network::Testnet, &present)
+                .expect("present read"),
+            Some(m)
+        );
+
+        // Present-but-unreadable: plant a blob that decodes as neither the
+        // current nor the legacy shape (a bare `u8` whose string-length varint
+        // runs past the end). `get` swallows this to `None`; `try_get` surfaces
+        // it as the sidecar-storage error.
+        let corrupt: WalletSeedHash = [0x03; 32];
+        let key = key_for(Network::Testnet, &corrupt);
+        kv.put(DetScope::Global, &key, &2u8)
+            .expect("plant corrupt blob");
+        let err = view
+            .try_get(Network::Testnet, &corrupt)
+            .expect_err("a present-but-unreadable blob must surface as an error");
+        assert!(
+            matches!(
+                err,
+                TaskError::KvSidecarStorage {
+                    sidecar: "wallet_meta",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+        // The same blob still degrades to `None` through `get` — the contrast
+        // the rename fix depends on.
+        assert_eq!(view.get(Network::Testnet, &corrupt), None);
     }
 
     /// W-META-VIEW-007 — the canonical key shape uses base58 encoding

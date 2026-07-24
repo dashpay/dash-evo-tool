@@ -42,6 +42,55 @@ pub fn classify_dpns_registration_outcome(
 /// The `.dash` parent domain suffix (case-insensitive match target).
 const DASH_SUFFIX: &str = ".dash";
 
+/// Result of validating a bare label for DPNS registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsNameValidationResult {
+    Valid,
+    TooShort,
+    TooLong,
+    InvalidCharacter(char),
+    StartsWithHyphen,
+    EndsWithHyphen,
+}
+
+/// Validate the format of a bare DPNS label before registration.
+pub fn validate_dpns_name(name: &str) -> DpnsNameValidationResult {
+    if name.len() < 3 {
+        return DpnsNameValidationResult::TooShort;
+    }
+    if name.len() > 63 {
+        return DpnsNameValidationResult::TooLong;
+    }
+    if name.starts_with('-') {
+        return DpnsNameValidationResult::StartsWithHyphen;
+    }
+    if name.ends_with('-') {
+        return DpnsNameValidationResult::EndsWithHyphen;
+    }
+    for character in name.chars() {
+        if !character.is_ascii_alphanumeric() && character != '-' {
+            return DpnsNameValidationResult::InvalidCharacter(character);
+        }
+    }
+    DpnsNameValidationResult::Valid
+}
+
+impl DpnsNameValidationResult {
+    /// Return user guidance for an invalid label.
+    pub fn error_message(self) -> Option<String> {
+        match self {
+            Self::Valid => None,
+            Self::TooShort => Some("Name must be at least 3 characters long.".to_string()),
+            Self::TooLong => Some("Name must be no more than 63 characters long.".to_string()),
+            Self::InvalidCharacter(character) => Some(format!(
+                "The character '{character}' is not allowed. Use only letters, numbers, and hyphens."
+            )),
+            Self::StartsWithHyphen => Some("Name cannot start with a hyphen.".to_string()),
+            Self::EndsWithHyphen => Some("Name cannot end with a hyphen.".to_string()),
+        }
+    }
+}
+
 /// Extract the bare label from a DPNS input and apply homograph-safe normalization.
 ///
 /// Handles all common user inputs:
@@ -291,6 +340,36 @@ mod tests {
         assert_eq!(
             validate_dpns_input("  alice.xyz  "),
             Err(NonDashDomainError)
+        );
+    }
+
+    #[test]
+    fn dpns_registration_name_accepts_boundary_lengths() {
+        assert_eq!(validate_dpns_name("abc"), DpnsNameValidationResult::Valid);
+        assert_eq!(
+            validate_dpns_name(&"a".repeat(63)),
+            DpnsNameValidationResult::Valid
+        );
+    }
+
+    #[test]
+    fn dpns_registration_name_rejects_invalid_formats() {
+        assert_eq!(validate_dpns_name("ab"), DpnsNameValidationResult::TooShort);
+        assert_eq!(
+            validate_dpns_name(&"a".repeat(64)),
+            DpnsNameValidationResult::TooLong
+        );
+        assert_eq!(
+            validate_dpns_name("-alice"),
+            DpnsNameValidationResult::StartsWithHyphen
+        );
+        assert_eq!(
+            validate_dpns_name("alice-"),
+            DpnsNameValidationResult::EndsWithHyphen
+        );
+        assert_eq!(
+            validate_dpns_name("ali_ce"),
+            DpnsNameValidationResult::InvalidCharacter('_')
         );
     }
 }

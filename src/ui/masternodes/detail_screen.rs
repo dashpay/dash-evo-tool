@@ -93,10 +93,11 @@ fn manage_keys_labels(
         .iter()
         .map(|(target, key)| {
             let (role, tip) = key_role_label(target, key);
-            let mut label = format!("{role} key");
-            if key.is_disabled() {
-                label.push_str(" (disabled)");
-            }
+            let label = if key.is_disabled() {
+                format!("{role} key (disabled)")
+            } else {
+                format!("{role} key")
+            };
             (label, tip)
         })
         .collect();
@@ -110,7 +111,7 @@ fn manage_keys_labels(
         .zip(keys.iter())
         .map(|((label, tip), (_, key))| {
             if counts.get(label.as_str()).copied().unwrap_or(0) > 1 {
-                (format!("{label} #{}", key.id()), *tip)
+                (format!("{label} #{key_id}", key_id = key.id()), *tip)
             } else {
                 (label.clone(), *tip)
             }
@@ -459,8 +460,11 @@ impl MasternodeDetailView {
             let voter_full = voter.id().to_string(Encoding::Base58);
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("Voter identity: {}", shorten_id(&voter_full)))
-                        .color(DashColors::text_secondary(dark_mode)),
+                    RichText::new(format!(
+                        "Voter identity: {voter}",
+                        voter = shorten_id(&voter_full)
+                    ))
+                    .color(DashColors::text_secondary(dark_mode)),
                 );
                 // `small_button` keeps the copy affordance text-height and
                 // vertically centered with the voter-identity label.
@@ -815,7 +819,7 @@ mod tests {
         // An unmapped purpose keeps its name and carries no tooltip.
         assert_eq!(
             role_label_and_tip(false, Purpose::ENCRYPTION),
-            (format!("{:?}", Purpose::ENCRYPTION), None)
+            (format!("{purpose:?}", purpose = Purpose::ENCRYPTION), None,)
         );
     }
 

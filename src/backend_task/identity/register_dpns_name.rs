@@ -4,7 +4,10 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::{
     context::AppContext,
-    model::{dpns::classify_dpns_registration_outcome, qualified_identity::DPNSNameInfo},
+    model::{
+        dpns::{DpnsNameValidationResult, classify_dpns_registration_outcome, validate_dpns_name},
+        qualified_identity::DPNSNameInfo,
+    },
 };
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
@@ -40,6 +43,11 @@ impl AppContext {
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let validation = validate_dpns_name(&input.name_input);
+        if validation != DpnsNameValidationResult::Valid {
+            return Err(TaskError::InvalidDpnsName { validation });
+        }
+
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
@@ -228,7 +236,7 @@ impl AppContext {
         qualified_identity.dpns_names = owned_dpns_names;
 
         if qualified_identity.alias.is_none() {
-            qualified_identity.alias = Some(format!("{}.dash", input.name_input));
+            qualified_identity.alias = Some(format!("{name}.dash", name = input.name_input));
         }
 
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(

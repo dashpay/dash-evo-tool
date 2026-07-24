@@ -25,6 +25,8 @@ pub mod selected_wallet;
 pub mod settings;
 pub mod single_key;
 pub mod spv_status;
+pub mod token;
 pub mod user_role;
+pub mod validation;
 pub mod wallet;
 pub mod wallet_association;

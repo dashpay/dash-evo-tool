@@ -170,6 +170,9 @@ pub struct AppContext {
     /// check → fetch → insert → seal span. See [`identity_load_registry`].
     identity_loads: identity_load_registry::SharedLoadRegistry,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
+    /// Per-wallet guards covering the complete wallet-meta alias update.
+    /// Different wallets remain independent while same-wallet renames serialize.
+    hd_wallet_rename_locks: Mutex<HashMap<WalletSeedHash, Arc<Mutex<()>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
     /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
@@ -338,6 +341,15 @@ impl std::fmt::Debug for SecretPromptSlot {
 }
 
 impl AppContext {
+    pub(crate) fn hd_wallet_rename_lock(&self, seed_hash: WalletSeedHash) -> Arc<Mutex<()>> {
+        self.hd_wallet_rename_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(seed_hash)
+            .or_default()
+            .clone()
+    }
+
     pub(crate) fn try_claim_contact_request_action(
         &self,
         request_id: Identifier,
@@ -493,6 +505,7 @@ impl AppContext {
             identity_autodiscovery_fired: AtomicBool::new(false),
             identity_loads: Default::default(),
             wallets: RwLock::new(wallets),
+            hd_wallet_rename_locks: Mutex::new(HashMap::new()),
             single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),

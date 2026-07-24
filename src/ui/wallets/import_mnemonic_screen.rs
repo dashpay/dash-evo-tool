@@ -95,9 +95,12 @@ impl ImportMnemonicScreen {
                 self.parsed_single_key_wallet = Some(wallet);
                 self.error = None;
             }
-            Err(e) => {
+            Err(error) => {
+                tracing::debug!(?error, "Imported private-key preview parsing failed");
                 self.parsed_single_key_wallet = None;
-                self.error = Some(format!("Invalid private key: {}", e));
+                self.error = Some(
+                    "The private key is not valid. Check the WIF or hexadecimal value.".to_string(),
+                );
             }
         }
     }
@@ -130,7 +133,7 @@ impl ImportMnemonicScreen {
                 .read()
                 .map(|w| w.len())
                 .unwrap_or(0);
-            Some(format!("Key {}", existing_wallet_count + 1))
+            Some(format!("Key {number}", number = existing_wallet_count + 1))
         } else {
             Some(self.alias_input.clone())
         };
@@ -147,15 +150,22 @@ impl ImportMnemonicScreen {
                 })?;
                 if bytes.len() != 32 {
                     return Err(format!(
-                        "Hex private keys must be exactly 32 bytes; got {} bytes.",
-                        bytes.len()
+                        "Hex private keys must be exactly 32 bytes; got {byte_count} bytes.",
+                        byte_count = bytes.len()
                     ));
                 }
                 let mut buf = [0u8; 32];
                 buf.copy_from_slice(&bytes);
-                PrivateKey::from_byte_array(&buf, self.app_context.network)
-                    .map_err(|e| format!("Invalid private key: {e}"))?
-                    .to_wif()
+                match PrivateKey::from_byte_array(&buf, self.app_context.network) {
+                    Ok(private_key) => private_key.to_wif(),
+                    Err(error) => {
+                        tracing::debug!(?error, "Imported hexadecimal private key was rejected");
+                        return Err(
+                            "The private key is not valid. Check the hexadecimal value and try again."
+                                .to_string(),
+                        );
+                    }
+                }
             }
         };
 
@@ -192,7 +202,7 @@ impl ImportMnemonicScreen {
                     .read()
                     .map(|w| w.len())
                     .unwrap_or(0);
-                format!("Wallet {}", existing_wallet_count + 1)
+                format!("Wallet {number}", number = existing_wallet_count + 1)
             } else {
                 self.alias_input.clone()
             };
@@ -305,14 +315,14 @@ impl ImportMnemonicScreen {
                 ui.label("Seed Phrase Length:");
 
                 ComboBox::from_label("")
-                    .selected_text(format!("{}", self.selected_seed_phrase_length))
+                    .selected_text(self.selected_seed_phrase_length.to_string())
                     .width(100.0)
                     .show_ui(ui, |ui| {
                         for &length in &[12, 15, 18, 21, 24] {
                             ui.selectable_value(
                                 &mut self.selected_seed_phrase_length,
                                 length,
-                                format!("{}", length),
+                                length.to_string(),
                             );
                         }
                     });
@@ -335,7 +345,7 @@ impl ImportMnemonicScreen {
                 .show(ui, |ui| {
                     for i in 0..self.selected_seed_phrase_length {
                         ui.horizontal(|ui| {
-                            ui.label(format!("{:2}:", i + 1));
+                            ui.label(format!("{word_number:2}:", word_number = i + 1));
 
                             let mut word = self.seed_phrase_words[i].clone();
 
@@ -382,8 +392,7 @@ impl ImportMnemonicScreen {
 
     fn render_private_key_input(&mut self, ui: &mut Ui, step: u32) {
         ui.heading(format!(
-            "{}. Enter your private key (WIF or 64-character hex format)",
-            step
+            "{step}. Enter your private key (WIF or 64-character hex format)"
         ));
         ui.add_space(8.0);
 
@@ -485,7 +494,7 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     // Import type selection (only show when advanced options is checked)
                     if self.show_advanced_options {
-                        ui.heading(format!("{}. Select what you want to import.", step));
+                        ui.heading(format!("{step}. Select what you want to import."));
                         ui.add_space(10.0);
                         self.render_import_type_selection(ui);
                         ui.add_space(10.0);
@@ -495,7 +504,7 @@ impl ScreenLike for ImportMnemonicScreen {
 
                         // Identity scan count option (only for mnemonic/HD wallets)
                         if self.import_type == ImportType::Mnemonic {
-                            ui.heading(format!("{}. Configure identity auto-discovery.", step));
+                            ui.heading(format!("{step}. Configure identity auto-discovery."));
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
                                 ui.label("Identity indices to scan:");
@@ -517,7 +526,7 @@ impl ScreenLike for ImportMnemonicScreen {
                     // Different UI based on import type
                     match self.import_type {
                         ImportType::Mnemonic => {
-                            ui.heading(format!("{}. Select the seed phrase length and enter all words.", step));
+                            ui.heading(format!("{step}. Select the seed phrase length and enter all words."));
                             self.render_seed_phrase_input(ui);
 
                             // Check seed phrase validity whenever all words are filled
@@ -570,7 +579,7 @@ impl ScreenLike for ImportMnemonicScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading(format!("{}. Enter a name to remember it by. (This will not go on the blockchain)", step));
+                    ui.heading(format!("{step}. Enter a name to remember it by. (This will not go on the blockchain)"));
 
                     ui.add_space(8.0);
 
@@ -585,7 +594,7 @@ impl ScreenLike for ImportMnemonicScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading(format!("{}. Add a password to encrypt. (Optional but recommended)", step));
+                    ui.heading(format!("{step}. Add a password to encrypt. (Optional but recommended)"));
 
                     ui.add_space(8.0);
 
@@ -643,8 +652,8 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     ui.add_space(10.0);
                     ui.label(format!(
-                        "Estimated time to crack: {}",
-                        self.estimated_time_to_crack
+                        "Estimated time to crack: {duration}",
+                        duration = self.estimated_time_to_crack
                     ));
 
                     step += 1;
@@ -654,8 +663,8 @@ impl ScreenLike for ImportMnemonicScreen {
                     ui.add_space(10.0);
 
                     let button_text = match self.import_type {
-                        ImportType::Mnemonic => format!("{}. Save the wallet.", step),
-                        ImportType::PrivateKey => format!("{}. Import the key.", step),
+                        ImportType::Mnemonic => format!("{step}. Save the wallet."),
+                        ImportType::PrivateKey => format!("{step}. Import the key."),
                     };
                     ui.heading(button_text);
                     ui.add_space(10.0);

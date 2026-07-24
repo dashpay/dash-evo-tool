@@ -8,6 +8,7 @@ pub mod single_key;
 
 use crate::database::WalletError;
 use crate::model::secret::Secret;
+use crate::model::validation::{TextLengthError, validate_char_count};
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -29,6 +30,14 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
+
+/// Maximum number of characters in a wallet alias.
+pub const MAX_WALLET_ALIAS_CHARS: usize = 64;
+
+/// Validate a wallet alias before it is persisted.
+pub fn validate_wallet_alias(alias: &str) -> Result<(), TextLengthError> {
+    validate_char_count(alias, 0, MAX_WALLET_ALIAS_CHARS)
+}
 
 /// Why a set of payment recipients was rejected.
 ///
@@ -3822,5 +3831,11 @@ mod tests {
 
         assert!(!wallet.reconcile_platform_address(&foreign, network));
         assert!(!wallet.known_addresses.contains_key(&foreign));
+    }
+
+    #[test]
+    fn wallet_alias_limit_counts_characters() {
+        assert!(validate_wallet_alias(&"é".repeat(64)).is_ok());
+        assert!(validate_wallet_alias(&"w".repeat(65)).is_err());
     }
 }

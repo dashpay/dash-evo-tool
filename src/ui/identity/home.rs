@@ -329,11 +329,12 @@ pub fn render(
         }
 
         let send_to_wallet = ComponentStyles::secondary_button("Send to wallet", dark_mode);
-        if identity.available_withdrawal_keys().is_empty() {
+        if !identity.can_attempt_withdrawal(app_context.user_role()) {
             ui.add_enabled(false, send_to_wallet).disabled_tooltip(
-                "Sending to a wallet is unavailable because this identity has no loaded key \
-                 that can approve it. Load or import a key that can send funds from this \
-                 identity, or use a different identity.",
+                "Sending to a wallet is unavailable because this identity has no key available \
+                 for withdrawal in the current interface mode. Load or import an eligible key, \
+                 change the interface mode if another on-chain key is available, or use a \
+                 different identity.",
             );
         } else if ui
             .add(send_to_wallet)

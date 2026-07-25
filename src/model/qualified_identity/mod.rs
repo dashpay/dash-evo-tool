@@ -9,6 +9,7 @@ pub mod qualified_identity_public_key;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, ResolvedPrivateKey};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
@@ -886,6 +887,15 @@ impl QualifiedIdentity {
         keys
     }
 
+    /// Whether the active role can attempt a withdrawal with this identity.
+    pub fn can_attempt_withdrawal(&self, role: UserRole) -> bool {
+        if role.at_least(UserRole::Developer) {
+            !self.identity.public_keys().is_empty()
+        } else {
+            !self.available_withdrawal_keys().is_empty()
+        }
+    }
+
     /// Returns the key to pre-select for signing a withdrawal.
     ///
     /// Only keys whose private material is held locally are considered (via
@@ -1343,6 +1353,28 @@ mod withdrawal_key_tests {
             .map(|qk| qk.identity_public_key.id())
             .collect();
         assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn can_attempt_withdrawal_developer_uses_on_chain_keys() {
+        let without_keys = build_identity(IdentityType::User, vec![], vec![]);
+        assert!(!without_keys.can_attempt_withdrawal(UserRole::Developer));
+
+        let authentication = key(1, Purpose::AUTHENTICATION);
+        let on_chain_only = build_identity(IdentityType::User, vec![authentication], vec![]);
+        assert!(on_chain_only.can_attempt_withdrawal(UserRole::Developer));
+    }
+
+    #[test]
+    fn can_attempt_withdrawal_non_developer_uses_local_withdrawal_keys() {
+        let authentication = key(1, Purpose::AUTHENTICATION);
+        let on_chain_only = build_identity(IdentityType::User, vec![authentication], vec![]);
+        assert!(!on_chain_only.can_attempt_withdrawal(UserRole::Everyday));
+
+        let transfer = key(2, Purpose::TRANSFER);
+        let locally_signable =
+            build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
+        assert!(locally_signable.can_attempt_withdrawal(UserRole::Power));
     }
 
     /// A wholly disabled key set leaves no signable withdrawal key.

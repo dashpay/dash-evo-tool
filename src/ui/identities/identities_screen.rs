@@ -680,9 +680,19 @@ impl IdentitiesScreen {
                                                             .app_context
                                                             .fee_estimator()
                                                             .estimate_credit_withdrawal();
-                                                        let can_withdraw = qualified_identity.identity.balance() > min_withdrawal_balance;
+                                                        let has_withdrawal_balance =
+                                                            qualified_identity.identity.balance()
+                                                                > min_withdrawal_balance;
+                                                        let can_attempt_withdrawal =
+                                                            qualified_identity.can_attempt_withdrawal(
+                                                                self.app_context.user_role(),
+                                                            );
+                                                        let can_withdraw = has_withdrawal_balance
+                                                            && can_attempt_withdrawal;
 
-                                                        let withdraw_hover = if can_withdraw {
+                                                        let withdraw_hover = if !can_attempt_withdrawal {
+                                                            "No key is available for withdrawal in the current interface mode"
+                                                        } else if has_withdrawal_balance {
                                                             "Withdraw credits from this identity to a Dash Core address"
                                                         } else {
                                                             "Insufficient balance for withdrawal fees"

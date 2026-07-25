@@ -77,7 +77,7 @@ impl WithdrawalScreen {
             .or_else(|| {
                 // Only the Developer role can actually sign with an on-chain-only
                 // key (the signing override in `state_transition_options` plus the
-                // Developer branch of the `has_keys` gate below). Pre-selecting one
+                // Developer branch of `can_attempt_withdrawal`). Pre-selecting one
                 // for any lower role gives a key the signer cannot use, so this
                 // fallback matches that Developer gate.
                 app_context
@@ -435,13 +435,10 @@ impl ScreenLike for WithdrawalScreen {
             });
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self.identity.identity.public_keys().is_empty()
-            } else {
-                !self.identity.available_withdrawal_keys().is_empty()
-            };
-
-            if !has_keys {
+            if !self
+                .identity
+                .can_attempt_withdrawal(self.app_context.user_role())
+            {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
                     "This identity has no loaded key that can approve a withdrawal. Load or \

@@ -681,7 +681,7 @@ mod tests {
             let mut attempted_tx = Some(attempted_tx);
             loop {
                 match unload_ctx.unload_identity(identity_id) {
-                    Err(TaskError::IdentityLoadInProgress { .. }) => {
+                    Err(TaskError::IdentityBusyWithLoad { .. }) => {
                         if let Some(attempted_tx) = attempted_tx.take() {
                             let _ = attempted_tx.send(());
                         }

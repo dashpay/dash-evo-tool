@@ -287,4 +287,138 @@ mod tests {
             .expect("remove owner-overlay delete trigger");
         backend.shutdown().await;
     }
+
+    /// QA (issue #889 review): a second unload of the identity a first unload
+    /// already claims must be rejected outright through the real
+    /// `unload_identity()` task handler (not just the lower-level
+    /// `delete_local_qualified_identity_inner`), and — because it never got
+    /// past `begin_identity_load` — must leave in-memory state completely
+    /// untouched: `error.identity_was_removed()` is false for
+    /// `IdentityLoadInProgress`, so `unload_identity()` returns before ever
+    /// calling `reconcile_unloaded_identity_memory`. A rejected concurrent
+    /// unload evicting the wallet cache or clearing the selection anyway
+    /// would be a real bug: it would desync the UI from storage, which still
+    /// holds the identity untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn second_concurrent_unload_of_the_same_identity_is_rejected_without_side_effects() {
+        use crate::app::TaskResult;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let platform_version = PlatformVersion::latest();
+        let target_id = Identifier::from([0x91; 32]);
+        let target = Identity::create_basic_identity(target_id, platform_version)
+            .expect("create target identity");
+        let mut wallet = Wallet::new_from_seed([0x93; 64], Network::Testnet, None, None)
+            .expect("build test wallet");
+        wallet.identities.insert(3, target.clone());
+        let wallet_seed_hash = wallet.seed_hash();
+        let qualified_identity = QualifiedIdentity {
+            identity: target,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: BTreeMap::from([(
+                wallet_seed_hash,
+                Arc::new(RwLock::new(wallet.clone())),
+            )]),
+            secret_access: Some(backend.secret_access()),
+            wallet_index: Some(3),
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        ctx.insert_local_qualified_identity(&qualified_identity, &Some((wallet_seed_hash, 3)))
+            .expect("insert target identity");
+        ctx.wallets()
+            .write()
+            .expect("write wallets")
+            .insert(wallet_seed_hash, Arc::new(RwLock::new(wallet)));
+        ctx.set_selected_identity(Some(target_id));
+        ctx.set_pending_identity_selection(target_id);
+
+        // Simulate a first unload already in flight by holding its exclusive
+        // claim directly, the same claim `unload_local_qualified_identity`
+        // takes internally.
+        let first_unload_guard = ctx
+            .begin_identity_load(target_id, None)
+            .expect("claim the identity for the first, in-flight unload");
+
+        let second_unload_error = ctx
+            .unload_identity(target_id)
+            .expect_err("a second unload of the same identity must be rejected, not raced");
+        assert!(
+            matches!(
+                second_unload_error,
+                TaskError::IdentityLoadInProgress { identity_id } if identity_id == target_id
+            ),
+            "the rejection must be IdentityLoadInProgress, got {second_unload_error:?}"
+        );
+
+        // Nothing the rejected call touched: storage, wallet cache, and
+        // selection must all still reflect the identity as loaded.
+        assert!(
+            ctx.get_local_qualified_identity(&target_id)
+                .expect("read identity")
+                .is_some(),
+            "a rejected concurrent unload must not remove the identity from storage"
+        );
+        let target_is_cached = {
+            let wallets = ctx.wallets().read().expect("read wallets");
+            let wallet = wallets
+                .get(&wallet_seed_hash)
+                .expect("wallet remains")
+                .read()
+                .expect("read wallet");
+            wallet
+                .identities
+                .values()
+                .any(|identity| identity.id() == target_id)
+        };
+        assert!(
+            target_is_cached,
+            "a rejected concurrent unload must not evict the wallet cache"
+        );
+        assert_eq!(
+            ctx.selected_identity_id(),
+            Some(target_id),
+            "a rejected concurrent unload must not clear the selection"
+        );
+        assert_eq!(
+            ctx.take_pending_identity_selection(),
+            Some(target_id),
+            "a rejected concurrent unload must not clear the pending selection"
+        );
+        ctx.set_pending_identity_selection(target_id);
+
+        // Once the first unload's claim is released, a genuine second attempt
+        // must succeed and actually perform the unload this time.
+        drop(first_unload_guard);
+        let result = ctx
+            .unload_identity(target_id)
+            .expect("unload succeeds once the in-flight claim is released");
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::UnloadedIdentity(identity_id) if identity_id == target_id
+        ));
+        assert!(
+            ctx.get_local_qualified_identity(&target_id)
+                .expect("read identity")
+                .is_none(),
+            "the retried unload must actually remove the identity"
+        );
+
+        backend.shutdown().await;
+    }
 }

@@ -1320,6 +1320,23 @@ mod tests {
         assert!(message.contains("some local data could not be cleaned up"));
         assert!(message.contains("associated voter identity is still on this device"));
         assert_eq!(message_type, crate::ui::MessageType::Warning);
+
+        // QA (issue #889 review): the two combos the original test left
+        // unexercised — both cleanup flags true (primary AND associated
+        // cleanup left residue, but nothing was left un-removed), and the
+        // `(_, true, true)` catch-all arm (defensive: `remove_identity`
+        // never sets `associated_cleanup_failed` and
+        // `associated_removal_failed` together, but the match is exhaustive
+        // over all 8 bool combinations regardless).
+        let (message, message_type) = identity_removal_message(true, true, false);
+        assert!(message.contains("associated voter identity were removed"));
+        assert!(message.contains("some local data could not be cleaned up"));
+        assert!(message.contains("both identities"));
+        assert_eq!(message_type, crate::ui::MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(false, true, true);
+        assert!(message.contains("may still have local data"));
+        assert_eq!(message_type, crate::ui::MessageType::Warning);
     }
 
     /// The Identities list Name cell shows the identity's name and, when a DPNS

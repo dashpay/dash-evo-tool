@@ -357,4 +357,93 @@ mod tests {
         );
         backend.shutdown().await;
     }
+
+    /// QA (issue #889 review): the two `associated_voter_identity_id` shapes
+    /// the associated-voter branch has to tell apart — absent, and
+    /// self-referential (the voter identity is the identity being removed).
+    /// The `.filter(|id| *id != identity_id)` guard exists precisely to skip
+    /// the second identity_id==voter_id case; unlike the ordinary
+    /// distinct-voter path exercised elsewhere in this file, no test drove a
+    /// self-referential voter through the real entry point before this one.
+    /// A regression here would either double-process the same identity or
+    /// wrongly flag `associated_removal_failed`/`associated_cleanup_failed`
+    /// for an identity that was, in fact, fully removed by the primary step.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_identity_handles_absent_and_self_referential_voter() {
+        use crate::app::TaskResult;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let platform_version = PlatformVersion::latest();
+
+        // No associated voter at all.
+        let no_voter_id = Identifier::from([0x86; 32]);
+        let no_voter_identity = Identity::create_basic_identity(no_voter_id, platform_version)
+            .expect("create no-voter identity");
+        let no_voter = qualified_identity(no_voter_identity, None, backend.secret_access());
+        ctx.insert_local_qualified_identity(&no_voter, &None)
+            .expect("insert no-voter identity");
+
+        let result = ctx
+            .remove_identity(no_voter_id)
+            .expect("remove an identity with no associated voter");
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::RemovedIdentities {
+                    identity_ids,
+                    primary_cleanup_failed: false,
+                    associated_cleanup_failed: false,
+                    associated_removal_failed: false,
+                } if identity_ids == &vec![no_voter_id]
+            ),
+            "an identity with no associated voter must report exactly itself and no \
+             associated-voter failure flags, got {result:?}"
+        );
+
+        // Self-referential voter: associated_voter_identity_id == identity_id.
+        let self_voter_id = Identifier::from([0x87; 32]);
+        let self_voter_identity = Identity::create_basic_identity(self_voter_id, platform_version)
+            .expect("create self-referential identity");
+        let self_voter_key = IdentityPublicKey::random_key(1, Some(1), platform_version);
+        let self_voter = qualified_identity(
+            self_voter_identity.clone(),
+            Some((self_voter_identity, self_voter_key)),
+            backend.secret_access(),
+        );
+        ctx.insert_local_qualified_identity(&self_voter, &None)
+            .expect("insert self-referential identity");
+
+        let result = ctx
+            .remove_identity(self_voter_id)
+            .expect("remove a self-referentially-voting identity");
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::RemovedIdentities {
+                    identity_ids,
+                    primary_cleanup_failed: false,
+                    associated_cleanup_failed: false,
+                    associated_removal_failed: false,
+                } if identity_ids == &vec![self_voter_id]
+            ),
+            "a self-referential voter must not be double-processed or reported as an \
+             associated-removal failure, got {result:?}"
+        );
+        assert!(
+            ctx.get_local_qualified_identity(&self_voter_id)
+                .expect("read removed self-referential identity")
+                .is_none(),
+            "the self-referential identity must actually be gone, not just reported as such"
+        );
+
+        backend.shutdown().await;
+    }
 }

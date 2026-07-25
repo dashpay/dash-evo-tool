@@ -46,6 +46,7 @@ fn is_bare_placeholder(qualified_identity: &QualifiedIdentity) -> bool {
         && qualified_identity.associated_voter_identity.is_none()
         && qualified_identity.associated_operator_identity.is_none()
         && qualified_identity.associated_owner_key_id.is_none()
+        && qualified_identity.status == IdentityStatus::Active
 }
 
 /// Merge an already-stored identity's keys and associations into a freshly
@@ -1103,14 +1104,8 @@ mod tests {
         );
     }
 
-    /// QA (issue #889 review): `is_bare_placeholder` inspects only keys,
-    /// alias and associations — never `status`. A `FailedCreation` record
-    /// with no local keys is exactly as "bare" to it as a genuine empty
-    /// placeholder, so the `RejectIfExists` duplicate guard treats a marker
-    /// the registration flow relies on to remember a failed attempt
-    /// (`register_identity.rs`) the same as nothing-stored-at-all.
     #[test]
-    fn is_bare_placeholder_ignores_status() {
+    fn failed_creation_status_is_not_a_bare_placeholder() {
         let pv = PlatformVersion::latest();
         let identity =
             Identity::create_basic_identity(Identifier::random(), pv).expect("basic identity");
@@ -1131,24 +1126,13 @@ mod tests {
             network: Network::Testnet,
         };
         assert!(
-            is_bare_placeholder(&failed_creation_marker),
-            "BUG: a FailedCreation marker with no local keys is indistinguishable from a \
-             genuine empty placeholder to is_bare_placeholder, so RejectIfExists lets a fresh \
-             load take it over instead of treating the prior failed attempt as a duplicate",
+            !is_bare_placeholder(&failed_creation_marker),
+            "a failed-creation marker must make RejectIfExists report a duplicate",
         );
     }
 
-    /// QA (issue #889 review): reproduces the exact merge `load_identity` runs
-    /// for a `RejectIfExists` load over a bare existing record (line
-    /// 525-531) — build the fresh record with the hardcoded
-    /// `status: IdentityStatus::Active` `load_identity` always uses, then run
-    /// it through the real `merge_existing_keys_into`. `merge_existing_keys_into`
-    /// carries over keys/alias/associations but never touches `status`, so the
-    /// stored `FailedCreation` marker is silently discarded — a re-load of an
-    /// identity DET remembers as having failed creation is reported as an
-    /// ordinary, healthy `Active` identity with no trace the prior attempt failed.
     #[test]
-    fn reject_if_exists_bare_takeover_silently_discards_failed_creation_status() {
+    fn reject_if_exists_does_not_take_over_failed_creation_status() {
         let pv = PlatformVersion::latest();
         let identity =
             Identity::create_basic_identity(Identifier::random(), pv).expect("basic identity");
@@ -1169,37 +1153,8 @@ mod tests {
             network: Network::Testnet,
         };
         assert!(
-            is_bare_placeholder(&existing_failed_creation),
-            "precondition: the FailedCreation marker must be bare enough to bypass RejectIfExists"
-        );
-
-        // The freshly-built record `load_identity` assembles before the merge
-        // (line 499-520) always hardcodes `status: IdentityStatus::Active`.
-        let mut freshly_built = QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        };
-
-        merge_existing_keys_into(&mut freshly_built, existing_failed_creation);
-
-        assert_eq!(
-            freshly_built.status,
-            IdentityStatus::Active,
-            "BUG: merge_existing_keys_into does not carry over a non-Active stored status — \
-             the FailedCreation marker is silently overwritten with Active, losing the record \
-             that this identity's creation had previously failed",
+            !is_bare_placeholder(&existing_failed_creation),
+            "RejectIfExists must stop before the bare-placeholder merge can replace the status",
         );
     }
 

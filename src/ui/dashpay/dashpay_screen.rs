@@ -210,7 +210,8 @@ impl ScreenLike for DashPayScreen {
                 .contacts_list
                 .contact_requests
                 .display_task_error(error),
-            DashPaySubscreen::Profile | DashPaySubscreen::Payments => false,
+            DashPaySubscreen::Profile => self.profile_screen.display_task_error(error),
+            DashPaySubscreen::Payments => false,
             DashPaySubscreen::ProfileSearch => false,
         }
     }

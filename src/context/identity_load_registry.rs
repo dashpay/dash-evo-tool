@@ -14,12 +14,14 @@
 //!   persisted by a load that errored.
 //!
 //! So each load reports its own phase here, and the registry is the single source
-//! of truth for it. Loads are dispatched from several places — the Masternodes
-//! form, Add Existing, the detail screen, MCP tools — so a record is stamped with
-//! a [`IdentityLoadToken`] identifying the one load it belongs to, and every write
-//! checks that stamp first. Without it a later submission could erase a running
-//! load's record, and the two loads would then race each other's storage writes,
-//! or publish each other's outcome.
+//! of truth for it. Identity deletion and deliberate discovery skips also finish
+//! through the same phase while holding the identity's exclusive claim. Loads are
+//! dispatched from several places — the Masternodes form, Add Existing, the
+//! detail screen, MCP tools — so a record is stamped with a [`IdentityLoadToken`]
+//! identifying the one load it belongs to, and every write checks that stamp
+//! first. Without it a later submission could erase a running load's record, and
+//! the two loads would then race each other's storage writes, or publish each
+//! other's outcome.
 //!
 //! The records also give a load exclusive use of its identity for its whole
 //! check → fetch → insert → seal span, which is what makes
@@ -45,7 +47,7 @@ pub enum IdentityLoadPhase {
     Submitted,
     /// Running: the task holds this identity's exclusive claim.
     Running,
-    /// Finished, fully applied — the node is stored, with its keys as requested.
+    /// Finished and fully applied: stored, deliberately skipped, or deleted.
     Loaded,
     /// Finished with an error. The node may still have been persisted: the insert
     /// precedes the key seal, and a failed seal leaves the insert behind. Anything

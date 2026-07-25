@@ -55,6 +55,10 @@ impl AppContext {
                 }
             }
         }
+        debug_assert!(
+            !(associated_cleanup_failed && associated_removal_failed),
+            "one associated voter cannot be both removed-with-residue and retained"
+        );
 
         Ok(BackendTaskSuccessResult::RemovedIdentities {
             identity_ids: removed_identity_ids,
@@ -207,6 +211,19 @@ mod tests {
             associated_failure,
             BackendTaskSuccessResult::RemovedIdentities {
                 primary_cleanup_failed: false,
+                associated_cleanup_failed: true,
+                associated_removal_failed: false,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_identity_never_combines_associated_cleanup_and_removal_failures() {
+        let result = removal_result_with_cleanup_failure(true).await;
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RemovedIdentities {
                 associated_cleanup_failed: true,
                 associated_removal_failed: false,
                 ..

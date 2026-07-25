@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::{MAX_AVATAR_URL_CHARS, ProfileFieldError};
@@ -59,6 +60,8 @@ pub struct ProfileScreen {
     loading: bool,
     saving: bool, // Track if we're saving vs loading
     profile_load_attempted: bool,
+    in_flight_profile_load: Option<(dash_sdk::platform::Identifier, u64)>,
+    profile_load_generation: u64,
     validation_errors: Vec<ProfileFieldError>,
     has_unsaved_changes: bool,
     original_display_name: String,
@@ -92,6 +95,8 @@ impl ProfileScreen {
             loading: false,
             saving: false,
             profile_load_attempted: false,
+            in_flight_profile_load: None,
+            profile_load_generation: 0,
             validation_errors: Vec::new(),
             has_unsaved_changes: false,
             original_display_name: String::new(),
@@ -168,7 +173,12 @@ impl ProfileScreen {
     }
 
     pub fn trigger_load_profile(&mut self) -> AppAction {
+        if self.in_flight_profile_load.is_some() {
+            return AppAction::None;
+        }
         if let Some(identity) = self.selected_identity.clone() {
+            self.in_flight_profile_load =
+                Some((identity.identity.id(), self.profile_load_generation));
             self.loading = true;
             self.profile_load_attempted = true;
             AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
@@ -381,6 +391,7 @@ impl ProfileScreen {
 
                     if response.changed() {
                         // Reset state when identity changes
+                        self.profile_load_generation = self.profile_load_generation.wrapping_add(1);
                         self.profile = None;
                         self.profile_load_attempted = false;
                         self.loading = false;
@@ -1046,7 +1057,33 @@ impl ProfileScreen {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.loading = false;
             self.saving = false;
+            self.in_flight_profile_load = None;
         }
+    }
+
+    fn invalidate_unloaded_identity(&mut self, identity_id: &dash_sdk::platform::Identifier) {
+        if self
+            .selected_identity
+            .as_ref()
+            .is_some_and(|identity| identity.identity.id() == *identity_id)
+        {
+            self.profile_load_generation = self.profile_load_generation.wrapping_add(1);
+            self.selected_identity = None;
+            self.selected_identity_string.clear();
+            self.profile = None;
+            self.loading = false;
+            self.saving = false;
+            self.profile_load_attempted = false;
+            self.editing = false;
+            self.has_unsaved_changes = false;
+        }
+    }
+
+    pub fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if let TaskError::IdentityUnloadCleanupFailed { identity_id, .. } = error {
+            self.invalidate_unloaded_identity(identity_id);
+        }
+        false
     }
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -1057,13 +1094,35 @@ impl ProfileScreen {
             return;
         }
 
-        // Always clear loading and saving states first
-        self.loading = false;
-        self.saving = false;
-        self.profile_load_attempted = true;
+        match &result {
+            BackendTaskSuccessResult::UnloadedIdentity(identity_id) => {
+                self.invalidate_unloaded_identity(identity_id);
+                return;
+            }
+            BackendTaskSuccessResult::RemovedIdentities { identity_ids, .. } => {
+                for identity_id in identity_ids {
+                    self.invalidate_unloaded_identity(identity_id);
+                }
+                return;
+            }
+            _ => {}
+        }
 
         match result {
             BackendTaskSuccessResult::DashPayProfile(profile_data) => {
+                let Some((owner_id, generation)) = self.in_flight_profile_load.take() else {
+                    return;
+                };
+                self.loading = false;
+                let selected_id = self
+                    .selected_identity
+                    .as_ref()
+                    .map(|identity| identity.identity.id());
+                if generation != self.profile_load_generation || selected_id != Some(owner_id) {
+                    self.profile_load_attempted = false;
+                    return;
+                }
+                self.profile_load_attempted = true;
                 if let Some((display_name, bio, avatar_url)) = profile_data {
                     // Check if avatar URL changed - if so, we need to re-fetch the avatar
                     let old_avatar_url = self.profile.as_ref().map(|p| p.avatar_url.clone());
@@ -1101,7 +1160,15 @@ impl ProfileScreen {
                     // Don't show a message - let the UI show "Create Profile" button
                 }
             }
-            BackendTaskSuccessResult::DashPayProfileUpdated(_identity_id) => {
+            BackendTaskSuccessResult::DashPayProfileUpdated(updated_identity_id) => {
+                self.saving = false;
+                if self
+                    .selected_identity
+                    .as_ref()
+                    .is_none_or(|identity| identity.identity.id() != updated_identity_id)
+                {
+                    return;
+                }
                 // Profile was successfully created/updated; the upstream
                 // mirror (`update_profile` → `dashpay_set_profile`) is the
                 // authoritative write, so we only refresh local in-memory
@@ -1142,5 +1209,65 @@ impl ProfileScreen {
                 // Ignore other results - profile screen only handles DashPayProfile and DashPayProfileUpdated
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, Identity};
+    use std::collections::BTreeMap;
+
+    fn qualified_identity(identity_id: Identifier) -> QualifiedIdentity {
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(identity_id, PlatformVersion::latest())
+                .expect("create identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    #[test]
+    fn late_profile_result_for_unloaded_identity_is_discarded() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let identity = qualified_identity(Identifier::from([0xD1; 32]));
+        let mut screen = ProfileScreen::new(ctx);
+        screen.selected_identity = Some(identity);
+        assert!(matches!(
+            screen.trigger_load_profile(),
+            AppAction::BackendTask(BackendTask::DashPayTask(_))
+        ));
+
+        let error = TaskError::IdentityUnloadCleanupFailed {
+            identity_id: Identifier::from([0xD1; 32]),
+            source: Box::new(TaskError::IdentityNotFound),
+        };
+        assert!(!screen.display_task_error(&error));
+        screen.display_task_result(BackendTaskSuccessResult::DashPayProfile(Some((
+            "Stale name".to_string(),
+            "Stale bio".to_string(),
+            "https://example.invalid/stale.png".to_string(),
+        ))));
+
+        assert!(
+            screen.profile.is_none(),
+            "a result started for an identity that is no longer displayed must be discarded"
+        );
     }
 }

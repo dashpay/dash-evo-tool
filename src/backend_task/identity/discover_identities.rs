@@ -569,8 +569,8 @@ mod tests {
             .insert(wallet_seed_hash, Arc::clone(&wallet));
         let identity_id = Identifier::from([0x62; 32]);
         let identity = wallet_derived_identity(identity_id, &wallet, 4);
-        ctx.insert_local_qualified_identity(&identity, &Some((wallet_seed_hash, 4)))
-            .expect("insert wallet-derived identity");
+        ctx.insert_local_qualified_identity(&identity, &None)
+            .expect("insert identity without a stored wallet association");
 
         ctx.unload_identity(identity_id)
             .expect("unload wallet-derived identity");

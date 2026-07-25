@@ -389,11 +389,6 @@ impl MasternodesScreen {
                 self.view = MasternodesView::List;
                 AppAction::None
             }
-            DetailOutcome::Removed => {
-                self.view = MasternodesView::List;
-                self.reload();
-                AppAction::None
-            }
             DetailOutcome::Forward(action) => *action,
         }
     }
@@ -551,7 +546,17 @@ impl ScreenLike for MasternodesScreen {
         }
     }
 
-    fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
+    fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
+        let removed_open_node = matches!(
+            (&self.view, &result),
+            (
+                MasternodesView::Detail(detail),
+                crate::backend_task::BackendTaskSuccessResult::RemovedIdentities {
+                    identity_ids,
+                    ..
+                }
+            ) if identity_ids.contains(&detail.node_id())
+        );
         self.reload();
         // Settle the submitted load against the phase its task reported. This
         // screen also receives detail-view results (voting, RefreshIdentity) and
@@ -562,7 +567,9 @@ impl ScreenLike for MasternodesScreen {
         // Add-voting-key merge, a RefreshIdentity) just updated the store.
         // Re-open the detail view for that node so the on-screen view reflects
         // the fresh data instead of the stale clone captured at open time.
-        if let MasternodesView::Detail(detail) = &self.view {
+        if removed_open_node {
+            self.view = MasternodesView::List;
+        } else if let MasternodesView::Detail(detail) = &self.view {
             let node_id = detail.node_id();
             self.open_detail(node_id);
         }
@@ -670,6 +677,37 @@ mod tests {
         };
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("seed masternode");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removal_result_closes_detail_while_failure_keeps_it_open() {
+        use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::error::TaskError;
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node_id = Identifier::from([0xD3; 32]);
+        seed_masternode(&ctx, 0xD3, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node_id);
+
+        assert!(!screen.display_task_error(&TaskError::WalletBackendNotYetWired));
+        assert!(
+            matches!(screen.view, MasternodesView::Detail(_)),
+            "a failed removal must keep the detail view open"
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![node_id],
+            primary_cleanup_failed: false,
+            associated_cleanup_failed: false,
+            associated_removal_failed: false,
+        });
+        assert!(
+            matches!(screen.view, MasternodesView::List),
+            "a successful shared removal result must close the detail view"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

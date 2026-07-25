@@ -74,13 +74,19 @@ fn keep_first_unload_cleanup_error(
     identity_id: Identifier,
     result: std::result::Result<(), TaskError>,
 ) {
-    if cleanup_error.is_none() {
-        *cleanup_error = result
-            .err()
-            .map(|source| TaskError::IdentityUnloadCleanupFailed {
+    if let Err(source) = result {
+        if cleanup_error.is_none() {
+            *cleanup_error = Some(TaskError::IdentityUnloadCleanupFailed {
                 identity_id,
                 source: Box::new(source),
             });
+        } else {
+            tracing::warn!(
+                identity_id = %identity_id,
+                error = ?source,
+                "Additional identity unload cleanup step failed"
+            );
+        }
     }
 }
 
@@ -979,7 +985,7 @@ impl AppContext {
     fn delete_local_qualified_identity_inner(
         &self,
         identifier: &Identifier,
-        remember_wallet_derived_unload: bool,
+        remember_unload: bool,
     ) -> std::result::Result<(), TaskError> {
         // The load registry provides the existing per-identity exclusive claim.
         let load_guard = self.begin_identity_load(*identifier, None)?;
@@ -991,54 +997,14 @@ impl AppContext {
             return Err(TaskError::WalletStorageNotReady);
         }
         let kv = self.det_kv()?;
+        let backend = self.wallet_backend()?;
         let id = identifier.to_buffer();
-        let should_remember_unload = remember_wallet_derived_unload
-            && kv
-                .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
-                .map_err(identity_err)?
-                .is_some_and(|stored| {
-                    stored.wallet_hash.is_some() && stored.wallet_index.is_some()
-                });
         crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(
             |source| TaskError::IdentityDeletionMigrationRecord {
                 source: Arc::new(source),
             },
         )?;
-        let mut cleanup_error = None;
-        match self.wallet_backend() {
-            Ok(backend) => {
-                keep_first_unload_cleanup_error(
-                    &mut cleanup_error,
-                    *identifier,
-                    backend.dashpay_clear_owner_overlays(identifier),
-                );
-                // Conversation/payment timestamps that are not keyed by this identity
-                // may be shared; full-wallet teardown is the safe reclamation boundary.
-                keep_first_unload_cleanup_error(
-                    &mut cleanup_error,
-                    *identifier,
-                    backend.dashpay_clear_identity_timestamps(identifier),
-                );
-                keep_first_unload_cleanup_error(
-                    &mut cleanup_error,
-                    *identifier,
-                    backend.dashpay_clear_identity_addr_map(identifier),
-                );
-                keep_first_unload_cleanup_error(
-                    &mut cleanup_error,
-                    *identifier,
-                    backend.identity_meta().delete(self.network, &id),
-                );
-            }
-            Err(TaskError::WalletBackendNotYetWired) => {
-                tracing::warn!(
-                    identity_id = %identifier,
-                    "Identity unload left DashPay overlays, timestamps, address mappings, and identity details because the wallet backend is not wired"
-                );
-            }
-            Err(error) => return Err(error),
-        }
-        if should_remember_unload {
+        if remember_unload {
             self.db
                 .record_forgotten_identity(self.network, identifier)
                 .map_err(|source| TaskError::ForgottenIdentityStorage { source })?;
@@ -1050,13 +1016,42 @@ impl AppContext {
         // `purge_identity_scope`, since it reads the identity blob that
         // `purge_identity_scope` deletes.
         if let Err(error) = index_remove_identity(&kv, &id) {
-            if should_remember_unload {
-                self.db
-                    .clear_forgotten_identity(self.network, identifier)
-                    .map_err(|source| TaskError::ForgottenIdentityStorage { source })?;
+            if remember_unload
+                && let Err(rollback_error) =
+                    self.db.clear_forgotten_identity(self.network, identifier)
+            {
+                tracing::warn!(
+                    identity_id = %identifier,
+                    original_error = ?error,
+                    rollback_error = ?rollback_error,
+                    "Identity unload marker rollback failed after the removal commit failed"
+                );
             }
             return Err(error);
         }
+        let mut cleanup_error = None;
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.dashpay_clear_owner_overlays(identifier),
+        );
+        // Conversation/payment timestamps that are not keyed by this identity
+        // may be shared; full-wallet teardown is the safe reclamation boundary.
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.dashpay_clear_identity_timestamps(identifier),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.dashpay_clear_identity_addr_map(identifier),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.identity_meta().delete(self.network, &id),
+        );
         keep_first_unload_cleanup_error(
             &mut cleanup_error,
             *identifier,
@@ -1352,7 +1347,8 @@ mod tests {
     use super::*;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use DetKv;
-    use std::sync::Arc;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -1382,37 +1378,62 @@ mod tests {
         index_add_identity(kv, id).unwrap();
     }
 
-    /// QA (issue #889 review): `keep_first_unload_cleanup_error` keeps only
-    /// the first cleanup failure — every call after `cleanup_error` is
-    /// already `Some(_)` is a no-op, including on its `Err` branch. A second,
-    /// unrelated failure (here `InternalSendError`, standing in for e.g. a
-    /// vault-key-clear fault) is discarded with no trace: not merged, not
-    /// logged by this function, not recoverable from `cleanup_error` by any
-    /// caller. `delete_local_qualified_identity_inner` calls this six times
-    /// in sequence across independent cleanup steps with no logging of its
-    /// own at any call site, so a second real failure during identity
-    /// removal is invisible end to end — the returned
-    /// `IdentityUnloadCleanupFailed` names only the first failure's source.
+    #[derive(Clone, Default)]
+    struct SharedLog(Arc<Mutex<Vec<u8>>>);
+
+    struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("lock captured log")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLog {
+        type Writer = SharedLogWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedLogWriter(Arc::clone(&self.0))
+        }
+    }
+
     #[test]
-    fn keep_first_unload_cleanup_error_silently_drops_every_later_failure() {
+    fn keep_first_unload_cleanup_error_logs_every_later_failure() {
         let identity_id = Identifier::from([0x01; 32]);
         let mut cleanup_error = None;
+        let captured = SharedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(captured.clone())
+            .finish();
 
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            identity_id,
-            Err(TaskError::IdentityNotFound),
-        );
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            identity_id,
-            Err(TaskError::InternalSendError),
-        );
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            identity_id,
-            Err(TaskError::InternalSendError),
-        );
+        tracing::subscriber::with_default(subscriber, || {
+            keep_first_unload_cleanup_error(
+                &mut cleanup_error,
+                identity_id,
+                Err(TaskError::IdentityNotFound),
+            );
+            keep_first_unload_cleanup_error(
+                &mut cleanup_error,
+                identity_id,
+                Err(TaskError::InternalSendError),
+            );
+            keep_first_unload_cleanup_error(
+                &mut cleanup_error,
+                identity_id,
+                Err(TaskError::InternalSendError),
+            );
+        });
 
         match cleanup_error.expect("a cleanup error must be recorded") {
             TaskError::IdentityUnloadCleanupFailed {
@@ -1422,13 +1443,20 @@ mod tests {
                 assert_eq!(id, identity_id);
                 assert!(
                     matches!(*source, TaskError::IdentityNotFound),
-                    "BUG: only the first failure's source is ever recoverable — the second \
-                     and third failures (InternalSendError) leave no trace anywhere in the \
-                     returned error, got {source:?}"
+                    "the first failure remains the primary source, got {source:?}"
                 );
             }
             other => panic!("expected IdentityUnloadCleanupFailed, got {other:?}"),
         }
+        let output =
+            String::from_utf8(captured.0.lock().expect("lock captured log").clone()).unwrap();
+        assert_eq!(
+            output
+                .matches("Additional identity unload cleanup step failed")
+                .count(),
+            2,
+            "the second and third failures must each be visible in logs: {output}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -2166,6 +2194,177 @@ mod tests {
             "wallet seed.raw.v1 must survive identity removal"
         );
 
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_unload_reports_failure_when_wallet_backend_is_unwired() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let target_id = Identifier::from([0xB1; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0xB2; 32], [0xB3; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+
+        ctx.wallet_backend.store(None);
+
+        assert!(
+            matches!(
+                ctx.unload_local_qualified_identity(&target_id),
+                Err(TaskError::WalletBackendNotYetWired)
+            ),
+            "unload must not report success when its cleanup backend is unavailable"
+        );
+        assert!(
+            backend
+                .kv()
+                .get::<StoredQualifiedIdentity>(
+                    DetScope::Identity(&target_id.to_buffer()),
+                    IDENTITY_KEY,
+                )
+                .expect("read retained identity")
+                .is_some(),
+            "an unload rejected before its commit point must retain the identity"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_unload_before_commit_preserves_dashpay_overlays() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::model::dashpay::ContactPrivateInfo;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let target_id = Identifier::from([0xB4; 32]);
+        let contact_id = Identifier::from([0xB5; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0xB6; 32], [0xB7; 32]);
+        ctx.insert_local_qualified_identity(&target, &Some(([0xB8; 32], 1)))
+            .expect("insert target identity");
+        backend
+            .dashpay_set_private_info(
+                &target_id,
+                &contact_id,
+                &ContactPrivateInfo {
+                    nickname: "retained contact".into(),
+                    notes: "retained note".into(),
+                    is_hidden: false,
+                },
+            )
+            .expect("seed owner overlay");
+
+        let persister_path = backend.spv_storage_dir().join("platform-wallet.sqlite");
+        let fault_connection =
+            rusqlite::Connection::open(&persister_path).expect("open persister second handle");
+        fault_connection
+            .execute_batch(
+                "CREATE TRIGGER fail_identity_index_commit
+                 BEFORE INSERT ON meta_global
+                 WHEN NEW.key = 'det:identity_index:v1'
+                 BEGIN
+                     SELECT RAISE(FAIL, 'injected identity-index failure');
+                 END;",
+            )
+            .expect("install identity-index trigger");
+
+        assert!(
+            matches!(
+                ctx.unload_local_qualified_identity(&target_id),
+                Err(TaskError::IdentityStorage { .. })
+            ),
+            "the failed commit must surface its identity-storage error"
+        );
+        assert!(
+            backend
+                .dashpay_get_private_info(&target_id, &contact_id)
+                .expect("read retained owner overlay")
+                .is_some(),
+            "cleanup must not destroy DashPay overlays before the unload commits"
+        );
+
+        fault_connection
+            .execute_batch("DROP TRIGGER fail_identity_index_commit;")
+            .expect("remove identity-index trigger");
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rollback_failure_does_not_replace_original_unload_error() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let target_id = Identifier::from([0xB9; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0xBA; 32], [0xBB; 32]);
+        ctx.insert_local_qualified_identity(&target, &Some(([0xBC; 32], 2)))
+            .expect("insert target identity");
+
+        let persister_path = backend.spv_storage_dir().join("platform-wallet.sqlite");
+        let fault_connection =
+            rusqlite::Connection::open(&persister_path).expect("open persister second handle");
+        fault_connection
+            .execute_batch(
+                "CREATE TRIGGER fail_identity_index_commit
+                 BEFORE INSERT ON meta_global
+                 WHEN NEW.key = 'det:identity_index:v1'
+                 BEGIN
+                     SELECT RAISE(FAIL, 'injected identity-index failure');
+                 END;",
+            )
+            .expect("install identity-index trigger");
+        ctx.db()
+            .locked_conn()
+            .execute_batch(
+                "CREATE TRIGGER fail_forgotten_marker_rollback
+                 BEFORE DELETE ON forgotten_identities
+                 BEGIN
+                     SELECT RAISE(FAIL, 'injected marker-rollback failure');
+                 END;",
+            )
+            .expect("install marker-rollback trigger");
+
+        let error = ctx
+            .unload_local_qualified_identity(&target_id)
+            .expect_err("the unload commit must fail");
+        assert!(
+            matches!(error, TaskError::IdentityStorage { .. }),
+            "the original commit failure must remain primary, got {error:?}"
+        );
+
+        fault_connection
+            .execute_batch("DROP TRIGGER fail_identity_index_commit;")
+            .expect("remove identity-index trigger");
+        ctx.db()
+            .locked_conn()
+            .execute_batch("DROP TRIGGER fail_forgotten_marker_rollback;")
+            .expect("remove marker-rollback trigger");
         backend.shutdown().await;
     }
 

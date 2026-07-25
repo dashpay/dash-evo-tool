@@ -231,8 +231,6 @@ pub enum DetailOutcome {
     None,
     /// Return to the card list (`‹ All masternodes`).
     Back,
-    /// The node was removed — return to the list and reload.
-    Removed,
     /// Push a reused screen / navigate. Boxed because `AppAction` is large.
     Forward(Box<AppAction>),
 }
@@ -441,8 +439,8 @@ impl MasternodeDetailView {
                 outcome = DetailOutcome::Forward(Box::new(action));
             }
             ui.add_space(12.0);
-            if self.render_remove_section(ui, dark_mode) {
-                outcome = DetailOutcome::Removed;
+            if let Some(action) = self.render_remove_section(ui, dark_mode) {
+                outcome = DetailOutcome::Forward(Box::new(action));
             }
         });
 
@@ -953,8 +951,8 @@ impl MasternodeDetailView {
         action
     }
 
-    /// Returns `true` once the node has been removed.
-    fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> bool {
+    /// Dispatch the shared removal task after confirmation.
+    fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> Option<AppAction> {
         let migration_in_progress = self.app_context.migration_status().state().is_in_progress();
         if ui
             .add_enabled(
@@ -978,66 +976,24 @@ impl MasternodeDetailView {
             );
         }
 
-        let mut removed = false;
+        let mut action = None;
         if let Some(dialog) = self.remove_dialog.as_mut() {
             use crate::ui::components::component_trait::Component;
             let response = dialog.show(ui);
             if let Some(status) = response.inner.dialog_response {
                 self.remove_dialog = None;
                 if status == ConfirmationStatus::Confirmed {
-                    removed = self.remove_node(ui.ctx());
+                    action = Some(Self::remove_node(self.identity.identity.id()));
                 }
             }
         }
-        removed
+        action
     }
 
-    /// Delete the node and its associated voter identity from local storage.
-    /// Keep the detail view open when storage deletion does not happen. If only
-    /// follow-up cleanup fails, reconcile memory, close the removed view, and
-    /// surface the cleanup error. Voter cleanup failures remain non-fatal.
-    fn remove_node(&self, ctx: &egui::Context) -> bool {
-        let node_id = self.identity.identity.id();
-        match self.app_context.unload_local_qualified_identity(&node_id) {
-            Ok(()) => self
-                .app_context
-                .reconcile_unloaded_identity_memory(&node_id),
-            Err(error) if error.identity_was_removed() => {
-                self.app_context
-                    .reconcile_unloaded_identity_memory(&node_id);
-                MessageBanner::set_global(
-                    ctx,
-                    "The masternode was removed, but some local data could not be cleaned up. Load and remove it again to retry.",
-                    MessageType::Error,
-                )
-                .with_details(error);
-            }
-            Err(error) => {
-                MessageBanner::set_global(
-                    ctx,
-                    "This masternode couldn't be removed from this device. Try again in a moment.",
-                    MessageType::Error,
-                )
-                .with_details(error);
-                return false;
-            }
-        }
-        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
-            let voter_id = voter.id();
-            let voter_result = self.app_context.delete_local_qualified_identity(&voter_id);
-            if voter_result.as_ref().is_ok()
-                || voter_result
-                    .as_ref()
-                    .is_err_and(|error| error.identity_was_removed())
-            {
-                self.app_context
-                    .reconcile_unloaded_identity_memory(&voter_id);
-            }
-            if let Err(error) = voter_result {
-                tracing::warn!(error = ?error, "Failed to remove voter identity");
-            }
-        }
-        true
+    fn remove_node(node_id: dash_sdk::platform::Identifier) -> AppAction {
+        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+            identity_id: node_id,
+        }))
     }
 }
 
@@ -1061,6 +1017,17 @@ mod tests {
             SECTION_ORDER,
             ["Header", "Actions", "Keys", "DPNS", "Remove"]
         );
+    }
+
+    #[test]
+    fn remove_node_dispatches_the_shared_identity_removal_task() {
+        let node_id = dash_sdk::platform::Identifier::from([0xD2; 32]);
+        assert!(matches!(
+            MasternodeDetailView::remove_node(node_id),
+            AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RemoveIdentity { identity_id }
+            )) if identity_id == node_id
+        ));
     }
 
     /// Build a masternode key with a chosen id / purpose / disabled state.

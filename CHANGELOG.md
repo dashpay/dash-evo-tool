@@ -11,13 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Unload an identity from this device**: Identity Hub → Settings now has a
   working "Unload this identity from this device" action. It removes the
   identity from the app on this device and clears the local keys, profile
-  information, and DashPay details that the app can identify for it, while
-  leaving your other identities untouched. If cleanup cannot finish, the app
-  reports that clearly so you can retry. The identity itself is unaffected on
-  the network. Wallet-derived private keys can be restored from the wallet. To
-  load the identity again, you need recovery information for any keys stored
-  only on this device. Unloaded identities now stay unloaded after automatic
-  wallet discovery, and delayed profile results are ignored after an unload.
+  information, DashPay details, and queued scheduled DPNS votes that the app can
+  identify for it, while leaving your other identities untouched. The
+  confirmation names how many scheduled votes will be cancelled. If cleanup
+  cannot finish, the app reports that clearly so you can retry. The identity
+  itself is unaffected on the network. Wallet-derived private keys can be
+  restored from the wallet. To load the identity again, you need recovery
+  information for any keys stored only on this device. Unloaded identities now
+  stay unloaded after automatic wallet discovery, and delayed profile results
+  are ignored after an unload.
 
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.

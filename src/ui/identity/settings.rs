@@ -97,6 +97,8 @@ const ALIAS_HINT: &str = "For example: My main identity";
 const ALIAS_SAVED: &str = "Name saved on this device.";
 const ALIAS_SAVE_FAILED: &str =
     "This name could not be saved on your device. Try again in a moment.";
+const UNLOAD_DETAILS_LOAD_FAILED: &str =
+    "The unload details could not be loaded. Try again in a moment.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
 // Marker strings for controls without a matching backend task. Surfaced in
 // disabled_tooltip and as a prefix on the row so users know it is a coming
@@ -753,17 +755,32 @@ impl SettingsTab {
                         .clickable_tooltip(identity_unload_tip(identity));
                 if unload.clicked() {
                     let target_id = identity.identity.id();
-                    self.confirm_unload = Some(PendingIdentityUnload {
-                        dialog: ConfirmationDialog::new(
-                            "Unload this identity",
-                            identity_unload_confirmation_message(identity),
-                        )
-                        .confirm_text(Some("Permanently unload"))
-                        .cancel_text(Some("Keep identity"))
-                        .danger_mode(true)
-                        .blocks_input(true),
-                        target_id,
-                    });
+                    match app_context.scheduled_vote_count_for_identity(&target_id) {
+                        Ok(scheduled_vote_count) => {
+                            self.confirm_unload = Some(PendingIdentityUnload {
+                                dialog: ConfirmationDialog::new(
+                                    "Unload this identity",
+                                    identity_unload_confirmation_message(
+                                        identity,
+                                        scheduled_vote_count,
+                                    ),
+                                )
+                                .confirm_text(Some("Permanently unload"))
+                                .cancel_text(Some("Keep identity"))
+                                .danger_mode(true)
+                                .blocks_input(true),
+                                target_id,
+                            });
+                        }
+                        Err(error) => {
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                UNLOAD_DETAILS_LOAD_FAILED,
+                                MessageType::Error,
+                            )
+                            .with_details(&error);
+                        }
+                    }
                 }
             });
 
@@ -996,30 +1013,46 @@ fn identity_unload_tip_for(recovery_information_required: bool) -> &'static str 
     }
 }
 
-fn identity_unload_confirmation_message(identity: &QualifiedIdentity) -> String {
+fn identity_unload_confirmation_message(
+    identity: &QualifiedIdentity,
+    scheduled_vote_count: usize,
+) -> String {
     let identity_label = identity_unload_label(identity);
     identity_unload_confirmation_message_for(
         &identity_label,
         identity.requires_recovery_information_after_unload(),
+        scheduled_vote_count,
     )
 }
 
 fn identity_unload_confirmation_message_for(
     identity_label: &str,
     recovery_information_required: bool,
+    scheduled_vote_count: usize,
 ) -> String {
-    if recovery_information_required {
-        format!(
+    match (recovery_information_required, scheduled_vote_count > 0) {
+        (true, true) => format!(
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its private keys and local data. It remains on Dash Platform, but you will \
+             need its recovery information to load it again. This also cancels \
+             {scheduled_vote_count} scheduled vote(s)."
+        ),
+        (true, false) => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
              deleting its private keys and local data. It remains on Dash Platform, but you will \
              need its recovery information to load it again."
-        )
-    } else {
-        format!(
+        ),
+        (false, true) => format!(
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its local data. It remains on Dash Platform, and its wallet-derived private \
+             keys can be restored when you load it again. This also cancels \
+             {scheduled_vote_count} scheduled vote(s)."
+        ),
+        (false, false) => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
              deleting its local data. It remains on Dash Platform, and its wallet-derived private \
              keys can be restored when you load it again."
-        )
+        ),
     }
 }
 
@@ -1260,12 +1293,24 @@ mod tests {
     #[test]
     fn unload_dialog_omits_recovery_warning_for_wallet_derived_keys() {
         assert_eq!(
-            identity_unload_confirmation_message_for("Wallet identity", false),
+            identity_unload_confirmation_message_for("Wallet identity", false, 0),
             "Identity \"Wallet identity\" will be permanently unloaded from this device, \
              deleting its local data. It remains on Dash Platform, and its wallet-derived \
              private keys can be restored when you load it again."
         );
         assert_eq!(identity_unload_tip_for(false), TIP_UNLOAD_WALLET_DERIVED);
+    }
+
+    #[test]
+    fn unload_dialog_mentions_scheduled_votes_only_when_queued() {
+        assert!(
+            identity_unload_confirmation_message_for("Voting identity", true, 3)
+                .contains("This also cancels 3 scheduled vote(s).")
+        );
+        assert!(
+            !identity_unload_confirmation_message_for("Voting identity", true, 0)
+                .contains("scheduled vote")
+        );
     }
 
     #[test]
@@ -1292,7 +1337,7 @@ mod tests {
         );
 
         assert_eq!(
-            identity_unload_confirmation_message(&identity),
+            identity_unload_confirmation_message(&identity, 0),
             "Identity \"Mixed identity\" will be permanently unloaded from this device, deleting \
              its private keys and local data. It remains on Dash Platform, but you will need its \
              recovery information to load it again."

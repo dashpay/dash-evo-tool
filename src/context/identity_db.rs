@@ -1231,6 +1231,15 @@ impl AppContext {
         Ok(())
     }
 
+    /// Count the scheduled votes queued for one identity on this network.
+    pub fn scheduled_vote_count_for_identity(
+        &self,
+        voter: &Identifier,
+    ) -> std::result::Result<usize, TaskError> {
+        let kv = self.det_kv()?;
+        Ok(scheduled_vote_keys(&kv, &voter.to_buffer())?.len())
+    }
+
     /// Fetch every scheduled vote queued for this network from the
     /// wallet k/v store, across all voters in the Global voter index.
     pub fn get_scheduled_votes(&self) -> std::result::Result<Vec<ScheduledDPNSVote>, TaskError> {
@@ -1754,6 +1763,54 @@ mod tests {
         let mut voters = load_scheduled_vote_voters(&kv).unwrap();
         voters.sort_unstable();
         assert_eq!(voters, vec![v1, v2]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn scheduled_vote_count_for_identity_counts_only_that_voters_queue() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let target = id(0x61);
+        let other = id(0x62);
+        let kv = ctx.det_kv().expect("det kv");
+        for (voter, name) in [(target, "alpha"), (target, "beta"), (other, "gamma")] {
+            kv.put(
+                DetScope::Identity(&voter),
+                &scheduled_vote_key(name),
+                &StoredScheduledVote {
+                    voter_id: voter,
+                    contested_name: name.to_string(),
+                    choice: StoredVoteChoice::Lock,
+                    unix_timestamp: 0,
+                    executed_successfully: false,
+                },
+            )
+            .expect("store scheduled vote");
+        }
+
+        assert_eq!(
+            ctx.scheduled_vote_count_for_identity(&Identifier::from(target))
+                .expect("count target votes"),
+            2
+        );
+        assert_eq!(
+            ctx.scheduled_vote_count_for_identity(&Identifier::from(id(0x63)))
+                .expect("count absent voter"),
+            0
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
     }
 
     #[test]

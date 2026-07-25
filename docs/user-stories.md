@@ -653,8 +653,10 @@ As a user, I want to unload one identity from this device so that I can recover 
 - The Identity Hub asks for confirmation before unloading. If the identity is
   wallet-derived, it explains that the identity can be loaded again from the
   wallet's recovery seed. Otherwise, it warns that keys stored only on this
-  device are permanently deleted and require separate recovery information.
-- Unloading removes only the selected identity's local keys, metadata, DashPay overlays, and device record while leaving the Platform identity unchanged.
+  device are permanently deleted and require separate recovery information. If
+  scheduled votes are queued, the confirmation states how many will be
+  cancelled.
+- Unloading removes only the selected identity's local keys, metadata, DashPay overlays, queued scheduled votes, and device record while leaving the Platform identity unchanged.
 - Other identities on the same wallet and the wallet's recovery seed remain available.
 
 ---

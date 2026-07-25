@@ -504,6 +504,13 @@ pub enum IdentityTask {
     },
     /// Permanently remove one identity's keys and local device state while
     /// leaving the Platform identity itself unchanged.
+    ///
+    /// Unload deliberately requires no per-identity password, even for Tier-2
+    /// protected identities. Deletion exposes no key material, and a password
+    /// gate is not a security boundary for someone with device and app access
+    /// who can already destroy the local files. [`Self::UnprotectIdentityKeys`]
+    /// verifies the password because it retains the keys while removing their
+    /// protection; deletion needs no equivalent proof.
     UnloadIdentity {
         /// The identity to unload from this device.
         identity_id: Identifier,

@@ -78,10 +78,50 @@ pub fn create_app_user_data_directory_if_not_exists() -> Result<(), std::io::Err
 
 /// Creates the given data directory if it does not exist and verifies it is a directory.
 pub fn ensure_data_dir_exists(data_dir: &Path) -> Result<(), std::io::Error> {
-    fs::create_dir_all(data_dir)?;
-    let metadata = fs::metadata(data_dir)?;
-    if !metadata.is_dir() {
-        return Err(std::io::Error::other("Created path is not a directory"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+        match fs::symlink_metadata(data_dir) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Data directory path must not be a symbolic link",
+                    ));
+                }
+                if !metadata.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Data directory path is not a directory",
+                    ));
+                }
+                // Accepted narrow residual: a local process with precise timing can swap this path before chmod; closing it requires descriptor-relative plumbing.
+                fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700))?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let mut builder = fs::DirBuilder::new();
+                builder.recursive(true).mode(0o700);
+                builder.create(data_dir)?;
+            }
+            Err(error) => return Err(error),
+        }
+
+        let metadata = fs::symlink_metadata(data_dir)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Created data path is not a real directory",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(data_dir)?;
+        let metadata = fs::metadata(data_dir)?;
+        if !metadata.is_dir() {
+            return Err(std::io::Error::other("Created path is not a directory"));
+        }
     }
     Ok(())
 }
@@ -143,4 +183,87 @@ pub fn create_dash_core_config_if_not_exists(
     resource.write_to_file(&config_path, false)?;
 
     Ok(config_path)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::ensure_data_dir_exists;
+
+    #[test]
+    fn ensure_data_dir_exists_restricts_existing_directory_permissions() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let data_dir = parent.path().join("data");
+        std::fs::create_dir(&data_dir).expect("create data dir");
+        std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o775))
+            .expect("make data dir group-writable");
+
+        ensure_data_dir_exists(&data_dir).expect("secure data dir");
+
+        let mode = std::fs::metadata(&data_dir)
+            .expect("read data dir metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "data dir must be owner-only");
+    }
+
+    #[test]
+    fn ensure_data_dir_exists_creates_nested_directories_owner_only() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let first = parent.path().join("first");
+        let nested = first.join("second").join("data");
+
+        ensure_data_dir_exists(&nested).expect("create secure nested data dir");
+
+        for directory in [first, parent.path().join("first/second"), nested] {
+            let mode = std::fs::symlink_metadata(&directory)
+                .expect("read nested directory metadata")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "{} must be owner-only",
+                directory.display()
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_data_dir_exists_rejects_symlink_without_changing_target_permissions() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().expect("temp parent");
+        let target = parent.path().join("target");
+        let data_dir = parent.path().join("data");
+        std::fs::create_dir(&target).expect("create symlink target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+            .expect("set target permissions");
+        symlink(&target, &data_dir).expect("create data-dir symlink");
+
+        let error = ensure_data_dir_exists(&data_dir).expect_err("symlink must be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let target_mode = std::fs::metadata(&target)
+            .expect("read target metadata")
+            .permissions()
+            .mode();
+        assert_eq!(
+            target_mode & 0o777,
+            0o755,
+            "rejecting a symlink must not chmod its target"
+        );
+    }
+
+    #[test]
+    fn ensure_data_dir_exists_rejects_existing_regular_file() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let data_dir = parent.path().join("data");
+        std::fs::write(&data_dir, b"not a directory").expect("create regular file");
+
+        let error = ensure_data_dir_exists(&data_dir).expect_err("regular file must be rejected");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
 }

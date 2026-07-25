@@ -20,6 +20,16 @@ use dash_sdk::{
     },
 };
 
+fn validate_updated_contract_id(
+    expected: Identifier,
+    returned: Identifier,
+) -> Result<(), TaskError> {
+    if returned != expected {
+        return Err(TaskError::UpdatedContractIdMismatch { expected, returned });
+    }
+    Ok(())
+}
+
 impl AppContext {
     pub async fn update_data_contract(
         &self,
@@ -74,9 +84,13 @@ impl AppContext {
             .await
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
-        match state_transition.broadcast_and_wait(sdk, None).await {
+        match state_transition
+            .broadcast_and_wait_for_affected_state::<DataContract>(sdk, None)
+            .await
+        {
             Ok(returned_contract) => {
-                self.replace_contract(data_contract.id(), &returned_contract)?;
+                validate_updated_contract_id(contract_id, returned_contract.id())?;
+                self.replace_contract(contract_id, &returned_contract)?;
                 Ok(BackendTaskSuccessResult::UpdatedContract(
                     FeeResult::estimated_only(estimated_fee),
                 ))
@@ -95,5 +109,40 @@ impl AppContext {
             }
             Err(e) => Err(crate::backend_task::error::TaskError::from(e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returned_contract_id_mismatch_is_rejected_before_caching() {
+        let expected = Identifier::from([1; 32]);
+        let returned = Identifier::from([2; 32]);
+
+        let error = validate_updated_contract_id(expected, returned)
+            .expect_err("a mismatched returned contract must be rejected");
+
+        assert!(matches!(
+            &error,
+            TaskError::UpdatedContractIdMismatch {
+                expected: error_expected,
+                returned: error_returned,
+            } if *error_expected == expected && *error_returned == returned
+        ));
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "The platform returned contract {returned} instead of {expected}. Please try the update again."
+            )
+        );
+    }
+
+    #[test]
+    fn matching_returned_contract_id_is_accepted() {
+        let contract_id = Identifier::from([3; 32]);
+
+        assert!(validate_updated_contract_id(contract_id, contract_id).is_ok());
     }
 }

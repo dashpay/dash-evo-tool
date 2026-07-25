@@ -68,7 +68,7 @@ fn identity_removal_message(
             MessageType::Warning,
         ),
         (false, false, true) => (
-            "The identity was removed, but its associated voter identity is still on this device. Restart the app, then load and remove the identity again to retry.",
+            "The identity was removed, but its associated voter identity is still on this device. Wait a moment, then load and remove the identity again to retry.",
             MessageType::Warning,
         ),
         (true, false, true) => (
@@ -1314,6 +1314,8 @@ mod tests {
         let (message, message_type) = identity_removal_message(false, false, true);
         assert!(message.contains("associated voter identity is still on this device"));
         assert!(!message.contains("local data could not be cleaned up"));
+        assert!(message.contains("Wait a moment"));
+        assert!(!message.contains("Restart the app"));
         assert_eq!(message_type, crate::ui::MessageType::Warning);
 
         let (message, message_type) = identity_removal_message(true, false, true);

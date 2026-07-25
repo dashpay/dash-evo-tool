@@ -294,7 +294,7 @@ mod tests {
     /// `delete_local_qualified_identity_inner`), and — because it never got
     /// past `begin_identity_load` — must leave in-memory state completely
     /// untouched: `error.identity_was_removed()` is false for
-    /// `IdentityLoadInProgress`, so `unload_identity()` returns before ever
+    /// `IdentityBusyWithLoad`, so `unload_identity()` returns before ever
     /// calling `reconcile_unloaded_identity_memory`. A rejected concurrent
     /// unload evicting the wallet cache or clearing the selection anyway
     /// would be a real bug: it would desync the UI from storage, which still
@@ -361,9 +361,9 @@ mod tests {
         assert!(
             matches!(
                 second_unload_error,
-                TaskError::IdentityLoadInProgress { identity_id } if identity_id == target_id
+                TaskError::IdentityBusyWithLoad { identity_id } if identity_id == target_id
             ),
-            "the rejection must be IdentityLoadInProgress, got {second_unload_error:?}"
+            "the rejection must be IdentityBusyWithLoad, got {second_unload_error:?}"
         );
 
         // Nothing the rejected call touched: storage, wallet cache, and

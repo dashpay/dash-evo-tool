@@ -988,7 +988,14 @@ impl AppContext {
         remember_unload: bool,
     ) -> std::result::Result<(), TaskError> {
         // The load registry provides the existing per-identity exclusive claim.
-        let load_guard = self.begin_identity_load(*identifier, None)?;
+        let load_guard =
+            self.begin_identity_load(*identifier, None)
+                .map_err(|error| match error {
+                    TaskError::IdentityLoadInProgress { identity_id } => {
+                        TaskError::IdentityBusyWithLoad { identity_id }
+                    }
+                    other => other,
+                })?;
         let _migration_guard = self
             .migration_run
             .try_lock()
@@ -2542,9 +2549,9 @@ mod tests {
         assert!(
             matches!(
                 ctx.delete_local_qualified_identity(&target_id),
-                Err(TaskError::IdentityLoadInProgress { identity_id }) if identity_id == target_id
+                Err(TaskError::IdentityBusyWithLoad { identity_id }) if identity_id == target_id
             ),
-            "deletion must not race a load of the same identity"
+            "deletion must surface an unload-specific error without racing the load"
         );
         assert!(
             ctx.get_local_qualified_identity(&target_id)

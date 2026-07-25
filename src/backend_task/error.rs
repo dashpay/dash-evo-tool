@@ -682,6 +682,12 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
+    /// Another load currently owns this identity's exclusive claim.
+    #[error(
+        "The identity {identity_id} is being updated right now. Wait a moment and try unloading it again."
+    )]
+    IdentityBusyWithLoad { identity_id: Identifier },
+
     /// A user's choice to keep an unloaded identity off this device could not
     /// be read or saved in the local database.
     #[error(

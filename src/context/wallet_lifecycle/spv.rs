@@ -74,6 +74,10 @@ impl AppContext {
                 failures.push(TaskError::DashpaySidecarStorage { source });
             }
         }
+        if let Err(error) = self.clear_all_forgotten_identities() {
+            tracing::warn!(error = ?error, "Forgotten identity marker clear failed");
+            failures.push(error);
+        }
         match self.local_identity_ids() {
             Ok(owners) => {
                 for owner in owners {

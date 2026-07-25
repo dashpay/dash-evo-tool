@@ -982,6 +982,13 @@ impl AppContext {
             .map_err(|source| TaskError::ForgottenIdentityStorage { source })
     }
 
+    /// Clear every discovery block for the active network.
+    pub(crate) fn clear_all_forgotten_identities(&self) -> std::result::Result<(), TaskError> {
+        self.db
+            .clear_all_forgotten_identities(self.network)
+            .map_err(|source| TaskError::ForgottenIdentityStorage { source })
+    }
+
     fn delete_local_qualified_identity_inner(
         &self,
         identifier: &Identifier,

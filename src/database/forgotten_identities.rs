@@ -46,6 +46,16 @@ impl Database {
         Ok(())
     }
 
+    /// Clear every deliberately unloaded identity marker on one network.
+    pub(crate) fn clear_all_forgotten_identities(&self, network: Network) -> rusqlite::Result<()> {
+        self.execute(
+            "DELETE FROM forgotten_identities
+             WHERE network = ?1",
+            params![network.to_string()],
+        )?;
+        Ok(())
+    }
+
     /// Whether an identity is deliberately unloaded on one network.
     pub(crate) fn is_identity_forgotten(
         &self,

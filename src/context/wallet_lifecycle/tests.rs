@@ -2360,18 +2360,10 @@ async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
     }
 }
 
-/// QA (issue #889 review): the v39 `forgotten_identities` table
-/// (`database/forgotten_identities.rs`) lives in DET's own `data.db`, not in
-/// `platform-wallet.sqlite`. `clear_network_database`'s F60 "delete all local
-/// data" sweep never touches `self.db` at all — only the wallet backend's
-/// vault/KV/wallet state — so a forgotten-identity marker recorded before a
-/// full wipe survives it untouched. A user who unloads an identity, then
-/// later runs "Clear all wallet data" expecting a genuinely fresh start, and
-/// re-imports the same seed finds that identity silently un-rediscoverable —
-/// automatic and wallet-unlock discovery both skip anything marked forgotten,
-/// with no UI surface that shows the marker still exists.
+/// "Delete all local data" clears forgotten-identity markers so re-importing a
+/// wallet can rediscover identities that were unloaded before the wipe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clear_network_database_leaves_forgotten_identity_markers_in_place() {
+async fn clear_network_database_clears_forgotten_identity_markers() {
     use dash_sdk::platform::Identifier;
 
     let (ctx, sender, _tmp) = offline_testnet_context();
@@ -2394,13 +2386,9 @@ async fn clear_network_database_leaves_forgotten_identity_markers_in_place() {
         .expect("clear_network_database should succeed with nothing else to wipe");
 
     assert!(
-        ctx.is_identity_forgotten(&identity_id)
+        !ctx.is_identity_forgotten(&identity_id)
             .expect("read marker after wipe"),
-        "BUG: 'Clear all wallet data' is expected to clear the forgotten_identities table, \
-         but this assertion documents that the marker recorded before the wipe currently \
-         survives it untouched, silently blocking rediscovery of that identity after a full \
-         wipe and reimport of the same seed. Flipping this assertion is the signal that the \
-         gap has been closed.",
+        "the full wipe must clear forgotten-identity markers",
     );
 
     ctx.wallet_backend()

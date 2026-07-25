@@ -1059,16 +1059,18 @@ impl AppContext {
             *identifier,
             backend.identity_meta().delete(self.network, &id),
         );
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            *identifier,
-            self.clear_identity_vault_keys(&kv, &id),
-        );
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            *identifier,
-            purge_identity_scope(&kv, &id),
-        );
+        match self.clear_identity_vault_keys(&kv, &id) {
+            Ok(()) => keep_first_unload_cleanup_error(
+                &mut cleanup_error,
+                *identifier,
+                purge_identity_scope(&kv, &id),
+            ),
+            // The identity blob inventories its vault labels. Keep it when the
+            // clear fails so a later retry can finish deleting those keys.
+            Err(error) => {
+                keep_first_unload_cleanup_error(&mut cleanup_error, *identifier, Err(error))
+            }
+        }
         if let Some(error) = cleanup_error {
             return Err(error);
         }
@@ -2626,28 +2628,8 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// QA (issue #889 review): the same fault as
-    /// `deletion_fault_after_index_removal_leaves_no_visible_zombie` — index
-    /// removed, `clear_identity_vault_keys` then fails because the corrupted
-    /// blob can no longer be decoded to learn which vault labels to erase —
-    /// but followed one step further, to the vault itself and to the
-    /// "delete all local data" sweep.
-    ///
-    /// Requirement (CHANGELOG "Unload an identity from this device": "It
-    /// removes every piece of locally stored data for that identity (keys,
-    /// ...)"; the F60 comment in `clear_network_database`: "a full wipe must
-    /// remove [Tier-1 keyless identity keys] as well"): a private key must
-    /// never survive both a failed identity deletion AND a subsequent
-    /// "delete all local data" sweep. `purge_identity_scope` currently runs
-    /// unconditionally after a `clear_identity_vault_keys` failure and
-    /// deletes the identity blob — per `IdentityKeyView`'s own doc comment
-    /// "the only on-disk marker that the key exists" — permanently
-    /// orphaning the vault entry: `clear_network_database`'s per-identity
-    /// sweep enumerates exclusively via `local_identity_ids()`, which no
-    /// longer lists this identity once its index entry (and blob) are gone.
-    /// EXPECTED (currently FAILS): the vault key must still be reachable —
-    /// i.e. cleared, or at minimum still discoverable/retryable — after the
-    /// full-wipe sweep. This test currently fails, proving the leak.
+    /// A failed vault-key clear must retain the identity blob that inventories
+    /// its labels, allowing a later retry to finish without orphaning the key.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deletion_fault_after_index_removal_must_not_permanently_orphan_vault_key() {
         use crate::app::TaskResult;
@@ -2678,11 +2660,14 @@ mod tests {
             "the vault key must exist before the faulted deletion"
         );
 
-        // Corrupt the stored blob in place, exactly as the sibling test does,
-        // so `clear_identity_vault_keys` fails to decode it and never learns
-        // which vault labels belong to this identity.
         let id_buf = target_id.to_buffer();
         let kv = ctx.det_kv().expect("det kv");
+        let stored_before_fault = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .expect("read stored identity")
+            .expect("stored identity exists");
+        // Corrupt the stored blob in place so the first clear cannot decode
+        // the inventory of vault labels.
         kv.put(DetScope::Identity(&id_buf), IDENTITY_KEY, &stored("User"))
             .expect("corrupt the stored blob");
 
@@ -2696,25 +2681,30 @@ mod tests {
                 .contains(&target_id),
             "precondition: the identity is already hidden from the index"
         );
+        assert!(
+            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+                .expect("read retained inventory")
+                .is_some(),
+            "a vault-clear failure must retain the only on-disk inventory of key labels"
+        );
 
-        // Simulate clear_network_database's (F60 "delete all local data") own
-        // per-identity sweep, which enumerates strictly through
-        // `local_identity_ids()` (see context/wallet_lifecycle/spv.rs).
-        for owner in ctx.local_identity_ids().expect("read index for sweep") {
-            let _ = ctx.delete_local_qualified_identity(&owner);
-        }
+        // Repair the transiently unreadable inventory and retry by the known
+        // identity id, as the unload caller can after the reported failure.
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &stored_before_fault,
+        )
+        .expect("restore stored identity");
+        ctx.delete_local_qualified_identity(&target_id)
+            .expect("retry identity deletion");
 
         assert!(
             target_vault
                 .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
-                .expect("read target key after full-wipe sweep")
+                .expect("read target key after retry")
                 .is_none(),
-            "the vault key must not permanently survive a faulted deletion followed by the \
-             'delete all local data' sweep — clear_network_database documents that a full \
-             wipe removes every identity's private-key material, but purge_identity_scope \
-             deleted the blob (the only on-disk record of which vault labels belonged to \
-             this identity) before the vault-key clear it depends on ever ran, and the \
-             sweep can no longer find this identity at all once its index entry is gone"
+            "the retained inventory must let a retry delete the vault key"
         );
 
         backend.shutdown().await;

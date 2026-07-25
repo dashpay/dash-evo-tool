@@ -2126,14 +2126,9 @@ async fn clear_network_database_wipes_local_identity_private_keys() {
         .await;
 }
 
-/// QA (issue #889 review): `delete_local_qualified_identity_inner` now opens
-/// with `begin_identity_load` (identity_db.rs:985), so the per-identity wipe
-/// loop in `clear_network_database` collides with any other outstanding claim
-/// on that identity — e.g. a `Background` discovery pass mid-scan. The claim
-/// is held directly here to simulate that collision deterministically instead
-/// of racing a real discovery task.
+/// A network clear retries when a background load briefly owns the identity.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn clear_network_database_reports_incomplete_when_a_load_claim_is_outstanding() {
+async fn clear_network_database_retries_until_a_load_claim_clears() {
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::model::qualified_identity::{
@@ -2192,50 +2187,43 @@ async fn clear_network_database_reports_incomplete_when_a_load_claim_is_outstand
         "precondition: the identity private key is in the vault before clear"
     );
 
-    // Simulate a concurrent Background discovery pass holding this
-    // identity's exclusive load claim for the whole span of the wipe.
+    // Hold the exclusive claim long enough for the first wipe attempt to fail,
+    // then release it within the bounded retry window.
     let discovery_claim = ctx
         .begin_identity_load(identity_id, None)
         .expect("simulate an outstanding discovery claim on this identity");
+    let release_claim = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        drop(discovery_claim);
+    });
 
     let result = ctx.clear_network_database().await;
+    release_claim.await.expect("release discovery claim");
 
-    match result {
-        Err(TaskError::WalletDataClearIncomplete {
-            failed,
-            first_error,
-        }) => {
-            assert!(failed >= 1, "the claim collision must count as a failure");
-            assert!(
-                matches!(*first_error, TaskError::IdentityLoadInProgress { identity_id: id } if id == identity_id),
-                "the collision must surface as IdentityLoadInProgress, got {first_error:?}"
-            );
-        }
-        other => panic!("an outstanding load claim must make the clear incomplete, got {other:?}"),
-    }
+    assert!(
+        result.is_ok(),
+        "a claim released within the retry window must not make the clear incomplete: {result:?}"
+    );
 
-    // The colliding identity's own data must survive untouched: the wipe for
-    // THIS identity never ran.
-    assert_eq!(
-        ctx.local_identity_ids().expect("list ids after clear"),
-        vec![identity_id],
-        "the identity whose claim collided must remain locally stored"
+    assert!(
+        ctx.local_identity_ids()
+            .expect("list ids after clear")
+            .is_empty(),
+        "the retried identity must be removed from local storage"
     );
     assert!(
         view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
             .expect("vault read after clear")
-            .is_some(),
-        "the colliding identity's private key must survive the incomplete clear"
+            .is_none(),
+        "the retried wipe must delete the identity's private key"
     );
 
-    // The in-memory wallet maps are still torn down unconditionally, so the
-    // user sees no wallets even though on-disk state is incomplete.
+    // The in-memory wallet maps are torn down after the successful retry.
     assert!(
         ctx.wallets().read().expect("read wallets").is_empty(),
-        "in-memory wallets must still be cleared despite the incomplete wipe"
+        "in-memory wallets must be cleared after the wipe"
     );
 
-    drop(discovery_claim);
     ctx.wallet_backend()
         .expect("backend wired")
         .shutdown()

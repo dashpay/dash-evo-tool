@@ -3,6 +3,9 @@
 
 use super::*;
 
+const IDENTITY_WIPE_ATTEMPTS: usize = 5;
+const IDENTITY_WIPE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
 impl AppContext {
     /// Delete the cached chain-sync data (headers, filters, blocks, masternode
     /// state, peers) for this network so the next connection re-syncs from
@@ -77,7 +80,19 @@ impl AppContext {
                     // Wipe each identity's vault keys and det:identity:* records too —
                     // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)
                     // are plaintext-recoverable, so a full wipe must remove them as well.
-                    if let Err(e) = self.delete_local_qualified_identity(&owner) {
+                    let mut attempts_remaining = IDENTITY_WIPE_ATTEMPTS;
+                    let deletion_result = loop {
+                        match self.delete_local_qualified_identity(&owner) {
+                            Err(TaskError::IdentityBusyWithLoad { .. })
+                                if attempts_remaining > 1 =>
+                            {
+                                attempts_remaining -= 1;
+                                tokio::time::sleep(IDENTITY_WIPE_RETRY_DELAY).await;
+                            }
+                            result => break result,
+                        }
+                    };
+                    if let Err(e) = deletion_result {
                         tracing::warn!(
                             owner = %owner,
                             "Identity private-key wipe failed during clear: {e:?}"

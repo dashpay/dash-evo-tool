@@ -2126,6 +2126,122 @@ async fn clear_network_database_wipes_local_identity_private_keys() {
         .await;
 }
 
+/// QA (issue #889 review): `delete_local_qualified_identity_inner` now opens
+/// with `begin_identity_load` (identity_db.rs:985), so the per-identity wipe
+/// loop in `clear_network_database` collides with any other outstanding claim
+/// on that identity — e.g. a `Background` discovery pass mid-scan. The claim
+/// is held directly here to simulate that collision deterministically instead
+/// of racing a real discovery task.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_reports_incomplete_when_a_load_claim_is_outstanding() {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let key_id = key.id();
+    let mut private_keys = KeyStorage::default();
+    private_keys.private_keys.insert(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear([0x5Bu8; 32]),
+        ),
+    );
+    let identity_id = Identifier::from([0x34u8; 32]);
+    let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
+    let qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    };
+    ctx.insert_local_qualified_identity(&qi, &None)
+        .expect("persist local identity");
+
+    let store = ctx.secret_store();
+    let view = IdentityKeyView::new(&store, identity_id.to_buffer());
+    assert!(
+        view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+            .expect("vault read before clear")
+            .is_some(),
+        "precondition: the identity private key is in the vault before clear"
+    );
+
+    // Simulate a concurrent Background discovery pass holding this
+    // identity's exclusive load claim for the whole span of the wipe.
+    let discovery_claim = ctx
+        .begin_identity_load(identity_id, None)
+        .expect("simulate an outstanding discovery claim on this identity");
+
+    let result = ctx.clear_network_database().await;
+
+    match result {
+        Err(TaskError::WalletDataClearIncomplete {
+            failed,
+            first_error,
+        }) => {
+            assert!(failed >= 1, "the claim collision must count as a failure");
+            assert!(
+                matches!(*first_error, TaskError::IdentityLoadInProgress { identity_id: id } if id == identity_id),
+                "the collision must surface as IdentityLoadInProgress, got {first_error:?}"
+            );
+        }
+        other => panic!("an outstanding load claim must make the clear incomplete, got {other:?}"),
+    }
+
+    // The colliding identity's own data must survive untouched: the wipe for
+    // THIS identity never ran.
+    assert_eq!(
+        ctx.local_identity_ids().expect("list ids after clear"),
+        vec![identity_id],
+        "the identity whose claim collided must remain locally stored"
+    );
+    assert!(
+        view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+            .expect("vault read after clear")
+            .is_some(),
+        "the colliding identity's private key must survive the incomplete clear"
+    );
+
+    // The in-memory wallet maps are still torn down unconditionally, so the
+    // user sees no wallets even though on-disk state is incomplete.
+    assert!(
+        ctx.wallets().read().expect("read wallets").is_empty(),
+        "in-memory wallets must still be cleared despite the incomplete wipe"
+    );
+
+    drop(discovery_claim);
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
 /// A masternode removal must report an incomplete clear when its voting,
 /// owner, or payout key cannot be deleted from the vault.
 #[cfg(unix)]
@@ -2254,6 +2370,55 @@ async fn clear_network_database_reports_incomplete_when_shielded_clear_fails() {
         }
         other => panic!("shielded clear failure must make clear incomplete: {other:?}"),
     }
+}
+
+/// QA (issue #889 review): the v39 `forgotten_identities` table
+/// (`database/forgotten_identities.rs`) lives in DET's own `data.db`, not in
+/// `platform-wallet.sqlite`. `clear_network_database`'s F60 "delete all local
+/// data" sweep never touches `self.db` at all — only the wallet backend's
+/// vault/KV/wallet state — so a forgotten-identity marker recorded before a
+/// full wipe survives it untouched. A user who unloads an identity, then
+/// later runs "Clear all wallet data" expecting a genuinely fresh start, and
+/// re-imports the same seed finds that identity silently un-rediscoverable —
+/// automatic and wallet-unlock discovery both skip anything marked forgotten,
+/// with no UI surface that shows the marker still exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_leaves_forgotten_identity_markers_in_place() {
+    use dash_sdk::platform::Identifier;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let identity_id = Identifier::from([0x35u8; 32]);
+    ctx.db()
+        .record_forgotten_identity(Network::Testnet, &identity_id)
+        .expect("record forgotten marker before the wipe");
+    assert!(
+        ctx.is_identity_forgotten(&identity_id)
+            .expect("read marker before wipe"),
+        "precondition: the identity is marked forgotten before the wipe"
+    );
+
+    ctx.clear_network_database()
+        .await
+        .expect("clear_network_database should succeed with nothing else to wipe");
+
+    assert!(
+        ctx.is_identity_forgotten(&identity_id)
+            .expect("read marker after wipe"),
+        "BUG: 'Clear all wallet data' is expected to clear the forgotten_identities table, \
+         but this assertion documents that the marker recorded before the wipe currently \
+         survives it untouched, silently blocking rediscovery of that identity after a full \
+         wipe and reimport of the same seed. Flipping this assertion is the signal that the \
+         gap has been closed.",
+    );
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
 }
 
 /// Clear-all must fail before changing any state when the wallet backend is

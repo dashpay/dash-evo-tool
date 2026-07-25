@@ -1382,6 +1382,55 @@ mod tests {
         index_add_identity(kv, id).unwrap();
     }
 
+    /// QA (issue #889 review): `keep_first_unload_cleanup_error` keeps only
+    /// the first cleanup failure — every call after `cleanup_error` is
+    /// already `Some(_)` is a no-op, including on its `Err` branch. A second,
+    /// unrelated failure (here `InternalSendError`, standing in for e.g. a
+    /// vault-key-clear fault) is discarded with no trace: not merged, not
+    /// logged by this function, not recoverable from `cleanup_error` by any
+    /// caller. `delete_local_qualified_identity_inner` calls this six times
+    /// in sequence across independent cleanup steps with no logging of its
+    /// own at any call site, so a second real failure during identity
+    /// removal is invisible end to end — the returned
+    /// `IdentityUnloadCleanupFailed` names only the first failure's source.
+    #[test]
+    fn keep_first_unload_cleanup_error_silently_drops_every_later_failure() {
+        let identity_id = Identifier::from([0x01; 32]);
+        let mut cleanup_error = None;
+
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            identity_id,
+            Err(TaskError::IdentityNotFound),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            identity_id,
+            Err(TaskError::InternalSendError),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            identity_id,
+            Err(TaskError::InternalSendError),
+        );
+
+        match cleanup_error.expect("a cleanup error must be recorded") {
+            TaskError::IdentityUnloadCleanupFailed {
+                identity_id: id,
+                source,
+            } => {
+                assert_eq!(id, identity_id);
+                assert!(
+                    matches!(*source, TaskError::IdentityNotFound),
+                    "BUG: only the first failure's source is ever recoverable — the second \
+                     and third failures (InternalSendError) leave no trace anywhere in the \
+                     returned error, got {source:?}"
+                );
+            }
+            other => panic!("expected IdentityUnloadCleanupFailed, got {other:?}"),
+        }
+    }
+
     // ---------------------------------------------------------------
     // SEC: the redacting Debug must never print the private-key blob.
     // ---------------------------------------------------------------

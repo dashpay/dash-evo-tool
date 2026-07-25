@@ -56,9 +56,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Identity unload and reload follow-ups for #889 / PR #925**: node load forms
   now reject regular identities, wallet discovery keeps deliberately unloaded
-  identities unloaded until the user explicitly loads them again, partial
-  cleanup failures still reconcile the app's active identity state, and late
-  DashPay profile responses can no longer restore stale profile data.
+  identities unloaded until the user explicitly loads them again even when
+  discovery overlaps an unload, successful loads are not reported as failed
+  when marker cleanup leaves recoverable residue, associated voter removal
+  outcomes are reported accurately, partial cleanup failures still reconcile
+  the app's active identity state, and late DashPay profile responses can no
+  longer restore stale profile data.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

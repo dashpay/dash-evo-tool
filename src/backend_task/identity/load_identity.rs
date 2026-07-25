@@ -564,12 +564,9 @@ impl AppContext {
         if let Some(password) = encryption_password {
             self.protect_identity_keys(qualified_identity.identity.id(), password, None)?;
         }
-        self.clear_forgotten_identity_after_explicit_load(&identity_id)?;
-
-        // Past the last fallible step: the node is stored with its keys as
-        // requested. Anything that failed before this — including a key seal that
-        // left the insert behind — reported `Failed` when the guard dropped.
-        load_guard.loaded();
+        // The identity is durably stored with its keys as requested. Clearing
+        // the discovery marker is best-effort and must not mask that success.
+        self.finish_identity_load_after_persist(&identity_id, load_guard);
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
@@ -1571,5 +1568,61 @@ mod tests {
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persisted_load_with_marker_cleanup_failure_still_reports_success() {
+        use crate::context::identity_load_registry::IdentityLoadPhase;
+        use crate::context::test_support::test_app_context;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let (mut qualified_identity, _) = masternode_shaped_qi();
+        qualified_identity.identity_type = IdentityType::User;
+        qualified_identity.private_keys = KeyStorage::default();
+        let identity_id = qualified_identity.identity.id();
+        ctx.insert_local_qualified_identity(&qualified_identity, &None)
+            .expect("durably persist loaded identity");
+        ctx.db()
+            .record_forgotten_identity(Network::Testnet, &identity_id)
+            .expect("record forgotten marker");
+        ctx.db()
+            .execute(
+                "CREATE TRIGGER fail_load_marker_cleanup
+                 BEFORE DELETE ON forgotten_identities
+                 BEGIN
+                     SELECT RAISE(FAIL, 'injected load marker cleanup failure');
+                 END;",
+                [],
+            )
+            .expect("install marker cleanup failure trigger");
+        let token = ctx
+            .mark_identity_load_submitted(identity_id)
+            .expect("submit load");
+        let load_guard = ctx
+            .begin_identity_load(identity_id, Some(token))
+            .expect("claim load");
+
+        ctx.finish_identity_load_after_persist(&identity_id, load_guard);
+
+        assert!(
+            ctx.get_local_qualified_identity(&identity_id)
+                .expect("read persisted identity")
+                .is_some(),
+            "the identity must remain durably persisted"
+        );
+        assert_eq!(
+            ctx.identity_load_phase(&identity_id, token),
+            Some(IdentityLoadPhase::Loaded),
+            "cleanup residue must not turn a committed load into a reported failure"
+        );
+
+        backend.shutdown().await;
     }
 }

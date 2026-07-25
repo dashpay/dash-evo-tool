@@ -44,22 +44,39 @@ use std::sync::{Arc, Mutex};
 fn identity_removal_message(
     primary_cleanup_failed: bool,
     associated_cleanup_failed: bool,
+    associated_removal_failed: bool,
 ) -> (&'static str, MessageType) {
-    match (primary_cleanup_failed, associated_cleanup_failed) {
-        (false, false) => (
+    match (
+        primary_cleanup_failed,
+        associated_cleanup_failed,
+        associated_removal_failed,
+    ) {
+        (false, false, false) => (
             "The identity was removed from this device.",
             MessageType::Success,
         ),
-        (true, false) => (
+        (true, false, false) => (
             "The identity was removed, but some local data could not be cleaned up. Load and remove it again to retry.",
             MessageType::Warning,
         ),
-        (false, true) => (
-            "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.",
+        (false, true, false) => (
+            "The identity and its associated voter identity were removed, but some local voter data could not be cleaned up. Load and remove the identity again to retry the cleanup.",
             MessageType::Warning,
         ),
-        (true, true) => (
-            "The identity was removed, but some local data could not be cleaned up and its associated voter identity could not be removed. Restart the app, then load and remove the identity again to retry.",
+        (true, true, false) => (
+            "The identity and its associated voter identity were removed, but some local data could not be cleaned up. Load and remove both identities again to retry.",
+            MessageType::Warning,
+        ),
+        (false, false, true) => (
+            "The identity was removed, but its associated voter identity is still on this device. Restart the app, then load and remove the identity again to retry.",
+            MessageType::Warning,
+        ),
+        (true, false, true) => (
+            "The identity was removed, but some local data could not be cleaned up and its associated voter identity is still on this device. Restart the app, then load and remove the identity again to retry.",
+            MessageType::Warning,
+        ),
+        (_, true, true) => (
+            "The identity was removed, but the associated voter identity may still have local data on this device. Restart the app, then load and remove the identity again to retry.",
             MessageType::Warning,
         ),
     }
@@ -1146,17 +1163,22 @@ impl ScreenLike for IdentitiesScreen {
                 identity_ids,
                 primary_cleanup_failed,
                 associated_cleanup_failed,
+                associated_removal_failed,
             } => {
                 let mut identities = self.identities.lock_recover();
                 for identity_id in identity_ids {
                     identities.shift_remove(&identity_id);
                 }
                 drop(identities);
-                let (message, message_type) =
-                    identity_removal_message(primary_cleanup_failed, associated_cleanup_failed);
+                let (message, message_type) = identity_removal_message(
+                    primary_cleanup_failed,
+                    associated_cleanup_failed,
+                    associated_removal_failed,
+                );
                 let banner =
                     MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
-                if primary_cleanup_failed || associated_cleanup_failed {
+                if primary_cleanup_failed || associated_cleanup_failed || associated_removal_failed
+                {
                     banner.disable_auto_dismiss();
                 }
             }
@@ -1275,23 +1297,28 @@ mod tests {
 
     #[test]
     fn identity_removal_messages_distinguish_cleanup_outcomes() {
-        let (message, message_type) = identity_removal_message(false, false);
+        let (message, message_type) = identity_removal_message(false, false, false);
         assert_eq!(message, "The identity was removed from this device.");
         assert_eq!(message_type, crate::ui::MessageType::Success);
 
-        let (message, message_type) = identity_removal_message(true, false);
+        let (message, message_type) = identity_removal_message(true, false, false);
         assert!(message.contains("some local data could not be cleaned up"));
         assert!(!message.contains("associated voter identity"));
         assert_eq!(message_type, crate::ui::MessageType::Warning);
 
-        let (message, message_type) = identity_removal_message(false, true);
-        assert!(!message.contains("some local data could not be cleaned up"));
-        assert!(message.contains("associated voter identity could not be removed"));
+        let (message, message_type) = identity_removal_message(false, true, false);
+        assert!(message.contains("associated voter identity were removed"));
+        assert!(message.contains("could not be cleaned up"));
         assert_eq!(message_type, crate::ui::MessageType::Warning);
 
-        let (message, message_type) = identity_removal_message(true, true);
+        let (message, message_type) = identity_removal_message(false, false, true);
+        assert!(message.contains("associated voter identity is still on this device"));
+        assert!(!message.contains("local data could not be cleaned up"));
+        assert_eq!(message_type, crate::ui::MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(true, false, true);
         assert!(message.contains("some local data could not be cleaned up"));
-        assert!(message.contains("associated voter identity could not be removed"));
+        assert!(message.contains("associated voter identity is still on this device"));
         assert_eq!(message_type, crate::ui::MessageType::Warning);
     }
 

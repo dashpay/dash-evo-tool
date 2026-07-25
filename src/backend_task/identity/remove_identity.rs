@@ -33,6 +33,7 @@ impl AppContext {
         let mut removed_identity_ids = vec![identity_id];
         let primary_cleanup_failed = cleanup_error.is_some();
         let mut associated_cleanup_failed = false;
+        let mut associated_removal_failed = false;
         if let Some(voter_id) = associated_voter_identity_id.filter(|id| *id != identity_id) {
             match self.unload_local_qualified_identity(&voter_id) {
                 Ok(()) => {
@@ -45,11 +46,11 @@ impl AppContext {
                     associated_cleanup_failed = true;
                 }
                 Err(error) => {
-                    associated_cleanup_failed = true;
+                    associated_removal_failed = true;
                     tracing::warn!(
                         ?error,
                         voter_identity_id = %voter_id,
-                        "Associated voter identity cleanup failed"
+                        "Associated voter identity could not be removed"
                     );
                 }
             }
@@ -59,6 +60,7 @@ impl AppContext {
             identity_ids: removed_identity_ids,
             primary_cleanup_failed,
             associated_cleanup_failed,
+            associated_removal_failed,
         })
     }
 }
@@ -195,6 +197,7 @@ mod tests {
             BackendTaskSuccessResult::RemovedIdentities {
                 primary_cleanup_failed: true,
                 associated_cleanup_failed: false,
+                associated_removal_failed: false,
                 ..
             }
         ));
@@ -205,9 +208,69 @@ mod tests {
             BackendTaskSuccessResult::RemovedIdentities {
                 primary_cleanup_failed: false,
                 associated_cleanup_failed: true,
+                associated_removal_failed: false,
                 ..
             }
         ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_identity_distinguishes_associated_removal_failure_from_cleanup_residue() {
+        use crate::app::TaskResult;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let platform_version = PlatformVersion::latest();
+        let target_id = Identifier::from([0x84; 32]);
+        let voter_id = Identifier::from([0x85; 32]);
+        let target = Identity::create_basic_identity(target_id, platform_version)
+            .expect("create target identity");
+        let voter = Identity::create_basic_identity(voter_id, platform_version)
+            .expect("create voter identity");
+        let voter_key = IdentityPublicKey::random_key(1, Some(1), platform_version);
+        let target = qualified_identity(
+            target,
+            Some((voter.clone(), voter_key)),
+            backend.secret_access(),
+        );
+        let voter = qualified_identity(voter, None, backend.secret_access());
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+        ctx.insert_local_qualified_identity(&voter, &None)
+            .expect("insert voter identity");
+        let voter_load_guard = ctx
+            .begin_identity_load(voter_id, None)
+            .expect("hold voter load claim");
+
+        let result = ctx
+            .remove_identity(target_id)
+            .expect("primary removal remains successful");
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::RemovedIdentities {
+                identity_ids,
+                primary_cleanup_failed: false,
+                associated_cleanup_failed: false,
+                associated_removal_failed: true,
+            } if identity_ids == vec![target_id]
+        ));
+        assert!(
+            ctx.get_local_qualified_identity(&voter_id)
+                .expect("read voter identity")
+                .is_some(),
+            "a genuine associated removal failure must leave the voter present"
+        );
+
+        drop(voter_load_guard);
+        backend.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -252,9 +315,11 @@ mod tests {
                 identity_ids,
                 primary_cleanup_failed,
                 associated_cleanup_failed,
+                associated_removal_failed,
             } if identity_ids == &vec![target_id]
                 && !primary_cleanup_failed
                 && !associated_cleanup_failed
+                && !associated_removal_failed
         ));
         let (target_evicted, cached_sibling) = {
             let wallets = ctx.wallets().read().expect("read wallets");

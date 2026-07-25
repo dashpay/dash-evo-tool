@@ -595,6 +595,9 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if let TaskError::IdentityUnloadCleanupFailed { identity_id, .. } = error {
+            self.profile_cache.remove_identity(identity_id);
+        }
         if self.handle_contact_request_error(error) {
             return matches!(
                 contact_info_read_error_key(error),
@@ -935,6 +938,45 @@ mod tests {
         assert!(
             screen.result_is_for_selected_identity(&explicitly_selected),
             "a result for the explicitly selected identity must apply after a switch"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unload_cleanup_error_invalidates_in_flight_profile_result() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let identity_id = seed_user_identity(&context, 3);
+        let identity = context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read identity")
+            .expect("identity exists");
+        let mut screen = IdentityHubScreen::new(&context);
+
+        assert!(screen.profile_cache.get_or_request(&identity).is_none());
+        assert!(matches!(
+            screen.profile_cache.dispatch_pending(),
+            AppAction::BackendTask(_)
+        ));
+
+        let error = TaskError::IdentityUnloadCleanupFailed {
+            identity_id,
+            source: Box::new(TaskError::DocumentNotFound),
+        };
+        assert!(
+            !screen.display_task_error(&error),
+            "AppState must still render the cleanup warning"
+        );
+        assert!(
+            screen
+                .profile_cache
+                .record_result(&BackendTaskSuccessResult::DashPayProfile(Some((
+                    "Stale name".to_string(),
+                    "Stale bio".to_string(),
+                    "https://example.invalid/stale.png".to_string(),
+                ))))
+        );
+        assert!(
+            screen.profile_cache.get_or_request(&identity).is_none(),
+            "a profile request started before the committed unload must be discarded"
         );
     }
 

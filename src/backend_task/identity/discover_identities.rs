@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::context::identity_load_registry::IdentityLoadGuard;
 use crate::model::identity_discovery::{
     DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP, should_continue_scan,
 };
@@ -282,23 +283,30 @@ impl AppContext {
             )
             .await?;
 
-        if !self.persist_discovered_identity(
+        let explicit_reload = mode.explicitly_reloads_forgotten();
+        let Some(load_guard) = self.persist_discovered_identity(
             qualified_identity.clone(),
             seed_hash,
             identity_index,
-            mode.explicitly_reloads_forgotten(),
-        )? {
+            explicit_reload,
+        )?
+        else {
             tracing::debug!(
                 identity_id = %identity_id,
                 "Skipped a discovered identity that the user unloaded"
             );
             return Ok(false);
-        }
+        };
 
         if let Ok(mut wallet_guard) = wallet.write() {
             wallet_guard
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
+        }
+        if explicit_reload {
+            self.finish_identity_load_after_persist(&identity_id, load_guard);
+        } else {
+            load_guard.loaded();
         }
         tracing::info!(
             identity_id = %identity_id,
@@ -308,18 +316,21 @@ impl AppContext {
     }
 
     /// Persist one discovery result unless automatic discovery must leave it unloaded.
+    ///
+    /// A persisted result returns its exclusive load claim so the caller can
+    /// keep it through the corresponding wallet-cache update.
     pub(crate) fn persist_discovered_identity(
         &self,
         mut qualified_identity: crate::model::qualified_identity::QualifiedIdentity,
         seed_hash: crate::model::wallet::WalletSeedHash,
         identity_index: u32,
         explicit_reload: bool,
-    ) -> Result<bool, TaskError> {
+    ) -> Result<Option<IdentityLoadGuard>, TaskError> {
         let identity_id = qualified_identity.identity.id();
         let load_guard = self.begin_identity_load(identity_id, None)?;
         if self.is_identity_forgotten(&identity_id)? && !explicit_reload {
             load_guard.loaded();
-            return Ok(false);
+            return Ok(None);
         }
 
         match self.get_identity_by_id(&identity_id)? {
@@ -338,12 +349,7 @@ impl AppContext {
                 )?;
             }
         }
-        if explicit_reload {
-            self.finish_identity_load_after_persist(&identity_id, load_guard);
-        } else {
-            load_guard.loaded();
-        }
-        Ok(true)
+        Ok(Some(load_guard))
     }
 
     /// Build a QualifiedIdentity from a fetched Identity with wallet key derivation paths.
@@ -576,7 +582,7 @@ mod tests {
         let stored = ctx
             .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
             .expect("simulate discovery persistence");
-        assert!(!stored, "discovery must skip a forgotten identity");
+        assert!(stored.is_none(), "discovery must skip a forgotten identity");
         assert_eq!(
             ctx.latest_identity_load_phase(&identity_id),
             Some(IdentityLoadPhase::Loaded),
@@ -589,11 +595,11 @@ mod tests {
             "discovery must not resurrect an unloaded identity"
         );
 
-        assert!(
-            ctx.persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, true)
-                .expect("simulate explicit wallet load"),
-            "an explicit load must restore the identity"
-        );
+        let load_guard = ctx
+            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, true)
+            .expect("simulate explicit wallet load")
+            .expect("an explicit load must restore the identity");
+        ctx.finish_identity_load_after_persist(&identity_id, load_guard);
         assert!(
             !ctx.is_identity_forgotten(&identity_id)
                 .expect("read cleared marker")
@@ -601,11 +607,11 @@ mod tests {
 
         ctx.delete_local_qualified_identity(&identity_id)
             .expect("remove identity without recording another unload");
-        assert!(
-            ctx.persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
-                .expect("simulate discovery after explicit reload"),
-            "discovery must work normally after the explicit load clears the marker"
-        );
+        let load_guard = ctx
+            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
+            .expect("simulate discovery after explicit reload")
+            .expect("discovery must work normally after explicit reload");
+        load_guard.loaded();
         assert!(
             ctx.get_identity_by_id(&identity_id)
                 .expect("read rediscovered identity")
@@ -625,11 +631,11 @@ mod tests {
                 [],
             )
             .expect("install marker cleanup failure trigger");
-        assert!(
-            ctx.persist_discovered_identity(identity, wallet_seed_hash, 4, true)
-                .expect("persist despite marker cleanup failure"),
-            "durable persistence remains successful when marker cleanup fails"
-        );
+        let load_guard = ctx
+            .persist_discovered_identity(identity, wallet_seed_hash, 4, true)
+            .expect("persist despite marker cleanup failure")
+            .expect("durable persistence must remain successful");
+        ctx.finish_identity_load_after_persist(&identity_id, load_guard);
         assert_eq!(
             ctx.latest_identity_load_phase(&identity_id),
             Some(IdentityLoadPhase::Loaded)
@@ -638,6 +644,76 @@ mod tests {
             ctx.is_identity_forgotten(&identity_id)
                 .expect("read retained marker"),
             "the injected cleanup fault must leave the marker in place"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unload_during_discovery_persist_does_not_resurrect_wallet_cache() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed([0x64; 64], Network::Testnet, None, None).expect("build wallet"),
+        ));
+        let wallet_seed_hash = wallet.read().expect("read wallet").seed_hash();
+        ctx.wallets()
+            .write()
+            .expect("write wallets")
+            .insert(wallet_seed_hash, Arc::clone(&wallet));
+        let identity_id = Identifier::from([0x65; 32]);
+        let identity = wallet_derived_identity(identity_id, &wallet, 5);
+
+        let load_guard = ctx
+            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 5, false)
+            .expect("persist discovery")
+            .expect("discovery must persist a new identity");
+
+        let unload_ctx = Arc::clone(&ctx);
+        let (attempted_tx, attempted_rx) = tokio::sync::oneshot::channel();
+        let unload_task = tokio::spawn(async move {
+            let mut attempted_tx = Some(attempted_tx);
+            loop {
+                match unload_ctx.unload_identity(identity_id) {
+                    Err(TaskError::IdentityLoadInProgress { .. }) => {
+                        if let Some(attempted_tx) = attempted_tx.take() {
+                            let _ = attempted_tx.send(());
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                    result => return result,
+                }
+            }
+        });
+        attempted_rx
+            .await
+            .expect("unload must overlap the held discovery claim");
+
+        wallet
+            .write()
+            .expect("write wallet")
+            .identities
+            .insert(5, identity.identity);
+        load_guard.loaded();
+        unload_task
+            .await
+            .expect("join unload")
+            .expect("unload after discovery cache insertion");
+
+        assert!(
+            wallet
+                .read()
+                .expect("read wallet")
+                .identities
+                .values()
+                .all(|identity| identity.id() != identity_id),
+            "an unload that completes during discovery must not be overwritten by a late cache insert"
         );
 
         backend.shutdown().await;

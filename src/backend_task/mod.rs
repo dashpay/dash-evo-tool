@@ -719,6 +719,7 @@ pub enum BackendTaskSuccessResult {
         identity_ids: Vec<Identifier>,
         primary_cleanup_failed: bool,
         associated_cleanup_failed: bool,
+        associated_removal_failed: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),

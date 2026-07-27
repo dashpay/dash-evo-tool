@@ -399,6 +399,8 @@ fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
 pub(super) struct SnapshotStore {
     /// DET-keyed published snapshots. Lock-free read on the UI hot path.
     snapshots: ArcSwap<HashMap<WalletSeedHash, Arc<WalletSnapshot>>>,
+    /// Per-wallet publish counters, advanced once before each RCU publication.
+    generations: Mutex<HashMap<WalletSeedHash, u64>>,
     /// Event-sourced transaction history, keyed by upstream `WalletId` then
     /// `Txid`. A `BTreeMap` per wallet so re-seen records (mempool → block →
     /// chainlock) upsert in place and iteration is deterministic.
@@ -426,6 +428,7 @@ impl SnapshotStore {
     pub(super) fn new() -> Self {
         Self {
             snapshots: ArcSwap::from_pointee(HashMap::new()),
+            generations: Mutex::new(HashMap::new()),
             tx_log: Mutex::new(HashMap::new()),
             transaction_history_status: Mutex::new(HashMap::new()),
             registered: Mutex::new(HashMap::new()),
@@ -456,6 +459,9 @@ impl SnapshotStore {
             next.remove(seed_hash);
             next
         });
+        if let Ok(mut generations) = self.generations.lock() {
+            generations.remove(seed_hash);
+        }
         if let Ok(mut map) = self.registered.lock() {
             map.remove(wallet_id);
         }
@@ -681,8 +687,17 @@ impl SnapshotStore {
             .and_then(|log| log.get(wallet_id).map(|m| m.values().cloned().collect()))
             .unwrap_or_default();
 
-        let snapshot = WalletSnapshot {
-            generation: 0,
+        let generation = {
+            let mut generations = match self.generations.lock() {
+                Ok(generations) => generations,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let generation = generations.entry(*seed_hash).or_default();
+            *generation = generation.saturating_add(1);
+            *generation
+        };
+        let snapshot = Arc::new(WalletSnapshot {
+            generation,
             balance: state.balance,
             transactions,
             utxos: state.utxos,
@@ -695,15 +710,16 @@ impl SnapshotStore {
                 .ok()
                 .and_then(|statuses| statuses.get(wallet_id).cloned())
                 .unwrap_or_default(),
-        };
+        });
 
         self.snapshots.rcu(|current| {
             let mut next = (**current).clone();
-            let mut published = snapshot.clone();
-            published.generation = current
+            if current
                 .get(seed_hash)
-                .map_or(1, |prior| prior.generation.saturating_add(1));
-            next.insert(*seed_hash, Arc::new(published));
+                .is_none_or(|prior| prior.generation < snapshot.generation)
+            {
+                next.insert(*seed_hash, Arc::clone(&snapshot));
+            }
             next
         });
     }

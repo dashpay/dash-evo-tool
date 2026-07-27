@@ -32,16 +32,19 @@ use super::{DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend};
 // TODO(upstream): export that default or expose an asset-lock ceiling quote primitive.
 const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
 const MAX_DRAIN_SEARCH_DOUBLINGS: u32 = 40;
+const P2PKH_CREDIT_OUTPUT_SCRIPT_LEN: usize = 25;
+const P2PKH_INPUT_SIZE: usize = 148;
 
 enum AssetLockDryRun {
     Builds,
     Rejected { available: u64 },
+    TooManyInputs { max: usize },
 }
 
 enum AssetLockDrainSeed {
     Ceiling(u64),
     Unavailable,
-    TooManyInputs,
+    TooManyInputs { max: usize },
 }
 
 fn asset_lock_builder_height(
@@ -58,19 +61,37 @@ fn dry_run_asset_lock_amount(
     current_height: u32,
     amount_duffs: u64,
 ) -> Result<AssetLockDryRun, BuilderError> {
+    dry_run_asset_lock_amount_with_strategy(
+        managed_account,
+        account,
+        current_height,
+        amount_duffs,
+        None,
+    )
+}
+
+fn dry_run_asset_lock_amount_with_strategy(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+    amount_duffs: u64,
+    selection_strategy: Option<SelectionStrategy>,
+) -> Result<AssetLockDryRun, BuilderError> {
     let mut dry_run_account = managed_account.clone();
-    let result = TransactionBuilder::new()
+    let mut builder = TransactionBuilder::new()
         .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
         .set_current_height(current_height)
         .set_special_payload(TransactionPayload::AssetLockPayloadType(
             AssetLockPayload::new(vec![TxOut {
                 value: amount_duffs,
-                script_pubkey: ScriptBuf::new(),
+                script_pubkey: ScriptBuf::from_bytes(vec![0; P2PKH_CREDIT_OUTPUT_SCRIPT_LEN]),
             }]),
         ))
-        .set_funding(&mut dry_run_account, account)
-        .require_final_inputs()
-        .build_unsigned();
+        .set_funding(&mut dry_run_account, account);
+    if let Some(strategy) = selection_strategy {
+        builder = builder.set_selection_strategy(strategy);
+    }
+    let result = builder.require_final_inputs().build_unsigned();
 
     match result {
         Ok((transaction, _)) => {
@@ -86,7 +107,7 @@ fn dry_run_asset_lock_amount(
         | Err(BuilderError::InsufficientFunds { available, .. }) => {
             Ok(AssetLockDryRun::Rejected { available })
         }
-        Err(BuilderError::TooManyInputs { .. }) => Ok(AssetLockDryRun::Rejected { available: 0 }),
+        Err(BuilderError::TooManyInputs { max, .. }) => Ok(AssetLockDryRun::TooManyInputs { max }),
         Err(source) => Err(source),
     }
 }
@@ -104,7 +125,8 @@ fn asset_lock_drain_ceiling(
         .set_special_payload(TransactionPayload::AssetLockPayloadType(
             AssetLockPayload::new(vec![TxOut {
                 value: 1,
-                script_pubkey: ScriptBuf::new(),
+                // Credit-output script length affects the serialized payload fee.
+                script_pubkey: ScriptBuf::from_bytes(vec![0; P2PKH_CREDIT_OUTPUT_SCRIPT_LEN]),
             }]),
         ))
         .set_funding(&mut dry_run_account, account)
@@ -125,16 +147,174 @@ fn asset_lock_drain_ceiling(
         Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable))
         | Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
         | Err(BuilderError::InsufficientFunds { .. }) => Ok(AssetLockDrainSeed::Unavailable),
-        Err(BuilderError::TooManyInputs { .. }) => Ok(AssetLockDrainSeed::TooManyInputs),
+        Err(BuilderError::TooManyInputs { max, .. }) => {
+            Ok(AssetLockDrainSeed::TooManyInputs { max })
+        }
         Err(source) => Err(source),
     }
+}
+
+fn asset_lock_input_cap_upper_bound(
+    managed_account: &ManagedCoreFundsAccount,
+    current_height: u32,
+    max_inputs: usize,
+) -> u64 {
+    let mut values: Vec<u64> = managed_account
+        .utxos
+        .values()
+        .filter(|utxo| {
+            (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height)
+        })
+        .map(|utxo| utxo.value())
+        .collect();
+    values.sort_unstable_by(|left, right| right.cmp(left));
+    values
+        .into_iter()
+        .take(max_inputs)
+        .fold(0_u64, u64::saturating_add)
+}
+
+fn largest_first_asset_lock_max_below(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+    upper_bound: u64,
+) -> Result<u64, BuilderError> {
+    let mut low = 0;
+    let mut high = upper_bound;
+    while low < high {
+        let candidate = low + (high - low).div_ceil(2);
+        match dry_run_asset_lock_amount_with_strategy(
+            managed_account,
+            account,
+            current_height,
+            candidate,
+            Some(SelectionStrategy::LargestFirst),
+        )? {
+            AssetLockDryRun::Builds => low = candidate,
+            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+                high = candidate - 1
+            }
+        }
+    }
+    Ok(low)
+}
+
+fn default_strategy_max_from_seed(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+    seed: u64,
+    upper_bound: u64,
+) -> Result<u64, BuilderError> {
+    if !matches!(
+        dry_run_asset_lock_amount(managed_account, account, current_height, seed)?,
+        AssetLockDryRun::Builds
+    ) {
+        return asset_lock_max_below_upper_bound(managed_account, account, current_height, seed);
+    }
+
+    let mut low = seed;
+    let mut step = 1_u64;
+    while low < upper_bound {
+        let candidate = seed.saturating_add(step).min(upper_bound);
+        match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
+            AssetLockDryRun::Builds if candidate == upper_bound => return Ok(candidate),
+            AssetLockDryRun::Builds => {
+                low = candidate;
+                step = step.saturating_mul(2);
+            }
+            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+                let mut high = candidate - 1;
+                while low < high {
+                    let midpoint = low + (high - low).div_ceil(2);
+                    match dry_run_asset_lock_amount(
+                        managed_account,
+                        account,
+                        current_height,
+                        midpoint,
+                    )? {
+                        AssetLockDryRun::Builds => low = midpoint,
+                        AssetLockDryRun::Rejected { .. }
+                        | AssetLockDryRun::TooManyInputs { .. } => high = midpoint - 1,
+                    }
+                }
+                return Ok(low);
+            }
+        }
+    }
+    Ok(low)
+}
+
+fn asset_lock_max_with_input_cap(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+    max_inputs: usize,
+) -> Result<u64, BuilderError> {
+    let upper_bound = asset_lock_input_cap_upper_bound(managed_account, current_height, max_inputs);
+    let largest_first_seed =
+        largest_first_asset_lock_max_below(managed_account, account, current_height, upper_bound)?;
+    // Branch-and-bound's exact-match sizing looks one P2PKH input ahead; this
+    // is only a starting point, and default-strategy probes remain authoritative.
+    let seed = largest_first_seed
+        .saturating_sub(FeeRate::new(ASSET_LOCK_FEE_PER_KB).calculate_fee(P2PKH_INPUT_SIZE));
+    default_strategy_max_from_seed(managed_account, account, current_height, seed, upper_bound)
+}
+
+fn asset_lock_max_below_upper_bound(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+    upper_bound: u64,
+) -> Result<u64, BuilderError> {
+    let mut step = 1_u64;
+    let mut high = upper_bound;
+    for _ in 0..MAX_DRAIN_SEARCH_DOUBLINGS {
+        let candidate = upper_bound.saturating_sub(step);
+        match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
+            AssetLockDryRun::Builds => {
+                let mut low = candidate;
+                while low < high {
+                    let midpoint = low + (high - low).div_ceil(2);
+                    match dry_run_asset_lock_amount(
+                        managed_account,
+                        account,
+                        current_height,
+                        midpoint,
+                    )? {
+                        AssetLockDryRun::Builds => low = midpoint,
+                        AssetLockDryRun::Rejected { .. }
+                        | AssetLockDryRun::TooManyInputs { .. } => high = midpoint - 1,
+                    }
+                }
+                return Ok(low);
+            }
+            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. }
+                if candidate == 0 =>
+            {
+                return Ok(0);
+            }
+            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+                high = candidate - 1;
+                step = step.saturating_mul(2);
+            }
+        }
+    }
+
+    full_range_asset_lock_max_amount(managed_account, account, current_height, None)
 }
 
 fn full_range_asset_lock_max_amount(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
     current_height: u32,
+    input_cap: Option<usize>,
 ) -> Result<u64, BuilderError> {
+    if let Some(max_inputs) = input_cap {
+        return asset_lock_max_with_input_cap(managed_account, account, current_height, max_inputs);
+    }
+
     let mut high = match dry_run_asset_lock_amount(
         managed_account,
         account,
@@ -143,6 +323,9 @@ fn full_range_asset_lock_max_amount(
     )? {
         AssetLockDryRun::Rejected { available } => available,
         AssetLockDryRun::Builds => MAX_MONEY,
+        AssetLockDryRun::TooManyInputs { max } => {
+            return asset_lock_max_with_input_cap(managed_account, account, current_height, max);
+        }
     };
     let mut low = 0;
 
@@ -150,7 +333,9 @@ fn full_range_asset_lock_max_amount(
         let candidate = low + (high - low).div_ceil(2);
         match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
             AssetLockDryRun::Builds => low = candidate,
-            AssetLockDryRun::Rejected { .. } => high = candidate - 1,
+            AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
+                high = candidate - 1
+            }
         }
     }
 
@@ -169,40 +354,16 @@ fn asset_lock_max_amount_from_account(
     let drain_ceiling = match asset_lock_drain_ceiling(managed_account, account, current_height)? {
         AssetLockDrainSeed::Ceiling(ceiling) => ceiling,
         AssetLockDrainSeed::Unavailable => return Ok(0),
-        AssetLockDrainSeed::TooManyInputs => {
-            return full_range_asset_lock_max_amount(managed_account, account, current_height);
+        AssetLockDrainSeed::TooManyInputs { max } => {
+            return full_range_asset_lock_max_amount(
+                managed_account,
+                account,
+                current_height,
+                Some(max),
+            );
         }
     };
-    let mut step = 1_u64;
-    let mut high = drain_ceiling;
-    for _ in 0..MAX_DRAIN_SEARCH_DOUBLINGS {
-        let candidate = drain_ceiling.saturating_sub(step);
-        match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
-            AssetLockDryRun::Builds => {
-                let mut low = candidate;
-                while low < high {
-                    let midpoint = low + (high - low).div_ceil(2);
-                    match dry_run_asset_lock_amount(
-                        managed_account,
-                        account,
-                        current_height,
-                        midpoint,
-                    )? {
-                        AssetLockDryRun::Builds => low = midpoint,
-                        AssetLockDryRun::Rejected { .. } => high = midpoint - 1,
-                    }
-                }
-                return Ok(low);
-            }
-            AssetLockDryRun::Rejected { .. } if candidate == 0 => return Ok(0),
-            AssetLockDryRun::Rejected { .. } => {
-                high = candidate - 1;
-                step = step.saturating_mul(2);
-            }
-        }
-    }
-
-    full_range_asset_lock_max_amount(managed_account, account, current_height)
+    asset_lock_max_below_upper_bound(managed_account, account, current_height, drain_ceiling)
 }
 
 impl WalletBackend {
@@ -495,7 +656,8 @@ impl WalletBackend {
 #[cfg(test)]
 mod tests {
     use super::{
-        ASSET_LOCK_FEE_PER_KB, asset_lock_builder_height, asset_lock_max_amount_from_account,
+        ASSET_LOCK_FEE_PER_KB, MAX_MONEY, asset_lock_builder_height,
+        asset_lock_max_amount_from_account,
     };
     use crate::model::fee_estimation::core_max_send_amount_duffs;
     use crate::wallet_backend::snapshot::DetWalletBalance;
@@ -670,6 +832,109 @@ mod tests {
         assert!(
             overshoot.is_err(),
             "the display-only snapshot amount must reproduce the builder rejection"
+        );
+    }
+
+    #[test]
+    fn asset_lock_max_uses_an_in_cap_subset_when_the_wallet_has_too_many_utxos() {
+        const CURRENT_HEIGHT: u32 = 200;
+        const INPUT_CAP: usize = 500;
+        const LARGE_UTXO_COUNT: usize = INPUT_CAP - 1;
+        const SMALL_UTXO_COUNT: usize = 17;
+        const UTXO_COUNT: usize = LARGE_UTXO_COUNT + SMALL_UTXO_COUNT;
+        const ASSET_LOCK_BASE_SIZE: usize = 115;
+
+        // Match upstream exact-match sizing so the MAX+1 seed deterministically
+        // selects every UTXO and returns `TooManyInputs`.
+        let seed_probe_fee = FeeRate::new(ASSET_LOCK_FEE_PER_KB)
+            .calculate_fee(ASSET_LOCK_BASE_SIZE + 148 * (UTXO_COUNT + 1));
+        let total_value = MAX_MONEY + 1 + seed_probe_fee;
+        let small_values: Vec<u64> = (0..SMALL_UTXO_COUNT)
+            .rev()
+            .map(|power| 1_u64 << power)
+            .collect();
+        let large_total = total_value - small_values.iter().sum::<u64>();
+        let base_utxo_duffs = large_total / LARGE_UTXO_COUNT as u64;
+        let larger_utxos = large_total % LARGE_UTXO_COUNT as u64;
+
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut wallet_info =
+            ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        let account = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed_account = wallet_info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed BIP44 account");
+        let funding_address = managed_account
+            .next_receive_address(Some(&account.account_xpub), true)
+            .expect("funding address");
+
+        let values = (0..LARGE_UTXO_COUNT)
+            .map(|index| base_utxo_duffs + u64::from((index as u64) < larger_utxos))
+            .chain(small_values);
+        for (index, value) in values.enumerate() {
+            let txid = Txid::from_byte_array([index as u8; 32]);
+            let outpoint = OutPoint::new(txid, index as u32);
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value,
+                    script_pubkey: funding_address.script_pubkey(),
+                },
+                funding_address.clone(),
+                100,
+                false,
+            );
+            utxo.is_confirmed = true;
+            managed_account.utxos.insert(outpoint, utxo);
+        }
+
+        let max_amount =
+            asset_lock_max_amount_from_account(managed_account, account, CURRENT_HEIGHT)
+                .expect("asset-lock maximum");
+        assert!(
+            max_amount > base_utxo_duffs,
+            "Max must use a real in-cap subset instead of collapsing to zero"
+        );
+
+        let mut dry_run_account = managed_account.clone();
+        let (transaction, _) = TransactionBuilder::new()
+            .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
+            .set_current_height(CURRENT_HEIGHT)
+            .set_special_payload(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload::new(vec![TxOut {
+                    value: max_amount,
+                    script_pubkey: ScriptBuf::new(),
+                }]),
+            ))
+            .set_funding(&mut dry_run_account, account)
+            .require_final_inputs()
+            .build_unsigned()
+            .expect("quoted Max must build from an in-cap subset");
+        assert!(
+            transaction.input.len() <= INPUT_CAP,
+            "the achievable quote must respect the builder's input cap"
+        );
+        dry_run_account.release_reservation(&transaction);
+
+        let mut one_over_account = managed_account.clone();
+        let one_over = TransactionBuilder::new()
+            .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
+            .set_current_height(CURRENT_HEIGHT)
+            .set_special_payload(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload::new(vec![TxOut {
+                    value: max_amount + 1,
+                    script_pubkey: ScriptBuf::new(),
+                }]),
+            ))
+            .set_funding(&mut one_over_account, account)
+            .require_final_inputs()
+            .build_unsigned();
+        assert!(
+            one_over.is_err(),
+            "one duff above the quote must exceed the achievable in-cap subset"
         );
     }
 

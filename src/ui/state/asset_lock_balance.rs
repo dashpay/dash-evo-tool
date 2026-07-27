@@ -5,34 +5,11 @@ use crate::backend_task::wallet::WalletTask;
 use crate::model::wallet::WalletSeedHash;
 use std::collections::BTreeMap;
 
-enum FetchState {
-    Loading {
-        snapshot_generation: u64,
-    },
-    Loaded {
-        snapshot_generation: u64,
-        amount_duffs: u64,
-    },
-    Failed {
-        snapshot_generation: u64,
-    },
-}
-
-impl FetchState {
-    fn snapshot_generation(&self) -> u64 {
-        match self {
-            Self::Loading {
-                snapshot_generation,
-            }
-            | Self::Loaded {
-                snapshot_generation,
-                ..
-            }
-            | Self::Failed {
-                snapshot_generation,
-            } => *snapshot_generation,
-        }
-    }
+struct FetchState {
+    latest_snapshot_generation: u64,
+    loaded: Option<(u64, u64)>,
+    in_flight_generation: Option<u64>,
+    failed_generation: Option<u64>,
 }
 
 /// Async fetch state for asset-lock maximum amounts, keyed by wallet.
@@ -48,19 +25,26 @@ impl AssetLockBalanceCache {
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
     ) -> Option<BackendTask> {
-        if self
-            .states
-            .get(&seed_hash)
-            .is_some_and(|state| state.snapshot_generation() == snapshot_generation)
+        let state = self.states.entry(seed_hash).or_insert(FetchState {
+            latest_snapshot_generation: snapshot_generation,
+            loaded: None,
+            in_flight_generation: None,
+            failed_generation: None,
+        });
+        if snapshot_generation < state.latest_snapshot_generation {
+            return None;
+        }
+        state.latest_snapshot_generation = snapshot_generation;
+        if state.in_flight_generation.is_some()
+            || state
+                .loaded
+                .is_some_and(|(generation, _)| generation == snapshot_generation)
+            || state.failed_generation == Some(snapshot_generation)
         {
             return None;
         }
-        self.states.insert(
-            seed_hash,
-            FetchState::Loading {
-                snapshot_generation,
-            },
-        );
+        state.in_flight_generation = Some(snapshot_generation);
+        state.failed_generation = None;
         Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
             seed_hash,
             snapshot_generation,
@@ -74,49 +58,43 @@ impl AssetLockBalanceCache {
         snapshot_generation: u64,
         amount_duffs: u64,
     ) {
-        if self
-            .states
-            .get(&seed_hash)
-            .is_some_and(|state| state.snapshot_generation() == snapshot_generation)
-        {
-            self.states.insert(
-                seed_hash,
-                FetchState::Loaded {
-                    snapshot_generation,
-                    amount_duffs,
-                },
-            );
+        let Some(state) = self.states.get_mut(&seed_hash) else {
+            return;
+        };
+        if state.in_flight_generation == Some(snapshot_generation) {
+            state.in_flight_generation = None;
+            if state.latest_snapshot_generation == snapshot_generation {
+                state.loaded = Some((snapshot_generation, amount_duffs));
+                state.failed_generation = None;
+            }
         }
     }
 
     /// Mark one in-flight wallet query retryable after a backend failure.
     pub fn mark_loading_failed(&mut self, seed_hash: &WalletSeedHash, snapshot_generation: u64) {
-        if matches!(
-            self.states.get(seed_hash),
-            Some(FetchState::Loading {
-                snapshot_generation: active_generation,
-            }) if *active_generation == snapshot_generation
-        ) {
-            self.states.insert(
-                *seed_hash,
-                FetchState::Failed {
-                    snapshot_generation,
-                },
-            );
+        let Some(state) = self.states.get_mut(seed_hash) else {
+            return;
+        };
+        if state.in_flight_generation == Some(snapshot_generation) {
+            state.in_flight_generation = None;
+            if state.latest_snapshot_generation == snapshot_generation {
+                state.failed_generation = Some(snapshot_generation);
+            }
         }
     }
 
     /// Return the builder maximum once loaded.
     pub fn get(&self, seed_hash: &WalletSeedHash) -> Option<u64> {
-        match self.states.get(seed_hash) {
-            Some(FetchState::Loaded { amount_duffs, .. }) => Some(*amount_duffs),
-            _ => None,
-        }
+        self.states
+            .get(seed_hash)
+            .and_then(|state| state.loaded.map(|(_, amount_duffs)| amount_duffs))
     }
 
     /// Whether the query failed and needs an explicit retry.
     pub fn is_failed(&self, seed_hash: &WalletSeedHash) -> bool {
-        matches!(self.states.get(seed_hash), Some(FetchState::Failed { .. }))
+        self.states
+            .get(seed_hash)
+            .is_some_and(|state| state.failed_generation == Some(state.latest_snapshot_generation))
     }
 
     /// Re-arm one wallet's query.
@@ -162,13 +140,21 @@ mod tests {
                 }
             )) if requested_seed == seed_hash
         ));
-        assert_eq!(cache.get(&seed_hash), None);
+        assert_eq!(
+            cache.get(&seed_hash),
+            Some(1_000),
+            "the last loaded value must remain displayable while generation 8 refreshes"
+        );
+        assert!(
+            cache.ensure_requested(seed_hash, 8).is_none(),
+            "an in-flight refresh for the current generation must not dispatch twice"
+        );
 
         cache.store(seed_hash, 7, 1_000);
         assert_eq!(
             cache.get(&seed_hash),
-            None,
-            "a response for the prior wallet snapshot must not refill the cache"
+            Some(1_000),
+            "a stale response must not overwrite or erase the last displayable value"
         );
 
         cache.store(seed_hash, 8, 900);

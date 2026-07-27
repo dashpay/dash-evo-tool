@@ -45,10 +45,7 @@ impl AddNewIdentityScreen {
     fn render_insufficient_wallet_balance_banner(&self, ui: &mut egui::Ui) -> Option<AppAction> {
         let selected_wallet = self.selected_wallet.as_ref()?;
         let spendable_duffs = match selected_wallet.read() {
-            Ok(w) => self
-                .app_context
-                .snapshot_balance(&w.seed_hash())
-                .spendable(),
+            Ok(w) => self.asset_lock_balance.get(&w.seed_hash())?,
             Err(_) => {
                 ui.label("Wallet is busy. Try again in a moment.");
                 return Some(AppAction::None);
@@ -102,8 +99,31 @@ impl AddNewIdentityScreen {
         self.show_wallet_balance(ui);
         ui.add_space(5.0);
 
+        let seed_hash = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
+        let Some(seed_hash) = seed_hash else {
+            return action;
+        };
+        if let Some(task) = self.asset_lock_balance.ensure_requested(seed_hash) {
+            action |= AppAction::BackendTask(task);
+        }
+        if self.asset_lock_balance.is_failed(&seed_hash) {
+            ui.label("The available amount could not be checked.");
+            if ui.button("Retry available amount check").clicked() {
+                self.asset_lock_balance.invalidate_one(&seed_hash);
+            }
+            return action;
+        }
+        if self.asset_lock_balance.get(&seed_hash).is_none() {
+            ui.label("Checking the available amount…");
+            return action;
+        }
+
         if let Some(insufficient_action) = self.render_insufficient_wallet_balance_banner(ui) {
-            return insufficient_action;
+            action |= insufficient_action;
+            return action;
         }
 
         self.render_funding_amount_input(ui);

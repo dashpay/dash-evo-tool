@@ -10,11 +10,139 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
+use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
+use dash_sdk::dpp::dashcore::{ScriptBuf, TxOut};
+use dash_sdk::dpp::key_wallet::account::Account;
+use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionError;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::{
+    BuilderError, TransactionBuilder,
+};
 use std::sync::Arc;
 
 use super::{DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend};
 
+// Must match platform-wallet's asset-lock manager builder configuration.
+const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
+
+enum AssetLockDryRun {
+    Builds,
+    Rejected { available: u64 },
+}
+
+fn dry_run_asset_lock_amount(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+    amount_duffs: u64,
+) -> Result<AssetLockDryRun, BuilderError> {
+    let mut dry_run_account = managed_account.clone();
+    let result = TransactionBuilder::new()
+        .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
+        .set_current_height(current_height)
+        .set_special_payload(TransactionPayload::AssetLockPayloadType(
+            AssetLockPayload::new(vec![TxOut {
+                value: amount_duffs,
+                script_pubkey: ScriptBuf::new(),
+            }]),
+        ))
+        .set_funding(&mut dry_run_account, account)
+        .require_final_inputs()
+        .build_unsigned();
+
+    match result {
+        Ok((transaction, _)) => {
+            dry_run_account.release_reservation(&transaction);
+            Ok(AssetLockDryRun::Builds)
+        }
+        Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {
+            Ok(AssetLockDryRun::Rejected { available: 0 })
+        }
+        Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds {
+            available, ..
+        }))
+        | Err(BuilderError::InsufficientFunds { available, .. }) => {
+            Ok(AssetLockDryRun::Rejected { available })
+        }
+        Err(BuilderError::TooManyInputs { .. }) => Ok(AssetLockDryRun::Rejected { available: 0 }),
+        Err(source) => Err(source),
+    }
+}
+
+/// Return the largest credit-output amount the real asset-lock builder accepts.
+///
+/// Every probe is a no-broadcast `TransactionBuilder` build with the same
+/// funding account, fee rate, payload shape, and final-input requirement used
+/// by `create_asset_lock_proof`. Cloning the account keeps address-pool state
+/// unchanged; successful probes release their shared UTXO reservation before
+/// returning.
+fn asset_lock_max_amount_from_account(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+) -> Result<u64, BuilderError> {
+    let mut high = match dry_run_asset_lock_amount(
+        managed_account,
+        account,
+        current_height,
+        MAX_MONEY.saturating_add(1),
+    )? {
+        AssetLockDryRun::Rejected { available } => available,
+        AssetLockDryRun::Builds => MAX_MONEY,
+    };
+    let mut low = 0;
+
+    while low < high {
+        let candidate = low + (high - low).div_ceil(2);
+        match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
+            AssetLockDryRun::Builds => low = candidate,
+            AssetLockDryRun::Rejected { .. } => high = candidate - 1,
+        }
+    }
+
+    Ok(low)
+}
+
 impl WalletBackend {
+    /// Query the largest asset-lock credit output accepted by the live wallet.
+    ///
+    /// This is the read-only counterpart of [`Self::create_asset_lock_proof`].
+    /// It runs off the UI thread against the upstream wallet manager and never
+    /// exposes or reconstructs UTXO selection in the UI.
+    pub async fn asset_lock_max_amount(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<u64, TaskError> {
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let mut wallet_manager = wallet.wallet_manager().write().await;
+        let (key_wallet, info) = wallet_manager
+            .get_wallet_and_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        let account = key_wallet
+            .get_bip44_account(DEFAULT_BIP44_ACCOUNT)
+            .ok_or(TaskError::WalletStateInconsistent)?
+            .clone();
+        let current_height = info.core_wallet.synced_height();
+        let managed_account = info
+            .core_wallet
+            .accounts
+            .standard_bip44_accounts
+            .get(&DEFAULT_BIP44_ACCOUNT)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+
+        asset_lock_max_amount_from_account(managed_account, &account, current_height).map_err(
+            |source| TaskError::AssetLockBalanceQueryFailed {
+                source: Box::new(source),
+            },
+        )
+    }
+
     /// Derive the secp256k1 [`PrivateKey`](dash_sdk::dpp::dashcore::PrivateKey) at `path` from a held HD seed.
     /// Used after `create_asset_lock_proof` to obtain the one-time
     /// credit-output key needed to sign DET-retained non-identity state
@@ -269,11 +397,20 @@ impl WalletBackend {
 
 #[cfg(test)]
 mod tests {
+    use super::{ASSET_LOCK_FEE_PER_KB, asset_lock_max_amount_from_account};
     use crate::model::fee_estimation::core_max_send_amount_duffs;
+    use crate::wallet_backend::snapshot::DetWalletBalance;
+    use dash_sdk::dpp::dashcore::ScriptBuf;
+    use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+    use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PublicKey, TxOut, Txid};
     use dash_sdk::dpp::key_wallet::Utxo;
+    use dash_sdk::dpp::key_wallet::wallet::Wallet;
+    use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
 
     /// Reproduces <https://github.com/dashpay/dash-evo-tool/issues/909>.
@@ -324,5 +461,115 @@ mod tests {
 
         assert_eq!(transaction.output.len(), 1);
         assert_eq!(fee, BALANCE_DUFFS - max_amount);
+    }
+
+    #[test]
+    fn asset_lock_max_excludes_unconfirmed_funds_counted_by_snapshot() {
+        const CONFIRMED_DUFFS: u64 = 1_000_000;
+        const UNCONFIRMED_DUFFS: u64 = 5_000_000;
+        const CURRENT_HEIGHT: u32 = 200;
+
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut wallet_info =
+            ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        let account = wallet.get_bip44_account(0).expect("BIP44 account");
+        let managed_account = wallet_info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed BIP44 account");
+        let funding_address = managed_account
+            .next_receive_address(Some(&account.account_xpub), true)
+            .expect("funding address");
+
+        for (txid_byte, value, is_confirmed) in [
+            (0x11, CONFIRMED_DUFFS, true),
+            (0x22, UNCONFIRMED_DUFFS, false),
+        ] {
+            let outpoint = OutPoint::new(Txid::from_byte_array([txid_byte; 32]), 0);
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value,
+                    script_pubkey: funding_address.script_pubkey(),
+                },
+                funding_address.clone(),
+                100,
+                false,
+            );
+            utxo.is_confirmed = is_confirmed;
+            managed_account.utxos.insert(outpoint, utxo);
+        }
+
+        let snapshot_balance = DetWalletBalance {
+            confirmed: CONFIRMED_DUFFS,
+            unconfirmed: UNCONFIRMED_DUFFS,
+            total: CONFIRMED_DUFFS + UNCONFIRMED_DUFFS,
+        };
+        let max_amount =
+            asset_lock_max_amount_from_account(managed_account, account, CURRENT_HEIGHT)
+                .expect("asset-lock maximum");
+
+        assert!(
+            max_amount > 0,
+            "the confirmed output must still provide a usable asset-lock Max"
+        );
+        assert!(
+            max_amount < snapshot_balance.spendable(),
+            "Max must exclude the unconfirmed output that the asset-lock builder rejects"
+        );
+
+        let mut dry_run_account = managed_account.clone();
+        let (transaction, _) = TransactionBuilder::new()
+            .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
+            .set_current_height(CURRENT_HEIGHT)
+            .set_special_payload(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload::new(vec![TxOut {
+                    value: max_amount,
+                    script_pubkey: ScriptBuf::new(),
+                }]),
+            ))
+            .set_funding(&mut dry_run_account, account)
+            .require_final_inputs()
+            .build_unsigned()
+            .expect("quoted Max must build through the real asset-lock selector");
+        dry_run_account.release_reservation(&transaction);
+
+        let mut one_over_account = managed_account.clone();
+        let one_over = TransactionBuilder::new()
+            .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
+            .set_current_height(CURRENT_HEIGHT)
+            .set_special_payload(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload::new(vec![TxOut {
+                    value: max_amount + 1,
+                    script_pubkey: ScriptBuf::new(),
+                }]),
+            ))
+            .set_funding(&mut one_over_account, account)
+            .require_final_inputs()
+            .build_unsigned();
+        assert!(
+            one_over.is_err(),
+            "one duff above the quoted Max must fail through the real selector"
+        );
+
+        let mut overshoot_account = managed_account.clone();
+        let overshoot = TransactionBuilder::new()
+            .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
+            .set_current_height(CURRENT_HEIGHT)
+            .set_special_payload(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload::new(vec![TxOut {
+                    value: snapshot_balance.spendable(),
+                    script_pubkey: ScriptBuf::new(),
+                }]),
+            ))
+            .set_funding(&mut overshoot_account, account)
+            .require_final_inputs()
+            .build_unsigned();
+        assert!(
+            overshoot.is_err(),
+            "the display-only snapshot amount must reproduce the builder rejection"
+        );
     }
 }

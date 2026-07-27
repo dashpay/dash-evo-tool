@@ -331,6 +331,8 @@ pub enum BackendTaskContext {
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
+    /// Live asset-lock builder ceiling query for one wallet.
+    AssetLockMaxAmount { seed_hash: WalletSeedHash },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
     /// A known backend task that needs no finer UI correlation.
@@ -387,6 +389,13 @@ impl BackendTaskContext {
         }
     }
 
+    pub(crate) fn asset_lock_max_amount_wallet(&self) -> Option<WalletSeedHash> {
+        match self.operation() {
+            Self::AssetLockMaxAmount { seed_hash } => Some(*seed_hash),
+            _ => None,
+        }
+    }
+
     pub(crate) fn wallet_rename_task(&self) -> Option<&WalletTask> {
         match self.operation() {
             Self::WalletRename(task) => Some(task),
@@ -431,6 +440,11 @@ impl From<&BackendTask> for BackendTaskContext {
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
+                    seed_hash: *seed_hash,
+                }
+            }
+            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount { seed_hash }) => {
+                Self::AssetLockMaxAmount {
                     seed_hash: *seed_hash,
                 }
             }
@@ -600,6 +614,11 @@ pub enum BackendTaskSuccessResult {
     TrackedAssetLocks {
         seed_hash: WalletSeedHash,
         locks: Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock>,
+    },
+    /// Largest asset-lock credit output the live upstream builder accepts.
+    AssetLockMaxAmount {
+        seed_hash: WalletSeedHash,
+        amount_duffs: u64,
     },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
@@ -1243,6 +1262,15 @@ impl AppContext {
                 .list_tracked_asset_locks(&seed_hash)
                 .await
                 .map(|locks| BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks }),
+            WalletTask::GetAssetLockMaxAmount { seed_hash } => backend
+                .asset_lock_max_amount(&seed_hash)
+                .await
+                .map(
+                    |amount_duffs| BackendTaskSuccessResult::AssetLockMaxAmount {
+                        seed_hash,
+                        amount_duffs,
+                    },
+                ),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }

@@ -224,6 +224,11 @@ pub enum WalletTask {
     ListTrackedAssetLocks {
         seed_hash: WalletSeedHash,
     },
+    /// Dry-run the live upstream asset-lock builder to obtain the largest
+    /// credit output its current UTXO set can fund.
+    GetAssetLockMaxAmount {
+        seed_hash: WalletSeedHash,
+    },
     /// Fund Platform addresses from a tracked asset lock identified by its
     /// credit-output outpoint. The proof and credit-output key are recovered
     /// from the upstream `AssetLockManager` and the wallet's funding

@@ -234,6 +234,17 @@ pub enum TaskError {
         >,
     },
 
+    /// The read-only asset-lock builder probe could not determine a safe Max.
+    #[error(
+        "The wallet's available amount could not be checked. Wait a moment and try again."
+    )]
+    AssetLockBalanceQueryFailed {
+        #[source]
+        source: Box<
+            dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError,
+        >,
+    },
+
     /// The payment would need more individual unspent outputs than fit in a
     /// single standard transaction.
     #[error(

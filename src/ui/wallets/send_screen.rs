@@ -3,11 +3,14 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::asset_lock::{
+    AssetLockAmountError, asset_lock_user_max_amount, validate_asset_lock_amount,
+};
 use crate::model::fee_estimation::{
     MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
     allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
@@ -29,6 +32,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::Error as SdkError;
@@ -315,6 +319,7 @@ pub struct WalletSendScreen {
     send_status: SendStatus,
     send_banner: Option<BannerHandle>,
     send_confirmation: Option<PendingSendConfirmation>,
+    asset_lock_balance: AssetLockBalanceCache,
 
     /// Preset flow this screen was opened for. `General` is the full send
     /// screen; the shielded presets lock source/destination for that flow.
@@ -351,6 +356,7 @@ impl WalletSendScreen {
             send_status: SendStatus::NotStarted,
             send_banner: None,
             send_confirmation: None,
+            asset_lock_balance: AssetLockBalanceCache::default(),
             flow: SendFlow::General,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -440,6 +446,7 @@ impl WalletSendScreen {
         self.amount_input = None;
         self.invalidate_address_input();
         self.send_confirmation = None;
+        self.asset_lock_balance.invalidate();
     }
 
     fn reset_form(&mut self) {
@@ -460,6 +467,7 @@ impl WalletSendScreen {
         self.fee_strategy = PlatformFeeStrategy::default();
         self.send_status = SendStatus::NotStarted;
         self.send_confirmation = None;
+        self.asset_lock_balance.invalidate();
     }
 
     fn mark_sending(&mut self) {
@@ -606,14 +614,11 @@ impl WalletSendScreen {
         }
     }
 
-    /// Get the Core wallet's **spendable** balance from the display-only
-    /// `WalletBackend` snapshot (P4a). DISPLAY-ONLY — this number never feeds
-    /// coin selection itself, but it must mirror what coin selection can spend
-    /// so the amount checks here agree with the actual send. `spendable()` is
-    /// the upstream `CoinSelector`'s set (confirmed + unconfirmed); reading
-    /// `confirmed` alone would understate IS-locked funds that have not yet been
-    /// flagged locally (they sit in `unconfirmed`), making "Max" exceed this
-    /// check and the validations reject sends coin selection would accept.
+    /// Get the Core wallet's display-only balance for labels and ordinary sends.
+    ///
+    /// Asset-lock Max and validation use [`Self::asset_lock_max_amount`]
+    /// instead because those transactions require final inputs and can reject
+    /// outputs counted by this snapshot.
     fn get_core_balance(&self) -> u64 {
         self.selected_wallet
             .as_ref()
@@ -624,6 +629,49 @@ impl WalletSendScreen {
                     .spendable()
             })
             .unwrap_or(0)
+    }
+
+    fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
+        self.asset_lock_balance.get(seed_hash).ok_or_else(|| {
+            "Your wallet's available amount is still being checked. Wait a moment and try again."
+                .to_string()
+        })
+    }
+
+    fn request_asset_lock_max_amount(&mut self) -> Option<BackendTask> {
+        if !matches!(self.selected_source, Some(SourceSelection::CoreWallet))
+            || !matches!(
+                self.destination_kind(),
+                Some(AddressKind::Shielded | AddressKind::Identity)
+            )
+        {
+            return None;
+        }
+        let seed_hash = self.selected_wallet_seed_hash?;
+        self.asset_lock_balance.ensure_requested(seed_hash)
+    }
+
+    fn render_asset_lock_balance_status(&mut self, ui: &mut Ui) {
+        let Some(seed_hash) = self.selected_wallet_seed_hash else {
+            return;
+        };
+        if !matches!(self.selected_source, Some(SourceSelection::CoreWallet))
+            || !matches!(
+                self.destination_kind(),
+                Some(AddressKind::Shielded | AddressKind::Identity)
+            )
+        {
+            return;
+        }
+
+        if self.asset_lock_balance.is_failed(&seed_hash) {
+            ui.label("The available amount could not be checked.");
+            if ui.button("Retry available amount check").clicked() {
+                self.asset_lock_balance.invalidate_one(&seed_hash);
+            }
+        } else if self.asset_lock_balance.get(&seed_hash).is_none() {
+            ui.label("Checking the available amount…");
+        }
     }
 
     /// Get loaded identities for the current wallet, filtered by wallet seed hash.
@@ -1276,6 +1324,10 @@ impl WalletSendScreen {
         ui.add_space(10.0);
 
         // Amount
+        if let Some(task) = self.request_asset_lock_max_amount() {
+            action |= AppAction::BackendTask(task);
+        }
+        self.render_asset_lock_balance_status(ui);
         self.render_amount_input(ui);
 
         ui.add_space(10.0);
@@ -1432,6 +1484,9 @@ impl WalletSendScreen {
 
         self.sync_flow_state();
         self.render_flow_source(ui);
+        if let Some(task) = self.request_asset_lock_max_amount() {
+            action |= AppAction::BackendTask(task);
+        }
 
         ui.add_space(10.0);
         ui.separator();
@@ -1445,6 +1500,7 @@ impl WalletSendScreen {
             ui.add_space(10.0);
         }
 
+        self.render_asset_lock_balance_status(ui);
         self.render_amount_input(ui);
 
         ui.add_space(10.0);
@@ -1572,13 +1628,26 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        let balance = self.get_core_balance();
-        if amount_duffs > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                format_duffs_as_dash(amount_duffs),
-                format_duffs_as_dash(balance)
-            ));
+        let (platform_fee_duffs, _) = self
+            .app_context
+            .fee_estimator()
+            .estimate_shield_from_core_fees_duffs();
+        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
+        match validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max) {
+            Ok(()) => {}
+            Err(AssetLockAmountError::Overflow) => {
+                return Err(
+                    "The amount is too large. Enter a smaller amount and try again.".to_string(),
+                );
+            }
+            Err(AssetLockAmountError::ExceedsMaximum {
+                maximum_amount_duffs,
+            }) => {
+                return Err(format!(
+                    "You can shield up to {} right now. Choose a smaller amount or wait for more funds.",
+                    format_duffs_as_dash(maximum_amount_duffs)
+                ));
+            }
         }
 
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
@@ -1590,7 +1659,7 @@ impl WalletSendScreen {
     }
 
     /// Top up an identity from Core wallet via asset lock (Core -> Identity).
-    fn send_core_to_identity(&mut self, _seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+    fn send_core_to_identity(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
         let amount_duffs = self
             .amount
             .as_ref()
@@ -1600,12 +1669,17 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        let balance = self.get_core_balance();
-        if amount_duffs > balance {
+        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
+        if let Err(error) = validate_asset_lock_amount(amount_duffs, 0, asset_lock_max) {
+            let maximum_amount_duffs = match error {
+                AssetLockAmountError::Overflow => asset_lock_max,
+                AssetLockAmountError::ExceedsMaximum {
+                    maximum_amount_duffs,
+                } => maximum_amount_duffs,
+            };
             return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                format_duffs_as_dash(amount_duffs),
-                format_duffs_as_dash(balance)
+                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
+                format_duffs_as_dash(maximum_amount_duffs)
             ));
         }
 
@@ -2366,19 +2440,21 @@ impl WalletSendScreen {
         // Get max amount and hint based on source selection
         let (max_amount_credits, max_hint) = match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
+                let dest_kind = self.destination_kind();
                 let mut max = self.selected_wallet.as_ref().and_then(|w| {
-                    w.read().ok().map(|wallet| {
-                        // Reserve against the spendable set (confirmed +
-                        // unconfirmed), not `total` — `total` counts immature
-                        // and locked funds coin selection can't spend, so a
-                        // total-based Max over-shoots and the send fails.
-                        self.app_context
-                            .snapshot_balance(&wallet.seed_hash())
-                            .spendable()
-                            * CREDITS_PER_DUFF // duffs to credits
+                    w.read().ok().and_then(|wallet| {
+                        let seed_hash = wallet.seed_hash();
+                        let max_duffs = if matches!(
+                            dest_kind,
+                            Some(AddressKind::Shielded | AddressKind::Identity)
+                        ) {
+                            self.asset_lock_balance.get(&seed_hash)
+                        } else {
+                            Some(self.app_context.snapshot_balance(&seed_hash).spendable())
+                        };
+                        max_duffs.map(|amount| amount.saturating_mul(CREDITS_PER_DUFF))
                     })
                 });
-                let dest_kind = self.destination_kind();
                 let hint = match dest_kind {
                     Some(AddressKind::Platform) => {
                         let destination = self
@@ -2402,9 +2478,13 @@ impl WalletSendScreen {
                     Some(AddressKind::Shielded) => {
                         let (platform_fee_duffs, l1_tx_fee_duffs) =
                             fee_estimator.estimate_shield_from_core_fees_duffs();
-                        let total_fee_credits =
-                            (platform_fee_duffs + l1_tx_fee_duffs) * CREDITS_PER_DUFF;
-                        max = max.map(|amount| amount.saturating_sub(total_fee_credits));
+                        let platform_fee_credits =
+                            platform_fee_duffs.saturating_mul(CREDITS_PER_DUFF);
+                        let total_fee_credits = platform_fee_duffs
+                            .saturating_add(l1_tx_fee_duffs)
+                            .saturating_mul(CREDITS_PER_DUFF);
+                        max = max
+                            .map(|amount| asset_lock_user_max_amount(amount, platform_fee_credits));
                         let fee = format_credits_as_dash(total_fee_credits);
                         Some(format!(
                             "Shielding fees of approximately {fee} are reserved from your balance."
@@ -4213,6 +4293,14 @@ impl ScreenLike for WalletSendScreen {
         &mut self,
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
+        if let crate::backend_task::BackendTaskSuccessResult::AssetLockMaxAmount {
+            seed_hash,
+            amount_duffs,
+        } = &backend_task_success_result
+        {
+            self.asset_lock_balance.store(*seed_hash, *amount_duffs);
+            return;
+        }
         self.send_banner.take_and_clear();
         if Self::task_result_updates_address_input(&backend_task_success_result) {
             self.address_input_snapshot_signature = None;
@@ -4332,10 +4420,18 @@ impl ScreenLike for WalletSendScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.address_input_snapshot_signature = None;
+        self.asset_lock_balance.invalidate();
     }
 
     fn refresh(&mut self) {
         self.address_input_snapshot_signature = None;
+        self.asset_lock_balance.invalidate();
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if let Some(seed_hash) = context.asset_lock_max_amount_wallet() {
+            self.asset_lock_balance.mark_loading_failed(&seed_hash);
+        }
     }
 }
 
@@ -4431,6 +4527,99 @@ mod tests {
             },
         ]);
         harness.step();
+    }
+
+    #[test]
+    fn core_asset_lock_max_and_validation_use_builder_quote() {
+        const BUILDER_MAX_DUFFS: u64 = 10_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let (platform_fee_duffs, _) = screen
+            .app_context
+            .fee_estimator()
+            .estimate_shield_from_core_fees_duffs();
+        assert!(BUILDER_MAX_DUFFS > platform_fee_duffs);
+
+        screen
+            .asset_lock_balance
+            .store(seed_hash, BUILDER_MAX_DUFFS);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        let max_amount_duffs = harness
+            .state()
+            .amount
+            .as_ref()
+            .expect("Max sets the amount")
+            .dash_to_duffs()
+            .expect("DASH amount");
+        assert_eq!(
+            max_amount_duffs,
+            BUILDER_MAX_DUFFS - platform_fee_duffs,
+            "Max reserves the platform fee from the real builder ceiling"
+        );
+        assert!(
+            harness.state_mut().send_core_to_shielded(seed_hash).is_ok(),
+            "the same ceiling must accept the Max amount"
+        );
+
+        harness.state_mut().amount = Some(Amount::dash_from_duffs(max_amount_duffs + 1));
+        let error = harness
+            .state_mut()
+            .send_core_to_shielded(seed_hash)
+            .expect_err("one duff above Max must be rejected before dispatch");
+        assert!(
+            error.starts_with("You can shield up to "),
+            "validation should report the builder-derived ceiling: {error}"
+        );
+
+        harness.state_mut().validated_destination = Some(ValidatedAddress::Identity {
+            id: dash_sdk::dpp::prelude::Identifier::new([0x29; 32]),
+            dpns_name: None,
+        });
+        harness.step();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        let identity_max_duffs = harness
+            .state()
+            .amount
+            .as_ref()
+            .expect("Identity Max sets the amount")
+            .dash_to_duffs()
+            .expect("DASH amount");
+        assert_eq!(identity_max_duffs, BUILDER_MAX_DUFFS);
+        let downstream_error = harness
+            .state_mut()
+            .send_core_to_identity(seed_hash)
+            .expect_err("the offline test cannot resolve the destination identity");
+        assert!(
+            downstream_error.starts_with("Could not look up identity:")
+                || downstream_error.starts_with("No identity found with this ID."),
+            "builder-derived Max must pass amount validation and reach identity lookup: \
+             {downstream_error}"
+        );
+
+        harness.state_mut().amount = Some(Amount::dash_from_duffs(identity_max_duffs + 1));
+        let error = harness
+            .state_mut()
+            .send_core_to_identity(seed_hash)
+            .expect_err("one duff above Identity Max must be rejected before dispatch");
+        assert!(
+            error.starts_with("You can transfer up to "),
+            "validation should report the builder-derived identity ceiling: {error}"
+        );
     }
 
     #[test]

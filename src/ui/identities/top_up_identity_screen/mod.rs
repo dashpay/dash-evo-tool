@@ -12,7 +12,8 @@ use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::asset_lock::{AssetLockAmountError, validate_asset_lock_amount};
+use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::MessageBanner;
@@ -30,7 +31,7 @@ use crate::ui::identities::funding_common::{
     max_amount_after_fee_reserve, spendable_covers_minimum, step_after_task_failure,
     wallet_selection_combo,
 };
-use crate::ui::state::TrackedAssetLockCache;
+use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -106,6 +107,7 @@ pub struct TopUpIdentityScreen {
     /// Task System. Backs the funding-method gate, the wallet selector, and the
     /// asset-lock picker.
     asset_lock_cache: TrackedAssetLockCache,
+    asset_lock_balance: AssetLockBalanceCache,
 }
 
 impl TopUpIdentityScreen {
@@ -135,6 +137,7 @@ impl TopUpIdentityScreen {
             platform_top_up_amount_input: None,
             completed_fee_result: None,
             asset_lock_cache: TrackedAssetLockCache::default(),
+            asset_lock_balance: AssetLockBalanceCache::default(),
         }
     }
 
@@ -263,6 +266,7 @@ impl TopUpIdentityScreen {
 
         if let Some(wallet) = selected_wallet_update {
             self.wallet = Some(wallet);
+            self.asset_lock_balance.invalidate();
             self.wallet_open_attempted = false;
             self.funding_address = None;
             self.pending_funding_address_request = None;
@@ -474,6 +478,45 @@ impl TopUpIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
+                if funding_method == FundingMethod::UseWalletBalance {
+                    let seed_hash = match selected_wallet.read() {
+                        Ok(wallet) => wallet.seed_hash(),
+                        Err(error) => {
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "The wallet is busy. Wait a moment and try again.",
+                                MessageType::Warning,
+                            )
+                            .with_details(error);
+                            return AppAction::None;
+                        }
+                    };
+                    let Some(max_amount) = self.asset_lock_balance.get(&seed_hash) else {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Your wallet's available amount is still being checked. Wait a moment and try again.",
+                            MessageType::Warning,
+                        );
+                        return AppAction::None;
+                    };
+                    if let Err(error) = validate_asset_lock_amount(amount, 0, max_amount) {
+                        let maximum_amount_duffs = match error {
+                            AssetLockAmountError::Overflow => max_amount,
+                            AssetLockAmountError::ExceedsMaximum {
+                                maximum_amount_duffs,
+                            } => maximum_amount_duffs,
+                        };
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            format!(
+                                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
+                                format_duffs_as_dash(maximum_amount_duffs)
+                            ),
+                            MessageType::Warning,
+                        );
+                        return AppAction::None;
+                    }
+                }
                 if funding_method == FundingMethod::ReceiveDeposit {
                     let fee_credits = self.app_context.fee_estimator().estimate_identity_topup();
                     let available_credits = max_amount_after_fee_reserve(
@@ -525,23 +568,19 @@ impl TopUpIdentityScreen {
             funding_method,
             FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
         ) {
-            let max_spendable_duffs = if funding_method == FundingMethod::ReceiveDeposit {
+            let available_ceiling_duffs = if funding_method == FundingMethod::ReceiveDeposit {
                 self.funding_address_balance_duffs
             } else {
                 self.wallet
                     .as_ref()
                     .and_then(|w| w.read().ok())
-                    .map(|w| {
-                        self.app_context
-                            .snapshot_balance(&w.seed_hash())
-                            .spendable()
-                    })
+                    .and_then(|w| self.asset_lock_balance.get(&w.seed_hash()))
                     .unwrap_or(0)
             };
             let fee_estimator = self.app_context.fee_estimator();
             let estimated_fee = fee_estimator.estimate_identity_topup();
             let max_with_fee_reserved =
-                max_amount_after_fee_reserve(max_spendable_duffs, estimated_fee);
+                max_amount_after_fee_reserve(available_ceiling_duffs, estimated_fee);
             (
                 Some(max_with_fee_reserved),
                 true,
@@ -603,6 +642,9 @@ impl ScreenLike for TopUpIdentityScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if let Some(seed_hash) = context.asset_lock_max_amount_wallet() {
+            self.asset_lock_balance.mark_loading_failed(&seed_hash);
+        }
         let selected_seed_hash = self
             .wallet
             .as_ref()
@@ -615,6 +657,14 @@ impl ScreenLike for TopUpIdentityScreen {
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::AssetLockMaxAmount {
+            seed_hash,
+            amount_duffs,
+        } = &backend_task_success_result
+        {
+            self.asset_lock_balance.store(*seed_hash, *amount_duffs);
+            return;
+        }
         if let BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } =
             backend_task_success_result
         {

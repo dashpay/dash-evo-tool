@@ -57,8 +57,9 @@ type WalletId = [u8; 32];
 /// (rust-best-practices M-DONT-LEAK-TYPES).
 ///
 /// `total` is the headline figure and counts immature coinbase and locked
-/// (CoinJoin) funds that coin selection cannot touch. `spendable()` is the
-/// subset the upstream `CoinSelector` actually draws from.
+/// (CoinJoin) funds. `spendable()` is a display subtotal only; operation-
+/// specific finality rules and live reservations can make the builder accept
+/// less.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DetWalletBalance {
     pub confirmed: u64,
@@ -67,11 +68,10 @@ pub struct DetWalletBalance {
 }
 
 impl DetWalletBalance {
-    /// Funds coin selection can spend right now: confirmed plus unconfirmed.
-    /// Excludes the immature and locked duffs that `total` counts but the
-    /// upstream `CoinSelector` rejects. Reserve a "Max" send against this, not
-    /// `total`, or the send over-shoots the selectable set and fails with
-    /// insufficient funds.
+    /// Display subtotal of confirmed plus unconfirmed funds.
+    ///
+    /// This is not a coin-selection guarantee. Max and validation must query
+    /// the backend builder used by their operation.
     pub fn spendable(&self) -> u64 {
         self.confirmed.saturating_add(self.unconfirmed)
     }

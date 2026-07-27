@@ -1231,8 +1231,8 @@ fn identity_unload_confirmation_message_for(
              deleting its private keys and its entry in this app.{identity_identification} Some \
              synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
-             Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. {restoration} This also cancels {scheduled_vote_count} \
+             Settings. This app remembers that you unloaded this identity, so no search brings it \
+             back. {restoration} This also cancels {scheduled_vote_count} \
              scheduled vote(s)."
         ),
         false => format!(
@@ -1240,8 +1240,8 @@ fn identity_unload_confirmation_message_for(
              deleting its private keys and its entry in this app.{identity_identification} Some \
              synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
-             Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. {restoration}"
+             Settings. This app remembers that you unloaded this identity, so no search brings it \
+             back. {restoration}"
         ),
     }
 }
@@ -1492,8 +1492,8 @@ mod tests {
             "Identity \"Wallet identity\" will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app. Some synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
-             Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. It remains on Dash Platform, and its wallet-derived private \
+             Settings. This app remembers that you unloaded this identity, so no search brings it \
+             back. It remains on Dash Platform, and its wallet-derived private \
              keys can be restored when you load it again."
         );
         assert_eq!(identity_unload_tip_for(false), TIP_UNLOAD_WALLET_DERIVED);
@@ -1531,14 +1531,23 @@ mod tests {
                 );
                 assert!(
                     message.contains(
-                        "This app remembers that you unloaded this identity, so automatic \
-                         discovery does not bring it back."
+                        "This app remembers that you unloaded this identity, so no search \
+                         brings it back."
                     ),
                     "the dialog must disclose the durable record of the unload: {message}"
                 );
                 assert!(
                     !message.contains("deleting its local data"),
                     "the dialog must not overstate the removal as all local data: {message}"
+                );
+                // No discovery pass restores a forgotten identity, so a
+                // disclosure that qualifies the promise — "automatic discovery",
+                // "background sync" — invites the user to expect a manual search
+                // to undo what they are about to authorize.
+                assert!(
+                    !message.contains("automatic"),
+                    "the record of the unload holds against every search, not just automatic \
+                     ones: {message}"
                 );
             }
         }
@@ -1855,7 +1864,7 @@ mod tests {
                  deleting its private keys and its entry in this app. Its full identifier is \
                  {identity_id}. Some synced network data, such as contacts and payment history, \
                  is removed only by the \"Clear Database\" action in Settings. This app remembers \
-                 that you unloaded this identity, so automatic discovery does not bring it back. \
+                 that you unloaded this identity, so no search brings it back. \
                  It remains on Dash Platform, but you will need its recovery information to load \
                  it again."
             )

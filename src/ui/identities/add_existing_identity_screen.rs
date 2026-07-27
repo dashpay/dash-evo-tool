@@ -35,7 +35,10 @@ use std::sync::{Arc, RwLock};
 ///
 /// A search never restores an identity the user unloaded, and it can find an
 /// identity it then fails to store; both are called out, because either one
-/// silently loads fewer identities than the search found.
+/// silently loads fewer identities than the search found. The way back names
+/// the identity-ID and username routes: their mode buttons are always on
+/// screen, and in default mode both derive the keys from the loaded wallet, so
+/// neither asks the user for a key this device no longer holds.
 pub(crate) fn wallet_identity_search_message(
     count: u32,
     skipped_forgotten: u32,
@@ -49,8 +52,8 @@ pub(crate) fn wallet_identity_search_message(
         (true, false) => (
             format!(
                 "Loaded {count} identity(ies) from your wallet. {skipped_forgotten} identity(ies) \
-                 you unloaded were left alone. To load one again, turn on Show Advanced Options \
-                 and search for that identity's own index."
+                 you unloaded were left alone. To load one again, use its identity ID or its \
+                 username."
             ),
             MessageType::Success,
         ),
@@ -66,7 +69,7 @@ pub(crate) fn wallet_identity_search_message(
                 "Loaded {count} identity(ies) from your wallet. {failed} identity(ies) could not \
                  be saved on this device. Search again in a moment to load them. \
                  {skipped_forgotten} identity(ies) you unloaded were left alone. To load one \
-                 again, turn on Show Advanced Options and search for that identity's own index."
+                 again, use its identity ID or its username."
             ),
             MessageType::Warning,
         ),
@@ -1241,7 +1244,10 @@ mod load_identity_mode_tests {
 
         let (skipped, message_type) = wallet_identity_search_message(1, 1, 0);
         assert!(skipped.contains("1 identity(ies) you unloaded were left alone."));
-        assert!(skipped.contains("turn on Show Advanced Options"));
+        assert!(
+            skipped.contains("use its identity ID or its username"),
+            "the way back must be a route the default mode offers: {skipped}"
+        );
         assert_eq!(
             message_type,
             MessageType::Success,
@@ -1280,7 +1286,8 @@ mod load_identity_mode_tests {
             );
             if skipped > 0 || failed > 0 {
                 assert!(
-                    message.contains("Show Advanced Options") || message.contains("Search again"),
+                    message.contains("use its identity ID or its username")
+                        || message.contains("Search again"),
                     "a shortfall must name what the user can do about it: {message}"
                 );
             }

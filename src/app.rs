@@ -384,6 +384,7 @@ fn dpns_result_needs_hidden_active_contests_route(
         result,
         BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
             | BackendTaskSuccessResult::RefreshedDpnsContests
+            | BackendTaskSuccessResult::ScheduledVoteSweepCompleted { .. }
     ) && (selected != RootScreenType::RootScreenDPNSActiveContests || !screen_stack_is_empty)
 }
 
@@ -2834,7 +2835,12 @@ impl App for AppState {
                             ) {
                                 self.scheduled_vote_recovery_last_attempt.remove(&network);
                             }
-                            self.visible_screen_mut().refresh();
+                            if self.selected_main_screen
+                                == RootScreenType::RootScreenDPNSActiveContests
+                                && self.screen_stack.is_empty()
+                            {
+                                self.visible_screen_mut().refresh();
+                            }
                         }
                         BackendTaskSuccessResult::NetworkContextCreated {
                             network,
@@ -3812,6 +3818,30 @@ mod dpns_result_routing_tests {
             RootScreenType::RootScreenWalletsBalances,
             true,
             &BackendTaskSuccessResult::RefreshedDpnsContests,
+        ));
+    }
+
+    #[test]
+    fn scheduled_vote_sweep_completion_routes_when_active_contests_is_hidden() {
+        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+            network: Network::Testnet,
+            preserve_eligibility_since_ms: None,
+        };
+
+        assert!(dpns_result_needs_hidden_active_contests_route(
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &result,
+        ));
+        assert!(dpns_result_needs_hidden_active_contests_route(
+            RootScreenType::RootScreenDPNSActiveContests,
+            false,
+            &result,
+        ));
+        assert!(!dpns_result_needs_hidden_active_contests_route(
+            RootScreenType::RootScreenDPNSActiveContests,
+            true,
+            &result,
         ));
     }
 }

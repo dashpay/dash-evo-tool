@@ -74,10 +74,11 @@ impl AppContext {
                 failures.push(TaskError::DashpaySidecarStorage { source });
             }
         }
-        // Hold successful ghost cleanup claims until the whole wipe finishes.
-        // Otherwise a concurrent explicit load could repopulate the just-purged
-        // slot after the index sweep and make a reported-success wipe incomplete.
-        let mut successful_forgotten_cleanup_guards = Vec::new();
+        // Hold every successful cleanup claim — ghost recovery and ordinary
+        // identity wipe alike — until the whole wipe finishes. Otherwise a
+        // concurrent explicit load could repopulate the just-purged slot after
+        // the index sweep and make a reported-success wipe incomplete.
+        let mut successful_identity_cleanup_guards = Vec::new();
         let mut failed_forgotten_cleanup_guards = Vec::new();
         let mut forgotten_marker_clear_candidates = Vec::new();
         let mut forgotten_indexed_identities = Vec::new();
@@ -112,12 +113,22 @@ impl AppContext {
                     match retry_result {
                         Ok(true) => {
                             if let Some(load_guard) = load_guard {
-                                successful_forgotten_cleanup_guards.push(load_guard);
+                                successful_identity_cleanup_guards.push(load_guard);
                             }
                         }
                         Ok(false) => {
                             let Some(load_guard) = load_guard else {
-                                unreachable!("a successful retry check owns its load claim");
+                                // Only a claimed identity can reach a retry
+                                // verdict, so this is a broken invariant rather
+                                // than a runtime condition. Degrade instead of
+                                // panicking: a panic here would abort a
+                                // destructive wipe partway through.
+                                tracing::error!(
+                                    identity_id = %identity_id,
+                                    "Forgotten identity reported a cleanup verdict without owning its load claim"
+                                );
+                                failures.push(TaskError::WalletStorageNotReady);
+                                continue;
                             };
                             match self.local_identity_ids() {
                                 Ok(indexed) if indexed.contains(&identity_id) => {
@@ -140,7 +151,7 @@ impl AppContext {
                                     match residue_result {
                                         Ok(()) => {
                                             forgotten_marker_clear_candidates.push(identity_id);
-                                            successful_forgotten_cleanup_guards.push(load_guard);
+                                            successful_identity_cleanup_guards.push(load_guard);
                                         }
                                         Err(error) => {
                                             failed_forgotten_cleanup_guards.push(load_guard);
@@ -205,44 +216,11 @@ impl AppContext {
                     // Wipe each identity's vault keys and det:identity:* records too —
                     // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)
                     // are plaintext-recoverable, so a full wipe must remove them as well.
-                    if forgotten_indexed_identities.contains(&owner) {
-                        let mut attempts_remaining = IDENTITY_WIPE_ATTEMPTS;
-                        let deletion_result = loop {
-                            match self.delete_local_qualified_identity_retaining_claim(&owner) {
-                                Err(TaskError::IdentityBusyWithLoad { .. })
-                                    if attempts_remaining > 1 =>
-                                {
-                                    attempts_remaining -= 1;
-                                    tokio::time::sleep(IDENTITY_WIPE_RETRY_DELAY).await;
-                                }
-                                result => break result,
-                            }
-                        };
-                        match deletion_result {
-                            Ok(load_guard) => {
-                                forgotten_marker_clear_candidates.push(owner);
-                                successful_forgotten_cleanup_guards.push(load_guard);
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    owner = %owner,
-                                    "Identity private-key wipe failed during clear: {error:?}"
-                                );
-                                let underlying_error = match error {
-                                    TaskError::IdentityUnloadCleanupFailed { source, .. } => {
-                                        *source
-                                    }
-                                    other => other,
-                                };
-                                failures.push(underlying_error);
-                            }
-                        }
-                        continue;
-                    }
-
+                    // Every identity is deleted through the claim-retaining form so no
+                    // slot reopens to a concurrent load while the sweep is still running.
                     let mut attempts_remaining = IDENTITY_WIPE_ATTEMPTS;
                     let deletion_result = loop {
-                        match self.delete_local_qualified_identity(&owner) {
+                        match self.delete_local_qualified_identity_retaining_claim(&owner) {
                             Err(TaskError::IdentityBusyWithLoad { .. })
                                 if attempts_remaining > 1 =>
                             {
@@ -253,13 +231,18 @@ impl AppContext {
                         }
                     };
                     match deletion_result {
-                        Ok(()) => {}
-                        Err(e) => {
+                        Ok(load_guard) => {
+                            if forgotten_indexed_identities.contains(&owner) {
+                                forgotten_marker_clear_candidates.push(owner);
+                            }
+                            successful_identity_cleanup_guards.push(load_guard);
+                        }
+                        Err(error) => {
                             tracing::warn!(
                                 owner = %owner,
-                                "Identity private-key wipe failed during clear: {e:?}"
+                                "Identity private-key wipe failed during clear: {error:?}"
                             );
-                            let underlying_error = match e {
+                            let underlying_error = match error {
                                 TaskError::IdentityUnloadCleanupFailed { source, .. } => *source,
                                 other => other,
                             };
@@ -290,23 +273,16 @@ impl AppContext {
             }
         }
 
-        // Resolve every forgotten-identity load claim now, right after the last
-        // step that still touches per-identity state (the marker retirement
-        // above). Everything from here on (`?`-fallible shielded cleanup
-        // included) must not be able to make these claims report `Failed` by
-        // early-returning past an unresolved guard — an identity whose ghost
-        // cleanup durably succeeded this pass must record `Loaded`, regardless
-        // of what happens to unrelated state afterward.
-        for load_guard in successful_forgotten_cleanup_guards {
-            load_guard.loaded();
-        }
-        drop(failed_forgotten_cleanup_guards);
-
         // Reset the upstream shielded coordinator (quiesces its sync loop and
         // empties the per-network store) and unlink DET's two retired legacy
         // shielded files. The legacy-file unlinks are synchronous and scoped
-        // strictly to THIS network's spv directory.
-        cleanup_legacy_shielded_files(backend.spv_storage_dir())?;
+        // strictly to THIS network's spv directory. Neither may early-return:
+        // the identity claims below are still held, and a `?` here would drop
+        // them unresolved, reporting durably-cleaned identities as `Failed`.
+        if let Err(error) = cleanup_legacy_shielded_files(backend.spv_storage_dir()) {
+            tracing::warn!(%error, "Legacy shielded file cleanup failed during clear");
+            failures.push(error);
+        }
 
         if let Err(error) = backend.clear_shielded().await {
             tracing::warn!(%error, "Shielded coordinator reset failed during clear");
@@ -322,6 +298,19 @@ impl AppContext {
         }
 
         self.has_wallet.store(false, Ordering::Relaxed);
+
+        // Resolve every identity load claim only now, once every step that can
+        // restore or touch per-identity state is done: marker retirement, the
+        // shielded and legacy-file cleanup, and the in-memory wallet teardown.
+        // Holding them this long is what makes a reported-clean wipe true — a
+        // claim released earlier reopens that identity's slot to a concurrent
+        // load, which could persist a fresh blob after this function's only
+        // index sweep. Nothing between guard capture and here early-returns, so
+        // an identity whose cleanup durably succeeded still records `Loaded`.
+        for load_guard in successful_identity_cleanup_guards {
+            load_guard.loaded();
+        }
+        drop(failed_forgotten_cleanup_guards);
 
         // Any secret-bearing delete that failed above means data may survive on
         // disk, so never report a clean wipe. The in-memory maps are still

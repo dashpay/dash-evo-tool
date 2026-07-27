@@ -76,6 +76,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wallet discovery — so a leftover key from an earlier interrupted unload is
   always cleared before a fresh load replaces it, not just on one path.
 
+- **"Delete all local data" no longer reports a clean wipe it did not finish**:
+  the wipe now keeps every identity reserved until the last step is done, so an
+  identity being loaded in the background cannot be written back to disk after
+  the wipe has already passed it and still be reported as erased. A failure
+  while removing retired shielded files no longer aborts the wipe partway or
+  makes identities that were erased successfully look as though they failed.
+
+- **A removal interrupted by a cleanup failure stays findable**: if the app
+  cannot finish clearing an identity's local data, it now records the identity
+  as unloaded, so loading it again finds the leftovers and finishes the job.
+  Previously such an identity could disappear from every list while its private
+  keys remained on the device with nothing able to reach them. The message
+  shown when this happens names that recovery — load the identity again, then
+  remove it a second time — instead of suggesting a retry that was impossible.
+
+- **Removing an identity now says what it really does**: the "Remove" action on
+  the Identities list and "Remove masternode" on the masternode page show the
+  same confirmation as Identity Hub → Settings, rather than wording that
+  suggested the identity was merely untracked. That confirmation is now
+  accurate too: it names the private keys and app entry that are deleted,
+  points to the "Clear Database" action in Settings for synced data such as
+  contacts and payment history that this action does not remove, and discloses
+  that the app remembers the unload so automatic discovery does not bring the
+  identity back. Removing a masternode still states that its voting identity
+  goes with it.
+
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and
   wallet removals also keep displayed aliases and deleted-wallet metadata

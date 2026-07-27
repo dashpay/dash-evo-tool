@@ -1176,7 +1176,24 @@ impl AppContext {
             }
             return Err(error);
         }
-        self.cleanup_identity_after_index_removal(identifier)?;
+        if let Err(error) = self.cleanup_identity_after_index_removal(identifier) {
+            // The index entry is already gone, so without a marker this identity
+            // is reachable by no recovery path while its vault keys survive. A
+            // remembered unload wrote its marker above; every other caller gets
+            // one here. Never mask the cleanup error with a marker-write failure.
+            if !remember_unload
+                && let Err(marker_error) =
+                    self.db.record_forgotten_identity(self.network, identifier)
+            {
+                tracing::warn!(
+                    identity_id = %identifier,
+                    original_error = ?error,
+                    marker_error = ?marker_error,
+                    "Failed to record safety-net forgotten marker after cleanup failure"
+                );
+            }
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -3010,6 +3027,86 @@ mod tests {
             !ctx.is_identity_forgotten(&target_id)
                 .expect("read marker after successful retry"),
             "a successful retry must clear the forgotten marker"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// A plain delete records no forgotten marker up front, so a cleanup fault
+    /// after the index removal would leave the identity reachable by no recovery
+    /// path — not the index, not the marker sweeps — while its vault keys
+    /// survive on disk. The delete must write a safety-net marker on that path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_without_remembered_unload_records_a_safety_net_marker_on_cleanup_failure() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let target_id = Identifier::from([0xB1; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0xB2; 32], [0xB3; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+
+        let id_buf = target_id.to_buffer();
+        let target_vault = IdentityKeyView::new(backend.secret_store(), id_buf);
+        let kv = ctx.det_kv().expect("det kv");
+        let stored_before_fault = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .expect("read stored identity")
+            .expect("stored identity exists");
+        // Corrupt the stored blob so the vault-key clear cannot decode the
+        // inventory of labels and the cleanup tail fails.
+        kv.put(DetScope::Identity(&id_buf), IDENTITY_KEY, &stored("User"))
+            .expect("corrupt the stored blob");
+
+        assert!(matches!(
+            ctx.delete_local_qualified_identity(&target_id),
+            Err(TaskError::IdentityUnloadCleanupFailed { .. })
+        ));
+        assert!(
+            !ctx.local_identity_ids()
+                .expect("read index")
+                .contains(&target_id),
+            "precondition: the identity is already out of the index"
+        );
+        assert!(
+            ctx.is_identity_forgotten(&target_id)
+                .expect("read forgotten marker"),
+            "a faulted delete must leave a marker, or no recovery path can find \
+             the identity again"
+        );
+
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &stored_before_fault,
+        )
+        .expect("restore stored identity");
+        assert!(
+            ctx.retry_stuck_unload_cleanup(&id_buf)
+                .expect("retry repaired cleanup"),
+            "the safety-net marker must make the residue recoverable"
+        );
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read target key after retry")
+                .is_none(),
+            "the recovered retry must delete the vault key the fault left behind"
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&target_id)
+                .expect("read marker after successful retry"),
+            "a successful retry must clear the safety-net marker"
         );
 
         backend.shutdown().await;

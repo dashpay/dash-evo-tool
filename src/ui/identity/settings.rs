@@ -81,10 +81,10 @@ const TIP_ADD_KEY: &str =
 const TIP_MANAGE_KEYS: &str = "View this identity's keys and their security settings.";
 const TIP_VIEW_USERNAMES: &str = "Open the complete list of your registered usernames.";
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
-const TIP_UNLOAD_WALLET_DERIVED: &str = "Remove this identity and its local data from this device. It remains on \
-     Dash Platform, and its wallet-derived private keys can be restored when you load it again.";
-const TIP_UNLOAD_RECOVERY_REQUIRED: &str = "Remove this identity from this device, deleting its private keys and \
-     local data. It remains on Dash Platform, but you will need its recovery information to load it again.";
+const TIP_UNLOAD_WALLET_DERIVED: &str = "Remove this identity, its private keys, and its entry in this app from this \
+     device. It remains on Dash Platform, and its wallet-derived private keys can be restored when you load it again.";
+const TIP_UNLOAD_RECOVERY_REQUIRED: &str = "Remove this identity, its private keys, and its entry in this app from \
+     this device. It remains on Dash Platform, but you will need its recovery information to load it again.";
 const TIP_SAVE_ALIAS: &str = "Save this name on this device.";
 const TIP_ID_COPY: &str = "Copy the full identity ID to your clipboard.";
 
@@ -97,7 +97,7 @@ const ALIAS_HINT: &str = "For example: My main identity";
 const ALIAS_SAVED: &str = "Name saved on this device.";
 const ALIAS_SAVE_FAILED: &str =
     "This name could not be saved on your device. Try again in a moment.";
-const UNLOAD_DETAILS_LOAD_FAILED: &str =
+pub(crate) const UNLOAD_DETAILS_LOAD_FAILED: &str =
     "The unload details could not be loaded. Try again in a moment.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
 // Marker strings for controls without a matching backend task. Surfaced in
@@ -1013,7 +1013,11 @@ fn identity_unload_tip_for(recovery_information_required: bool) -> &'static str 
     }
 }
 
-fn identity_unload_confirmation_message(
+/// Confirmation body for unloading `identity`, naming what is deleted, what is
+/// kept, and how many scheduled votes the unload cancels. Shared by every screen
+/// that unloads or removes an identity so the disclosure cannot drift between
+/// them.
+pub(crate) fn identity_unload_confirmation_message(
     identity: &QualifiedIdentity,
     scheduled_vote_count: usize,
 ) -> String {
@@ -1033,24 +1037,36 @@ fn identity_unload_confirmation_message_for(
     match (recovery_information_required, scheduled_vote_count > 0) {
         (true, true) => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
-             deleting its private keys and local data. It remains on Dash Platform, but you will \
-             need its recovery information to load it again. This also cancels \
-             {scheduled_vote_count} scheduled vote(s)."
+             deleting its private keys and its entry in this app. Some synced network data, such \
+             as contacts and payment history, is removed only by the \"Clear Database\" action in \
+             Settings. This app remembers that you unloaded this identity, so automatic discovery \
+             does not bring it back. It remains on Dash Platform, but you will need its recovery \
+             information to load it again. This also cancels {scheduled_vote_count} scheduled \
+             vote(s)."
         ),
         (true, false) => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
-             deleting its private keys and local data. It remains on Dash Platform, but you will \
-             need its recovery information to load it again."
+             deleting its private keys and its entry in this app. Some synced network data, such \
+             as contacts and payment history, is removed only by the \"Clear Database\" action in \
+             Settings. This app remembers that you unloaded this identity, so automatic discovery \
+             does not bring it back. It remains on Dash Platform, but you will need its recovery \
+             information to load it again."
         ),
         (false, true) => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
-             deleting its local data. It remains on Dash Platform, and its wallet-derived private \
-             keys can be restored when you load it again. This also cancels \
-             {scheduled_vote_count} scheduled vote(s)."
+             deleting its private keys and its entry in this app. Some synced network data, such \
+             as contacts and payment history, is removed only by the \"Clear Database\" action in \
+             Settings. This app remembers that you unloaded this identity, so automatic discovery \
+             does not bring it back. It remains on Dash Platform, and its wallet-derived private \
+             keys can be restored when you load it again. This also cancels {scheduled_vote_count} \
+             scheduled vote(s)."
         ),
         (false, false) => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
-             deleting its local data. It remains on Dash Platform, and its wallet-derived private \
+             deleting its private keys and its entry in this app. Some synced network data, such \
+             as contacts and payment history, is removed only by the \"Clear Database\" action in \
+             Settings. This app remembers that you unloaded this identity, so automatic discovery \
+             does not bring it back. It remains on Dash Platform, and its wallet-derived private \
              keys can be restored when you load it again."
         ),
     }
@@ -1295,10 +1311,52 @@ mod tests {
         assert_eq!(
             identity_unload_confirmation_message_for("Wallet identity", false, 0),
             "Identity \"Wallet identity\" will be permanently unloaded from this device, \
-             deleting its local data. It remains on Dash Platform, and its wallet-derived \
-             private keys can be restored when you load it again."
+             deleting its private keys and its entry in this app. Some synced network data, such \
+             as contacts and payment history, is removed only by the \"Clear Database\" action in \
+             Settings. This app remembers that you unloaded this identity, so automatic discovery \
+             does not bring it back. It remains on Dash Platform, and its wallet-derived private \
+             keys can be restored when you load it again."
         );
         assert_eq!(identity_unload_tip_for(false), TIP_UNLOAD_WALLET_DERIVED);
+    }
+
+    /// Unloading is the action a user takes to sever a device↔identity link, so
+    /// the dialog must disclose what it does NOT remove and that the app keeps a
+    /// record of the unload — on every variant, not just one.
+    #[test]
+    fn unload_dialog_discloses_retained_data_and_the_remembered_unload() {
+        for recovery_information_required in [true, false] {
+            for scheduled_vote_count in [0, 2] {
+                let message = identity_unload_confirmation_message_for(
+                    "Disclosure identity",
+                    recovery_information_required,
+                    scheduled_vote_count,
+                );
+                assert!(
+                    message.contains("deleting its private keys and its entry in this app"),
+                    "the dialog must name what is actually deleted: {message}"
+                );
+                assert!(
+                    message.contains(
+                        "Some synced network data, such as contacts and payment history, is \
+                         removed only by the \"Clear Database\" action in Settings."
+                    ),
+                    "the dialog must name the data it leaves behind and where to remove it: \
+                     {message}"
+                );
+                assert!(
+                    message.contains(
+                        "This app remembers that you unloaded this identity, so automatic \
+                         discovery does not bring it back."
+                    ),
+                    "the dialog must disclose the durable record of the unload: {message}"
+                );
+                assert!(
+                    !message.contains("deleting its local data"),
+                    "the dialog must not overstate the removal as all local data: {message}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1339,8 +1397,11 @@ mod tests {
         assert_eq!(
             identity_unload_confirmation_message(&identity, 0),
             "Identity \"Mixed identity\" will be permanently unloaded from this device, deleting \
-             its private keys and local data. It remains on Dash Platform, but you will need its \
-             recovery information to load it again."
+             its private keys and its entry in this app. Some synced network data, such as \
+             contacts and payment history, is removed only by the \"Clear Database\" action in \
+             Settings. This app remembers that you unloaded this identity, so automatic discovery \
+             does not bring it back. It remains on Dash Platform, but you will need its recovery \
+             information to load it again."
         );
         assert_eq!(identity_unload_tip(&identity), TIP_UNLOAD_RECOVERY_REQUIRED);
     }

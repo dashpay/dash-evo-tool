@@ -665,17 +665,20 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 - When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
 - An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
 
-### IDN-017: Unload one identity from this device [Implemented]
+### IDN-020: Unload one identity from this device [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to unload one identity from this device so that I can recover from an incorrect import or stop keeping its private keys locally without removing a shared wallet.
 
-- The Identity Hub asks for confirmation before unloading. If the identity is
+- The Identity Hub, the Identities list, and the masternode detail view all ask
+  for the same confirmation before unloading. If the identity is
   wallet-derived, it explains that the identity can be loaded again from the
   wallet's recovery seed. Otherwise, it warns that keys stored only on this
   device are permanently deleted and require separate recovery information. If
   scheduled votes are queued, the confirmation states how many will be
-  cancelled.
+  cancelled. The confirmation also names the synced data that only a full
+  database clear removes, and discloses that the app records the unload so
+  automatic discovery does not bring the identity back.
 - Unloading removes only the selected identity's local keys, metadata, DashPay overlays, queued scheduled votes, and device record while leaving the Platform identity unchanged.
 - Other identities on the same wallet and the wallet's recovery seed remain available.
 

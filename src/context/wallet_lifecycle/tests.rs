@@ -2571,6 +2571,200 @@ async fn clear_network_database_clears_forgotten_identity_markers() {
         .await;
 }
 
+/// A minimal local identity carrying one plaintext key, so wiping it has real
+/// vault state to remove.
+fn keyed_qualified_identity(
+    identity_id: dash_sdk::platform::Identifier,
+    secret: [u8; 32],
+) -> crate::model::qualified_identity::QualifiedIdentity {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::IdentityPublicKey;
+
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let mut private_keys = KeyStorage::default();
+    private_keys.private_keys.insert(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear(secret),
+        ),
+    );
+    QualifiedIdentity {
+        identity: Identity::create_basic_identity(identity_id, pv).expect("basic identity"),
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: std::collections::BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: std::collections::BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    }
+}
+
+/// An ordinary (never-unloaded) identity's exclusive claim must outlive the
+/// whole wipe, not just its own deletion. Releasing it mid-sweep reopens that
+/// identity's slot: a concurrent load could persist a fresh blob after the
+/// wipe's only index sweep, and the wipe would still report success.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_network_database_holds_ordinary_identity_claim_until_the_wipe_ends() {
+    use crate::context::identity_load_registry::IdentityLoadPhase;
+    use dash_sdk::platform::Identifier;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    // The enumeration index preserves insertion order, so the wipe reaches the
+    // ordinary identity first and the blocked ones after it. Their bounded
+    // retries are what keep the wipe running while the probe below happens.
+    let ordinary_id = Identifier::from([0x36u8; 32]);
+    ctx.insert_local_qualified_identity(
+        &keyed_qualified_identity(ordinary_id, [0x5Cu8; 32]),
+        &None,
+    )
+    .expect("persist the ordinary identity");
+    let blocked_ids: Vec<Identifier> = (0..5).map(|i| Identifier::from([0x40u8 + i; 32])).collect();
+    for (i, blocked_id) in blocked_ids.iter().enumerate() {
+        ctx.insert_local_qualified_identity(
+            &keyed_qualified_identity(*blocked_id, [0x60u8 + i as u8; 32]),
+            &None,
+        )
+        .expect("persist a blocked identity");
+    }
+    let blocking_claims: Vec<_> = blocked_ids
+        .iter()
+        .map(|blocked_id| {
+            ctx.begin_identity_load(*blocked_id, None)
+                .expect("hold a claim the wipe has to retry against")
+        })
+        .collect();
+
+    let wipe = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.clear_network_database().await }
+    });
+
+    // Wait for the ordinary identity's blob purge — the last step of its
+    // deletion — then let the deletion call itself return. A claim released per
+    // deletion is gone microseconds after that point; a claim held to the end of
+    // the wipe survives the ~500ms the blocked identities spend retrying.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while ctx
+        .has_local_qualified_identity(&ordinary_id)
+        .expect("read the ordinary identity")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wipe never reached the ordinary identity"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let concurrent_load = ctx.begin_identity_load(ordinary_id, None);
+    let phase_during_wipe = ctx.latest_identity_load_phase(&ordinary_id);
+
+    drop(blocking_claims);
+    let _ = wipe.await.expect("the wipe task must not panic");
+
+    assert!(
+        matches!(
+            concurrent_load,
+            Err(TaskError::IdentityLoadInProgress { identity_id }) if identity_id == ordinary_id
+        ),
+        "a concurrent load must be excluded until the wipe finishes, got: {concurrent_load:?}"
+    );
+    assert_eq!(
+        phase_during_wipe,
+        Some(IdentityLoadPhase::Running),
+        "the wiped identity's claim must still be unresolved mid-wipe"
+    );
+    assert!(
+        !ctx.local_identity_ids()
+            .expect("read the identity index after the wipe")
+            .contains(&ordinary_id),
+        "the ordinary identity must still be wiped"
+    );
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// Guards are resolved after the legacy shielded-file cleanup, so that cleanup
+/// must never early-return: a `?` there would drop every held claim unresolved
+/// and report durably-wiped identities as failed loads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_resolves_identity_claims_after_a_legacy_file_cleanup_failure() {
+    use crate::context::identity_load_registry::IdentityLoadPhase;
+    use dash_sdk::platform::Identifier;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let identity_id = Identifier::from([0x37u8; 32]);
+    ctx.insert_local_qualified_identity(
+        &keyed_qualified_identity(identity_id, [0x5Du8; 32]),
+        &None,
+    )
+    .expect("persist local identity");
+
+    // A directory where a legacy shielded file is expected: the unlink fails
+    // with a non-NotFound error, leaving the wallet database in the same
+    // directory untouched.
+    std::fs::create_dir(backend.spv_storage_dir().join("det-shielded.sqlite"))
+        .expect("plant the legacy shielded cleanup fault");
+
+    let result = ctx.clear_network_database().await;
+
+    backend.shutdown().await;
+
+    match result {
+        Err(TaskError::WalletDataClearIncomplete {
+            failed,
+            first_error,
+        }) => {
+            assert_eq!(failed, 1, "the legacy file unlink is the only failure");
+            assert!(
+                matches!(*first_error, TaskError::FileSystem { .. }),
+                "the aggregate must preserve the legacy file cleanup error"
+            );
+        }
+        other => panic!("a legacy file cleanup failure must make clear incomplete: {other:?}"),
+    }
+    assert_eq!(
+        ctx.latest_identity_load_phase(&identity_id),
+        Some(IdentityLoadPhase::Loaded),
+        "an identity wiped durably must record a successful claim regardless of \
+         unrelated cleanup failures"
+    );
+    assert!(
+        ctx.local_identity_ids()
+            .expect("read the identity index after the wipe")
+            .is_empty(),
+        "the identity must still be wiped"
+    );
+}
+
 /// Clear-all must fail before changing any state when the wallet backend is
 /// unavailable, because persisted secrets from an earlier run may still exist.
 #[tokio::test]

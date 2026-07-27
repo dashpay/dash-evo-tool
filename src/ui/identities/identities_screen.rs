@@ -22,6 +22,9 @@ use crate::ui::identities::register_dpns_name_screen::{
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
+use crate::ui::identity::settings::{
+    UNLOAD_DETAILS_LOAD_FAILED, identity_unload_confirmation_message,
+};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::wallet_backend::poison::MutexRecover;
@@ -40,6 +43,9 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+
+const REMOVE_IDENTITY_TIP: &str = "Permanently remove this identity and its private keys from this device. It remains on Dash \
+     Platform.";
 
 fn identity_removal_message(
     primary_cleanup_failed: bool,
@@ -920,22 +926,34 @@ impl IdentitiesScreen {
                                                 }
 
                                                 // Remove
-                                                if ui.button("Remove").clickable_tooltip("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
-                                                    let message = format!(
-                                                        "Are you sure you want to no longer track this {identity_type} identity?\n\nIdentity ID: {identity_id}",
-                                                        identity_type = qualified_identity.identity_type,
-                                                        identity_id = qualified_identity.identity.id().to_string(
-                                                            qualified_identity.identity_type.default_encoding()
-                                                        )
-                                                    );
-                                                    self.identity_to_remove =
-                                                        Some(qualified_identity.clone());
-                                                    self.remove_confirmation_dialog = Some(
-                                                        ConfirmationDialog::new("Confirm Removal", message)
-                                                            .confirm_text(Some("Yes"))
-                                                            .cancel_text(Some("No"))
-                                                            .danger_mode(true),
-                                                    );
+                                                if ui.button("Remove").clickable_tooltip(REMOVE_IDENTITY_TIP).clicked() {
+                                                    // Same disclosure as Identity Hub → Settings:
+                                                    // this permanently unloads the identity and
+                                                    // deletes its private keys on this device.
+                                                    match self.app_context.scheduled_vote_count_for_identity(&qualified_identity.identity.id()) {
+                                                        Ok(scheduled_vote_count) => {
+                                                            let message = identity_unload_confirmation_message(
+                                                                qualified_identity,
+                                                                scheduled_vote_count,
+                                                            );
+                                                            self.identity_to_remove =
+                                                                Some(qualified_identity.clone());
+                                                            self.remove_confirmation_dialog = Some(
+                                                                ConfirmationDialog::new("Confirm Removal", message)
+                                                                    .confirm_text(Some("Yes"))
+                                                                    .cancel_text(Some("No"))
+                                                                    .danger_mode(true),
+                                                            );
+                                                        }
+                                                        Err(error) => {
+                                                            MessageBanner::set_global(
+                                                                ui.ctx(),
+                                                                UNLOAD_DETAILS_LOAD_FAILED,
+                                                                MessageType::Error,
+                                                            )
+                                                            .with_details(&error);
+                                                        }
+                                                    }
                                                 }
 
                                                 // Up arrow

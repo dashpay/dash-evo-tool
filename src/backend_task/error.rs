@@ -683,8 +683,12 @@ pub enum TaskError {
     /// Owner-attributable local state could not be fully removed while unloading
     /// an identity. Cleanup continues after failures, but only the first failure
     /// is preserved in the nested typed error for logs.
+    ///
+    /// The identity is already out of the local index when this is raised, so it
+    /// is gone from every screen: the only recovery is to load it again, which
+    /// finishes the deferred cleanup, and then remove it a second time.
     #[error(
-        "Some local data for identity {identity_id} could not be fully removed. Wait a moment and try again."
+        "Some local data for identity {identity_id} could not be fully removed. Load this identity again, then remove it a second time to finish clearing it."
     )]
     IdentityUnloadCleanupFailed {
         identity_id: Identifier,

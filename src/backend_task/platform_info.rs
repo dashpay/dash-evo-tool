@@ -470,23 +470,6 @@ fn withdrawal_status_str(status: WithdrawalStatus) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn epoch_workaround_reports_protocol_version_and_stale_fee_cache() {
-        assert_eq!(
-            format_unavailable_current_epoch_info(12),
-            "Current Epoch Information:\n\
-             • Protocol Version: 12\n\
-             • Epoch details and fee multiplier are temporarily unavailable while \
-             dashpay/platform#4231 is unresolved.\n\n\
-             (The fee multiplier cache was not updated.)"
-        );
-    }
-}
-
 /// Flatten one withdrawal [`Document`] into a [`WithdrawalRecord`].
 fn extract_withdrawal_record(
     document: &Document,
@@ -932,5 +915,22 @@ impl AppContext {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoch_workaround_reports_protocol_version_and_stale_fee_cache() {
+        assert_eq!(
+            format_unavailable_current_epoch_info(12),
+            "Current Epoch Information:\n\
+             • Protocol Version: 12\n\
+             • Epoch details and fee multiplier are temporarily unavailable while \
+             dashpay/platform#4231 is unresolved.\n\n\
+             (The fee multiplier cache was not updated.)"
+        );
     }
 }

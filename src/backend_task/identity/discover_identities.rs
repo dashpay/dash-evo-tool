@@ -218,11 +218,14 @@ impl AppContext {
                         summary.skipped_forgotten = summary.skipped_forgotten.saturating_add(1)
                     }
                     Ok(DiscoveredIdentityOutcome::Skipped) => {}
-                    Err(e) => tracing::warn!(
-                        identity_id = %identity_id,
-                        error = %e,
-                        "Failed to store discovered identity"
-                    ),
+                    Err(e) => {
+                        summary.failed = summary.failed.saturating_add(1);
+                        tracing::warn!(
+                            identity_id = %identity_id,
+                            error = %e,
+                            "Failed to store discovered identity"
+                        );
+                    }
                 }
             }
 
@@ -233,6 +236,8 @@ impl AppContext {
             seed = %hex::encode(seed_hash),
             found = summary.found,
             stored = summary.stored,
+            skipped_forgotten = summary.skipped_forgotten,
+            failed = summary.failed,
             "Gap-limited identity discovery complete"
         );
 
@@ -347,7 +352,8 @@ impl AppContext {
 
         // No stuck-unload repair here: an interrupted unload leaves the marker
         // set, so this path has already returned above. Repair belongs to the
-        // targeted load paths and the startup sweep, which do name an identity.
+        // targeted load paths, which name an identity, and to
+        // `clear_network_database`, which sweeps every marker on a full wipe.
         match self.get_identity_by_id(&identity_id)? {
             Some(existing) => {
                 // Carry DET-only metadata onto the refreshed identity, then

@@ -652,7 +652,7 @@ As a user, I want my wallet's identities to be found and loaded automatically on
 - The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
 - Already-loaded identities are refreshed (new keys, new DPNS names) while any alias the user assigned is preserved.
 - Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
-- No search of a whole wallet — automatic or user-started — brings back an identity the user unloaded. Those are left alone, and the result reports how many, so a smaller count is not mistaken for a failure.
+- No search of a whole wallet — automatic or user-started — brings back an identity the user unloaded. The automatic sweep leaves them alone silently; the user-started "Load Identity → From my wallet" search reports how many it left alone, so a smaller count is not mistaken for a failure. That search also reports identities it found but could not save on this device.
 
 ### IDN-016: Identities and their keys preserved across an app upgrade [Implemented]
 **Persona:** Alex, Priya
@@ -682,8 +682,9 @@ As a user, I want to unload one identity from this device so that I can recover 
   automatic discovery does not bring the identity back. All three
   confirmations use the same danger-styled, input-blocking dialog with buttons
   that name the action instead of a generic Yes/No pair.
-- The recorded unload also survives a user-started search of the whole wallet;
-  only loading that identity by its own index (or by its ID) brings it back.
+- The recorded unload also survives a user-started search of the whole wallet.
+  Only a load aimed at that one identity brings it back: its own wallet index,
+  its identity ID, or its username.
 - Removal reports its outcome, whichever screen it was started from, and says
   what to retry when local data or the node's voting identity could not be
   cleaned up.

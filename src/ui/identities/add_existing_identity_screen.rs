@@ -24,25 +24,51 @@ use egui::{Color32, ComboBox, RichText, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
-/// Outcome of a wallet identity search, as one message for the user.
+/// Outcome of a wallet identity search, as one message for the user and the
+/// banner severity to show it at.
 ///
-/// Shared by the screen and the global banner so both report the same thing. A
-/// search never restores an identity the user unloaded, so `skipped_forgotten`
-/// gets its own sentence naming the one action that brings such an identity
-/// back — without it, the search silently loads fewer identities than it found.
-pub(crate) fn wallet_identity_search_message(count: u32, skipped_forgotten: u32) -> String {
-    let loaded = match count {
-        0 => "No new identities were loaded from your wallet.".to_string(),
-        1 => "Successfully loaded 1 identity from your wallet.".to_string(),
-        count => format!("Successfully loaded {count} identities from your wallet."),
-    };
-    match skipped_forgotten {
-        0 => loaded,
-        1 => format!(
-            "{loaded} 1 identity you unloaded was left alone. To load it again, search for its own identity index."
+/// Shared by the screen and the global banner so both report the same thing.
+/// Each case is one whole template rather than sentences spliced at runtime, so
+/// a translator sees the complete message and can reorder it freely. Counts stay
+/// plural-neutral ("identity(ies)"), matching the scheduled-vote wording in the
+/// unload confirmation.
+///
+/// A search never restores an identity the user unloaded, and it can find an
+/// identity it then fails to store; both are called out, because either one
+/// silently loads fewer identities than the search found.
+pub(crate) fn wallet_identity_search_message(
+    count: u32,
+    skipped_forgotten: u32,
+    failed: u32,
+) -> (String, MessageType) {
+    match (skipped_forgotten > 0, failed > 0) {
+        (false, false) => (
+            format!("Loaded {count} identity(ies) from your wallet."),
+            MessageType::Success,
         ),
-        skipped => format!(
-            "{loaded} {skipped} identities you unloaded were left alone. To load one again, search for its own identity index."
+        (true, false) => (
+            format!(
+                "Loaded {count} identity(ies) from your wallet. {skipped_forgotten} identity(ies) \
+                 you unloaded were left alone. To load one again, turn on Show Advanced Options \
+                 and search for that identity's own index."
+            ),
+            MessageType::Success,
+        ),
+        (false, true) => (
+            format!(
+                "Loaded {count} identity(ies) from your wallet. {failed} identity(ies) could not \
+                 be saved on this device. Search again in a moment to load them."
+            ),
+            MessageType::Warning,
+        ),
+        (true, true) => (
+            format!(
+                "Loaded {count} identity(ies) from your wallet. {failed} identity(ies) could not \
+                 be saved on this device. Search again in a moment to load them. \
+                 {skipped_forgotten} identity(ies) you unloaded were left alone. To load one \
+                 again, turn on Show Advanced Options and search for that identity's own index."
+            ),
+            MessageType::Warning,
         ),
     }
 }
@@ -996,11 +1022,20 @@ impl ScreenLike for AddExistingIdentityScreen {
             BackendTaskSuccessResult::IdentitiesLoaded {
                 count,
                 skipped_forgotten,
+                failed,
             } => {
                 self.refresh_banner.take_and_clear();
-                self.success_message =
-                    Some(wallet_identity_search_message(count, skipped_forgotten));
-                self.add_identity_status = AddIdentityStatus::Complete;
+                let (message, message_type) =
+                    wallet_identity_search_message(count, skipped_forgotten, failed);
+                match message_type {
+                    MessageType::Success => {
+                        self.success_message = Some(message);
+                        self.add_identity_status = AddIdentityStatus::Complete;
+                    }
+                    // A search that could not store what it found keeps the form
+                    // up, so the retry the banner asks for is one click away.
+                    _ => self.add_identity_status = AddIdentityStatus::NotStarted,
+                }
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
@@ -1166,7 +1201,7 @@ impl ScreenLike for AddExistingIdentityScreen {
 
 #[cfg(test)]
 mod load_identity_mode_tests {
-    use super::{LoadIdentityMode, wallet_identity_search_message};
+    use super::{LoadIdentityMode, MessageType, wallet_identity_search_message};
 
     const ALL_MODES: [LoadIdentityMode; 3] = [
         LoadIdentityMode::IdentityId,
@@ -1196,22 +1231,59 @@ mod load_identity_mode_tests {
     }
 
     /// A wallet search that leaves an unloaded identity alone must say so, and
-    /// say how to get it back — otherwise the count silently disagrees with what
-    /// the user sees in the list.
+    /// name an action that gets it back — otherwise the count silently disagrees
+    /// with what the user sees in the list.
     #[test]
     fn search_message_reports_identities_left_unloaded() {
+        let (clean, message_type) = wallet_identity_search_message(2, 0, 0);
+        assert_eq!(clean, "Loaded 2 identity(ies) from your wallet.");
+        assert_eq!(message_type, MessageType::Success);
+
+        let (skipped, message_type) = wallet_identity_search_message(1, 1, 0);
+        assert!(skipped.contains("1 identity(ies) you unloaded were left alone."));
+        assert!(skipped.contains("turn on Show Advanced Options"));
         assert_eq!(
-            wallet_identity_search_message(2, 0),
-            "Successfully loaded 2 identities from your wallet."
+            message_type,
+            MessageType::Success,
+            "a deliberate unload the search honoured is not a failure",
         );
+    }
 
-        let one_skipped = wallet_identity_search_message(1, 1);
-        assert!(one_skipped.starts_with("Successfully loaded 1 identity from your wallet."));
-        assert!(one_skipped.contains("1 identity you unloaded was left alone."));
-        assert!(one_skipped.contains("search for its own identity index"));
+    /// A search that found identities it could not store must not render as a
+    /// plain success — that is indistinguishable from finding nothing new.
+    #[test]
+    fn search_message_warns_when_identities_could_not_be_saved() {
+        let (failed_only, message_type) = wallet_identity_search_message(0, 0, 2);
+        assert!(failed_only.contains("2 identity(ies) could not be saved on this device."));
+        assert!(failed_only.contains("Search again in a moment"));
+        assert_eq!(message_type, MessageType::Warning);
 
-        let all_skipped = wallet_identity_search_message(0, 3);
-        assert!(all_skipped.starts_with("No new identities were loaded from your wallet."));
-        assert!(all_skipped.contains("3 identities you unloaded were left alone."));
+        let (both, message_type) = wallet_identity_search_message(1, 3, 2);
+        assert!(both.contains("2 identity(ies) could not be saved on this device."));
+        assert!(both.contains("3 identity(ies) you unloaded were left alone."));
+        assert_eq!(message_type, MessageType::Warning);
+    }
+
+    /// Every case is one whole template: the message must never be assembled
+    /// from sentences chosen at runtime, which no translator can reorder.
+    #[test]
+    fn search_message_names_an_action_and_stays_one_template() {
+        for (count, skipped, failed) in [(2, 0, 0), (2, 1, 0), (2, 0, 1), (2, 1, 1)] {
+            let (message, _) = wallet_identity_search_message(count, skipped, failed);
+            assert!(
+                message.starts_with("Loaded 2 identity(ies) from your wallet."),
+                "every case opens with the same complete sentence: {message}"
+            );
+            assert!(
+                message.ends_with('.'),
+                "every case is a set of complete sentences: {message}"
+            );
+            if skipped > 0 || failed > 0 {
+                assert!(
+                    message.contains("Show Advanced Options") || message.contains("Search again"),
+                    "a shortfall must name what the user can do about it: {message}"
+                );
+            }
+        }
     }
 }

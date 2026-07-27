@@ -820,6 +820,103 @@ fn remove_flow_reports_the_removal_outcome() {
     });
 }
 
+/// An evonode is not a masternode: the control that opens the removal
+/// confirmation must carry the same kind-derived verb as the confirmation
+/// itself, or the two disagree about what the click does.
+#[test]
+fn remove_trigger_names_the_node_kind() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x9A, "evo-remove-verb", IdentityType::Evonode);
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open evo-remove-verb").click();
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Remove evonode").is_some(),
+            "an evonode's remove button must name the evonode"
+        );
+        assert!(
+            harness.query_by_label("Remove masternode").is_none(),
+            "an evonode must never be offered a masternode's wording"
+        );
+
+        // The confirmation it opens agrees with the trigger.
+        harness.get_by_label("Remove evonode").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("Keep evonode").is_some(),
+            "the confirmation must be the kind-derived one"
+        );
+    });
+}
+
+/// The failure path of the removal banner: cleanup residue must reach the user
+/// as a warning that stays put, not a success that fades. Drives the result
+/// through the app's own task channel, which is the wiring `AppState` owns —
+/// production of the flags themselves is covered by the fault-injection tests in
+/// `backend_task::identity::remove_identity`.
+#[test]
+fn removal_with_cleanup_residue_warns_and_stays_on_screen() {
+    use dash_evo_tool::app::TaskResult;
+    use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        let node_id = Identifier::from([0x9B; 32]);
+        seed_node(&app_context, 0x9B, "mn-residue", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::RemovedIdentities {
+                    identity_ids: vec![node_id],
+                    primary_cleanup_failed: true,
+                    associated_cleanup_failed: false,
+                    associated_removal_failed: false,
+                }),
+            })
+            .expect("queue the removal result");
+        harness.run_steps(5);
+
+        assert!(
+            harness
+                .query_by_label(
+                    "The identity was removed, but some local data could not be cleaned up. Load \
+                     and remove it again to retry."
+                )
+                .is_some(),
+            "cleanup residue must be reported, not swallowed"
+        );
+        assert!(
+            harness.query_by_label("\u{26A0}").is_some(),
+            "residue is a warning, not a success"
+        );
+        // An auto-dismissing banner renders a countdown beside its dismiss
+        // control; a warning's window is 9s, so only these two can appear in the
+        // frames this test runs. Their absence is the durable signal that
+        // `disable_auto_dismiss` was applied.
+        for countdown in ["(9s)", "(10s)"] {
+            assert!(
+                harness.query_by_label(countdown).is_none(),
+                "a banner the user must act on cannot fade away on its own"
+            );
+        }
+    });
+}
+
 /// Execution-level: clicking a per-key "Manage keys" button in the masternode
 /// detail view opens the interactive `KeyInfoScreen` (not the static read-only
 /// `KeysScreen`). Seeds a node whose voter identity carries one key so

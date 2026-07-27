@@ -2584,9 +2584,11 @@ impl App for AppState {
                         BackendTaskSuccessResult::IdentitiesLoaded {
                             count,
                             skipped_forgotten,
+                            failed,
                         } => {
-                            let msg = wallet_identity_search_message(count, skipped_forgotten);
-                            MessageBanner::set_global(ctx, &msg, MessageType::Success);
+                            let (msg, message_type) =
+                                wallet_identity_search_message(count, skipped_forgotten, failed);
+                            MessageBanner::set_global(ctx, &msg, message_type);
                             self.visible_screen_mut()
                                 .display_backend_task_result(&context, unboxed_message);
                         }

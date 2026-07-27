@@ -274,6 +274,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::IdentitiesLoaded {
             count: 1,
             skipped_forgotten: 0,
+            failed: 0,
         })
     }
 
@@ -308,6 +309,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::IdentitiesLoaded {
             count: summary.stored,
             skipped_forgotten: summary.skipped_forgotten,
+            failed: summary.failed,
         })
     }
 }
@@ -437,7 +439,8 @@ mod tests {
                 result,
                 Ok(BackendTaskSuccessResult::IdentitiesLoaded {
                     count: 1,
-                    skipped_forgotten: 0
+                    skipped_forgotten: 0,
+                    failed: 0
                 })
             ),
             "the repaired ghost must reload from its wallet: {result:?}",

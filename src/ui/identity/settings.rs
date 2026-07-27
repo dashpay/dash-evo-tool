@@ -1095,13 +1095,12 @@ pub(crate) fn identity_removal_confirmation_message(
 }
 
 /// Outcome of a completed identity removal, as text for the user and the banner
-/// severity to show it at. Shared by every dispatcher of the removal task: the
-/// three cleanup flags are the only difference between a clean removal and one
-/// that left keys on disk, so a screen that ignores them shows a success that
-/// may not be one.
+/// severity to show it at. `AppState` calls this for whichever screen dispatched
+/// the removal, so the wording is the same wherever the removal was started.
 ///
-/// Each variant states what was removed, what may remain, and the retry the user
-/// can perform themselves.
+/// Each arm states what was removed, what may remain, and the retry the user can
+/// perform themselves. The three cleanup flags are the only difference between a
+/// clean removal and one that left keys on disk.
 pub(crate) fn identity_removal_message(
     primary_cleanup_failed: bool,
     associated_cleanup_failed: bool,
@@ -1143,17 +1142,19 @@ pub(crate) fn identity_removal_message(
     }
 }
 
-/// Title and button labels of an unload or removal confirmation.
-struct UnloadDialogLabels {
-    title: &'static str,
-    confirm: &'static str,
-    cancel: &'static str,
+/// Title and button labels of an unload or removal confirmation. `confirm` also
+/// labels the control that opens the confirmation, so the button a user clicks
+/// and the button they confirm with cannot name different actions.
+pub(crate) struct UnloadDialogLabels {
+    pub(crate) title: &'static str,
+    pub(crate) confirm: &'static str,
+    pub(crate) cancel: &'static str,
 }
 
-/// The wording every unload and removal confirmation uses for `identity_type`.
+/// The wording every unload and removal control uses for `identity_type`.
 /// Derived from the identity kind rather than supplied by the screen, so no
 /// call site can invent labels for an action that deletes private keys.
-fn unload_dialog_labels(identity_type: IdentityType) -> UnloadDialogLabels {
+pub(crate) fn unload_dialog_labels(identity_type: IdentityType) -> UnloadDialogLabels {
     match identity_type {
         IdentityType::Masternode => UnloadDialogLabels {
             title: REMOVE_MASTERNODE,

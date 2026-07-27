@@ -23,9 +23,19 @@ impl AppContext {
         // failure (`identity_was_removed()`) from a genuine removal failure so
         // in-memory state still gets reconciled in the former case, matching
         // `unload_identity()`'s contract instead of aborting via a bare `?`.
+        // Each residue below is logged where it is detected: the user is told to
+        // retry, and that report is only diagnosable against a log line naming
+        // the identity and the underlying error.
         let cleanup_error = match self.unload_local_qualified_identity(&identity_id) {
             Ok(()) => None,
-            Err(error) if error.identity_was_removed() => Some(error),
+            Err(error) if error.identity_was_removed() => {
+                tracing::warn!(
+                    ?error,
+                    identity = %identity_id,
+                    "Removed identity but left some of its local data behind"
+                );
+                Some(error)
+            }
             Err(error) => return Err(error),
         };
         self.reconcile_unloaded_identity_memory(&identity_id);
@@ -44,6 +54,11 @@ impl AppContext {
                     self.reconcile_unloaded_identity_memory(&voter_id);
                     removed_identity_ids.push(voter_id);
                     associated_cleanup_failed = true;
+                    tracing::warn!(
+                        ?error,
+                        voter_identity_id = %voter_id,
+                        "Removed the associated voter identity but left some of its local data behind"
+                    );
                 }
                 Err(error) => {
                     associated_removal_failed = true;

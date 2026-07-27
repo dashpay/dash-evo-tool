@@ -848,6 +848,10 @@ pub enum BackendTaskSuccessResult {
         /// unloaded them. Reported so a search that loads fewer identities than
         /// it found is not mistaken for a failure.
         skipped_forgotten: u32,
+        /// Identities the search found but could not store on this device.
+        /// Reported so a search whose writes all failed is not mistaken for one
+        /// that found nothing new.
+        failed: u32,
     },
 }
 

@@ -90,6 +90,10 @@ pub struct DiscoverySummary {
     /// deliberate unload — not a failure — is why the scan loaded fewer
     /// identities than it found.
     pub skipped_forgotten: u32,
+    /// Identities found on the network that could not be stored on this device.
+    /// Without this count a scan whose every write failed is indistinguishable
+    /// from one that simply found nothing new.
+    pub failed: u32,
 }
 
 #[cfg(test)]

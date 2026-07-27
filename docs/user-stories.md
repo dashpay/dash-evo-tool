@@ -33,6 +33,7 @@ As a user, I want to create a new wallet with a generated mnemonic so that I can
 - Mnemonic is generated using mouse entropy for randomness.
 - User can select mnemonic language and wallet name.
 - Optional password protection is offered.
+- An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
 - Recovery phrase is displayed for backup.
 
 ### WAL-002: Import wallet via mnemonic [Implemented]
@@ -42,6 +43,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 
 - Accepts standard BIP39 mnemonic phrases.
 - User can assign a name and optional password.
+- An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
 - Wallet syncs balances after import.
 
 ### WAL-003: Import single private key [Implemented]

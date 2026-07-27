@@ -499,8 +499,9 @@ impl SecretAccess {
     /// The lazy legacy→steady-state re-wrap happens inside [`Self::decrypt_jit`]:
     /// a protected seed re-wraps to **Tier-2 under the same password** (protection
     /// KEPT, never downgraded to a raw secret), an unprotected one to the raw
-    /// label. So there is nothing for the unlock callsite to "finalize" — the
-    /// wallet's `uses_password` stays accurate (`true` for a protected wallet).
+    /// label. A protected re-wrap rejected by the current storage policy is
+    /// deferred without blocking the successfully decrypted seed; the legacy
+    /// envelope remains intact for the next unlock.
     pub fn promote_hd_seed_with_passphrase(
         &self,
         seed_hash: &WalletSeedHash,
@@ -829,6 +830,19 @@ impl SecretAccess {
                         Ok(Plaintext::HdSeed(seed))
                     }
                     // Tier-2 — unseal with this seed's own object password.
+                    //
+                    // TODO(v1.1): `get_protected` rejects any password below
+                    // `platform_wallet_storage::secrets::MIN_PASSPHRASE_LEN`
+                    // (8 UTF-8 bytes after trimming) on READ, not just write (see
+                    // `rs-platform-wallet-storage/src/secrets/wire/envelope.rs`,
+                    // `unwrap_password_payload`, comment `(a0)` — intentional,
+                    // mirrors the write floor so a backend-write attacker can't
+                    // plant a weakly sealed envelope). A wallet already migrated
+                    // to Tier-2 with a password below that floor by the July 17/21 weekly
+                    // builds (see CHANGELOG "Compatibility blocker" entry) has no
+                    // downstream escape hatch here and stays permanently
+                    // unreadable until upstream adds a scoped migration-read
+                    // capability. Revisit this call once that lands upstream.
                     SecretScheme::Protected => {
                         let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
                         let seed = view
@@ -848,7 +862,9 @@ impl SecretAccess {
                         let seed = decrypt_hd_seed(&envelope, passphrase)?;
                         if envelope.uses_password {
                             let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
-                            view.set_protected(seed_hash, &seed, pw)?;
+                            handle_lazy_tier2_rewrap_result(
+                                view.set_protected(seed_hash, &seed, pw),
+                            )?;
                         } else {
                             view.set_raw(seed_hash, &seed)?;
                         }
@@ -1115,6 +1131,22 @@ pub(crate) fn identity_key_from_bytes(bytes: &[u8]) -> Result<[u8; SINGLE_KEY_LE
         );
         TaskError::IdentityKeyMalformed
     })
+}
+
+fn handle_lazy_tier2_rewrap_result(result: Result<(), TaskError>) -> Result<(), TaskError> {
+    match result {
+        Err(TaskError::SecretSeam { source })
+            if matches!(source.as_ref(), SecretStoreError::BlankPassphrase) =>
+        {
+            tracing::warn!(
+                target = "wallet_backend::secret_access",
+                error = ?source,
+                "HD seed lazy Tier-2 re-wrap deferred because the legacy password is below the storage floor",
+            );
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Whether `e` is the "wrong passphrase" condition that the re-ask loop
@@ -2635,6 +2667,72 @@ mod tests {
             view.get_raw(&seed_hash).is_err(),
             "raw read of a protected seed must fail, never strip protection"
         );
+    }
+
+    /// A legacy wallet may use a password shorter than the upstream Tier-2
+    /// floor. Successful legacy decryption must still release the seed for the
+    /// requested operation; the unsupported re-wrap is deferred and the
+    /// legacy envelope remains the source of truth.
+    #[tokio::test]
+    async fn short_legacy_seed_password_remains_usable_without_tier2_migration() {
+        const SHORT_LEGACY_PASSWORD: &str = "short";
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x73; 32];
+        store_protected_hd(&store, &seed_hash, &SENTINEL_SEED, SHORT_LEGACY_PASSWORD);
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(
+            SHORT_LEGACY_PASSWORD,
+        )]));
+        let sa = access(store.clone(), prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("legacy password must keep unlocking the seed");
+        assert_eq!(prompt.ask_count(), 1);
+
+        let view = WalletSeedView::new(&store);
+        assert_eq!(
+            view.scheme(&seed_hash).unwrap(),
+            SecretScheme::Absent,
+            "a sub-floor password must not be enrolled into Tier-2"
+        );
+        assert!(
+            view.get(&seed_hash).unwrap().is_some(),
+            "the legacy envelope must remain for the next unlock"
+        );
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_defers_blank_passphrase() {
+        let result = handle_lazy_tier2_rewrap_result(Err(TaskError::SecretSeam {
+            source: Box::new(SecretStoreError::BlankPassphrase),
+        }));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_propagates_non_blank_storage_error() {
+        let result = handle_lazy_tier2_rewrap_result(Err(TaskError::SecretSeam {
+            source: Box::new(SecretStoreError::Corruption),
+        }));
+
+        assert!(matches!(
+            result,
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::Corruption)
+        ));
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_accepts_success() {
+        assert!(handle_lazy_tier2_rewrap_result(Ok(())).is_ok());
     }
 
     /// TS-T2-02 — a Tier-2 seed re-asks on a wrong object password (upstream

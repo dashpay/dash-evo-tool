@@ -566,6 +566,7 @@ impl AppContext {
         data_dir: &std::path::Path,
     ) -> Result<Arc<DetKv>, platform_wallet_storage::WalletStorageError> {
         use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
+        crate::app_dir::ensure_data_dir_exists(data_dir)?;
         let path = data_dir.join("det-app.sqlite");
         let config = SqlitePersisterConfig::new(path);
         let persister = Arc::new(SqlitePersister::open(config)?);
@@ -580,6 +581,8 @@ impl AppContext {
     /// of the same vault would fail with `AlreadyLocked`. The vault is
     /// cross-network: seeds and imported keys are scoped by hash, not chain.
     pub fn open_secret_store(data_dir: &std::path::Path) -> Result<Arc<SecretStore>, TaskError> {
+        crate::app_dir::ensure_data_dir_exists(data_dir)
+            .map_err(|source| TaskError::FileSystem { source })?;
         crate::wallet_backend::single_key::open_secret_store(&Self::secret_store_path(data_dir))
             .map(Arc::new)
             .map_err(|source| TaskError::SecretStore {
@@ -599,6 +602,8 @@ impl AppContext {
         data_dir: &std::path::Path,
         passphrase: platform_wallet_storage::secrets::SecretString,
     ) -> Result<Arc<SecretStore>, TaskError> {
+        crate::app_dir::ensure_data_dir_exists(data_dir)
+            .map_err(|source| TaskError::FileSystem { source })?;
         crate::wallet_backend::single_key::open_secret_store_with_passphrase(
             &Self::secret_store_path(data_dir),
             passphrase,

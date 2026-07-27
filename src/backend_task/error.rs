@@ -204,6 +204,16 @@ pub enum TaskError {
     )]
     WalletPaymentOptionUnsupported,
 
+    /// A fatal persisted-load failure prevented the wallet backend from
+    /// restoring locally saved wallet state during startup.
+    #[error(
+        "Saved wallet data appears damaged and cannot be loaded. Restore the wallet from its recovery phrase to keep using it."
+    )]
+    WalletLocalDataLoadFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// A wallet operation failed inside the upstream wallet runtime.
     #[error("The wallet service could not complete this operation. Please retry in a moment.")]
     WalletBackend {
@@ -1695,6 +1705,15 @@ pub enum TaskError {
     #[error("The contract structure is unexpected. Please update the application.")]
     ContractSchemaMismatch { detail: &'static str },
 
+    /// Platform returned a different contract after accepting an update.
+    #[error(
+        "The platform returned contract {returned} instead of {expected}. Please try the update again."
+    )]
+    UpdatedContractIdMismatch {
+        expected: Identifier,
+        returned: Identifier,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Withdrawal document parsing errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -1957,6 +1976,13 @@ pub enum TaskError {
     /// The wallet has already been imported for this network.
     #[error("This wallet has already been imported for this network.")]
     WalletAlreadyImported,
+
+    /// A new wallet password is shorter than the persistent secret store's
+    /// minimum and therefore could not be migrated to Tier-2 protection.
+    #[error(
+        "Wallet passwords must be at least {min} UTF-8 bytes after trimming. Pick a longer one and try again."
+    )]
+    WalletPasswordTooShort { min: u32 },
 
     /// Wallet key derivation failed during construction.
     #[error("Could not create the wallet. Key derivation failed — please try again.")]
@@ -2779,6 +2805,9 @@ impl From<crate::model::wallet::WalletCreationError> for TaskError {
     fn from(e: crate::model::wallet::WalletCreationError) -> Self {
         use crate::model::wallet::WalletCreationError;
         match e {
+            WalletCreationError::PasswordTooShort { min } => {
+                TaskError::WalletPasswordTooShort { min }
+            }
             WalletCreationError::Encryption { detail } => TaskError::EncryptionError { detail },
             WalletCreationError::KeyDerivation { source } => {
                 TaskError::WalletKeyDerivationFailed { source }
@@ -3220,6 +3249,14 @@ mod tests {
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn wallet_password_too_short_display_matches_model_guidance() {
+        assert_eq!(
+            TaskError::WalletPasswordTooShort { min: 8 }.to_string(),
+            "Wallet passwords must be at least 8 UTF-8 bytes after trimming. Pick a longer one and try again."
+        );
     }
 
     #[test]

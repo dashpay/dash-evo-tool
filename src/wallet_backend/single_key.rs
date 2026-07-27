@@ -835,7 +835,7 @@ pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretSt
 /// never at risk. Parent-directory creation and owner-only permissions match
 /// [`open_secret_store`] exactly.
 ///
-/// A blank passphrase is rejected upstream
+/// A passphrase shorter than the upstream minimum is rejected
 /// ([`SecretStoreError::BlankPassphrase`]); the deliberately keyless door is
 /// [`open_secret_store`].
 pub fn open_secret_store_with_passphrase(
@@ -957,6 +957,7 @@ mod tests {
     #[test]
     fn legacy_passphrase_vault_round_trips_without_destroying_data() {
         let dir = tempfile::tempdir().expect("tempdir");
+        crate::app_dir::ensure_data_dir_exists(dir.path()).expect("secure test data dir");
         let path = dir.path().join("secrets").join("det-secrets.pwsvault");
         let scope = single_key_namespace_id();
         let label = "single_key_priv.roundtrip";
@@ -994,6 +995,7 @@ mod tests {
     #[test]
     fn keyless_vault_still_opens_keyless_after_refactor() {
         let dir = tempfile::tempdir().expect("tempdir");
+        crate::app_dir::ensure_data_dir_exists(dir.path()).expect("secure test data dir");
         let path = dir.path().join("secrets").join("det-secrets.pwsvault");
         let scope = single_key_namespace_id();
         {

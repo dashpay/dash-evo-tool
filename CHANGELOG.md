@@ -66,7 +66,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when marker cleanup leaves recoverable residue, associated voter removal
   outcomes are reported accurately, partial cleanup failures still reconcile
   the app's active identity state, and late DashPay profile responses can no
-  longer restore stale profile data.
+  longer restore stale profile data. Reloading a masternode or evonode
+  identity that was left in a recoverable state by an earlier cleanup failure
+  now finishes that cleanup and completes the load, instead of being rejected
+  as already loaded; "delete all local data" now reaches those same
+  recoverable identities too.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

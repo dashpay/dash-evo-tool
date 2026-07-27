@@ -2546,8 +2546,7 @@ async fn clear_network_database_clears_forgotten_identity_markers() {
         .expect("ensure_wallet_backend should succeed offline");
 
     let identity_id = Identifier::from([0x35u8; 32]);
-    ctx.db()
-        .record_forgotten_identity(Network::Testnet, &identity_id)
+    ctx.record_forgotten_identity(&identity_id)
         .expect("record forgotten marker before the wipe");
     assert!(
         ctx.is_identity_forgotten(&identity_id)
@@ -2737,8 +2736,7 @@ async fn clear_network_database_never_reports_success_for_a_reclaimed_forgotten_
     let target_id = Identifier::from([0x99u8; 32]);
     ctx.insert_local_qualified_identity(&keyed_qualified_identity(target_id, [0x98u8; 32]), &None)
         .expect("persist target identity");
-    ctx.db()
-        .record_forgotten_identity(Network::Testnet, &target_id)
+    ctx.record_forgotten_identity(&target_id)
         .expect("mark the target forgotten while it is still indexed");
 
     let blocking_claims: Vec<_> = blocked_ids

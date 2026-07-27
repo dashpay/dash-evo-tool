@@ -38,7 +38,6 @@ mod tests {
     use super::*;
     use crate::context::identity_load_registry::IdentityLoadPhase;
     use crate::context::test_support::test_app_context;
-    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
         IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -82,22 +81,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn cleanup_failure_after_persist_still_reports_loaded() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cleanup_failure_after_persist_still_reports_loaded() {
+        use crate::app::TaskResult;
+        use crate::utils::egui_mpsc::SenderAsync;
+
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
         let identity_id = Identifier::from([0x72; 32]);
-        ctx.db()
-            .record_forgotten_identity(Network::Testnet, &identity_id)
+        ctx.record_forgotten_identity(&identity_id)
             .expect("record forgotten marker");
-        ctx.db()
-            .execute(
+        let fault_connection =
+            rusqlite::Connection::open(backend.spv_storage_dir().join("platform-wallet.sqlite"))
+                .expect("open persister second handle");
+        fault_connection
+            .execute_batch(
                 "CREATE TRIGGER fail_forgotten_marker_cleanup
-                 BEFORE DELETE ON forgotten_identities
+                 BEFORE DELETE ON meta_global
+                 WHEN OLD.key = 'det:forgotten_identities:v1'
                  BEGIN
                      SELECT RAISE(FAIL, 'injected forgotten marker cleanup failure');
                  END;",
-                [],
             )
             .expect("install cleanup failure trigger");
         let token = ctx
@@ -119,5 +129,10 @@ mod tests {
                 .expect("read retained marker"),
             "the injected cleanup fault must leave the marker in place"
         );
+
+        fault_connection
+            .execute_batch("DROP TRIGGER fail_forgotten_marker_cleanup;")
+            .expect("remove cleanup failure trigger");
+        backend.shutdown().await;
     }
 }

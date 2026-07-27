@@ -622,17 +622,19 @@ mod tests {
                 .is_some()
         );
 
-        ctx.db()
-            .record_forgotten_identity(Network::Testnet, &identity_id)
+        ctx.record_forgotten_identity(&identity_id)
             .expect("record forgotten marker");
-        ctx.db()
-            .execute(
+        let fault_connection =
+            rusqlite::Connection::open(backend.spv_storage_dir().join("platform-wallet.sqlite"))
+                .expect("open persister second handle");
+        fault_connection
+            .execute_batch(
                 "CREATE TRIGGER fail_discovery_marker_cleanup
-                 BEFORE DELETE ON forgotten_identities
+                 BEFORE DELETE ON meta_global
+                 WHEN OLD.key = 'det:forgotten_identities:v1'
                  BEGIN
                      SELECT RAISE(FAIL, 'injected discovery marker cleanup failure');
                  END;",
-                [],
             )
             .expect("install marker cleanup failure trigger");
         let load_guard = ctx
@@ -650,6 +652,9 @@ mod tests {
             "the injected cleanup fault must leave the marker in place"
         );
 
+        fault_connection
+            .execute_batch("DROP TRIGGER fail_discovery_marker_cleanup;")
+            .expect("remove marker cleanup failure trigger");
         backend.shutdown().await;
     }
 

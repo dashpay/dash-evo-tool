@@ -82,11 +82,14 @@ Source: `src/model/selected_wallet.rs`, `src/wallet_backend/mod.rs`
 
 The identity blob and top-up history are **identity-scoped** (`DetScope::Identity(&id)`) so the upstream soft-cascade reaps them when the identity row is deleted. `DetScope::Identity` has no cross-identity listing, so a Global `det:identity_index:v1` slot holds the complete id roster the load-all paths iterate. `det:identity_order:v1` is a separate user-ordering view (may lag the full set) and stays Global.
 
+`det:forgotten_identities:v1` is Global for the opposite reason to the blob: the marker's whole purpose is to outlive the identity it names, so automatic discovery cannot resurrect a deliberate unload. An identity-scoped slot would be reaped by that same soft-cascade at exactly the moment the marker becomes load-bearing. Like the other Global identity keys it is per-network by virtue of the per-network store, not by anything in the key or the value.
+
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
 | `det:identity:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `StoredQualifiedIdentity` | Fields: `qi_bytes` (inner bincode, redacted in `Debug`), `status: u8`, `identity_type: String`, `wallet_hash: Option<[u8;32]>`, `wallet_index: Option<u32>` |
 | `det:identity_index:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids |
 | `det:identity_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
+| `det:forgotten_identities:v1` | `None` | `platform-wallet.sqlite` | `BTreeSet<[u8;32]>` | Identities the user deliberately unloaded; discovery must not restore them. Retiring the last marker deletes the slot |
 | `det:top_ups:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
 
 Source: `src/context/identity_db.rs`
@@ -204,8 +207,8 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 | Store | Key count |
 |-------|-----------|
 | `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `platform-wallet.sqlite` | 21 (across 8 domains) |
+| `platform-wallet.sqlite` | 22 (across 8 domains) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
-| **Total** | **27** |
+| **Total** | **28** |
 
 Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

@@ -82,7 +82,7 @@ impl AppContext {
         let mut failed_forgotten_cleanup_guards = Vec::new();
         let mut forgotten_marker_clear_candidates = Vec::new();
         let mut forgotten_indexed_identities = Vec::new();
-        match self.db.list_forgotten_identities(self.network) {
+        match self.list_forgotten_identities() {
             Ok(forgotten_identities) => {
                 for identity_id in forgotten_identities {
                     let load_guard = self
@@ -195,8 +195,7 @@ impl AppContext {
                     }
                 }
             }
-            Err(source) => {
-                let error = TaskError::ForgottenIdentityStorage { source };
+            Err(error) => {
                 tracing::warn!(error = ?error, "Forgotten identity listing failed during full wipe");
                 failures.push(error);
             }

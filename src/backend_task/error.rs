@@ -705,13 +705,13 @@ pub enum TaskError {
     IdentityBusyWithLoad { identity_id: Identifier },
 
     /// A user's choice to keep an unloaded identity off this device could not
-    /// be read or saved in the local database.
+    /// be read or saved in the per-network wallet k/v store.
     #[error(
         "This identity could not be kept unloaded. Check available disk space and try again."
     )]
     ForgottenIdentityStorage {
         #[source]
-        source: rusqlite::Error,
+        source: crate::wallet_backend::KvAdapterError,
     },
 
     /// An identity top-up history record could not be persisted to the

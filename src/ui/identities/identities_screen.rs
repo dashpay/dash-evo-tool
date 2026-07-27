@@ -23,7 +23,7 @@ use crate::ui::identities::register_dpns_name_screen::{
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identity::settings::{
-    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_message, identity_unload_tip,
+    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_dialog, identity_unload_tip,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -43,47 +43,6 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-
-fn identity_removal_message(
-    primary_cleanup_failed: bool,
-    associated_cleanup_failed: bool,
-    associated_removal_failed: bool,
-) -> (&'static str, MessageType) {
-    match (
-        primary_cleanup_failed,
-        associated_cleanup_failed,
-        associated_removal_failed,
-    ) {
-        (false, false, false) => (
-            "The identity was removed from this device.",
-            MessageType::Success,
-        ),
-        (true, false, false) => (
-            "The identity was removed, but some local data could not be cleaned up. Load and remove it again to retry.",
-            MessageType::Warning,
-        ),
-        (false, true, false) => (
-            "The identity and its associated voter identity were removed, but some local voter data could not be cleaned up. Load and remove the identity again to retry the cleanup.",
-            MessageType::Warning,
-        ),
-        (true, true, false) => (
-            "The identity and its associated voter identity were removed, but some local data could not be cleaned up. Load and remove both identities again to retry.",
-            MessageType::Warning,
-        ),
-        (false, false, true) => (
-            "The identity was removed, but its associated voter identity is still on this device. Wait a moment, then load and remove the identity again to retry.",
-            MessageType::Warning,
-        ),
-        (true, false, true) => (
-            "The identity was removed, but some local data could not be cleaned up and its associated voter identity is still on this device. Restart the app, then load and remove the identity again to retry.",
-            MessageType::Warning,
-        ),
-        (_, true, true) => (
-            "The identity was removed, but the associated voter identity may still have local data on this device. Restart the app, then load and remove the identity again to retry.",
-            MessageType::Warning,
-        ),
-    }
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IdentitiesSortColumn {
@@ -931,17 +890,13 @@ impl IdentitiesScreen {
                                                     // the voting-identity variant.
                                                     match self.app_context.scheduled_vote_count_for_identity(&qualified_identity.identity.id()) {
                                                         Ok(scheduled_vote_count) => {
-                                                            let message = identity_removal_confirmation_message(
-                                                                qualified_identity,
-                                                                scheduled_vote_count,
-                                                            );
                                                             self.identity_to_remove =
                                                                 Some(qualified_identity.clone());
                                                             self.remove_confirmation_dialog = Some(
-                                                                ConfirmationDialog::new("Confirm Removal", message)
-                                                                    .confirm_text(Some("Yes"))
-                                                                    .cancel_text(Some("No"))
-                                                                    .danger_mode(true),
+                                                                identity_removal_confirmation_dialog(
+                                                                    qualified_identity,
+                                                                    scheduled_vote_count,
+                                                                ),
                                                             );
                                                         }
                                                         Err(error) => {
@@ -1186,27 +1141,11 @@ impl ScreenLike for IdentitiesScreen {
                     );
                 }
             }
-            crate::ui::BackendTaskSuccessResult::RemovedIdentities {
-                identity_ids,
-                primary_cleanup_failed,
-                associated_cleanup_failed,
-                associated_removal_failed,
-            } => {
+            crate::ui::BackendTaskSuccessResult::RemovedIdentities { identity_ids, .. } => {
+                // `AppState` owns the outcome banner, for every dispatcher.
                 let mut identities = self.identities.lock_recover();
                 for identity_id in identity_ids {
                     identities.shift_remove(&identity_id);
-                }
-                drop(identities);
-                let (message, message_type) = identity_removal_message(
-                    primary_cleanup_failed,
-                    associated_cleanup_failed,
-                    associated_removal_failed,
-                );
-                let banner =
-                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
-                if primary_cleanup_failed || associated_cleanup_failed || associated_removal_failed
-                {
-                    banner.disable_auto_dismiss();
                 }
             }
             _ => {}
@@ -1316,11 +1255,10 @@ impl ScreenLike for IdentitiesScreen {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        identity_removal_confirmation_message, identity_removal_message, render_identity_name_cell,
-    };
+    use super::render_identity_name_cell;
     use crate::model::contested_name::PendingUsername;
     use crate::ui::components::pill::PENDING_USERNAME_PILL_LABEL;
+    use crate::ui::identity::settings::identity_removal_confirmation_message;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
@@ -1364,52 +1302,6 @@ mod tests {
             message.ends_with("This also removes the node's voting identity from this device."),
             "removing a node from the Identities list must disclose the voting identity: {message}"
         );
-    }
-
-    #[test]
-    fn identity_removal_messages_distinguish_cleanup_outcomes() {
-        let (message, message_type) = identity_removal_message(false, false, false);
-        assert_eq!(message, "The identity was removed from this device.");
-        assert_eq!(message_type, crate::ui::MessageType::Success);
-
-        let (message, message_type) = identity_removal_message(true, false, false);
-        assert!(message.contains("some local data could not be cleaned up"));
-        assert!(!message.contains("associated voter identity"));
-        assert_eq!(message_type, crate::ui::MessageType::Warning);
-
-        let (message, message_type) = identity_removal_message(false, true, false);
-        assert!(message.contains("associated voter identity were removed"));
-        assert!(message.contains("could not be cleaned up"));
-        assert_eq!(message_type, crate::ui::MessageType::Warning);
-
-        let (message, message_type) = identity_removal_message(false, false, true);
-        assert!(message.contains("associated voter identity is still on this device"));
-        assert!(!message.contains("local data could not be cleaned up"));
-        assert!(message.contains("Wait a moment"));
-        assert!(!message.contains("Restart the app"));
-        assert_eq!(message_type, crate::ui::MessageType::Warning);
-
-        let (message, message_type) = identity_removal_message(true, false, true);
-        assert!(message.contains("some local data could not be cleaned up"));
-        assert!(message.contains("associated voter identity is still on this device"));
-        assert_eq!(message_type, crate::ui::MessageType::Warning);
-
-        // QA (issue #889 review): the two combos the original test left
-        // unexercised — both cleanup flags true (primary AND associated
-        // cleanup left residue, but nothing was left un-removed), and the
-        // `(_, true, true)` catch-all arm (defensive: `remove_identity`
-        // never sets `associated_cleanup_failed` and
-        // `associated_removal_failed` together, but the match is exhaustive
-        // over all 8 bool combinations regardless).
-        let (message, message_type) = identity_removal_message(true, true, false);
-        assert!(message.contains("associated voter identity were removed"));
-        assert!(message.contains("some local data could not be cleaned up"));
-        assert!(message.contains("both identities"));
-        assert_eq!(message_type, crate::ui::MessageType::Warning);
-
-        let (message, message_type) = identity_removal_message(false, true, true);
-        assert!(message.contains("may still have local data"));
-        assert_eq!(message_type, crate::ui::MessageType::Warning);
     }
 
     /// The Identities list Name cell shows the identity's name and, when a DPNS

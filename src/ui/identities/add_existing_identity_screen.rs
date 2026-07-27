@@ -24,6 +24,29 @@ use egui::{Color32, ComboBox, RichText, Ui};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
+/// Outcome of a wallet identity search, as one message for the user.
+///
+/// Shared by the screen and the global banner so both report the same thing. A
+/// search never restores an identity the user unloaded, so `skipped_forgotten`
+/// gets its own sentence naming the one action that brings such an identity
+/// back — without it, the search silently loads fewer identities than it found.
+pub(crate) fn wallet_identity_search_message(count: u32, skipped_forgotten: u32) -> String {
+    let loaded = match count {
+        0 => "No new identities were loaded from your wallet.".to_string(),
+        1 => "Successfully loaded 1 identity from your wallet.".to_string(),
+        count => format!("Successfully loaded {count} identities from your wallet."),
+    };
+    match skipped_forgotten {
+        0 => loaded,
+        1 => format!(
+            "{loaded} 1 identity you unloaded was left alone. To load it again, search for its own identity index."
+        ),
+        skipped => format!(
+            "{loaded} {skipped} identities you unloaded were left alone. To load one again, search for its own identity index."
+        ),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoadIdentityMode {
     IdentityId,
@@ -970,13 +993,13 @@ impl ScreenLike for AddExistingIdentityScreen {
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
             }
-            BackendTaskSuccessResult::IdentitiesLoaded { count } => {
+            BackendTaskSuccessResult::IdentitiesLoaded {
+                count,
+                skipped_forgotten,
+            } => {
                 self.refresh_banner.take_and_clear();
-                self.success_message = Some(if count == 1 {
-                    "Successfully loaded 1 identity from your wallet.".to_string()
-                } else {
-                    format!("Successfully loaded {count} identities from your wallet.")
-                });
+                self.success_message =
+                    Some(wallet_identity_search_message(count, skipped_forgotten));
                 self.add_identity_status = AddIdentityStatus::Complete;
             }
             BackendTaskSuccessResult::Message(msg) => {
@@ -1143,7 +1166,7 @@ impl ScreenLike for AddExistingIdentityScreen {
 
 #[cfg(test)]
 mod load_identity_mode_tests {
-    use super::LoadIdentityMode;
+    use super::{LoadIdentityMode, wallet_identity_search_message};
 
     const ALL_MODES: [LoadIdentityMode; 3] = [
         LoadIdentityMode::IdentityId,
@@ -1170,5 +1193,25 @@ mod load_identity_mode_tests {
                 );
             }
         }
+    }
+
+    /// A wallet search that leaves an unloaded identity alone must say so, and
+    /// say how to get it back — otherwise the count silently disagrees with what
+    /// the user sees in the list.
+    #[test]
+    fn search_message_reports_identities_left_unloaded() {
+        assert_eq!(
+            wallet_identity_search_message(2, 0),
+            "Successfully loaded 2 identities from your wallet."
+        );
+
+        let one_skipped = wallet_identity_search_message(1, 1);
+        assert!(one_skipped.starts_with("Successfully loaded 1 identity from your wallet."));
+        assert!(one_skipped.contains("1 identity you unloaded was left alone."));
+        assert!(one_skipped.contains("search for its own identity index"));
+
+        let all_skipped = wallet_identity_search_message(0, 3);
+        assert!(all_skipped.starts_with("No new identities were loaded from your wallet."));
+        assert!(all_skipped.contains("3 identities you unloaded were left alone."));
     }
 }

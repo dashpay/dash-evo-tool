@@ -17,13 +17,19 @@ use std::sync::{Arc, RwLock};
 const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
 /// Whether discovery is automatic, follows unlock, or is user-requested.
+///
+/// The mode decides only whether a cold secret-cache miss may prompt. No mode
+/// restores an identity the user unloaded: a scan sweeps a whole wallet and
+/// names no identity, so it can never carry consent for one. Restoring is the
+/// job of a load aimed at a single identity — the By-Wallet search's specific
+/// index, or a load by identity id.
 #[derive(Clone, Copy)]
 pub(crate) enum IdentityDiscoveryMode {
-    /// Automatic startup discovery; never prompts or restores unloaded identities.
+    /// Automatic startup discovery; never prompts.
     Background,
-    /// Post-unlock discovery; may use the unlocked seed but never restores identities.
+    /// Post-unlock discovery; may use the unlocked seed.
     WalletUnlock,
-    /// User-started search; may deliberately restore an unloaded identity.
+    /// User-started wallet-wide search; may prompt for the seed.
     ExplicitSearch,
 }
 
@@ -31,10 +37,16 @@ impl IdentityDiscoveryMode {
     fn allow_prompt(self) -> bool {
         !matches!(self, Self::Background)
     }
+}
 
-    fn explicitly_reloads_forgotten(self) -> bool {
-        matches!(self, Self::ExplicitSearch)
-    }
+/// What one discovered identity contributed to the pass.
+enum DiscoveredIdentityOutcome {
+    /// Newly inserted or refreshed in the local database.
+    Stored,
+    /// Left unloaded because the user had unloaded it.
+    SkippedForgotten,
+    /// Not stored for any other reason (e.g. the network changed mid-scan).
+    Skipped,
 }
 
 impl AppContext {
@@ -49,10 +61,9 @@ impl AppContext {
     /// prior-session high index is never missed even if the early indices are
     /// empty.
     ///
-    /// `mode` controls whether a cold secret-cache miss may prompt and whether
-    /// the scan is an explicit user request that may restore an identity the
-    /// user unloaded. Startup and wallet-unlock discovery always leave forgotten
-    /// identities untouched.
+    /// `mode` controls whether a cold secret-cache miss may prompt. Whatever the
+    /// mode, an identity the user unloaded is left unloaded and counted in
+    /// [`DiscoverySummary::skipped_forgotten`].
     ///
     /// When `progress` is `Some`, a [`BackendTaskSuccessResult::Progress`] event
     /// is sent before each probed index.
@@ -200,8 +211,13 @@ impl AppContext {
                     )
                     .await
                 {
-                    Ok(true) => summary.stored = summary.stored.saturating_add(1),
-                    Ok(false) => {}
+                    Ok(DiscoveredIdentityOutcome::Stored) => {
+                        summary.stored = summary.stored.saturating_add(1)
+                    }
+                    Ok(DiscoveredIdentityOutcome::SkippedForgotten) => {
+                        summary.skipped_forgotten = summary.skipped_forgotten.saturating_add(1)
+                    }
+                    Ok(DiscoveredIdentityOutcome::Skipped) => {}
                     Err(e) => tracing::warn!(
                         identity_id = %identity_id,
                         error = %e,
@@ -264,10 +280,10 @@ impl AppContext {
         scan_network: dash_sdk::dpp::dashcore::Network,
         mode: IdentityDiscoveryMode,
         identity_index: u32,
-    ) -> Result<bool, TaskError> {
+    ) -> Result<DiscoveredIdentityOutcome, TaskError> {
         if self.network != scan_network {
             tracing::debug!("Network changed mid-scan; skipping store of discovered identity");
-            return Ok(false);
+            return Ok(DiscoveredIdentityOutcome::Skipped);
         }
 
         let identity_id = identity.id();
@@ -283,19 +299,17 @@ impl AppContext {
             )
             .await?;
 
-        let explicit_reload = mode.explicitly_reloads_forgotten();
         let Some(load_guard) = self.persist_discovered_identity(
             qualified_identity.clone(),
             seed_hash,
             identity_index,
-            explicit_reload,
         )?
         else {
             tracing::debug!(
                 identity_id = %identity_id,
                 "Skipped a discovered identity that the user unloaded"
             );
-            return Ok(false);
+            return Ok(DiscoveredIdentityOutcome::SkippedForgotten);
         };
 
         if let Ok(mut wallet_guard) = wallet.write() {
@@ -303,37 +317,37 @@ impl AppContext {
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
         }
-        if explicit_reload {
-            self.finish_identity_load_after_persist(&identity_id, load_guard);
-        } else {
-            load_guard.loaded();
-        }
+        load_guard.loaded();
         tracing::info!(
             identity_id = %identity_id,
             "Successfully loaded discovered identity"
         );
-        Ok(true)
+        Ok(DiscoveredIdentityOutcome::Stored)
     }
 
-    /// Persist one discovery result unless automatic discovery must leave it unloaded.
+    /// Persist one discovery result, or `Ok(None)` when the user unloaded it.
     ///
     /// A persisted result returns its exclusive load claim so the caller can
-    /// keep it through the corresponding wallet-cache update.
+    /// keep it through the corresponding wallet-cache update. Discovery never
+    /// overrides an unload: it derives identities from a wallet, so it cannot
+    /// distinguish the one identity a user wants back from every other one it
+    /// re-derives along the way.
     pub(crate) fn persist_discovered_identity(
         &self,
         mut qualified_identity: crate::model::qualified_identity::QualifiedIdentity,
         seed_hash: crate::model::wallet::WalletSeedHash,
         identity_index: u32,
-        explicit_reload: bool,
     ) -> Result<Option<IdentityLoadGuard>, TaskError> {
         let identity_id = qualified_identity.identity.id();
         let load_guard = self.begin_identity_load(identity_id, None)?;
-        if self.is_identity_forgotten(&identity_id)? && !explicit_reload {
+        if self.is_identity_forgotten(&identity_id)? {
             load_guard.loaded();
             return Ok(None);
         }
 
-        self.prepare_stuck_unload_cleanup_for_reload(&identity_id.to_buffer())?;
+        // No stuck-unload repair here: an interrupted unload leaves the marker
+        // set, so this path has already returned above. Repair belongs to the
+        // targeted load paths and the startup sweep, which do name an identity.
         match self.get_identity_by_id(&identity_id)? {
             Some(existing) => {
                 // Carry DET-only metadata onto the refreshed identity, then
@@ -518,11 +532,8 @@ mod tests {
     use crate::app::TaskResult;
     use crate::context::identity_load_registry::IdentityLoadPhase;
     use crate::context::test_support::test_app_context;
-    use crate::model::qualified_identity::{
-        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
-    };
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
     use crate::utils::egui_mpsc::SenderAsync;
-    use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Identifier, Identity};
@@ -553,8 +564,12 @@ mod tests {
         }
     }
 
+    /// No discovery pass restores an identity the user unloaded — not the
+    /// startup sweep, and not a user-started wallet-wide search, which targets a
+    /// search depth rather than any particular identity. Only a load aimed at
+    /// one identity may retire its marker.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn forgotten_identity_is_not_resurrected_by_discovery_and_explicit_load_clears_marker() {
+    async fn no_discovery_pass_resurrects_a_forgotten_identity() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(temp_dir.path());
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -564,146 +579,57 @@ mod tests {
             .expect("wire wallet backend offline");
         let backend = ctx.wallet_backend().expect("wallet backend");
         let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x61; 64], Network::Testnet, None, None).expect("build wallet"),
+            Wallet::new_from_seed([0x69; 64], Network::Testnet, None, None).expect("build wallet"),
         ));
         let wallet_seed_hash = wallet.read().expect("read wallet").seed_hash();
         ctx.wallets()
             .write()
             .expect("write wallets")
             .insert(wallet_seed_hash, Arc::clone(&wallet));
-        let identity_id = Identifier::from([0x62; 32]);
+        let identity_id = Identifier::from([0x6A; 32]);
         let identity = wallet_derived_identity(identity_id, &wallet, 4);
         ctx.insert_local_qualified_identity(&identity, &None)
             .expect("insert identity without a stored wallet association");
 
-        ctx.unload_identity(identity_id)
-            .expect("unload wallet-derived identity");
-        assert!(
-            ctx.is_identity_forgotten(&identity_id)
-                .expect("read forgotten marker")
-        );
+        ctx.unload_identity(identity_id).expect("unload identity");
 
         let stored = ctx
-            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
-            .expect("simulate discovery persistence");
-        assert!(stored.is_none(), "discovery must skip a forgotten identity");
+            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4)
+            .expect("simulate a discovery pass over the wallet");
+        assert!(
+            stored.is_none(),
+            "no discovery pass may restore an identity the user unloaded"
+        );
         assert_eq!(
             ctx.latest_identity_load_phase(&identity_id),
             Some(IdentityLoadPhase::Loaded),
             "intentionally skipping a forgotten identity is a successful load no-op"
         );
         assert!(
+            ctx.is_identity_forgotten(&identity_id)
+                .expect("read forgotten marker"),
+            "a discovery pass must leave the forgotten marker in place"
+        );
+        assert!(
             ctx.get_identity_by_id(&identity_id)
                 .expect("read identity")
                 .is_none(),
-            "discovery must not resurrect an unloaded identity"
+            "the unloaded identity must stay unloaded"
         );
 
+        // A load aimed at this one identity retires its marker — the only way
+        // back. Discovery then treats the identity like any other again.
+        ctx.clear_forgotten_identity_after_explicit_load(&identity_id)
+            .expect("a targeted load retires the marker");
         let load_guard = ctx
-            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, true)
-            .expect("simulate explicit wallet load")
-            .expect("an explicit load must restore the identity");
-        ctx.finish_identity_load_after_persist(&identity_id, load_guard);
-        assert!(
-            !ctx.is_identity_forgotten(&identity_id)
-                .expect("read cleared marker")
-        );
-
-        ctx.delete_local_qualified_identity(&identity_id)
-            .expect("remove identity without recording another unload");
-        let load_guard = ctx
-            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 4, false)
-            .expect("simulate discovery after explicit reload")
-            .expect("discovery must work normally after explicit reload");
+            .persist_discovered_identity(identity, wallet_seed_hash, 4)
+            .expect("simulate discovery after a targeted load")
+            .expect("discovery must work normally once the marker is retired");
         load_guard.loaded();
         assert!(
             ctx.get_identity_by_id(&identity_id)
                 .expect("read rediscovered identity")
                 .is_some()
-        );
-
-        ctx.record_forgotten_identity(&identity_id)
-            .expect("record forgotten marker");
-        let fault_connection =
-            crate::context::test_support::open_persister_fault_connection(&backend);
-        fault_connection
-            .execute_batch(
-                "CREATE TRIGGER fail_discovery_marker_cleanup
-                 BEFORE DELETE ON meta_global
-                 WHEN OLD.key LIKE 'det:forgotten_identity:%'
-                 BEGIN
-                     SELECT RAISE(FAIL, 'injected discovery marker cleanup failure');
-                 END;",
-            )
-            .expect("install marker cleanup failure trigger");
-        let load_guard = ctx
-            .persist_discovered_identity(identity, wallet_seed_hash, 4, true)
-            .expect("persist despite marker cleanup failure")
-            .expect("durable persistence must remain successful");
-        ctx.finish_identity_load_after_persist(&identity_id, load_guard);
-        assert_eq!(
-            ctx.latest_identity_load_phase(&identity_id),
-            Some(IdentityLoadPhase::Loaded)
-        );
-        assert!(
-            ctx.is_identity_forgotten(&identity_id)
-                .expect("read retained marker"),
-            "the injected cleanup fault must leave the marker in place"
-        );
-
-        fault_connection
-            .execute_batch("DROP TRIGGER fail_discovery_marker_cleanup;")
-            .expect("remove marker cleanup failure trigger");
-        backend.shutdown().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn explicit_discovery_clears_repaired_unload_ghost_key() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let ctx = test_app_context(temp_dir.path());
-        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
-        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
-        ctx.ensure_wallet_backend(sender)
-            .await
-            .expect("wire wallet backend offline");
-        let backend = ctx.wallet_backend().expect("wallet backend");
-        let wallet = Arc::new(RwLock::new(
-            Wallet::new_from_seed([0x66; 64], Network::Testnet, None, None).expect("build wallet"),
-        ));
-        let identity_index = 6;
-        let wallet_seed_hash = wallet.read().expect("read wallet").seed_hash();
-        ctx.wallets()
-            .write()
-            .expect("write wallets")
-            .insert(wallet_seed_hash, Arc::clone(&wallet));
-        let identity_id = Identifier::from([0x67; 32]);
-        let replacement = wallet_derived_identity(identity_id, &wallet, identity_index);
-        let old_key_id =
-            ctx.install_repaired_unload_ghost_for_test(replacement.identity.clone(), [0x68; 32]);
-        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
-        assert!(
-            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
-                .expect("read old vault key before reload")
-                .is_some(),
-            "precondition: the interrupted unload retains its old vault key",
-        );
-
-        let load_guard = ctx
-            .persist_discovered_identity(replacement, wallet_seed_hash, identity_index, true)
-            .expect("persist explicit discovery")
-            .expect("explicit discovery must restore the identity");
-        ctx.finish_identity_load_after_persist(&identity_id, load_guard);
-
-        assert!(
-            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
-                .expect("read old vault key after reload")
-                .is_none(),
-            "the old vault key must be cleared before explicit discovery writes its blob",
-        );
-        assert!(
-            !ctx.is_identity_forgotten(&identity_id)
-                .expect("read marker after reload"),
-            "a successful explicit discovery must retire the forgotten marker",
         );
 
         backend.shutdown().await;
@@ -731,7 +657,7 @@ mod tests {
         let identity = wallet_derived_identity(identity_id, &wallet, 5);
 
         let load_guard = ctx
-            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 5, false)
+            .persist_discovered_identity(identity.clone(), wallet_seed_hash, 5)
             .expect("persist discovery")
             .expect("discovery must persist a new identity");
 

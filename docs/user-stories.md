@@ -652,6 +652,7 @@ As a user, I want my wallet's identities to be found and loaded automatically on
 - The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
 - Already-loaded identities are refreshed (new keys, new DPNS names) while any alias the user assigned is preserved.
 - Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
+- No search of a whole wallet — automatic or user-started — brings back an identity the user unloaded. Those are left alone, and the result reports how many, so a smaller count is not mistaken for a failure.
 
 ### IDN-016: Identities and their keys preserved across an app upgrade [Implemented]
 **Persona:** Alex, Priya
@@ -678,7 +679,14 @@ As a user, I want to unload one identity from this device so that I can recover 
   scheduled votes are queued, the confirmation states how many will be
   cancelled. The confirmation also names the synced data that only a full
   database clear removes, and discloses that the app records the unload so
-  automatic discovery does not bring the identity back.
+  automatic discovery does not bring the identity back. All three
+  confirmations use the same danger-styled, input-blocking dialog with buttons
+  that name the action instead of a generic Yes/No pair.
+- The recorded unload also survives a user-started search of the whole wallet;
+  only loading that identity by its own index (or by its ID) brings it back.
+- Removal reports its outcome, whichever screen it was started from, and says
+  what to retry when local data or the node's voting identity could not be
+  cleaned up.
 - Unloading removes only the selected identity's local keys, metadata, its own DashPay overlay records, queued scheduled votes, and device record, while leaving the Platform identity unchanged. DashPay data held by another loaded identity that lists this one as a contact is not touched.
 - Other identities on the same wallet and the wallet's recovery seed remain available.
 

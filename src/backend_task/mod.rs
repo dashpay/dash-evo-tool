@@ -844,6 +844,10 @@ pub enum BackendTaskSuccessResult {
     /// Identities were discovered and loaded from a wallet by index search.
     IdentitiesLoaded {
         count: u32,
+        /// Identities the search found but left unloaded because the user had
+        /// unloaded them. Reported so a search that loads fewer identities than
+        /// it found is not mistaken for a failure.
+        skipped_forgotten: u32,
     },
 }
 

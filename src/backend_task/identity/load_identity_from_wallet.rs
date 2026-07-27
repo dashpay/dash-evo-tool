@@ -271,9 +271,17 @@ impl AppContext {
         }
         self.finish_identity_load_after_persist(&identity_id, load_guard);
 
-        Ok(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 })
+        Ok(BackendTaskSuccessResult::IdentitiesLoaded {
+            count: 1,
+            skipped_forgotten: 0,
+        })
     }
 
+    /// Search a whole wallet for identities, seeded from a user-supplied index.
+    ///
+    /// The search names no identity, so it never restores one the user
+    /// unloaded; those are reported back as `skipped_forgotten` and stay
+    /// unloaded until the user loads one by its own index.
     pub(super) async fn load_user_identities_up_to_index(
         self: &Arc<Self>,
         wallet_arc_ref: WalletArcRef,
@@ -298,7 +306,8 @@ impl AppContext {
         }
 
         Ok(BackendTaskSuccessResult::IdentitiesLoaded {
-            count: summary.found,
+            count: summary.stored,
+            skipped_forgotten: summary.skipped_forgotten,
         })
     }
 }
@@ -426,7 +435,10 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Ok(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 })
+                Ok(BackendTaskSuccessResult::IdentitiesLoaded {
+                    count: 1,
+                    skipped_forgotten: 0
+                })
             ),
             "the repaired ghost must reload from its wallet: {result:?}",
         );

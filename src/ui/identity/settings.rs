@@ -105,6 +105,16 @@ pub(crate) const UNLOAD_DETAILS_LOAD_FAILED: &str =
 /// identity — masternodes and evonodes, on every screen that removes them.
 const REMOVE_VOTING_IDENTITY_DISCLOSURE: &str =
     "This also removes the node's voting identity from this device.";
+// Dialog title and button labels per identity kind. Each names the action it
+// performs, because a destructive confirmation answered with "Yes" tells the
+// user nothing about what they are agreeing to (docs/ux-design-patterns.md §4).
+const UNLOAD_IDENTITY_TITLE: &str = "Unload this identity";
+const UNLOAD_IDENTITY_CONFIRM: &str = "Permanently unload";
+const UNLOAD_IDENTITY_CANCEL: &str = "Keep identity";
+const REMOVE_MASTERNODE: &str = "Remove masternode";
+const KEEP_MASTERNODE: &str = "Keep masternode";
+const REMOVE_EVONODE: &str = "Remove evonode";
+const KEEP_EVONODE: &str = "Keep evonode";
 // How the identity is restored after the unload — one complete statement per
 // identity kind. Nodes are loaded by ProTxHash and are never wallet-derived, so
 // they never carry the wallet or recovery-information wording; the ProTxHash
@@ -776,17 +786,10 @@ impl SettingsTab {
                     match app_context.scheduled_vote_count_for_identity(&target_id) {
                         Ok(scheduled_vote_count) => {
                             self.confirm_unload = Some(PendingIdentityUnload {
-                                dialog: ConfirmationDialog::new(
-                                    "Unload this identity",
-                                    identity_unload_confirmation_message(
-                                        identity,
-                                        scheduled_vote_count,
-                                    ),
-                                )
-                                .confirm_text(Some("Permanently unload"))
-                                .cancel_text(Some("Keep identity"))
-                                .danger_mode(true)
-                                .blocks_input(true),
+                                dialog: identity_unload_confirmation_dialog(
+                                    identity,
+                                    scheduled_vote_count,
+                                ),
                                 target_id,
                             });
                         }
@@ -1089,6 +1092,123 @@ pub(crate) fn identity_removal_confirmation_message(
         Some(_) => format!("{message}\n\n{REMOVE_VOTING_IDENTITY_DISCLOSURE}"),
         None => message,
     }
+}
+
+/// Outcome of a completed identity removal, as text for the user and the banner
+/// severity to show it at. Shared by every dispatcher of the removal task: the
+/// three cleanup flags are the only difference between a clean removal and one
+/// that left keys on disk, so a screen that ignores them shows a success that
+/// may not be one.
+///
+/// Each variant states what was removed, what may remain, and the retry the user
+/// can perform themselves.
+pub(crate) fn identity_removal_message(
+    primary_cleanup_failed: bool,
+    associated_cleanup_failed: bool,
+    associated_removal_failed: bool,
+) -> (&'static str, MessageType) {
+    match (
+        primary_cleanup_failed,
+        associated_cleanup_failed,
+        associated_removal_failed,
+    ) {
+        (false, false, false) => (
+            "The identity was removed from this device.",
+            MessageType::Success,
+        ),
+        (true, false, false) => (
+            "The identity was removed, but some local data could not be cleaned up. Load and remove it again to retry.",
+            MessageType::Warning,
+        ),
+        (false, true, false) => (
+            "The identity and its associated voter identity were removed, but some local voter data could not be cleaned up. Load and remove the identity again to retry the cleanup.",
+            MessageType::Warning,
+        ),
+        (true, true, false) => (
+            "The identity and its associated voter identity were removed, but some local data could not be cleaned up. Load and remove both identities again to retry.",
+            MessageType::Warning,
+        ),
+        (false, false, true) => (
+            "The identity was removed, but its associated voter identity is still on this device. Wait a moment, then load and remove the identity again to retry.",
+            MessageType::Warning,
+        ),
+        (true, false, true) => (
+            "The identity was removed, but some local data could not be cleaned up and its associated voter identity is still on this device. Restart the app, then load and remove the identity again to retry.",
+            MessageType::Warning,
+        ),
+        (_, true, true) => (
+            "The identity was removed, but the associated voter identity may still have local data on this device. Restart the app, then load and remove the identity again to retry.",
+            MessageType::Warning,
+        ),
+    }
+}
+
+/// Title and button labels of an unload or removal confirmation.
+struct UnloadDialogLabels {
+    title: &'static str,
+    confirm: &'static str,
+    cancel: &'static str,
+}
+
+/// The wording every unload and removal confirmation uses for `identity_type`.
+/// Derived from the identity kind rather than supplied by the screen, so no
+/// call site can invent labels for an action that deletes private keys.
+fn unload_dialog_labels(identity_type: IdentityType) -> UnloadDialogLabels {
+    match identity_type {
+        IdentityType::Masternode => UnloadDialogLabels {
+            title: REMOVE_MASTERNODE,
+            confirm: REMOVE_MASTERNODE,
+            cancel: KEEP_MASTERNODE,
+        },
+        IdentityType::Evonode => UnloadDialogLabels {
+            title: REMOVE_EVONODE,
+            confirm: REMOVE_EVONODE,
+            cancel: KEEP_EVONODE,
+        },
+        IdentityType::User => UnloadDialogLabels {
+            title: UNLOAD_IDENTITY_TITLE,
+            confirm: UNLOAD_IDENTITY_CONFIRM,
+            cancel: UNLOAD_IDENTITY_CANCEL,
+        },
+    }
+}
+
+/// Confirmation dialog for unloading `identity` from this device.
+///
+/// Danger-styled and input-blocking: the action deletes private keys and cannot
+/// be undone, so it must not be answerable by a stray click on the screen
+/// behind it. Use [`identity_removal_confirmation_dialog`] where the action also
+/// removes the identity's voting identity.
+pub(crate) fn identity_unload_confirmation_dialog(
+    identity: &QualifiedIdentity,
+    scheduled_vote_count: usize,
+) -> ConfirmationDialog {
+    unload_dialog(
+        identity,
+        identity_unload_confirmation_message(identity, scheduled_vote_count),
+    )
+}
+
+/// Confirmation dialog for removing `identity` and the voting identity it
+/// carries. Same treatment and labels as [`identity_unload_confirmation_dialog`],
+/// with the voting-identity consequence added to the disclosure.
+pub(crate) fn identity_removal_confirmation_dialog(
+    identity: &QualifiedIdentity,
+    scheduled_vote_count: usize,
+) -> ConfirmationDialog {
+    unload_dialog(
+        identity,
+        identity_removal_confirmation_message(identity, scheduled_vote_count),
+    )
+}
+
+fn unload_dialog(identity: &QualifiedIdentity, message: String) -> ConfirmationDialog {
+    let labels = unload_dialog_labels(identity.identity_type);
+    ConfirmationDialog::new(labels.title, message)
+        .confirm_text(Some(labels.confirm))
+        .cancel_text(Some(labels.cancel))
+        .danger_mode(true)
+        .blocks_input(true)
 }
 
 fn identity_unload_confirmation_message_for(
@@ -1584,6 +1704,123 @@ mod tests {
             with_voter.contains("This also cancels 2 scheduled vote(s)."),
             "the shared scheduled-vote clause must survive the addition: {with_voter}"
         );
+    }
+
+    #[test]
+    fn identity_removal_messages_distinguish_cleanup_outcomes() {
+        let (message, message_type) = identity_removal_message(false, false, false);
+        assert_eq!(message, "The identity was removed from this device.");
+        assert_eq!(message_type, MessageType::Success);
+
+        let (message, message_type) = identity_removal_message(true, false, false);
+        assert!(message.contains("some local data could not be cleaned up"));
+        assert!(!message.contains("associated voter identity"));
+        assert_eq!(message_type, MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(false, true, false);
+        assert!(message.contains("associated voter identity were removed"));
+        assert!(message.contains("could not be cleaned up"));
+        assert_eq!(message_type, MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(false, false, true);
+        assert!(message.contains("associated voter identity is still on this device"));
+        assert!(!message.contains("local data could not be cleaned up"));
+        assert!(message.contains("Wait a moment"));
+        assert!(!message.contains("Restart the app"));
+        assert_eq!(message_type, MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(true, false, true);
+        assert!(message.contains("some local data could not be cleaned up"));
+        assert!(message.contains("associated voter identity is still on this device"));
+        assert_eq!(message_type, MessageType::Warning);
+
+        // Both cleanup flags set (primary and associated cleanup left residue,
+        // but nothing was left un-removed), then the `(_, true, true)` catch-all
+        // arm: `remove_identity` never sets `associated_cleanup_failed` and
+        // `associated_removal_failed` together, but the match covers all 8
+        // combinations regardless.
+        let (message, message_type) = identity_removal_message(true, true, false);
+        assert!(message.contains("associated voter identity were removed"));
+        assert!(message.contains("some local data could not be cleaned up"));
+        assert!(message.contains("both identities"));
+        assert_eq!(message_type, MessageType::Warning);
+
+        let (message, message_type) = identity_removal_message(false, true, true);
+        assert!(message.contains("may still have local data"));
+        assert_eq!(message_type, MessageType::Warning);
+    }
+
+    /// A removal that left residue must never auto-dismiss its banner: the user
+    /// has a retry to perform and cannot act on a warning they did not see.
+    #[test]
+    fn only_a_clean_removal_reports_success() {
+        for (primary, associated_cleanup, associated_removal) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            let (_, message_type) =
+                identity_removal_message(primary, associated_cleanup, associated_removal);
+            assert_eq!(
+                message_type,
+                MessageType::Warning,
+                "a removal with residue must not report success",
+            );
+        }
+    }
+
+    /// Every unload and removal confirmation names the action on its buttons.
+    /// A generic Yes/No pair is forbidden for a destructive action, and the node
+    /// verbs are fixed copy the masternode detail view is specified against.
+    #[test]
+    fn unload_dialog_labels_name_the_action_for_every_identity_kind() {
+        for identity_type in [
+            IdentityType::User,
+            IdentityType::Masternode,
+            IdentityType::Evonode,
+        ] {
+            let labels = unload_dialog_labels(identity_type);
+            for label in [labels.title, labels.confirm, labels.cancel] {
+                assert!(
+                    !["Yes", "No", "OK", "Confirm", "Cancel"].contains(&label),
+                    "{identity_type:?} must not answer a destructive action with {label:?}"
+                );
+            }
+        }
+
+        let node = unload_dialog_labels(IdentityType::Masternode);
+        assert_eq!(node.title, REMOVE_MASTERNODE);
+        assert_eq!(node.confirm, REMOVE_MASTERNODE);
+        assert_eq!(
+            unload_dialog_labels(IdentityType::Evonode).confirm,
+            REMOVE_EVONODE
+        );
+    }
+
+    /// Both dialog flavours are irreversible, so both register egui's modal
+    /// layer: a click on the screen behind must never reach the app while the
+    /// confirmation is open.
+    #[test]
+    fn unload_dialogs_block_input_behind_them() {
+        let identity = qualified_identity_with(19, Some("Blocking identity"));
+        for mut dialog in [
+            identity_unload_confirmation_dialog(&identity, 0),
+            identity_removal_confirmation_dialog(&identity, 0),
+        ] {
+            let ctx = egui::Context::default();
+            // Two passes: `set_modal_layer` is consumed at the end of the pass
+            // that registers it, so it is observable from the next one.
+            for _ in 0..2 {
+                let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    dialog.show(ui);
+                });
+            }
+            assert!(
+                ctx.memory(|memory| memory.top_modal_layer().is_some()),
+                "an unload confirmation must block input to the screen behind it"
+            );
+        }
     }
 
     #[test]

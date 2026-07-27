@@ -85,6 +85,11 @@ pub struct DiscoverySummary {
     pub found: u32,
     /// Identities newly stored or refreshed in the local database.
     pub stored: u32,
+    /// Identities left unloaded because the user had unloaded them. Counted
+    /// separately from the rest of `found - stored` so the user can be told a
+    /// deliberate unload — not a failure — is why the scan loaded fewer
+    /// identities than it found.
+    pub skipped_forgotten: u32,
 }
 
 #[cfg(test)]

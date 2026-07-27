@@ -781,6 +781,45 @@ fn remove_flow_deletes_associated_voter_identity() {
     });
 }
 
+/// The card disappearing is not feedback: a removal that left owner/voter key
+/// residue on disk looks identical to a clean one. Every screen that removes an
+/// identity must report the outcome, this tab included.
+#[test]
+fn remove_flow_reports_the_removal_outcome() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(
+            &app_context,
+            0x99,
+            "mn-report-outcome",
+            IdentityType::Masternode,
+        );
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-report-outcome").click();
+        harness.run_steps(3);
+        harness.get_by_label("Remove masternode").click();
+        harness.run_steps(3);
+        harness
+            .query_all_by_label("Remove masternode")
+            .last()
+            .expect("confirm button present")
+            .click();
+        harness.run_steps(5);
+
+        assert!(
+            harness
+                .query_by_label("The identity was removed from this device.")
+                .is_some(),
+            "removing a node from this tab must report the cleanup outcome"
+        );
+    });
+}
+
 /// Execution-level: clicking a per-key "Manage keys" button in the masternode
 /// detail view opens the interactive `KeyInfoScreen` (not the static read-only
 /// `KeysScreen`). Seeds a node whose voter identity carries one key so

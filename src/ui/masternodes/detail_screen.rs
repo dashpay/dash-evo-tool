@@ -36,7 +36,7 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::settings::{
-    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_message,
+    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_dialog,
 };
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
@@ -975,18 +975,10 @@ impl MasternodeDetailView {
                 .scheduled_vote_count_for_identity(&identity_id)
             {
                 Ok(scheduled_vote_count) => {
-                    self.remove_dialog = Some(
-                        ConfirmationDialog::new(
-                            "Remove masternode",
-                            identity_removal_confirmation_message(
-                                &self.identity,
-                                scheduled_vote_count,
-                            ),
-                        )
-                        .danger_mode(true)
-                        // §7 confirm verb (TC-US4-02).
-                        .confirm_text(Some("Remove masternode")),
-                    );
+                    self.remove_dialog = Some(identity_removal_confirmation_dialog(
+                        &self.identity,
+                        scheduled_vote_count,
+                    ));
                 }
                 Err(error) => {
                     MessageBanner::set_global(

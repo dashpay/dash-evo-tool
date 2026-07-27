@@ -23,7 +23,9 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Progre
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
+use crate::ui::identities::add_existing_identity_screen::wallet_identity_search_message;
 use crate::ui::identities::identities_screen::IdentitiesScreen;
+use crate::ui::identity::settings::identity_removal_message;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
@@ -2579,12 +2581,11 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_backend_task_result(&context, unboxed_message);
                         }
-                        BackendTaskSuccessResult::IdentitiesLoaded { count } => {
-                            let msg = if count == 1 {
-                                "Successfully loaded 1 identity from your wallet.".to_string()
-                            } else {
-                                format!("Successfully loaded {count} identities from your wallet.")
-                            };
+                        BackendTaskSuccessResult::IdentitiesLoaded {
+                            count,
+                            skipped_forgotten,
+                        } => {
+                            let msg = wallet_identity_search_message(count, skipped_forgotten);
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.visible_screen_mut()
                                 .display_backend_task_result(&context, unboxed_message);
@@ -2667,6 +2668,34 @@ impl App for AppState {
                             // for all loaded wallets so the per-address tab stays current
                             // without a manual Refresh. No banner — this fires every 15 s.
                             active_context.apply_platform_address_push(updates);
+                        }
+                        BackendTaskSuccessResult::RemovedIdentities {
+                            primary_cleanup_failed,
+                            associated_cleanup_failed,
+                            associated_removal_failed,
+                            ..
+                        } => {
+                            // Here rather than in a screen: the card or row
+                            // disappearing looks the same whether cleanup
+                            // succeeded or left keys on disk, so every screen
+                            // that removes an identity — present and future —
+                            // reports the outcome by construction.
+                            let (message, message_type) = identity_removal_message(
+                                primary_cleanup_failed,
+                                associated_cleanup_failed,
+                                associated_removal_failed,
+                            );
+                            let banner = MessageBanner::set_global(ctx, message, message_type);
+                            if primary_cleanup_failed
+                                || associated_cleanup_failed
+                                || associated_removal_failed
+                            {
+                                // The user has a retry to perform; a warning
+                                // that fades out is a warning they may miss.
+                                banner.disable_auto_dismiss();
+                            }
+                            self.visible_screen_mut()
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::TokenBalanceRefreshAlreadyInFlight => {
                             MessageBanner::set_global(

@@ -76,6 +76,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wallet discovery — so a leftover key from an earlier interrupted unload is
   always cleared before a fresh load replaces it, not just on one path.
 
+- **Identity unload/removal confirmations, feedback, and discovery guarantees, made consistent**:
+  the three places you can unload or remove an identity (Identity Hub →
+  Settings, the Identities screen, and a masternode's detail view) now show
+  the same specific-verb, input-blocking confirmation everywhere, instead of
+  one of them using a generic "Yes"/"No". Removing a masternode or evonode
+  from the Masternodes tab now reports the same success/warning outcome as
+  removing it anywhere else, instead of showing no feedback at all when
+  cleanup left residue behind. A wallet-wide identity search can no longer
+  bring back an identity you unloaded under any circumstance — previously
+  only the automatic background scan respected that — and a user-started
+  search now reports how many identities it left unloaded and how many it
+  failed to save, instead of looking identical to finding nothing new. The
+  unload confirmation's own wording was corrected to match: it no longer
+  implies a manual search can undo the unload, and it now names an actual,
+  reachable way back (the identity's own ID or username) instead of one
+  hidden behind an advanced-options toggle.
+
 - **"Clear Database" no longer reports a clean wipe it did not finish**:
   the wipe now keeps every identity reserved until the last step is done, so an
   identity being loaded in the background cannot be written back to disk after

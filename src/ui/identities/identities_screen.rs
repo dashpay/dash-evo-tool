@@ -23,7 +23,7 @@ use crate::ui::identities::register_dpns_name_screen::{
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identity::settings::{
-    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_message,
+    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_message, identity_unload_tip,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -43,9 +43,6 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-
-const REMOVE_IDENTITY_TIP: &str = "Permanently remove this identity and its private keys from this device. It remains on Dash \
-     Platform.";
 
 fn identity_removal_message(
     primary_cleanup_failed: bool,
@@ -926,7 +923,7 @@ impl IdentitiesScreen {
                                                 }
 
                                                 // Remove
-                                                if ui.button("Remove").clickable_tooltip(REMOVE_IDENTITY_TIP).clicked() {
+                                                if ui.button("Remove").clickable_tooltip(identity_unload_tip(qualified_identity)).clicked() {
                                                     // Same disclosure as Identity Hub → Settings:
                                                     // this permanently unloads the identity and
                                                     // deletes its private keys on this device.

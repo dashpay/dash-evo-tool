@@ -103,6 +103,10 @@ pub(crate) const UNLOAD_DETAILS_LOAD_FAILED: &str =
 /// identity — masternodes and evonodes, on every screen that removes them.
 const REMOVE_VOTING_IDENTITY_DISCLOSURE: &str =
     "This also removes the node's voting identity from this device.";
+/// How a node is loaded again. Nodes never came from a wallet seed, so the
+/// generic recovery-information wording does not apply to them.
+const NODE_RELOAD_GUIDANCE: &str =
+    "You can load a masternode or evonode identity again using its ProTxHash.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
 // Marker strings for controls without a matching backend task. Surfaced in
 // disabled_tooltip and as a prefix on the row so users know it is a coming
@@ -1005,7 +1009,10 @@ fn identity_unload_label(identity: &QualifiedIdentity) -> String {
         .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58))
 }
 
-fn identity_unload_tip(identity: &QualifiedIdentity) -> &'static str {
+/// Hover text for the control that unloads or removes `identity`, branching on
+/// whether its keys can be restored from a wallet. Shared so no screen invents a
+/// third wording that contradicts the dialog it opens.
+pub(crate) fn identity_unload_tip(identity: &QualifiedIdentity) -> &'static str {
     identity_unload_tip_for(identity.requires_recovery_information_after_unload())
 }
 
@@ -1030,12 +1037,21 @@ pub(crate) fn identity_unload_confirmation_message(
     // Aliases are user-set and not unique, so a confirmation for an irreversible
     // action must carry the id too. A label that already is the id says it once.
     let identity_id = (identity_label != base58_id).then_some(base58_id.as_str());
-    identity_unload_confirmation_message_for(
+    let message = identity_unload_confirmation_message_for(
         &identity_label,
         identity_id,
         identity.requires_recovery_information_after_unload(),
         scheduled_vote_count,
-    )
+    );
+    // Nodes are loaded by ProTxHash, never from a wallet seed, so the generic
+    // recovery-information wording would send their owners hunting for a
+    // recovery phrase they never had.
+    match identity.identity_type {
+        IdentityType::Masternode | IdentityType::Evonode => {
+            format!("{message} {NODE_RELOAD_GUIDANCE}")
+        }
+        IdentityType::User => message,
+    }
 }
 
 /// Removal confirmation: the shared unload disclosure, plus the voting-identity
@@ -1059,14 +1075,18 @@ fn identity_unload_confirmation_message_for(
     recovery_information_required: bool,
     scheduled_vote_count: usize,
 ) -> String {
-    let identity_phrase = match identity_id {
-        Some(identity_id) => format!("\"{identity_label}\" (ID: {identity_id})"),
-        None => format!("\"{identity_label}\""),
+    // A complete sentence of its own, so it stays one translation unit rather
+    // than a fragment glued into the naming sentence. Empty when the identity is
+    // already named by its id.
+    let identity_identification = match identity_id {
+        Some(identity_id) => format!(" Its full identifier is {identity_id}."),
+        None => String::new(),
     };
     match (recovery_information_required, scheduled_vote_count > 0) {
         (true, true) => format!(
-            "Identity {identity_phrase} will be permanently unloaded from this device, \
-             deleting its private keys and its entry in this app. Some synced network data, such \
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its private keys and its entry in this app.{identity_identification} Some \
+             synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
              does not bring it back. It remains on Dash Platform, but you will need its recovery \
@@ -1074,16 +1094,18 @@ fn identity_unload_confirmation_message_for(
              vote(s)."
         ),
         (true, false) => format!(
-            "Identity {identity_phrase} will be permanently unloaded from this device, \
-             deleting its private keys and its entry in this app. Some synced network data, such \
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its private keys and its entry in this app.{identity_identification} Some \
+             synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
              does not bring it back. It remains on Dash Platform, but you will need its recovery \
              information to load it again."
         ),
         (false, true) => format!(
-            "Identity {identity_phrase} will be permanently unloaded from this device, \
-             deleting its private keys and its entry in this app. Some synced network data, such \
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its private keys and its entry in this app.{identity_identification} Some \
+             synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
              does not bring it back. It remains on Dash Platform, and its wallet-derived private \
@@ -1091,8 +1113,9 @@ fn identity_unload_confirmation_message_for(
              scheduled vote(s)."
         ),
         (false, false) => format!(
-            "Identity {identity_phrase} will be permanently unloaded from this device, \
-             deleting its private keys and its entry in this app. Some synced network data, such \
+            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+             deleting its private keys and its entry in this app.{identity_identification} Some \
+             synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
              does not bring it back. It remains on Dash Platform, and its wallet-derived private \
@@ -1410,8 +1433,12 @@ mod tests {
         let aliased_id = aliased.identity.id().to_string(Encoding::Base58);
         let message = identity_unload_confirmation_message(&aliased, 0);
         assert!(
-            message.contains("Shared alias") && message.contains(&aliased_id),
-            "an aliased identity must be named by both its alias and its id: {message}"
+            message.contains("Identity \"Shared alias\" will be"),
+            "an aliased identity must still be named by its alias: {message}"
+        );
+        assert!(
+            message.contains(&format!("Its full identifier is {aliased_id}.")),
+            "an aliased identity must also be named by its id, as its own sentence: {message}"
         );
 
         let unaliased = qualified_identity_with(14, None);
@@ -1419,7 +1446,36 @@ mod tests {
         let message = identity_unload_confirmation_message(&unaliased, 0);
         assert!(
             message.starts_with(&format!("Identity \"{unaliased_id}\" will be")),
-            "an unaliased identity is already unambiguous and names its id once: {message}"
+            "an unaliased identity is named by its id: {message}"
+        );
+        assert!(
+            !message.contains("Its full identifier is"),
+            "an identity already named by its id must not repeat it: {message}"
+        );
+    }
+
+    /// Nodes are loaded by ProTxHash, never from a wallet seed, so the generic
+    /// recovery-information wording would send their owners looking for a
+    /// recovery phrase that never existed.
+    #[test]
+    fn unload_dialog_points_nodes_at_their_protxhash() {
+        for identity_type in [IdentityType::Masternode, IdentityType::Evonode] {
+            let mut node = qualified_identity_with(17, Some("Node"));
+            node.identity_type = identity_type;
+            let message = identity_unload_confirmation_message(&node, 0);
+            assert!(
+                message.ends_with(NODE_RELOAD_GUIDANCE),
+                "a {identity_type:?} must be told how it is actually loaded again: {message}"
+            );
+        }
+
+        let user = identity_unload_confirmation_message(
+            &qualified_identity_with(18, Some("User identity")),
+            0,
+        );
+        assert!(
+            !user.contains(NODE_RELOAD_GUIDANCE),
+            "an ordinary identity must not be given node guidance: {user}"
         );
     }
 
@@ -1488,12 +1544,13 @@ mod tests {
         assert_eq!(
             identity_unload_confirmation_message(&identity, 0),
             format!(
-                "Identity \"Mixed identity\" (ID: {identity_id}) will be permanently unloaded \
-                 from this device, deleting its private keys and its entry in this app. Some \
-                 synced network data, such as contacts and payment history, is removed only by \
-                 the \"Clear Database\" action in Settings. This app remembers that you unloaded \
-                 this identity, so automatic discovery does not bring it back. It remains on Dash \
-                 Platform, but you will need its recovery information to load it again."
+                "Identity \"Mixed identity\" will be permanently unloaded from this device, \
+                 deleting its private keys and its entry in this app. Its full identifier is \
+                 {identity_id}. Some synced network data, such as contacts and payment history, \
+                 is removed only by the \"Clear Database\" action in Settings. This app remembers \
+                 that you unloaded this identity, so automatic discovery does not bring it back. \
+                 It remains on Dash Platform, but you will need its recovery information to load \
+                 it again."
             )
         );
         assert_eq!(identity_unload_tip(&identity), TIP_UNLOAD_RECOVERY_REQUIRED);

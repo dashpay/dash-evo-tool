@@ -686,9 +686,11 @@ pub enum TaskError {
     ///
     /// The identity is already out of the local index when this is raised, so it
     /// is gone from every screen: the only recovery is to load it again, which
-    /// finishes the deferred cleanup, and then remove it a second time.
+    /// finishes the deferred cleanup, and then unload or remove it a second
+    /// time. Both entry points reach this, so the text names neither button's
+    /// verb alone.
     #[error(
-        "Some local data for identity {identity_id} could not be fully removed. Load this identity again, then remove it a second time to finish clearing it."
+        "Some local data for identity {identity_id} could not be fully removed. Load this identity again, then unload or remove it to finish clearing it."
     )]
     IdentityUnloadCleanupFailed {
         identity_id: Identifier,

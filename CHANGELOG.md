@@ -76,7 +76,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wallet discovery — so a leftover key from an earlier interrupted unload is
   always cleared before a fresh load replaces it, not just on one path.
 
-- **"Delete all local data" no longer reports a clean wipe it did not finish**:
+- **"Clear Database" no longer reports a clean wipe it did not finish**:
   the wipe now keeps every identity reserved until the last step is done, so an
   identity being loaded in the background cannot be written back to disk after
   the wipe has already passed it and still be reported as erased. A failure
@@ -93,7 +93,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Previously such an identity could disappear from every list while its private
   keys remained on the device with nothing able to reach them. The message
   shown when this happens names that recovery — load the identity again, then
-  remove it a second time — instead of suggesting a retry that was impossible.
+  unload or remove it — instead of suggesting a retry that was impossible.
 
 - **Removing an identity now says what it really does**: the "Remove" action on
   the Identities list and "Remove masternode" on the masternode page show the
@@ -104,7 +104,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   contacts and payment history that this action does not remove, and discloses
   that the app remembers the unload so automatic discovery does not bring the
   identity back. Removing a masternode still states that its voting identity
-  goes with it.
+  goes with it, and a masternode or evonode confirmation now says the node can
+  be loaded again with its ProTxHash instead of asking for recovery information
+  it never had. An identity with a name you chose is now also identified by its
+  full identifier, so two identities sharing a name cannot be confused on an
+  action that deletes keys.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

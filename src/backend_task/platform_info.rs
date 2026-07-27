@@ -10,6 +10,7 @@ use dash_sdk::dpp::block::extended_epoch_info::{
 use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contracts::SystemDataContract;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::v1::document_types::withdrawal::properties::{
@@ -28,7 +29,9 @@ use dash_sdk::drive::query::{SelectProjection, OrderClause, WhereClause, WhereOp
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{DocumentQuery, FetchMany, FetchUnproved, Identifier};
+use dash_sdk::platform::{
+    DataContract, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier,
+};
 use dash_sdk::query_types::{
     AddressInfo, CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
@@ -247,6 +250,16 @@ fn format_extended_epoch_info(
     )
 }
 
+fn format_unavailable_current_epoch_info(protocol_version: u32) -> String {
+    format!(
+        "Current Epoch Information:\n\
+         • Protocol Version: {protocol_version}\n\
+         • Epoch details and fee multiplier are temporarily unavailable while \
+         dashpay/platform#4231 is unresolved.\n\n\
+         (The fee multiplier cache was not updated.)"
+    )
+}
+
 fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> String {
     let mut result = String::new();
     result.push_str("Current Validator Set Information:\n\n");
@@ -457,6 +470,23 @@ fn withdrawal_status_str(status: WithdrawalStatus) -> &'static str {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoch_workaround_reports_protocol_version_and_stale_fee_cache() {
+        assert_eq!(
+            format_unavailable_current_epoch_info(12),
+            "Current Epoch Information:\n\
+             • Protocol Version: 12\n\
+             • Epoch details and fee multiplier are temporarily unavailable while \
+             dashpay/platform#4231 is unresolved.\n\n\
+             (The fee multiplier cache was not updated.)"
+        );
+    }
+}
+
 /// Flatten one withdrawal [`Document`] into a [`WithdrawalRecord`].
 fn extract_withdrawal_record(
     document: &Document,
@@ -550,22 +580,44 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
-                    .await
-                    .map_err(TaskError::from)?;
+                if let Err(error) = DataContract::fetch(sdk, self.dpns_contract.id()).await {
+                    tracing::warn!(
+                        %error,
+                        "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
+                         keeping the SDK's previous protocol version"
+                    );
+                }
+                let protocol_version = sdk.protocol_version_number();
+                self.set_platform_protocol_version(protocol_version);
 
-                let fee_multiplier = epoch_info.fee_multiplier_permille();
-                self.set_fee_multiplier_permille(fee_multiplier);
-                self.set_platform_protocol_version(epoch_info.protocol_version());
+                match ExtendedEpochInfo::fetch_current(sdk).await {
+                    Ok(epoch_info) => {
+                        let fee_multiplier = epoch_info.fee_multiplier_permille();
+                        self.set_fee_multiplier_permille(fee_multiplier);
 
-                let mut formatted = format_extended_epoch_info(epoch_info, self.network, true);
-                formatted.push_str(&format!(
-                    "\n\n(Fee multiplier cache updated: {}x)",
-                    fee_multiplier as f64 / 1000.0
-                ));
-                Ok(BackendTaskSuccessResult::PlatformInfo(
-                    PlatformInfoTaskResult::TextResult(formatted),
-                ))
+                        let mut formatted =
+                            format_extended_epoch_info(epoch_info, self.network, true);
+                        formatted.push_str(&format!(
+                            "\n\n(Fee multiplier cache updated: {}x)",
+                            fee_multiplier as f64 / 1000.0
+                        ));
+                        Ok(BackendTaskSuccessResult::PlatformInfo(
+                            PlatformInfoTaskResult::TextResult(formatted),
+                        ))
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "Current epoch fetch is blocked by dashpay/platform#4231; \
+                             keeping the cached fee multiplier"
+                        );
+                        Ok(BackendTaskSuccessResult::PlatformInfo(
+                            PlatformInfoTaskResult::TextResult(
+                                format_unavailable_current_epoch_info(protocol_version),
+                            ),
+                        ))
+                    }
+                }
             }
             PlatformInfoTaskRequestType::TotalCreditsOnPlatform => {
                 let total_credits = TotalCreditsInPlatform::fetch_current(sdk)

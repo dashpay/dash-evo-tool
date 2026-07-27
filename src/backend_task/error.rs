@@ -204,6 +204,16 @@ pub enum TaskError {
     )]
     WalletPaymentOptionUnsupported,
 
+    /// A fatal persisted-load failure prevented the wallet backend from
+    /// restoring locally saved wallet state during startup.
+    #[error(
+        "Saved wallet data appears damaged and cannot be loaded. Restore the wallet from its recovery phrase to keep using it."
+    )]
+    WalletLocalDataLoadFailed {
+        #[source]
+        source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// A wallet operation failed inside the upstream wallet runtime.
     #[error("The wallet service could not complete this operation. Please retry in a moment.")]
     WalletBackend {
@@ -1613,6 +1623,15 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The funding transaction output has already been used for another operation.
+    #[error(
+        "This deposit has already been used and cannot be used again. Choose a different deposit, or start a new deposit."
+    )]
+    AssetLockOutPointAlreadyConsumed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Fetching address information from the platform failed.
     #[error("Could not retrieve address information from the platform. Please retry.")]
     PlatformFetchError {
@@ -1745,6 +1764,15 @@ pub enum TaskError {
     /// The contract structure does not match expectations (e.g. missing contested index).
     #[error("The contract structure is unexpected. Please update the application.")]
     ContractSchemaMismatch { detail: &'static str },
+
+    /// Platform returned a different contract after accepting an update.
+    #[error(
+        "The platform returned contract {returned} instead of {expected}. Please try the update again."
+    )]
+    UpdatedContractIdMismatch {
+        expected: Identifier,
+        returned: Identifier,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Withdrawal document parsing errors
@@ -2019,6 +2047,13 @@ pub enum TaskError {
     /// The wallet has already been imported for this network.
     #[error("This wallet has already been imported for this network.")]
     WalletAlreadyImported,
+
+    /// A new wallet password is shorter than the persistent secret store's
+    /// minimum and therefore could not be migrated to Tier-2 protection.
+    #[error(
+        "Wallet passwords must be at least {min} UTF-8 bytes after trimming. Pick a longer one and try again."
+    )]
+    WalletPasswordTooShort { min: u32 },
 
     /// Wallet key derivation failed during construction.
     #[error("Could not create the wallet. Key derivation failed — please try again.")]
@@ -2841,6 +2876,9 @@ impl From<crate::model::wallet::WalletCreationError> for TaskError {
     fn from(e: crate::model::wallet::WalletCreationError) -> Self {
         use crate::model::wallet::WalletCreationError;
         match e {
+            WalletCreationError::PasswordTooShort { min } => {
+                TaskError::WalletPasswordTooShort { min }
+            }
             WalletCreationError::Encryption { detail } => TaskError::EncryptionError { detail },
             WalletCreationError::KeyDerivation { source } => {
                 TaskError::WalletKeyDerivationFailed { source }
@@ -2973,6 +3011,11 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::BasicError(
+                        BasicError::IdentityAssetLockTransactionOutPointAlreadyConsumedError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::AssetLockOutPointAlreadyConsumed { source_error }
+                    })),
                     ConsensusError::StateError(StateError::InsufficientPoolNotesError(e)) => {
                         let (current_count, minimum_required) =
                             (e.current_count(), e.minimum_required());
@@ -3289,6 +3332,14 @@ mod tests {
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn wallet_password_too_short_display_matches_model_guidance() {
+        assert_eq!(
+            TaskError::WalletPasswordTooShort { min: 8 }.to_string(),
+            "Wallet passwords must be at least 8 UTF-8 bytes after trimming. Pick a longer one and try again."
+        );
     }
 
     #[test]
@@ -4441,6 +4492,44 @@ mod tests {
                 }
             ),
             "Expected AssetLockOutPointInsufficientBalance, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_asset_lock_outpoint_already_consumed_via_consensus() {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
+        use dashcore::hashes::Hash;
+        let consensus = ConsensusError::from(
+            IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
+                dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+            ),
+        );
+        let err = TaskError::from(SdkError::from(consensus));
+        assert!(
+            matches!(err, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn asset_lock_outpoint_already_consumed_display_is_actionable_and_non_retryable() {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
+        use dashcore::hashes::Hash;
+        let consensus = ConsensusError::from(
+            IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
+                dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+            ),
+        );
+        let message = TaskError::from(SdkError::from(consensus)).to_string();
+        assert!(
+            message.contains("different deposit") && message.contains("new deposit"),
+            "Expected an alternative funding action, got: {message}"
+        );
+        assert!(
+            !message.to_lowercase().contains("retry"),
+            "A permanently consumed deposit must not suggest retrying: {message}"
         );
     }
 

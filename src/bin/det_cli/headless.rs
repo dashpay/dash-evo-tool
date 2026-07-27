@@ -7,6 +7,8 @@
 /// runtime teardown to prevent coordinator OS threads from panicking against a
 /// shutting-down timer wheel.  See `DashMcpService::shutdown_wallet_backend`
 /// for the race analysis.
+use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
+
 pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
     use dash_evo_tool::logging::initialize_logger;
     use dash_evo_tool::mcp::server::{init_app_context, shutdown_app_context_wallet_backend};
@@ -25,6 +27,7 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
+        .thread_stack_size(SDK_THREAD_STACK_SIZE) // 4 MiB stack size for each worker thread
         .enable_all()
         .build()?;
 

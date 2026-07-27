@@ -102,7 +102,7 @@ impl TopUpIdentityScreen {
         let mut new_style = (**ui.style()).clone();
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
         ui.set_style(new_style);
-        let button = egui::Button::new(RichText::new("Top Up Identity").color(Color32::WHITE))
+        let button = egui::Button::new(RichText::new("Add funds").color(Color32::WHITE))
             .fill(DashColors::DASH_BLUE)
             .frame(true)
             .corner_radius(3.0);
@@ -114,7 +114,7 @@ impl TopUpIdentityScreen {
 
         ui.vertical_centered(|ui| match step {
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("=> Waiting for Platform acknowledgement <=");
+                ui.heading("Waiting for Platform to add the funds to the identity.");
             }
             WalletFundedScreenStep::Success => {
                 ui.heading("...Success...");

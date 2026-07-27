@@ -272,7 +272,7 @@ fn classify_open(data_dir: &std::path::Path) -> Result<BootDecision, BootError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet_backend::single_key::{open_secret_store, open_secret_store_with_passphrase};
+    use crate::wallet_backend::single_key::open_secret_store;
 
     /// A normal keyless vault classifies as ready — the happy path never gates.
     #[test]
@@ -294,8 +294,7 @@ mod tests {
     #[test]
     fn classify_open_unlock_for_passphrase_vault() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let vault = tmp.path().join("secrets").join("det-secrets.pwsvault");
-        open_secret_store_with_passphrase(&vault, SecretString::new("legacy"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
             .expect("create passphrase vault");
 
         let decision = classify_open(tmp.path()).expect("classify");
@@ -330,7 +329,7 @@ mod tests {
     fn keyless_open_of_passphrase_vault_is_the_gated_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let vault = tmp.path().join("secrets").join("det-secrets.pwsvault");
-        open_secret_store_with_passphrase(&vault, SecretString::new("legacy"))
+        AppContext::open_secret_store_with_passphrase(tmp.path(), SecretString::new("legacy-pass"))
             .expect("create passphrase vault");
 
         let err = open_secret_store(&vault).expect_err("keyless open must fail");

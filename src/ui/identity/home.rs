@@ -7,18 +7,18 @@
 //!    identity-type badge, network pill. Two variants: social profile set
 //!    (`IdentityHeroCard` with display name) and no social profile (type-glyph
 //!    monogram + inline `Set up your social profile` card below the hero).
-//! 2. Quick-actions row: **Send**, **Receive**, **Add contact**. `Add contact`
-//!    is gated behind a social profile (see §B.3).
-//! 3. Secondary actions row (ghost buttons): `Add funds`, `Send to wallet`,
-//!    `Send to another identity`. All three visible for all personas (§B.2).
-//! 4. Onboarding checklist strip (until all three steps are complete or the
+//! 2. Actions row: **Add funds**, **Send to wallet**, **Send to another
+//!    identity**, **Add contact**. `Add contact` is gated behind a social
+//!    profile (see §B.3).
+//! 3. Onboarding checklist strip (until all three steps are complete or the
 //!    user dismisses it).
-//! 5. Recent activity preview (up to 5 rows), currently an empty-state
+//! 4. Recent activity preview (up to 5 rows), currently an empty-state
 //!    preview; the `See all activity` link routes to the Activity tab.
 //!    Richer content is parked until the activity aggregator lands.
-//! 6. Advanced details expander (raw Identity ID, revision, last updated).
+//! 5. Advanced details expander (raw Identity ID, revision, last updated).
 //!
-//! Strings are taken verbatim from §B.2 / §B.3 and the wording audit in §C.
+//! Strings follow the Identity Home action-set redesign and the wording audit
+//! in §C.
 //!
 //! This module is state-less per-frame: the only persisted state is the
 //! `dismissed_checklist` flag owned by the calling hub screen and passed in
@@ -33,7 +33,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::identity::tabs::IdentityHubTab;
-use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing, network_label};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing, network_label};
 #[cfg(test)]
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -91,18 +91,14 @@ pub enum HomeOutcome {
 /// every button produces a real side effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeButton {
-    /// Quick-action `Send`.
-    Send,
-    /// Quick-action `Receive`.
-    Receive,
-    /// Quick-action `Add contact` (enabled path — gated callers do not reach
+    /// Action-row `Add contact` (enabled path — gated callers do not reach
     /// the dispatcher).
     AddContact,
-    /// Secondary action `Add funds`.
+    /// Action-row `Add funds`.
     AddFunds,
-    /// Secondary action `Send to wallet`.
+    /// Action-row `Send to wallet`.
     SendToWallet,
-    /// Secondary action `Send to another identity`.
+    /// Action-row `Send to another identity`.
     SendToAnotherIdentity,
     /// Inline social profile card `Add a display name` CTA. The hero card's
     /// separate `Pick a username` CTA (when no DPNS handle exists) maps to
@@ -154,7 +150,7 @@ pub enum HomeScreenKind {
     Transfer,
     /// `Screen::TopUpIdentityScreen` — move wallet Dash into the identity.
     TopUp,
-    /// `Screen::WithdrawalScreen` — move identity credits back to the wallet.
+    /// `Screen::WithdrawalScreen` — move identity credits to a Core Dash address.
     Withdrawal,
     /// `Screen::RegisterDpnsNameScreen` — register a DPNS name for the identity.
     RegisterDpnsName,
@@ -175,8 +171,8 @@ pub fn home_button_kind(button: HomeButton) -> HomeButtonKind {
     use HomeButtonKind::{OpenScreen, Outcome};
     use HomeScreenKind::*;
     match button {
-        HomeButton::Send | HomeButton::SendToAnotherIdentity => OpenScreen(Transfer),
-        HomeButton::Receive | HomeButton::AddFunds => OpenScreen(TopUp),
+        HomeButton::SendToAnotherIdentity => OpenScreen(Transfer),
+        HomeButton::AddFunds => OpenScreen(TopUp),
         HomeButton::SendToWallet => OpenScreen(Withdrawal),
         HomeButton::PickUsernameHero | HomeButton::ChecklistPickUsername => {
             OpenScreen(RegisterDpnsName)
@@ -308,18 +304,11 @@ pub fn render(
 
     // --- Inline "Set up your social profile" card (no-profile variant) -
     //
-    // Per wireframe §B.3 this prompt belongs immediately below the hero for
-    // the no-profile variant (V2 visual fix). It was previously rendered after
-    // the secondary-actions row, leaving the hero visually empty and the card
-    // buried. Moved here so the two form a single compact visual group with no
-    // gap between them. With V1 applied (hero sized to content, no min-height
-    // floor) the hero is already compact — no extra space is added before this
-    // card, and the standard Spacing::MD below separates both from the actions.
+    // Per wireframe §B.3 this prompt belongs immediately below the compact hero,
+    // with standard spacing separating the group from the actions.
     //
-    // V2/V3 conflict: the onboarding checklist already contains a
-    // "Set a display name" step that routes to Settings — the same action as
-    // this card. When the checklist is visible (not dismissed), suppress this
-    // card so the user sees exactly one prompt for the action.
+    // The onboarding checklist contains the same "Set a display name" action,
+    // so suppress this card while that checklist is visible.
     let checklist_covers_profile = !hero_has_social_profile && !state.dismissed_checklist;
     if !hero_has_social_profile
         && !state.skipped_social_profile
@@ -330,52 +319,50 @@ pub fn render(
     }
     ui.add_space(Spacing::MD);
 
-    // --- Quick actions row --------------------------------------------
-    ui.horizontal(|ui| {
-        // "Send" routes to the identity Transfer screen (identity→identity
-        // credit transfer). The tooltip therefore describes that action, not
-        // a wallet-Dash send (T30).
-        if primary_quick_action(
-            ui,
-            "Send",
-            "Transfer credits from this identity to another identity.",
-        )
-        .clicked()
+    // --- Actions row --------------------------------------------------
+    ui.horizontal_wrapped(|ui| {
+        if ComponentStyles::add_primary_button(ui, "Add funds")
+            .clickable_tooltip("Move Dash from your wallet into this identity.")
+            .clicked()
         {
-            apply(HomeButton::Send);
+            apply(HomeButton::AddFunds);
         }
-        ui.add_space(Spacing::SM);
-        // "Receive" routes to TopUpIdentity (wallet→identity credits). The
-        // tooltip therefore describes adding funds from the wallet, not showing
-        // a QR code for inbound Dash (T30).
-        if primary_quick_action(
-            ui,
-            "Receive",
-            "Move Dash from your wallet into this identity.",
-        )
-        .clicked()
+
+        let send_to_wallet = ComponentStyles::secondary_button("Send to wallet", dark_mode);
+        if !identity.can_attempt_withdrawal(app_context.user_role()) {
+            ui.add_enabled(false, send_to_wallet).disabled_tooltip(
+                "Sending to a wallet is unavailable because this identity has no key available \
+                 for withdrawal in the current interface mode. Load or import an eligible key, \
+                 change the interface mode if another on-chain key is available, or use a \
+                 different identity.",
+            );
+        } else if ui
+            .add(send_to_wallet)
+            .clickable_tooltip(
+                "Move Dash out of this identity to a Dash address, such as one from your wallet.",
+            )
+            .clicked()
         {
-            apply(HomeButton::Receive);
+            apply(HomeButton::SendToWallet);
         }
-        ui.add_space(Spacing::SM);
+
+        if ComponentStyles::add_secondary_button(ui, "Send to another identity", dark_mode)
+            .clickable_tooltip(
+                "Send Dash from this identity to another identity. You can also send to a \
+                 Platform address.",
+            )
+            .clicked()
+        {
+            apply(HomeButton::SendToAnotherIdentity);
+        }
 
         // Add contact is gated behind a social profile per §B.3.
-        let add_contact = egui::Button::new(
-            RichText::new("Add contact")
-                .strong()
-                .color(DashColors::text_primary(dark_mode)),
-        )
-        .fill(DashColors::surface(dark_mode))
-        .stroke(Stroke::new(
-            Shape::BORDER_WIDTH,
-            DashColors::border(dark_mode),
-        ))
-        .min_size(egui::vec2(160.0, 40.0));
+        let add_contact = ComponentStyles::secondary_button("Add contact", dark_mode);
         if hero_has_social_profile {
-            let resp = ui
+            let response = ui
                 .add(add_contact)
                 .clickable_tooltip("Find someone by username and add them to your contacts.");
-            if resp.clicked() {
+            if response.clicked() {
                 apply(HomeButton::AddContact);
             }
         } else {
@@ -383,43 +370,6 @@ pub fn render(
                 "Set up a social profile first. Contacts need a display name and avatar \
                  so people can find you.",
             );
-        }
-    });
-    ui.add_space(Spacing::MD);
-
-    // --- Secondary actions row ----------------------------------------
-    ui.horizontal(|ui| {
-        if ghost_action(
-            ui,
-            "Add funds",
-            "Move Dash from your wallet into this identity.",
-            dark_mode,
-        )
-        .clicked()
-        {
-            apply(HomeButton::AddFunds);
-        }
-        ui.add_space(Spacing::SM);
-        if ghost_action(
-            ui,
-            "Send to wallet",
-            "Convert your identity balance back to spendable Dash in your wallet.",
-            dark_mode,
-        )
-        .clicked()
-        {
-            apply(HomeButton::SendToWallet);
-        }
-        ui.add_space(Spacing::SM);
-        if ghost_action(
-            ui,
-            "Send to another identity",
-            "Transfer Dash directly from this identity to another identity.",
-            dark_mode,
-        )
-        .clicked()
-        {
-            apply(HomeButton::SendToAnotherIdentity);
         }
     });
     ui.add_space(Spacing::MD);
@@ -692,27 +642,6 @@ fn render_empty(ui: &mut Ui, dark_mode: bool) {
     });
 }
 
-/// Build a primary (filled, Dash-blue) button used in the quick-actions row.
-/// Returns the `Response` so the caller can attach click handling inline.
-fn primary_quick_action(ui: &mut Ui, label: &str, tooltip: &str) -> egui::Response {
-    let btn = egui::Button::new(RichText::new(label).strong().color(Color32::WHITE))
-        .fill(DashColors::DASH_BLUE)
-        .min_size(egui::vec2(140.0, 40.0));
-    ui.add(btn).clickable_tooltip(tooltip)
-}
-
-/// Build a ghost (outlined) button used in the secondary-actions row.
-fn ghost_action(ui: &mut Ui, label: &str, tooltip: &str, dark_mode: bool) -> egui::Response {
-    let btn = egui::Button::new(RichText::new(label).color(DashColors::text_primary(dark_mode)))
-        .fill(Color32::TRANSPARENT)
-        .stroke(Stroke::new(
-            Shape::BORDER_WIDTH,
-            DashColors::border(dark_mode),
-        ))
-        .min_size(egui::vec2(160.0, 36.0));
-    ui.add(btn).clickable_tooltip(tooltip)
-}
-
 /// Render the inline social profile card shown below the hero when the user
 /// has no display name. Returns `true` when the primary `Add a display name`
 /// button is clicked.
@@ -838,9 +767,7 @@ mod tests {
     // future catch-all). The enum is non-`Default`-constructible and
     // every variant is enumerated in `ALL_HOME_BUTTONS` — if you add a
     // new button, you MUST extend this list or the "coverage" test
-    // fails. Guards against #842, where the hub screen discarded the
-    // tab's action value and every quick/secondary action silently
-    // returned `AppAction::None`.
+    // fails.
     // -----------------------------------------------------------------
 
     /// Every `HomeButton` variant. The list is hand-maintained so that
@@ -848,8 +775,6 @@ mod tests {
     /// below — adding a variant without updating this list is a compile
     /// error.
     const ALL_HOME_BUTTONS: &[HomeButton] = &[
-        HomeButton::Send,
-        HomeButton::Receive,
         HomeButton::AddContact,
         HomeButton::AddFunds,
         HomeButton::SendToWallet,
@@ -872,8 +797,6 @@ mod tests {
         for button in ALL_HOME_BUTTONS {
             #[allow(unreachable_patterns)]
             let _: () = match *button {
-                HomeButton::Send => (),
-                HomeButton::Receive => (),
                 HomeButton::AddContact => (),
                 HomeButton::AddFunds => (),
                 HomeButton::SendToWallet => (),
@@ -903,30 +826,25 @@ mod tests {
         }
     }
 
-    /// Pin the specific mapping for the most-clicked surfaces so a future
-    /// rename or swap (e.g. routing `Send` to `TopUp`) is caught.
     #[test]
-    fn primary_send_receive_mappings_are_stable() {
-        assert_eq!(
-            home_button_kind(HomeButton::Send),
-            HomeButtonKind::OpenScreen(HomeScreenKind::Transfer),
-        );
-        assert_eq!(
-            home_button_kind(HomeButton::Receive),
-            HomeButtonKind::OpenScreen(HomeScreenKind::TopUp),
-        );
-        assert_eq!(
-            home_button_kind(HomeButton::AddFunds),
-            HomeButtonKind::OpenScreen(HomeScreenKind::TopUp),
-        );
-        assert_eq!(
-            home_button_kind(HomeButton::SendToWallet),
-            HomeButtonKind::OpenScreen(HomeScreenKind::Withdrawal),
-        );
-        assert_eq!(
-            home_button_kind(HomeButton::SendToAnotherIdentity),
-            HomeButtonKind::OpenScreen(HomeScreenKind::Transfer),
-        );
+    fn action_row_buttons_have_distinct_destinations() {
+        let destinations = [
+            HomeButton::AddFunds,
+            HomeButton::SendToWallet,
+            HomeButton::SendToAnotherIdentity,
+        ]
+        .map(|button| match home_button_kind(button) {
+            HomeButtonKind::OpenScreen(screen) => screen,
+            HomeButtonKind::Outcome(outcome) => {
+                panic!("action-row button {button:?} produced hub outcome {outcome:?}")
+            }
+        });
+
+        for (index, destination) in destinations.iter().enumerate() {
+            for other in &destinations[index + 1..] {
+                assert_ne!(destination, other);
+            }
+        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ impl TopUpIdentityScreen {
             let dash_balance = spendable_balance as f64 * 1e-8; // Convert to DASH units
 
             ui.horizontal(|ui| {
-                ui.label(format!("Wallet Balance: {:.8} DASH", dash_balance));
+                ui.label(format!("You can use {dash_balance:.8} DASH."));
             });
         } else {
             ui.label("No wallet selected");
@@ -102,8 +102,8 @@ impl TopUpIdentityScreen {
         // Extract the step from the RwLock to minimize borrow scope
         let step = self.current_step();
 
-        // Only show the fee estimate and Top Up button once a positive amount
-        // is entered — otherwise clicking Top Up would silently no-op.
+        // Only show the fee estimate and Add funds button once a positive amount
+        // is entered — otherwise clicking Add funds would silently no-op.
         let has_valid_amount = self.funding_amount_exact.is_some_and(|d| d > 0);
         if !has_valid_amount {
             return action;
@@ -135,11 +135,11 @@ impl TopUpIdentityScreen {
 
         ui.add_space(10.0);
 
-        // Top up button
+        // Add funds button
         let mut new_style = (**ui.style()).clone();
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
         ui.set_style(new_style);
-        let button = egui::Button::new(RichText::new("Top Up Identity").color(Color32::WHITE))
+        let button = egui::Button::new(RichText::new("Add funds").color(Color32::WHITE))
             .fill(DashColors::DASH_BLUE)
             .frame(true)
             .corner_radius(3.0);
@@ -152,12 +152,10 @@ impl TopUpIdentityScreen {
         ui.vertical_centered(|ui| {
             match step {
                 WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading(
-                        "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
-                    );
+                    ui.heading("Waiting for the Dash network to confirm the transfer.");
                 }
                 WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    ui.heading("=> Waiting for Platform acknowledgement <=");
+                    ui.heading("Waiting for Platform to add the funds to the identity.");
                 }
                 WalletFundedScreenStep::Success => {
                     ui.heading("...Success...");

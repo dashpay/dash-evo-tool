@@ -639,7 +639,7 @@ pub(super) async fn mirror_incoming_payment_to_backend(
 /// platform rev `35e4a2f`
 /// (`PlatformWalletManager::account_address_pools_blocking` →
 /// `AccountAddressInfoSnapshot::is_used`, sourced from the SPV-tracked
-/// `AddressInfo.used`), but it is keyed by `(wallet_id, AccountType)`,
+/// `AddressInfo.is_used()`), but it is keyed by `(wallet_id, AccountType)`,
 /// not by an arbitrary address. This function receives a context-free
 /// address list, so it cannot route a lookup. More fundamentally, the
 /// only DashPay addresses with derivation context are the contact-SEND

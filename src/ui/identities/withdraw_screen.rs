@@ -70,30 +70,13 @@ impl WithdrawalScreen {
         let max_amount = identity.identity.balance();
         // Only pre-select a withdrawal key whose private material is held locally
         // (TRANSFER preferred, OWNER fallback). Pre-selecting an on-chain-only key
-        // the signer cannot use is what surfaced the raw signing error.
+        // the signer cannot use is what surfaced the raw signing error. This is the
+        // same invariant `can_attempt_withdrawal` gates on for every role, so a
+        // `None` here means the gate itself should have kept this screen from
+        // being reachable in the first place.
         let selected_key: Option<IdentityPublicKey> = identity
             .default_withdrawal_key()
-            .map(|qk| qk.identity_public_key.clone())
-            .or_else(|| {
-                // Only the Developer role can actually sign with an on-chain-only
-                // key (the signing override in `state_transition_options` plus the
-                // Developer branch of the `has_keys` gate below). Pre-selecting one
-                // for any lower role gives a key the signer cannot use, so this
-                // fallback matches that Developer gate.
-                app_context
-                    .user_role()
-                    .at_least(UserRole::Developer)
-                    .then(|| {
-                        identity.identity.get_first_public_key_matching(
-                            Purpose::TRANSFER,
-                            SecurityLevel::full_range().into(),
-                            KeyType::all_key_types().into(),
-                            false,
-                        )
-                    })
-                    .flatten()
-                    .cloned()
-            });
+            .map(|qk| qk.identity_public_key.clone());
         // With no key there is nothing to resolve a wallet from; skip the call so
         // get_selected_wallet's "no key provided" Err path stays unreachable here.
         let selected_wallet = match selected_key.as_ref() {
@@ -435,19 +418,16 @@ impl ScreenLike for WithdrawalScreen {
             });
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
-                !self.identity.identity.public_keys().is_empty()
-            } else {
-                !self.identity.available_withdrawal_keys().is_empty()
-            };
-
-            if !has_keys {
+            if !self
+                .identity
+                .can_attempt_withdrawal(self.app_context.user_role())
+            {
                 ui.colored_label(
                     egui::Color32::DARK_RED,
-                    format!(
-                        "You do not have any withdrawal keys loaded for this {identity_type} identity. Note that TRANSFER or OWNER keys are used for withdrawals.",
-                        identity_type = self.identity.identity_type
-                    ));
+                    "This identity has no loaded key that can approve a withdrawal. Load or \
+                     import a key that can send funds from this identity, or use a different \
+                     identity.",
+                );
                 ui.add_space(10.0);
 
                 if self.identity.identity_type != IdentityType::User {

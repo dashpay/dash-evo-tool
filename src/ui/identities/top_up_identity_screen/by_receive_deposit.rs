@@ -128,7 +128,7 @@ impl TopUpIdentityScreen {
     }
 
     /// Render the "Receive a new deposit" funding method: a scannable deposit
-    /// address while waiting, then an editable amount and Top Up button once the
+    /// address while waiting, then an editable amount and Add funds button once the
     /// deposit arrives. A "Choose a different funding method" affordance is
     /// present throughout so the user is never trapped.
     pub fn render_ui_by_receive_deposit(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
@@ -166,11 +166,10 @@ impl TopUpIdentityScreen {
             let has_valid_amount = self.funding_amount_exact.is_some_and(|d| d > 0);
 
             if has_valid_amount {
-                let button =
-                    egui::Button::new(RichText::new("Top Up Identity").color(Color32::WHITE))
-                        .fill(DashColors::DASH_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
+                let button = egui::Button::new(RichText::new("Add funds").color(Color32::WHITE))
+                    .fill(DashColors::DASH_BLUE)
+                    .frame(true)
+                    .corner_radius(3.0);
                 if ui.add(button).clicked() {
                     action = self.top_up_identity_clicked(FundingMethod::ReceiveDeposit);
                 }
@@ -184,10 +183,10 @@ impl TopUpIdentityScreen {
         ui.add_space(20.0);
         ui.vertical_centered(|ui| match step {
             WalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
+                ui.heading("Waiting for the Dash network to confirm the transfer.");
             }
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("=> Waiting for Platform acknowledgement <=");
+                ui.heading("Waiting for Platform to add the funds to the identity.");
             }
             _ => {}
         });

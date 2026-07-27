@@ -159,11 +159,6 @@ use crate::model::wallet::meta::wallet_label;
 use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
 
-/// The upstream persister DET consumes. Authored upstream (PR #3625) — DET
-/// does not write its own persister (removal-inventory: consume, don't
-/// reimplement).
-type DetPersister = SqlitePersister;
-
 /// Which side of a contact relationship
 /// [`WalletBackend::record_contact_request`] writes into the local
 /// wallet-manager. Selects the upstream `add_*_contact_request` call and the
@@ -321,11 +316,11 @@ impl RegistrationFlight {
 }
 
 struct Inner {
-    pwm: PlatformWalletManager<DetPersister>,
-    /// Shared handle to the same persister `pwm` consumes. Kept so the
-    /// typed key/value adapter ([`DetKv`]) can read/write app data
-    /// alongside wallet state without opening a second connection.
-    persister: Arc<DetPersister>,
+    pwm: PlatformWalletManager<SqlitePersister>,
+    /// Native persistence handle for operations the manager does not expose,
+    /// including DET metadata and durable deletion. At this pin, the manager's
+    /// `remove_wallet` only evicts runtime state.
+    wallet_persister: Arc<SqlitePersister>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
     /// selection (A04 fund-safety gate).
@@ -344,6 +339,8 @@ struct Inner {
     registration_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -464,7 +461,6 @@ impl WalletBackend {
             SqlitePersister::open(persister_config)
                 .map_err(TaskError::from_wallet_storage_open_error)?,
         );
-
         // Reuse the vault handle `AppContext` already opened at boot. The file
         // backend holds an exclusive advisory lock for the handle's lifetime,
         // so opening a second handle here would fail with `AlreadyLocked` — and
@@ -520,7 +516,7 @@ impl WalletBackend {
         let backend = Self {
             inner: Arc::new(Inner {
                 pwm,
-                persister,
+                wallet_persister: persister,
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -532,6 +528,8 @@ impl WalletBackend {
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -693,12 +691,22 @@ impl WalletBackend {
         //    already holds the wallets, so the upstream load (which rejects
         //    duplicates) is skipped and only the resolution below runs.
         if self.inner.pwm.wallet_ids().await.is_empty() {
+            use platform_wallet::changeset::{PersistenceError, PersistenceErrorKind};
+
             self.inner
                 .pwm
                 .load_from_persistor()
                 .await
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Arc::new(e),
+                .map_err(|source| match source {
+                    source @ PlatformWalletError::PersisterLoad(PersistenceError::Backend {
+                        kind: PersistenceErrorKind::Fatal,
+                        ..
+                    }) => TaskError::WalletLocalDataLoadFailed {
+                        source: Arc::new(source),
+                    },
+                    source => TaskError::WalletBackend {
+                        source: Arc::new(source),
+                    },
                 })?;
         }
 
@@ -810,10 +818,15 @@ impl WalletBackend {
     //   adopt it:
     //     1. dashpay/rust-dashcore#818 "feat(key-wallet): reserve receive
     //        addresses on hand-out" — adds `next_unused_and_reserve`
-    //        (+ reserve/release/sweep); ready-for-review, NOT yet merged.
+    //        (+ reserve/release/sweep). MERGED and present in the pinned rev;
+    //        `AddressPool::next_unused` (DET's path) stays non-reserving —
+    //        it now returns the lowest `is_available()` (neither used nor
+    //        reserved) address, which equals the old lowest-unused for DET
+    //        because DET never reserves.
     //     2. dashpay/platform — surface it as
-    //        `CoreWallet::next_receive_address_and_reserve_for_account` (the
-    //        pinned rev still calls the old non-reserving path).
+    //        `CoreWallet::next_receive_address_and_reserve_for_account`. NOT
+    //        yet present; the pinned rev's `next_receive_address_for_account`
+    //        still calls the old non-reserving path.
     //     3. DET — bump the platform dep, then switch
     //        `next_receive_address()` to the reserving variant.
     //   Until all three land, `next_receive_address` stays on `next_unused`
@@ -1037,6 +1050,13 @@ impl WalletBackend {
             .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_forget_wallet_local_state_test_failure(&self, fail: bool) {
+        self.inner
+            .forget_wallet_local_state_test_failure
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Resolve one just-registered upstream wallet into the DET-keyed maps via
     /// the account-xpub fund-routing gate, identical in spirit to the gate the
     /// seedless loader applies per wallet.
@@ -1208,7 +1228,11 @@ impl WalletBackend {
                     continue;
                 }
             };
-            match self.inner.persister.get_core_tx_record(*wallet_id, &txid) {
+            match self
+                .inner
+                .wallet_persister
+                .get_core_tx_record(*wallet_id, &txid)
+            {
                 Ok(Some(record)) => records.push(record),
                 Ok(None) => {
                     record_persisted_transaction_skip(
@@ -1265,6 +1289,15 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         wallet_id: Option<WalletId>,
     ) -> Result<(), TaskError> {
+        #[cfg(test)]
+        if self
+            .inner
+            .forget_wallet_local_state_test_failure
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(TaskError::WalletDataClearUnavailable);
+        }
+
         let mut first_error: Option<TaskError> = None;
 
         // Seed vault — delete BOTH the raw `seed.raw.v1` (the current form) and
@@ -1372,11 +1405,24 @@ impl WalletBackend {
         wallet_id: &WalletId,
     ) -> Result<(), TaskError> {
         use platform_wallet::error::PlatformWalletError;
+        use platform_wallet_storage::WalletStorageError;
+
         match self.inner.pwm.remove_wallet(wallet_id).await {
-            Ok(_) | Err(PlatformWalletError::WalletNotFound(_)) => Ok(()),
-            Err(e) => Err(TaskError::WalletBackend {
-                source: Arc::new(e),
-            }),
+            Ok(_) | Err(PlatformWalletError::WalletNotFound(_)) => {}
+            Err(source) => {
+                return Err(TaskError::WalletBackend {
+                    source: Arc::new(source),
+                });
+            }
+        }
+
+        match self
+            .inner
+            .wallet_persister
+            .delete_wallet_skip_backup(*wallet_id)
+        {
+            Ok(_) | Err(WalletStorageError::WalletNotFound { .. }) => Ok(()),
+            Err(source) => Err(TaskError::WalletStorage { source }),
         }
     }
 
@@ -1690,7 +1736,7 @@ impl WalletBackend {
     /// schema of its own. See [`DetKv`] for namespacing conventions and
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
-        DetKv::new(Arc::clone(&self.inner.persister))
+        DetKv::new(Arc::clone(&self.inner.wallet_persister))
     }
 
     /// Persisted platform-address warm-start data, read straight from the
@@ -1705,7 +1751,7 @@ impl WalletBackend {
     /// first coordinator push warms the UI once the network is reachable.
     pub(crate) fn persisted_platform_address_warm_start(&self) -> PlatformWarmStartSeed {
         use platform_wallet::changeset::PlatformWalletPersistence;
-        let start = match self.inner.persister.load() {
+        let start = match self.inner.wallet_persister.load() {
             Ok(start) => start,
             Err(e) => {
                 tracing::debug!(error = ?e, "platform-address warm-start: persister load failed");
@@ -2113,18 +2159,16 @@ impl WalletBackend {
     /// Register every established contact's DIP-15 receiving account so the SPV
     /// layer watches the addresses each contact pays us at.
     ///
-    /// The receiving-account path `m/9'/coin'/15'/0'/owner/friend` is hardened,
-    /// so the upstream `IdentityWallet::register_contact_account` — which derives
-    /// from the live wallet — returns a watch-only error on the wallets DET
-    /// rehydrates at boot (they cannot do hardened derivation). This derives the
-    /// account xpub from a seed-built (signable) wallet instead and inserts the
-    /// managed `DashpayReceivingFunds` account directly: the contained
-    /// seed-bearing dual-insert exception, sibling to
+    /// The receiving-account path `m/9'/coin'/15'/0'/owner/friend` is hardened.
+    /// DET derives its xpub from a seed-built wallet inside the JIT seed scope,
+    /// then adds it to the rehydrated managed state through
+    /// `ManagedAccountOperations`: the contained seed-bearing derivation
+    /// exception, sibling to
     /// [`Self::provision_identity_funding_account`].
     ///
-    /// Upstream keeps the managed account in runtime state only, so this re-runs
-    /// on every cold boot / unlock and is idempotent (the account-map insert
-    /// overwrites in place). Only **newly-added** accounts trigger a
+    /// DET rebuilds these monitored accounts from established contacts on every
+    /// cold boot / unlock and skips keys already in the account map. Only
+    /// **newly-added** accounts trigger a
     /// `bump_monitor_revision`: the `dash-spv` mempool sync manager (shared via
     /// one `Arc`) checks the aggregate revision on each 100ms tick and rebuilds
     /// the peer bloom filter when it changes. The tick only runs when the mempool
@@ -2147,11 +2191,7 @@ impl WalletBackend {
             dash_sdk::platform::Identifier,
         )],
     ) -> Result<usize, TaskError> {
-        use dash_sdk::dpp::key_wallet::Account;
         use dash_sdk::dpp::key_wallet::AccountType;
-        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-        use dash_sdk::dpp::key_wallet::managed_account::managed_account_type::ManagedAccountType;
         if contacts.is_empty() {
             return Ok(0);
         }
@@ -2181,13 +2221,7 @@ impl WalletBackend {
                 }
             };
             match seed_wallet.derive_extended_public_key(&path) {
-                Ok(account_xpub) => accounts.push(Account {
-                    parent_wallet_id: Some(wallet_id),
-                    account_type,
-                    network,
-                    account_xpub,
-                    is_watch_only: false,
-                }),
+                Ok(account_xpub) => accounts.push((account_type, account_xpub)),
                 Err(error) => {
                     tracing::debug!(%error, "Skipping contact account: xpub derivation failed");
                 }
@@ -2197,44 +2231,14 @@ impl WalletBackend {
             return Ok(0);
         }
 
-        // Insert under the manager write lock — purely synchronous, no await
-        // held. Track accounts that are genuinely new (map len growth) so we
-        // only bump monitor_revision — and thus trigger a bloom-filter rebuild
-        // — when the set actually changes, not on every idempotent re-run.
+        // Register under the manager write lock, invalidating prior filter
+        // coverage only for genuinely new accounts.
         let mut wm = wallet.wallet_manager().write().await;
         let info = wm
             .get_wallet_info_mut(&wallet_id)
             .ok_or(TaskError::WalletStateInconsistent)?;
-        let before = info.core_wallet.accounts.dashpay_receival_accounts.len();
-        for account in &accounts {
-            let managed = ManagedCoreFundsAccount::from_account(account);
-            if let Err(error) = info
-                .core_wallet
-                .accounts
-                .insert_funds_bearing_account(managed)
-            {
-                tracing::debug!(%error, "Skipping contact account: managed insert failed");
-            }
-        }
-        let newly_inserted = info
-            .core_wallet
-            .accounts
-            .dashpay_receival_accounts
-            .len()
-            .saturating_sub(before);
-        // Only bump the monitor revision when new accounts were added: a
-        // revision bump on every unlock would cause a spurious bloom-filter
-        // rebuild on each boot even when the contact set is unchanged.
-        if newly_inserted > 0 {
-            for account in info.core_wallet.accounts.all_funding_accounts_mut() {
-                if matches!(
-                    account.managed_account_type(),
-                    ManagedAccountType::DashpayReceivingFunds { .. }
-                ) {
-                    account.bump_monitor_revision();
-                }
-            }
-        }
+        let newly_inserted =
+            register_contact_accounts_in_managed_wallet(&mut info.core_wallet, accounts);
         Ok(newly_inserted)
     }
 
@@ -2658,12 +2662,84 @@ impl WalletBackend {
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {
-        let mut dir = app_data_dir.to_path_buf();
-        dir.push("spv");
+        let mut dir = app_data_dir.join("spv");
+        crate::app_dir::ensure_data_dir_exists(&dir)
+            .map_err(|source| TaskError::FileSystem { source })?;
         dir.push(kv::network_prefix(network));
-        std::fs::create_dir_all(&dir).map_err(|source| TaskError::FileSystem { source })?;
+        crate::app_dir::ensure_data_dir_exists(&dir)
+            .map_err(|source| TaskError::FileSystem { source })?;
         Ok(dir)
     }
+}
+
+/// Registers contact accounts and bumps each newly inserted account's monitor revision.
+fn register_contact_accounts_in_managed_wallet(
+    info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    accounts: impl IntoIterator<
+        Item = (
+            dash_sdk::dpp::key_wallet::AccountType,
+            dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
+        ),
+    >,
+) -> usize {
+    use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+
+    let mut newly_inserted = 0;
+    for (account_type, account_xpub) in accounts {
+        match add_contact_receiving_account(info, account_type, account_xpub) {
+            Ok(Some(key)) => {
+                newly_inserted += 1;
+                if let Some(account) = info.accounts.dashpay_receival_accounts.get_mut(&key) {
+                    account.bump_monitor_revision();
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::debug!(%error, "Skipping contact account: managed insert failed");
+            }
+        }
+    }
+    newly_inserted
+}
+
+/// Adds one `DashpayReceivingFunds` account to managed state.
+///
+/// Returns its key for a new insertion and `None` when the key already exists.
+/// Any other account variant returns `InvalidParameter`.
+fn add_contact_receiving_account(
+    info: &mut dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    account_type: dash_sdk::dpp::key_wallet::AccountType,
+    account_xpub: dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
+) -> Result<
+    Option<dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey>,
+    dash_sdk::dpp::key_wallet::error::Error,
+> {
+    use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedAccountOperations;
+
+    let dash_sdk::dpp::key_wallet::AccountType::DashpayReceivingFunds {
+        index,
+        user_identity_id,
+        friend_identity_id,
+    } = account_type
+    else {
+        // Validate at this seam so future callers cannot register a non-contact account.
+        return Err(dash_sdk::dpp::key_wallet::error::Error::InvalidParameter(
+            "contact receiving account type required".to_owned(),
+        ));
+    };
+    let key = DashpayAccountKey {
+        index,
+        user_identity_id,
+        friend_identity_id,
+    };
+    // Convert upstream's duplicate InvalidParameter into DET's idempotent no-op result.
+    if info.accounts.dashpay_receival_accounts.contains_key(&key) {
+        return Ok(None);
+    }
+
+    info.add_managed_account_from_xpub(account_type, account_xpub)?;
+    Ok(Some(key))
 }
 
 /// The BIP44 account-0 extended public key among `accounts`, or `None` when
@@ -2760,6 +2836,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         // `PlatformWalletError` at this rev; it belongs in this bucket once
         // platform re-adds it.
         other @ (P::WalletCreation(_)
+        | P::PlatformNodePool(_)
         | P::PersisterLoad(_)
         | P::AddressNonceMismatch { .. }
         | P::WalletNotFound(_)
@@ -2773,9 +2850,13 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::DashpayReceivingAccountAlreadyExists { .. }
         | P::DashpayExternalAccountAlreadyExists { .. }
         | P::AssetLockTransaction(_)
+        | P::AssetLockNotTracked(_)
+        | P::AssetLockAlreadyConsumed(_)
+        | P::AssetLockFundingMismatch { .. }
         | P::TransactionBroadcast(_)
         | P::TransactionBroadcastUnconfirmed(_)
         | P::TransactionBuild(_)
+        | P::CoreInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::Sdk(_)
         | P::AddressSync(_)
@@ -2787,6 +2868,8 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AddressNotFound(_)
         | P::KeyDerivation(_)
         | P::Persistence(_)
+        | P::PersisterStore(_)
+        | P::PersisterRestore(_)
         | P::SeedMismatch { .. }
         | P::WalletLocked
         | P::SpvAlreadyRunning
@@ -2809,13 +2892,46 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     }
 }
 
+/// Classify an SDK error via [`TaskError::from`], preferring its richer
+/// classification (e.g. `AssetLockOutPointAlreadyConsumed`,
+/// `IdentityInsufficientBalance`) when one applies. When the SDK error is an
+/// unclassified `StateTransitionBroadcastError` — [`TaskError::from`]'s
+/// generic `PlatformRejected` bucket — that carries no funding-operation
+/// context, so this unwraps it and hands the underlying error to `on_generic`
+/// to build the caller's operation-specific rejection instead (e.g.
+/// `IdentityCreateRejected`), preserving the recovery guidance that variant
+/// carries (retained funding lock, affected identity, etc.).
+fn classify_sdk_error_or(
+    sdk_error: dash_sdk::Error,
+    on_generic: impl FnOnce(platform_wallet::error::PlatformWalletError) -> TaskError,
+) -> TaskError {
+    match TaskError::from(sdk_error) {
+        TaskError::PlatformRejected { source_error } => on_generic(
+            platform_wallet::error::PlatformWalletError::Sdk(*source_error),
+        ),
+        classified => classified,
+    }
+}
+
 /// Classify a `PlatformWalletError` returned from
 /// `register_identity_with_funding` into a typed `TaskError`. Network /
 /// broadcast rejections become `IdentityCreateRejected`; asset-lock
 /// finality failures become `AssetLockFinalityTimeout`; everything else
-/// falls through to the generic `WalletBackend` wrapper. Structural match
-/// — never parses error strings.
+/// falls through to the generic `WalletBackend` wrapper. SDK errors use the
+/// richer `TaskError` classifier before this coarse mapping, falling back to
+/// `IdentityCreateRejected` for an unclassified rejection (see
+/// [`classify_sdk_error_or`]) so generic broadcast failures still carry
+/// registration's funding-lock recovery guidance. Structural match — never
+/// parses error strings.
 fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+    let e = match e {
+        platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
+            return classify_sdk_error_or(sdk_error, |e| TaskError::IdentityCreateRejected {
+                source: Box::new(e),
+            });
+        }
+        other => other,
+    };
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
             source: Box::new(e),
@@ -2833,11 +2949,24 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
 
 /// Same as [`map_identity_register_error`] but for the top-up façade —
 /// the `identity_id` is carried into the rejection variant so the user-
-/// facing message can reference the affected identity.
+/// facing message can reference the affected identity. SDK errors use the
+/// richer `TaskError` classifier before the coarse identity-operation
+/// mapping, falling back to `IdentityTopUpRejected` (see
+/// [`classify_sdk_error_or`]) for an unclassified rejection so the affected
+/// identity is not lost.
 fn map_identity_top_up_error(
     identity_id: dash_sdk::platform::Identifier,
     e: platform_wallet::error::PlatformWalletError,
 ) -> TaskError {
+    let e = match e {
+        platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
+            return classify_sdk_error_or(sdk_error, |e| TaskError::IdentityTopUpRejected {
+                identity_id,
+                source: Box::new(e),
+            });
+        }
+        other => other,
+    };
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
@@ -2882,8 +3011,19 @@ fn platform_warm_start_seed(
 /// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
 /// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
 /// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
-/// through to the generic [`TaskError::WalletBackend`] envelope.
+/// through to the generic [`TaskError::WalletBackend`] envelope. SDK errors use
+/// the richer `TaskError` classifier before this coarse mapping, falling back
+/// to `PlatformAddressFundRejected` (see [`classify_sdk_error_or`]) for an
+/// unclassified rejection so the existing-lock recovery instructions survive.
 fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+    let e = match e {
+        platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
+            return classify_sdk_error_or(sdk_error, |e| TaskError::PlatformAddressFundRejected {
+                source: Box::new(e),
+            });
+        }
+        other => other,
+    };
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
@@ -2938,6 +3078,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 
         // Everything else — preconditions, wallet state, builder errors.
         P::WalletCreation(_)
+        | P::PlatformNodePool(_)
         | P::WalletNotFound(_)
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
@@ -2947,7 +3088,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::DashpayReceivingAccountAlreadyExists { .. }
         | P::DashpayExternalAccountAlreadyExists { .. }
         | P::AssetLockTransaction(_)
+        | P::AssetLockNotTracked(_)
+        | P::AssetLockAlreadyConsumed(_)
+        | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
+        | P::CoreInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::AddressSync(_)
         | P::AddressOperation(_)
@@ -2974,6 +3119,8 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedNoRecordedAnchor(_)
         | P::ShieldedNotBound
         | P::PersisterLoad(_)
+        | P::PersisterStore(_)
+        | P::PersisterRestore(_)
         | P::Persistence(_)
         | P::SeedMismatch { .. }
         // Address nonce desync is a precondition/state fault unrelated to
@@ -2995,6 +3142,168 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn already_consumed_wallet_error() -> platform_wallet::error::PlatformWalletError {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        let consensus = dash_sdk::dpp::consensus::ConsensusError::from(
+            IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
+                dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+            ),
+        );
+        let broadcast_error = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40000,
+            message: "already consumed".to_string(),
+            cause: Some(consensus),
+        };
+        platform_wallet::error::PlatformWalletError::Sdk(
+            dash_sdk::Error::StateTransitionBroadcastError(broadcast_error),
+        )
+    }
+
+    /// A broadcast rejection whose consensus cause has no dedicated
+    /// `TaskError` classification — [`TaskError::from`] buckets this as the
+    /// generic `PlatformRejected`, which is exactly the case
+    /// [`classify_sdk_error_or`] must unwrap and hand back to the caller's
+    /// funding-operation-specific envelope.
+    fn unmapped_broadcast_rejection_wallet_error() -> platform_wallet::error::PlatformWalletError {
+        use dash_sdk::dpp::consensus::basic::UnsupportedVersionError;
+        let consensus =
+            dash_sdk::dpp::consensus::ConsensusError::from(UnsupportedVersionError::new(1, 2, 3));
+        let broadcast_error = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40001,
+            message: "unsupported version".to_string(),
+            cause: Some(consensus),
+        };
+        platform_wallet::error::PlatformWalletError::Sdk(
+            dash_sdk::Error::StateTransitionBroadcastError(broadcast_error),
+        )
+    }
+
+    /// Covers the managed-state seam after contact xpub derivation, including revision gating.
+    /// Wallet resolution and manager-lock wiring still require backend-e2e infrastructure.
+    #[test]
+    fn contact_registration_bumps_monitor_revision_only_for_new_keys() {
+        use dash_sdk::dpp::key_wallet::account::AccountType;
+        use dash_sdk::dpp::key_wallet::account::account_collection::DashpayAccountKey;
+        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+
+        let network = Network::Testnet;
+        let wallet = UpstreamWallet::from_seed_bytes(
+            [0x5Au8; 64],
+            network,
+            WalletAccountCreationOptions::Default,
+        )
+        .expect("build seeded wallet");
+        let contact_account = |friend_identity_id| {
+            let account_type = AccountType::DashpayReceivingFunds {
+                index: 0,
+                user_identity_id: [1u8; 32],
+                friend_identity_id,
+            };
+            let path = account_type
+                .derivation_path(network)
+                .expect("derive contact account path");
+            let account_xpub = wallet
+                .derive_extended_public_key(&path)
+                .expect("derive contact account xpub");
+            (account_type, account_xpub)
+        };
+        let first_contact = contact_account([2u8; 32]);
+        let second_contact = contact_account([3u8; 32]);
+        let first_key = DashpayAccountKey {
+            index: 0,
+            user_identity_id: [1u8; 32],
+            friend_identity_id: [2u8; 32],
+        };
+        let second_key = DashpayAccountKey {
+            index: 0,
+            user_identity_id: [1u8; 32],
+            friend_identity_id: [3u8; 32],
+        };
+        let max_monitor_revision = |info: &ManagedWalletInfo| {
+            info.accounts
+                .dashpay_receival_accounts
+                .values()
+                .map(ManagedAccountTrait::monitor_revision)
+                .max()
+                .unwrap_or_default()
+        };
+        let mut info = ManagedWalletInfo::new(network, wallet.wallet_id);
+        info.update_synced_height(500);
+
+        assert_eq!(
+            register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
+            1
+        );
+        assert_eq!(info.account_generation(), 1);
+        assert_eq!(info.synced_height(), 0);
+        assert_eq!(max_monitor_revision(&info), 1);
+        assert_eq!(
+            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
+            1
+        );
+
+        assert_eq!(
+            register_contact_accounts_in_managed_wallet(&mut info, [first_contact]),
+            0
+        );
+        assert_eq!(info.account_generation(), 1);
+        assert_eq!(info.synced_height(), 0);
+        assert_eq!(max_monitor_revision(&info), 1);
+        assert_eq!(
+            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
+            1
+        );
+
+        assert_eq!(
+            register_contact_accounts_in_managed_wallet(&mut info, [first_contact, second_contact]),
+            1
+        );
+        assert_eq!(info.account_generation(), 2);
+        assert_eq!(max_monitor_revision(&info), 1);
+        assert_eq!(
+            info.accounts.dashpay_receival_accounts[&first_key].monitor_revision(),
+            1
+        );
+        assert_eq!(
+            info.accounts.dashpay_receival_accounts[&second_key].monitor_revision(),
+            1
+        );
+        let mut revisions = info
+            .accounts
+            .dashpay_receival_accounts
+            .values()
+            .map(ManagedAccountTrait::monitor_revision)
+            .collect::<Vec<_>>();
+        revisions.sort_unstable();
+        assert_eq!(revisions, [1, 1]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spv_storage_directory_ancestors_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let app_data = tempfile::tempdir().expect("app data tempdir");
+        crate::app_dir::ensure_data_dir_exists(app_data.path()).expect("secure app data dir");
+
+        let network_dir = WalletBackend::resolve_spv_storage_dir(app_data.path(), Network::Testnet)
+            .expect("resolve SPV storage dir");
+
+        for dir in [app_data.path().join("spv"), network_dir] {
+            let mode = std::fs::metadata(&dir)
+                .expect("read storage dir metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "{} must be owner-only", dir.display());
+        }
+    }
 
     #[tokio::test]
     async fn token_balance_sync_reports_an_already_running_upstream_pass() {
@@ -3121,6 +3430,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn map_identity_register_error_classifies_already_consumed_asset_lock() {
+        let mapped = map_identity_register_error(already_consumed_wallet_error());
+        assert!(
+            matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
+        );
+    }
+
+    /// An SDK broadcast rejection with no dedicated classification must still
+    /// land in `IdentityCreateRejected` — not the generic `PlatformRejected`
+    /// — so registration keeps its retained-funding-lock recovery guidance.
+    #[test]
+    fn map_identity_register_error_falls_back_for_unmapped_broadcast_rejection() {
+        let mapped = map_identity_register_error(unmapped_broadcast_rejection_wallet_error());
+        assert!(
+            matches!(mapped, TaskError::IdentityCreateRejected { .. }),
+            "Expected IdentityCreateRejected, got: {mapped:?}"
+        );
+    }
+
     /// I3: an asset-lock finality failure surfaced during identity register
     /// maps to `AssetLockFinalityTimeout`, regardless of which finality
     /// sub-variant fired upstream.
@@ -3161,6 +3491,34 @@ mod tests {
             "rejected".to_string(),
         );
         let mapped = map_identity_top_up_error(identity_id, inner);
+        match mapped {
+            TaskError::IdentityTopUpRejected {
+                identity_id: got, ..
+            } => assert_eq!(got, identity_id, "identity_id must be preserved"),
+            other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_identity_top_up_error_classifies_already_consumed_asset_lock() {
+        let mapped = map_identity_top_up_error(
+            dash_sdk::platform::Identifier::random(),
+            already_consumed_wallet_error(),
+        );
+        assert!(
+            matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
+        );
+    }
+
+    /// An unclassified SDK broadcast rejection during top-up must still land
+    /// in `IdentityTopUpRejected`, carrying the affected identity, rather
+    /// than the generic `PlatformRejected`.
+    #[test]
+    fn map_identity_top_up_error_falls_back_for_unmapped_broadcast_rejection() {
+        let identity_id = dash_sdk::platform::Identifier::random();
+        let mapped =
+            map_identity_top_up_error(identity_id, unmapped_broadcast_rejection_wallet_error());
         match mapped {
             TaskError::IdentityTopUpRejected {
                 identity_id: got, ..
@@ -3297,6 +3655,28 @@ mod tests {
             "rejected".to_string(),
         );
         let mapped = map_platform_address_fund_error(inner);
+        assert!(
+            matches!(mapped, TaskError::PlatformAddressFundRejected { .. }),
+            "Expected PlatformAddressFundRejected, got: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_platform_address_fund_error_classifies_already_consumed_asset_lock() {
+        let mapped = map_platform_address_fund_error(already_consumed_wallet_error());
+        assert!(
+            matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
+        );
+    }
+
+    /// An unclassified SDK broadcast rejection during platform-address
+    /// funding must still land in `PlatformAddressFundRejected`, preserving
+    /// the existing-lock recovery instructions, rather than the generic
+    /// `PlatformRejected`.
+    #[test]
+    fn map_platform_address_fund_error_falls_back_for_unmapped_broadcast_rejection() {
+        let mapped = map_platform_address_fund_error(unmapped_broadcast_rejection_wallet_error());
         assert!(
             matches!(mapped, TaskError::PlatformAddressFundRejected { .. }),
             "Expected PlatformAddressFundRejected, got: {mapped:?}"

@@ -107,7 +107,7 @@ Code lives by responsibility, not convenience:
 
 - **`model/`** — stateless data types and pure validation (format/length/charset). The single source of truth for validation. No `AppContext`, `Sdk`, DB, or `BackendTask`. All fee estimation goes in `model/fee_estimation.rs` — never inlined elsewhere.
 - **`backend_task/`** — async business logic, one submodule per domain; the authoritative enforcement layer. `TaskError` and its typed variants live in `backend_task/error.rs`.
-- **`database/`** — SQLite persistence, one module per domain.
+- **`database/`** — **Frozen legacy `data.db`, read-only in production.** Production opens an existing `data.db` with `SQLITE_OPEN_READ_ONLY` (`Database::open_legacy_read_only`, `src/app.rs`); the schema ladder in `database/initialization.rs` runs only on a fresh install that has no `data.db` yet, never on an existing one. Never add a table, column, or write path here — it becomes permanently unwritable after the install's first boot. All current durable state is a `DetKv` key (see `docs/kv-keys.md`) or a `SecretStore` entry (`wallet_backend/secret_seam.rs`); `database/` exists solely as a v0.9.3→v1.0 migration-read source and recovery artifact.
 - **`context/`** — `AppContext` submodules (`*_db.rs`, lifecycle, settings, status).
 - **`wallet_backend/`** — the wallet orchestration seam: adapters, views, backend-side live caches, signers, the secret chokepoint, the event bridge. All wallet secret bytes (HD seed, imported single key, identity private key) enter/leave the vault through ONE chokepoint, `wallet_backend/secret_seam.rs` (raw `SecretBytes`, no DET-side serialization). Per-secret at-rest encryption is implemented via `put_secret_protected`/`get_secret_protected` (Argon2id + XChaCha20-Poly1305, per-secret object-password envelope, AAD bound to `wallet_id ‖ label`); unprotected secrets use `put_secret`/`get_secret` (raw, keyless vault). Identity keys (imported/loaded, including masternode voting/owner/payout) enter unprotected (Tier-1 keyless) at load/creation time — the load flow has no password field — but can be sealed to Tier-2 per-identity afterward via `IdentityTask::ProtectIdentityKeys` (Key Info screen → "Add password protection…"; gated by vault-key scheme, not identity type). The keyless-vault residual is only no-password secrets and keys the user has not opted to protect. Design + migration: `docs/ai-design/2026-06-19-secret-storage-seam/`.
 - **`ui/<domain>/`** — screens (`ScreenLike`). UI may *call* `model/` validators for instant feedback but never implements its own validation.
@@ -151,7 +151,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **Wallet Backend (`wallet_backend/`)** — Wallet orchestration seam: adapters, views, backend-side live caches, signers, the secret chokepoint (`secret_seam.rs`), and the event bridge. A thin adapter over the upstream `platform-wallet` crate.
 - **Context (`context/`)** — `AppContext`: shared state — network config, SDK client, database, wallets, settings cache, connection health (`ConnectionStatus` / `SpvManager`), split into submodules (`identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.). Glue between layers.
 - **Model (`model/`)** — Pure data types and stateless validation (amounts, fees, settings, wallet/identity models). No side effects, no IO. All fee estimation lives in `model/fee_estimation.rs` — never inline fee math elsewhere.
-- **Database (`database/`)** — SQLite persistence (rusqlite), one module per domain. Typed CRUD, no business decisions.
+- **Database (`database/`)** — Frozen legacy `data.db`. Read-only in production (migration-source reads and recovery only); no new tables, columns, or writes. Current persistence is `DetKv` over `det-app.sqlite` / `platform-wallet.sqlite` (`docs/kv-keys.md`) and `SecretStore`.
 - **Platform Integration** — Chain sync, address derivation, asset-lock/identity handling, and the shielded coordinator come from the upstream **`platform-wallet`** crate (git dep, dashpay/platform); DET is a thin adapter over it via `wallet_backend/`. SPV health is surfaced through `SpvManager` → `ConnectionStatus`. (DET's bespoke `src/spv/` stack and the `core_zmq_listener` module were removed in the platform-wallet migration.)
 
 ### Layer Rules
@@ -354,7 +354,9 @@ Consider whether a repeated or reused message belongs in a dedicated `TaskError`
 
 ## Database
 
-Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors use `TaskError` (`src/backend_task/error.rs`) — see App Task System section above.
+`AppContext.db` is the **legacy** `data.db` — a frozen migration-read source and recovery artifact, not a general persistence layer. Production opens it with `SQLITE_OPEN_READ_ONLY` whenever the file already exists, and only initializes (runs `database/initialization.rs`'s schema ladder) on a fresh install that has none yet; consequently that ladder never executes against an existing production install, and any write attempted on one fails at the SQLite layer. **Never add a table, column, or write path to `database/`.**
+
+All current durable state lives in `DetKv` (wraps the upstream `platform_wallet_storage::KvStore`; two backing SQLite files, `det-app.sqlite` and `spv/<network>/platform-wallet.sqlite` — see `docs/kv-keys.md` for the full key registry) or `SecretStore` (`wallet_backend/secret_seam.rs`). New persistent state is a new `DetKv` key registered in `docs/kv-keys.md`, never a new SQL table. Backend task errors use `TaskError` (`src/backend_task/error.rs`) — see App Task System section above.
 
 ## Platform Targets
 

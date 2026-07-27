@@ -1,6 +1,7 @@
 use super::AppContext;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
+use crate::model::dpns_voting::DpnsScheduledVoteKey;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
@@ -456,6 +457,26 @@ fn scheduled_vote_keys(
         .map_err(scheduled_vote_err)
 }
 
+/// Enumerate scheduled mirror keys without decoding their stored values.
+pub(super) fn durable_scheduled_vote_keys(
+    kv: &DetKv,
+    network: Network,
+) -> std::result::Result<BTreeSet<DpnsScheduledVoteKey>, TaskError> {
+    let mut keys = BTreeSet::new();
+    for voter in load_scheduled_vote_voters(kv)? {
+        for key in scheduled_vote_keys(kv, &voter)? {
+            if let Some(contested_name) = key.strip_prefix(SCHEDULED_VOTE_KEY_PREFIX) {
+                keys.insert(DpnsScheduledVoteKey {
+                    network,
+                    voter_id: Identifier::from(voter),
+                    contested_name: contested_name.to_owned(),
+                });
+            }
+        }
+    }
+    Ok(keys)
+}
+
 /// Drop `voter` from the Global scheduled-vote voter index. No-op when the
 /// voter is not present, so repeated calls stay idempotent.
 fn remove_vote_voter_from_index(
@@ -495,6 +516,37 @@ fn delete_scheduled_votes_for_voter(
         kv.delete(scope, &key).map_err(scheduled_vote_err)?;
     }
     remove_vote_voter_from_index(kv, voter)
+}
+
+pub(super) fn insert_scheduled_votes_in(
+    kv: &DetKv,
+    scheduled_votes: &[ScheduledDPNSVote],
+) -> std::result::Result<(), TaskError> {
+    for vote in scheduled_votes {
+        let voter = vote.voter_id.to_buffer();
+        let stored = StoredScheduledVote::from(vote);
+        kv.put(
+            DetScope::Identity(&voter),
+            &scheduled_vote_key(&vote.contested_name),
+            &stored,
+        )
+        .map_err(scheduled_vote_err)?;
+        index_add_vote_voter(kv, &voter)?;
+    }
+    Ok(())
+}
+
+pub(super) fn delete_scheduled_vote_in(
+    kv: &DetKv,
+    voter: &[u8; 32],
+    contested_name: &str,
+) -> std::result::Result<(), TaskError> {
+    kv.delete(
+        DetScope::Identity(voter),
+        &scheduled_vote_key(contested_name),
+    )
+    .map_err(scheduled_vote_err)?;
+    prune_vote_voter_if_empty(kv, voter)
 }
 
 impl AppContext {
@@ -1082,19 +1134,7 @@ impl AppContext {
         &self,
         scheduled_votes: &[ScheduledDPNSVote],
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
-        for vote in scheduled_votes {
-            let voter = vote.voter_id.to_buffer();
-            let stored = StoredScheduledVote::from(vote);
-            kv.put(
-                DetScope::Identity(&voter),
-                &scheduled_vote_key(&vote.contested_name),
-                &stored,
-            )
-            .map_err(scheduled_vote_err)?;
-            index_add_vote_voter(&kv, &voter)?;
-        }
-        Ok(())
+        insert_scheduled_votes_in(&self.det_kv()?, scheduled_votes)
     }
 
     /// Fetch every scheduled vote queued for this network from the
@@ -1140,21 +1180,22 @@ impl AppContext {
     pub fn clear_executed_scheduled_votes(&self) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let voters = load_scheduled_vote_voters(&kv)?;
-        let mut removed_scheduled_votes = BTreeSet::new();
         for voter in &voters {
             let scope = DetScope::Identity(voter);
             for key in scheduled_vote_keys(&kv, voter)? {
-                match kv.get::<StoredScheduledVote>(scope, &key) {
-                    Ok(Some(stored)) if stored.executed_successfully => {
+                match kv
+                    .get::<StoredScheduledVote>(scope, &key)
+                    .map_err(scheduled_vote_err)?
+                {
+                    Some(stored) if stored.executed_successfully => {
                         kv.delete(scope, &key).map_err(scheduled_vote_err)?;
-                        removed_scheduled_votes.insert((stored.voter_id, stored.contested_name));
                     }
-                    _ => {}
+                    Some(_) | None => {}
                 }
             }
             prune_vote_voter_if_empty(&kv, voter)?;
         }
-        self.prune_terminal_dpns_vote_operations(&removed_scheduled_votes)?;
+        self.prune_terminal_dpns_vote_operations()?;
         Ok(())
     }
 
@@ -1165,13 +1206,7 @@ impl AppContext {
         contested_name: &str,
     ) -> std::result::Result<(), TaskError> {
         let voter = voter_buffer(identity_id)?;
-        let kv = self.det_kv()?;
-        kv.delete(
-            DetScope::Identity(&voter),
-            &scheduled_vote_key(contested_name),
-        )
-        .map_err(scheduled_vote_err)?;
-        prune_vote_voter_if_empty(&kv, &voter)
+        delete_scheduled_vote_in(&self.det_kv()?, &voter, contested_name)
     }
 
     /// Mark a single scheduled vote as executed so future cast loops skip it.
@@ -1223,7 +1258,10 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use crate::model::dpns_voting::{
+        DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    };
+    use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv};
     use DetKv;
     use std::sync::Arc;
 
@@ -1233,6 +1271,42 @@ mod tests {
 
     fn id(b: u8) -> [u8; 32] {
         [b; 32]
+    }
+
+    fn scheduled_vote(
+        voter_id: Identifier,
+        contested_name: &str,
+        executed_successfully: bool,
+    ) -> ScheduledDPNSVote {
+        ScheduledDPNSVote {
+            contested_name: contested_name.to_owned(),
+            voter_id,
+            choice: ResourceVoteChoice::Lock,
+            unix_timestamp: 42,
+            executed_successfully,
+        }
+    }
+
+    fn scheduled_operation(
+        voter_id: Identifier,
+        poll: u8,
+        contested_name: &str,
+        status: DpnsVoteTargetStatus,
+    ) -> DpnsVoteOperation {
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id,
+                vote_poll_id: Identifier::from([poll; 32]),
+            },
+            voter_alias: None,
+            contested_name: contested_name.to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(42),
+        }]);
+        operation.targets[0].status = status;
+        operation
     }
 
     /// Minimal stored-identity blob carrying a synthetic `qi_bytes`
@@ -1545,10 +1619,6 @@ mod tests {
 
     #[test]
     fn clearing_executed_votes_preserves_failed_and_cancelled_journal_records() {
-        use crate::model::dpns_voting::{
-            DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-        };
-
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let context = crate::context::test_support::test_app_context(temp_dir.path());
         let kv = empty_kv();
@@ -1678,6 +1748,192 @@ mod tests {
 
         prune_vote_voter_if_empty(&kv, &voter).unwrap();
         assert_eq!(load_scheduled_vote_voters(&kv).unwrap(), vec![voter]);
+    }
+
+    #[test]
+    fn mixed_terminal_operation_is_pruned_only_after_every_scheduled_mirror_is_absent() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from(id(1));
+        let first_vote = scheduled_vote(voter, "first", false);
+        let second_vote = scheduled_vote(voter, "second", false);
+        context
+            .insert_scheduled_votes(&[first_vote, second_vote])
+            .unwrap();
+        let mut operation = scheduled_operation(voter, 1, "first", DpnsVoteTargetStatus::Confirmed);
+        operation.targets.push(
+            scheduled_operation(voter, 2, "second", DpnsVoteTargetStatus::Confirmed)
+                .targets
+                .remove(0),
+        );
+        let mut immediate =
+            scheduled_operation(voter, 3, "immediate", DpnsVoteTargetStatus::Confirmed)
+                .targets
+                .remove(0);
+        immediate.target.timing = VoteTiming::Now;
+        operation.targets.push(immediate);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+
+        assert_eq!(context.prune_terminal_dpns_vote_operations().unwrap(), 0);
+        context
+            .delete_scheduled_vote(voter.as_slice(), "first")
+            .unwrap();
+        assert_eq!(context.prune_terminal_dpns_vote_operations().unwrap(), 0);
+        context
+            .delete_scheduled_vote(voter.as_slice(), "second")
+            .unwrap();
+        assert_eq!(context.prune_terminal_dpns_vote_operations().unwrap(), 1);
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn journal_only_terminal_scheduled_operation_is_prunable() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let kv = empty_kv();
+        context.set_det_kv_override_for_test(kv);
+        let mut operation = scheduled_operation(
+            Identifier::from(id(1)),
+            1,
+            "journal-only",
+            DpnsVoteTargetStatus::Confirmed,
+        );
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+
+        assert_eq!(context.prune_terminal_dpns_vote_operations().unwrap(), 1);
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_executed_cleanup_recovers_after_voter_index_write_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from(id(1));
+        context
+            .insert_scheduled_votes(&[scheduled_vote(voter, "confirmed", true)])
+            .unwrap();
+        let mut operation =
+            scheduled_operation(voter, 1, "confirmed", DpnsVoteTargetStatus::Confirmed);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        store.fail_next_puts_containing(SCHEDULED_VOTE_VOTERS_KEY, 1);
+
+        assert!(context.clear_executed_scheduled_votes().is_err());
+        assert_eq!(context.dpns_vote_operations().unwrap(), vec![operation]);
+
+        context.clear_executed_scheduled_votes().unwrap();
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+        assert!(
+            load_scheduled_vote_voters(&context.det_kv().unwrap())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn clear_executed_cleanup_recovers_after_journal_prune_write_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from(id(1));
+        context
+            .insert_scheduled_votes(&[scheduled_vote(voter, "confirmed", true)])
+            .unwrap();
+        let mut operation =
+            scheduled_operation(voter, 1, "confirmed", DpnsVoteTargetStatus::Confirmed);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        store.fail_next_puts_containing("dpns_vote_operation_locks_dirty", 1);
+
+        assert!(context.clear_executed_scheduled_votes().is_err());
+        assert_eq!(context.dpns_vote_operations().unwrap(), vec![operation]);
+
+        context.clear_executed_scheduled_votes().unwrap();
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+        assert!(
+            load_scheduled_vote_voters(&context.det_kv().unwrap())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn clear_executed_cleanup_fails_closed_on_unreadable_mirror() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from(id(1));
+        context
+            .insert_scheduled_votes(&[scheduled_vote(voter, "unreadable", true)])
+            .unwrap();
+        let mut operation =
+            scheduled_operation(voter, 1, "unreadable", DpnsVoteTargetStatus::Confirmed);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        store.fail_next_gets_containing(&scheduled_vote_key("unreadable"), 1);
+
+        assert!(matches!(
+            context
+                .clear_executed_scheduled_votes()
+                .expect_err("an unreadable row must stop cleanup"),
+            TaskError::ScheduledVoteStorage { .. }
+        ));
+        assert_eq!(context.dpns_vote_operations().unwrap(), vec![operation]);
+        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn pruning_treats_an_unreadable_mirror_key_as_surviving() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from(id(1));
+        context
+            .insert_scheduled_votes(&[scheduled_vote(voter, "unreadable", true)])
+            .unwrap();
+        let mut operation =
+            scheduled_operation(voter, 1, "unreadable", DpnsVoteTargetStatus::Confirmed);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        store.fail_next_gets_containing(&scheduled_vote_key("unreadable"), 1);
+
+        assert_eq!(context.prune_terminal_dpns_vote_operations().unwrap(), 0);
+        assert_eq!(context.dpns_vote_operations().unwrap(), vec![operation]);
+        assert!(
+            context.get_scheduled_votes().unwrap().is_empty(),
+            "the decode-oriented reader should consume and skip the injected row error"
+        );
     }
 
     // ---------------------------------------------------------------

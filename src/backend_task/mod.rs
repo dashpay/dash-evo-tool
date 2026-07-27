@@ -12,7 +12,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
-use crate::model::dpns_voting::DpnsVoteOperationId;
+use crate::model::dpns_voting::{DpnsScheduledVoteClearOutcome, DpnsVoteOperationId};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -511,6 +511,7 @@ pub enum BackendTaskSuccessResult {
         network: Network,
         operation_id: DpnsVoteOperationId,
     },
+    ScheduledVotesCleared(Vec<DpnsScheduledVoteClearOutcome>),
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
     /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
     ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),

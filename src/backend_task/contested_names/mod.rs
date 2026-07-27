@@ -219,21 +219,20 @@ impl AppContext {
                 wrap_scheduled_vote_sweep_result(self.network, result)
             }
             ContestedResourceTask::ClearAllScheduledVotes => {
-                self.cancel_all_scheduled_dpns_vote_targets()?;
-                if let Err(error) = self.clear_all_scheduled_votes() {
-                    tracing::warn!(
-                        ?error,
-                        "Scheduled DPNS votes were cancelled but the legacy mirror could not be cleared"
-                    );
-                }
-                Ok(BackendTaskSuccessResult::Refresh)
+                let outcomes = self.clear_all_scheduled_dpns_votes()?;
+                Ok(BackendTaskSuccessResult::ScheduledVotesCleared(outcomes))
             }
             ContestedResourceTask::ClearExecutedScheduledVotes => {
                 self.clear_executed_scheduled_votes()?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
             ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => {
-                self.delete_scheduled_vote(voter_id.as_slice(), &contested_name)?;
+                let key = DpnsVoteTargetKey {
+                    network: self.network,
+                    voter_id,
+                    vote_poll_id: self.dpns_vote_poll_id(&contested_name)?,
+                };
+                self.remove_scheduled_dpns_vote(None, &key, &contested_name)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
             ContestedResourceTask::CancelScheduledDpnsVote {
@@ -241,18 +240,7 @@ impl AppContext {
                 key,
                 contested_name,
             } => {
-                self.cancel_scheduled_dpns_vote_target(operation_id, &key)?;
-                if let Err(error) =
-                    self.delete_scheduled_vote(key.voter_id.as_slice(), &contested_name)
-                {
-                    tracing::warn!(
-                        ?error,
-                        operation_id = %operation_id,
-                        voter_id = %key.voter_id,
-                        contested_name,
-                        "Scheduled DPNS vote was cancelled but the legacy mirror could not be cleared"
-                    );
-                }
+                self.cancel_scheduled_dpns_vote_target(operation_id, &key, &contested_name)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
         }
@@ -324,16 +312,16 @@ impl AppContext {
         scheduled_vote: &ScheduledDPNSVote,
         voter: &QualifiedIdentity,
     ) -> Result<DpnsVoteOperation, TaskError> {
-        if let Some(operation) = self.dpns_vote_operations()?.into_iter().find(|operation| {
-            operation.targets.iter().any(|outcome| {
-                outcome.target.key.voter_id == scheduled_vote.voter_id
-                    && outcome.target.contested_name == scheduled_vote.contested_name
-            })
-        }) {
+        let key = DpnsVoteTargetKey {
+            network: self.network,
+            voter_id: scheduled_vote.voter_id,
+            vote_poll_id: self.dpns_vote_poll_id(&scheduled_vote.contested_name)?,
+        };
+        let operations = self.dpns_vote_operations()?;
+        if let Some(operation) = preferred_operation_for_scheduled_key(&operations, &key)?.cloned()
+        {
             for outcome in &operation.targets {
-                if outcome.target.key.voter_id != scheduled_vote.voter_id
-                    || outcome.target.contested_name != scheduled_vote.contested_name
-                {
+                if outcome.target.key != key {
                     continue;
                 }
                 match outcome.status {
@@ -466,10 +454,11 @@ impl AppContext {
                     VoteTiming::Now => None,
                 })
                 .collect::<Vec<_>>();
-            self.insert_dpns_vote_operation(&mut operation, replacing_scheduled_key.as_ref())?;
-            if !scheduled_votes.is_empty()
-                && let Err(error) = self.insert_scheduled_votes(&scheduled_votes)
-            {
+            if let Some(error) = self.insert_dpns_vote_operation_with_scheduled_mirror(
+                &mut operation,
+                replacing_scheduled_key.as_ref(),
+                &scheduled_votes,
+            )? {
                 // The journal is authoritative. The legacy table is a
                 // compatibility mirror, so its failure cannot turn a durable
                 // schedule into a reported failure that invites a duplicate.
@@ -949,6 +938,31 @@ impl AppContext {
     }
 }
 
+fn preferred_operation_for_scheduled_key<'a>(
+    operations: &'a [DpnsVoteOperation],
+    key: &DpnsVoteTargetKey,
+) -> Result<Option<&'a DpnsVoteOperation>, TaskError> {
+    let mut lock_holders = operations.iter().filter(|operation| {
+        operation
+            .outcome(key)
+            .is_some_and(|outcome| outcome.status.holds_lock())
+    });
+    let lock_holder = lock_holders.next();
+    if lock_holders.next().is_some() {
+        return Err(TaskError::DpnsVoteTargetBusy);
+    }
+    Ok(lock_holder.or_else(|| {
+        operations
+            .iter()
+            .filter(|operation| {
+                operation
+                    .outcome(key)
+                    .is_some_and(|outcome| !outcome.status.holds_lock())
+            })
+            .max_by_key(|operation| (operation.created_at, operation.id))
+    }))
+}
+
 fn scheduled_vote_is_due(
     scheduled_at_ms: u64,
     executed_successfully: bool,
@@ -1062,6 +1076,50 @@ mod tests {
 
         assert_eq!(returned.targets[0].status, DpnsVoteTargetStatus::Queued);
         assert_eq!(persisted.targets[0].status, DpnsVoteTargetStatus::Queued);
+    }
+
+    #[test]
+    fn scheduled_lookup_prefers_lock_holder_then_newest_terminal() {
+        let key = DpnsVoteTargetKey {
+            network: Network::Testnet,
+            voter_id: Identifier::from([1; 32]),
+            vote_poll_id: Identifier::from([2; 32]),
+        };
+        let target = DpnsVoteTarget {
+            key: key.clone(),
+            voter_alias: None,
+            contested_name: "dominguez".to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(42),
+        };
+        let mut older = DpnsVoteOperation::new(vec![target.clone()]);
+        older.created_at = 1;
+        older.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        let mut newer = DpnsVoteOperation::new(vec![target.clone()]);
+        newer.created_at = 2;
+        newer.targets[0].status = DpnsVoteTargetStatus::Cancelled;
+        let mut lock_holder = DpnsVoteOperation::new(vec![target]);
+        lock_holder.created_at = 0;
+        lock_holder.targets[0].status = DpnsVoteTargetStatus::Scheduled;
+        let operations = vec![older.clone(), lock_holder.clone(), newer.clone()];
+
+        assert_eq!(
+            preferred_operation_for_scheduled_key(&operations, &key)
+                .unwrap()
+                .unwrap()
+                .id,
+            lock_holder.id
+        );
+
+        let terminal_operations = vec![older, newer.clone()];
+        assert_eq!(
+            preferred_operation_for_scheduled_key(&terminal_operations, &key)
+                .unwrap()
+                .unwrap()
+                .id,
+            newer.id
+        );
     }
 
     #[test]

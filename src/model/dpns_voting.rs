@@ -166,6 +166,29 @@ pub struct DpnsVoteTargetKey {
     pub vote_poll_id: Identifier,
 }
 
+/// Durable identity of one scheduled-vote compatibility mirror row.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DpnsScheduledVoteKey {
+    pub network: Network,
+    pub voter_id: Identifier,
+    pub contested_name: String,
+}
+
+/// Result of clearing one scheduled target from the compatibility mirror.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsScheduledVoteClearDisposition {
+    Cleared,
+    InFlight(DpnsVoteTargetStatus),
+}
+
+/// Typed Clear All result for one scheduled target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpnsScheduledVoteClearOutcome {
+    pub operation_id: Option<DpnsVoteOperationId>,
+    pub key: DpnsScheduledVoteKey,
+    pub disposition: DpnsScheduledVoteClearDisposition,
+}
+
 /// When a target should enter the shared executor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VoteTiming {

@@ -2809,17 +2809,43 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
     }
 }
 
+/// Classify an SDK error via [`TaskError::from`], preferring its richer
+/// classification (e.g. `AssetLockOutPointAlreadyConsumed`,
+/// `IdentityInsufficientBalance`) when one applies. When the SDK error is an
+/// unclassified `StateTransitionBroadcastError` — [`TaskError::from`]'s
+/// generic `PlatformRejected` bucket — that carries no funding-operation
+/// context, so this unwraps it and hands the underlying error to `on_generic`
+/// to build the caller's operation-specific rejection instead (e.g.
+/// `IdentityCreateRejected`), preserving the recovery guidance that variant
+/// carries (retained funding lock, affected identity, etc.).
+fn classify_sdk_error_or(
+    sdk_error: dash_sdk::Error,
+    on_generic: impl FnOnce(platform_wallet::error::PlatformWalletError) -> TaskError,
+) -> TaskError {
+    match TaskError::from(sdk_error) {
+        TaskError::PlatformRejected { source_error } => on_generic(
+            platform_wallet::error::PlatformWalletError::Sdk(*source_error),
+        ),
+        classified => classified,
+    }
+}
+
 /// Classify a `PlatformWalletError` returned from
 /// `register_identity_with_funding` into a typed `TaskError`. Network /
 /// broadcast rejections become `IdentityCreateRejected`; asset-lock
 /// finality failures become `AssetLockFinalityTimeout`; everything else
 /// falls through to the generic `WalletBackend` wrapper. SDK errors use the
-/// richer `TaskError` classifier before this coarse mapping. Structural match
-/// — never parses error strings.
+/// richer `TaskError` classifier before this coarse mapping, falling back to
+/// `IdentityCreateRejected` for an unclassified rejection (see
+/// [`classify_sdk_error_or`]) so generic broadcast failures still carry
+/// registration's funding-lock recovery guidance. Structural match — never
+/// parses error strings.
 fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     let e = match e {
         platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
-            return TaskError::from(sdk_error);
+            return classify_sdk_error_or(sdk_error, |e| TaskError::IdentityCreateRejected {
+                source: Box::new(e),
+            });
         }
         other => other,
     };
@@ -2841,14 +2867,20 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
 /// Same as [`map_identity_register_error`] but for the top-up façade —
 /// the `identity_id` is carried into the rejection variant so the user-
 /// facing message can reference the affected identity. SDK errors use the
-/// richer `TaskError` classifier before the coarse identity-operation mapping.
+/// richer `TaskError` classifier before the coarse identity-operation
+/// mapping, falling back to `IdentityTopUpRejected` (see
+/// [`classify_sdk_error_or`]) for an unclassified rejection so the affected
+/// identity is not lost.
 fn map_identity_top_up_error(
     identity_id: dash_sdk::platform::Identifier,
     e: platform_wallet::error::PlatformWalletError,
 ) -> TaskError {
     let e = match e {
         platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
-            return TaskError::from(sdk_error);
+            return classify_sdk_error_or(sdk_error, |e| TaskError::IdentityTopUpRejected {
+                identity_id,
+                source: Box::new(e),
+            });
         }
         other => other,
     };
@@ -2897,11 +2929,15 @@ fn platform_warm_start_seed(
 /// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
 /// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
 /// through to the generic [`TaskError::WalletBackend`] envelope. SDK errors use
-/// the richer `TaskError` classifier before this coarse mapping.
+/// the richer `TaskError` classifier before this coarse mapping, falling back
+/// to `PlatformAddressFundRejected` (see [`classify_sdk_error_or`]) for an
+/// unclassified rejection so the existing-lock recovery instructions survive.
 fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     let e = match e {
         platform_wallet::error::PlatformWalletError::Sdk(sdk_error) => {
-            return TaskError::from(sdk_error);
+            return classify_sdk_error_or(sdk_error, |e| TaskError::PlatformAddressFundRejected {
+                source: Box::new(e),
+            });
         }
         other => other,
     };
@@ -3029,6 +3065,25 @@ mod tests {
         let broadcast_error = dash_sdk::error::StateTransitionBroadcastError {
             code: 40000,
             message: "already consumed".to_string(),
+            cause: Some(consensus),
+        };
+        platform_wallet::error::PlatformWalletError::Sdk(
+            dash_sdk::Error::StateTransitionBroadcastError(broadcast_error),
+        )
+    }
+
+    /// A broadcast rejection whose consensus cause has no dedicated
+    /// `TaskError` classification — [`TaskError::from`] buckets this as the
+    /// generic `PlatformRejected`, which is exactly the case
+    /// [`classify_sdk_error_or`] must unwrap and hand back to the caller's
+    /// funding-operation-specific envelope.
+    fn unmapped_broadcast_rejection_wallet_error() -> platform_wallet::error::PlatformWalletError {
+        use dash_sdk::dpp::consensus::basic::UnsupportedVersionError;
+        let consensus =
+            dash_sdk::dpp::consensus::ConsensusError::from(UnsupportedVersionError::new(1, 2, 3));
+        let broadcast_error = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40001,
+            message: "unsupported version".to_string(),
             cause: Some(consensus),
         };
         platform_wallet::error::PlatformWalletError::Sdk(
@@ -3170,6 +3225,18 @@ mod tests {
         );
     }
 
+    /// An SDK broadcast rejection with no dedicated classification must still
+    /// land in `IdentityCreateRejected` — not the generic `PlatformRejected`
+    /// — so registration keeps its retained-funding-lock recovery guidance.
+    #[test]
+    fn map_identity_register_error_falls_back_for_unmapped_broadcast_rejection() {
+        let mapped = map_identity_register_error(unmapped_broadcast_rejection_wallet_error());
+        assert!(
+            matches!(mapped, TaskError::IdentityCreateRejected { .. }),
+            "Expected IdentityCreateRejected, got: {mapped:?}"
+        );
+    }
+
     /// I3: an asset-lock finality failure surfaced during identity register
     /// maps to `AssetLockFinalityTimeout`, regardless of which finality
     /// sub-variant fired upstream.
@@ -3228,6 +3295,22 @@ mod tests {
             matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
             "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
         );
+    }
+
+    /// An unclassified SDK broadcast rejection during top-up must still land
+    /// in `IdentityTopUpRejected`, carrying the affected identity, rather
+    /// than the generic `PlatformRejected`.
+    #[test]
+    fn map_identity_top_up_error_falls_back_for_unmapped_broadcast_rejection() {
+        let identity_id = dash_sdk::platform::Identifier::random();
+        let mapped =
+            map_identity_top_up_error(identity_id, unmapped_broadcast_rejection_wallet_error());
+        match mapped {
+            TaskError::IdentityTopUpRejected {
+                identity_id: got, ..
+            } => assert_eq!(got, identity_id, "identity_id must be preserved"),
+            other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
+        }
     }
 
     /// A top-up against an identity the wallet has not registered
@@ -3370,6 +3453,19 @@ mod tests {
         assert!(
             matches!(mapped, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
             "Expected AssetLockOutPointAlreadyConsumed, got: {mapped:?}"
+        );
+    }
+
+    /// An unclassified SDK broadcast rejection during platform-address
+    /// funding must still land in `PlatformAddressFundRejected`, preserving
+    /// the existing-lock recovery instructions, rather than the generic
+    /// `PlatformRejected`.
+    #[test]
+    fn map_platform_address_fund_error_falls_back_for_unmapped_broadcast_rejection() {
+        let mapped = map_platform_address_fund_error(unmapped_broadcast_rejection_wallet_error());
+        assert!(
+            matches!(mapped, TaskError::PlatformAddressFundRejected { .. }),
+            "Expected PlatformAddressFundRejected, got: {mapped:?}"
         );
     }
 

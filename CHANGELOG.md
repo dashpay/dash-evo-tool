@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
+  the lock file moves from 0.11.14 to 0.11.15, which fixes a remote
+  memory-exhaustion issue in out-of-order stream reassembly. The crate is an
+  inert optional entry that no build of this app actually links, so this is
+  dependency hygiene rather than a fix for reachable behavior.
+
+- **Dependency advisory GHSA-7gcf-g7xr-8hxj still open** (`serde_with` below
+  3.21.0, a panic when serializing empty key-value map entries): it cannot be
+  resolved in this repository. `serde_with` 2.x is required by
+  `dashcore-rpc-json`, which arrives through pinned revisions of
+  `dashpay/platform` and `dashpay/rust-dashcore`; both still declare
+  `serde_with = "2.1.0"` at their current development heads as of 2026-07-27.
+  Allowing 3.x needs an upstream change in `dashpay/rust-dashcore` first. A TODO
+  in `Cargo.toml` marks the re-check.
+
 ### Added
 
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
@@ -84,7 +101,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the send-fee estimate from picking up the network's current rate. A
   temporary workaround is in place while the underlying issue is fixed
   upstream; the send-fee estimate will keep using its last known rate until
-  that lands.
+  that lands. The check only accepts a protocol version the connected network
+  actually confirms: when the network cannot be reached, shielded operations
+  stay unavailable and the app keeps retrying, instead of assuming the version
+  the app was built with.
 
 ### Changed
 

@@ -70,7 +70,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identity that was left in a recoverable state by an earlier cleanup failure
   now finishes that cleanup and completes the load, instead of being rejected
   as already loaded; "delete all local data" now reaches those same
-  recoverable identities too.
+  recoverable identities too. That same recovery now runs consistently across
+  every way an identity can be reloaded — overwriting, merging keys into an
+  existing record, loading from a wallet, loading by DPNS name, and automatic
+  wallet discovery — so a leftover key from an earlier interrupted unload is
+  always cleared before a fresh load replaces it, not just on one path.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

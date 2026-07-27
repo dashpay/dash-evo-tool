@@ -23,7 +23,7 @@ use crate::ui::identities::register_dpns_name_screen::{
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identity::settings::{
-    UNLOAD_DETAILS_LOAD_FAILED, identity_unload_confirmation_message,
+    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_message,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -930,9 +930,11 @@ impl IdentitiesScreen {
                                                     // Same disclosure as Identity Hub → Settings:
                                                     // this permanently unloads the identity and
                                                     // deletes its private keys on this device.
+                                                    // This list also removes nodes, so it needs
+                                                    // the voting-identity variant.
                                                     match self.app_context.scheduled_vote_count_for_identity(&qualified_identity.identity.id()) {
                                                         Ok(scheduled_vote_count) => {
-                                                            let message = identity_unload_confirmation_message(
+                                                            let message = identity_removal_confirmation_message(
                                                                 qualified_identity,
                                                                 scheduled_vote_count,
                                                             );
@@ -1317,11 +1319,55 @@ impl ScreenLike for IdentitiesScreen {
 
 #[cfg(test)]
 mod tests {
-    use super::{identity_removal_message, render_identity_name_cell};
+    use super::{
+        identity_removal_confirmation_message, identity_removal_message, render_identity_name_cell,
+    };
     use crate::model::contested_name::PendingUsername;
     use crate::ui::components::pill::PENDING_USERNAME_PILL_LABEL;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
+
+    /// This list removes masternodes and evonodes too, so its Remove dialog must
+    /// carry the same voting-identity disclosure as the masternode detail view.
+    #[test]
+    fn remove_dialog_discloses_the_voting_identity_for_a_node() {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::{Identifier, IdentityPublicKey};
+        use std::collections::BTreeMap;
+
+        let pv = PlatformVersion::latest();
+        let node = QualifiedIdentity {
+            identity: Identity::create_basic_identity(Identifier::from([0xE1; 32]), pv)
+                .expect("basic identity"),
+            associated_voter_identity: Some((
+                Identity::create_basic_identity(Identifier::from([0xE2; 32]), pv)
+                    .expect("voter identity"),
+                IdentityPublicKey::random_key(1, Some(1), pv),
+            )),
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+
+        let message = identity_removal_confirmation_message(&node, 0);
+        assert!(
+            message.ends_with("This also removes the node's voting identity from this device."),
+            "removing a node from the Identities list must disclose the voting identity: {message}"
+        );
+    }
 
     #[test]
     fn identity_removal_messages_distinguish_cleanup_outcomes() {

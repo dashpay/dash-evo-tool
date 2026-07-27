@@ -99,6 +99,10 @@ const ALIAS_SAVE_FAILED: &str =
     "This name could not be saved on your device. Try again in a moment.";
 pub(crate) const UNLOAD_DETAILS_LOAD_FAILED: &str =
     "The unload details could not be loaded. Try again in a moment.";
+/// The removal consequence carried only by an identity that has a voting
+/// identity — masternodes and evonodes, on every screen that removes them.
+const REMOVE_VOTING_IDENTITY_DISCLOSURE: &str =
+    "This also removes the node's voting identity from this device.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
 // Marker strings for controls without a matching backend task. Surfaced in
 // disabled_tooltip and as a prefix on the row so users know it is a coming
@@ -1022,21 +1026,46 @@ pub(crate) fn identity_unload_confirmation_message(
     scheduled_vote_count: usize,
 ) -> String {
     let identity_label = identity_unload_label(identity);
+    let base58_id = identity.identity.id().to_string(Encoding::Base58);
+    // Aliases are user-set and not unique, so a confirmation for an irreversible
+    // action must carry the id too. A label that already is the id says it once.
+    let identity_id = (identity_label != base58_id).then_some(base58_id.as_str());
     identity_unload_confirmation_message_for(
         &identity_label,
+        identity_id,
         identity.requires_recovery_information_after_unload(),
         scheduled_vote_count,
     )
 }
 
+/// Removal confirmation: the shared unload disclosure, plus the voting-identity
+/// consequence for an identity that carries one (masternodes and evonodes).
+/// Safe for any identity type — an identity without a voter identity gets the
+/// plain unload disclosure.
+pub(crate) fn identity_removal_confirmation_message(
+    identity: &QualifiedIdentity,
+    scheduled_vote_count: usize,
+) -> String {
+    let message = identity_unload_confirmation_message(identity, scheduled_vote_count);
+    match identity.associated_voter_identity {
+        Some(_) => format!("{message}\n\n{REMOVE_VOTING_IDENTITY_DISCLOSURE}"),
+        None => message,
+    }
+}
+
 fn identity_unload_confirmation_message_for(
     identity_label: &str,
+    identity_id: Option<&str>,
     recovery_information_required: bool,
     scheduled_vote_count: usize,
 ) -> String {
+    let identity_phrase = match identity_id {
+        Some(identity_id) => format!("\"{identity_label}\" (ID: {identity_id})"),
+        None => format!("\"{identity_label}\""),
+    };
     match (recovery_information_required, scheduled_vote_count > 0) {
         (true, true) => format!(
-            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+            "Identity {identity_phrase} will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app. Some synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
@@ -1045,7 +1074,7 @@ fn identity_unload_confirmation_message_for(
              vote(s)."
         ),
         (true, false) => format!(
-            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+            "Identity {identity_phrase} will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app. Some synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
@@ -1053,7 +1082,7 @@ fn identity_unload_confirmation_message_for(
              information to load it again."
         ),
         (false, true) => format!(
-            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+            "Identity {identity_phrase} will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app. Some synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
@@ -1062,7 +1091,7 @@ fn identity_unload_confirmation_message_for(
              scheduled vote(s)."
         ),
         (false, false) => format!(
-            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
+            "Identity {identity_phrase} will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app. Some synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
@@ -1309,7 +1338,7 @@ mod tests {
     #[test]
     fn unload_dialog_omits_recovery_warning_for_wallet_derived_keys() {
         assert_eq!(
-            identity_unload_confirmation_message_for("Wallet identity", false, 0),
+            identity_unload_confirmation_message_for("Wallet identity", None, false, 0),
             "Identity \"Wallet identity\" will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app. Some synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
@@ -1329,6 +1358,7 @@ mod tests {
             for scheduled_vote_count in [0, 2] {
                 let message = identity_unload_confirmation_message_for(
                     "Disclosure identity",
+                    None,
                     recovery_information_required,
                     scheduled_vote_count,
                 );
@@ -1362,12 +1392,72 @@ mod tests {
     #[test]
     fn unload_dialog_mentions_scheduled_votes_only_when_queued() {
         assert!(
-            identity_unload_confirmation_message_for("Voting identity", true, 3)
+            identity_unload_confirmation_message_for("Voting identity", None, true, 3)
                 .contains("This also cancels 3 scheduled vote(s).")
         );
         assert!(
-            !identity_unload_confirmation_message_for("Voting identity", true, 0)
+            !identity_unload_confirmation_message_for("Voting identity", None, true, 0)
                 .contains("scheduled vote")
+        );
+    }
+
+    /// Aliases are user-set and not unique, so a confirmation that named only
+    /// the alias could not tell two identically-aliased identities apart — on an
+    /// action that permanently deletes keys.
+    #[test]
+    fn unload_dialog_names_the_id_alongside_an_alias() {
+        let aliased = qualified_identity_with(13, Some("Shared alias"));
+        let aliased_id = aliased.identity.id().to_string(Encoding::Base58);
+        let message = identity_unload_confirmation_message(&aliased, 0);
+        assert!(
+            message.contains("Shared alias") && message.contains(&aliased_id),
+            "an aliased identity must be named by both its alias and its id: {message}"
+        );
+
+        let unaliased = qualified_identity_with(14, None);
+        let unaliased_id = unaliased.identity.id().to_string(Encoding::Base58);
+        let message = identity_unload_confirmation_message(&unaliased, 0);
+        assert!(
+            message.starts_with(&format!("Identity \"{unaliased_id}\" will be")),
+            "an unaliased identity is already unambiguous and names its id once: {message}"
+        );
+    }
+
+    /// The removal variant is used for every identity type, so it must add the
+    /// voting-identity consequence only for an identity that has one.
+    #[test]
+    fn removal_dialog_names_the_voting_identity_only_when_one_exists() {
+        let without_voter = identity_removal_confirmation_message(
+            &qualified_identity_with(15, Some("Plain identity")),
+            0,
+        );
+        assert!(
+            without_voter.contains("will be permanently unloaded from this device"),
+            "removal must reuse the shared unload disclosure: {without_voter}"
+        );
+        assert!(
+            !without_voter.contains(REMOVE_VOTING_IDENTITY_DISCLOSURE),
+            "an identity without a voting identity must not claim one is removed: {without_voter}"
+        );
+
+        let mut node = qualified_identity_with(16, Some("Node"));
+        node.identity_type = crate::model::qualified_identity::IdentityType::Masternode;
+        node.associated_voter_identity = Some((
+            Identity::create_basic_identity(
+                Identifier::from([0xD4; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("voter identity"),
+            IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest()),
+        ));
+        let with_voter = identity_removal_confirmation_message(&node, 2);
+        assert!(
+            with_voter.ends_with(REMOVE_VOTING_IDENTITY_DISCLOSURE),
+            "a node with a voting identity must disclose its removal: {with_voter}"
+        );
+        assert!(
+            with_voter.contains("This also cancels 2 scheduled vote(s)."),
+            "the shared scheduled-vote clause must survive the addition: {with_voter}"
         );
     }
 
@@ -1394,14 +1484,17 @@ mod tests {
             ),
         );
 
+        let identity_id = identity.identity.id().to_string(Encoding::Base58);
         assert_eq!(
             identity_unload_confirmation_message(&identity, 0),
-            "Identity \"Mixed identity\" will be permanently unloaded from this device, deleting \
-             its private keys and its entry in this app. Some synced network data, such as \
-             contacts and payment history, is removed only by the \"Clear Database\" action in \
-             Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. It remains on Dash Platform, but you will need its recovery \
-             information to load it again."
+            format!(
+                "Identity \"Mixed identity\" (ID: {identity_id}) will be permanently unloaded \
+                 from this device, deleting its private keys and its entry in this app. Some \
+                 synced network data, such as contacts and payment history, is removed only by \
+                 the \"Clear Database\" action in Settings. This app remembers that you unloaded \
+                 this identity, so automatic discovery does not bring it back. It remains on Dash \
+                 Platform, but you will need its recovery information to load it again."
+            )
         );
         assert_eq!(identity_unload_tip(&identity), TIP_UNLOAD_RECOVERY_REQUIRED);
     }

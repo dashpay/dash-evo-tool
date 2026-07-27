@@ -36,7 +36,7 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::settings::{
-    UNLOAD_DETAILS_LOAD_FAILED, identity_unload_confirmation_message,
+    UNLOAD_DETAILS_LOAD_FAILED, identity_removal_confirmation_message,
 };
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
@@ -55,9 +55,6 @@ const MISSING_VOTER_MESSAGE: &str =
 /// §7 copy: shown when the node has a voter identity but no open contests.
 const NO_OPEN_CONTESTS_MESSAGE: &str =
     "There are no open name contests for this node to vote on right now.";
-/// §7 copy: the removal consequence that is specific to a node with a voter.
-const REMOVE_VOTING_IDENTITY_DISCLOSURE: &str =
-    "This also removes the node's voting identity from this device.";
 
 /// The collapsible DPNS section header, with the open-contest count (TC-DPNS-02).
 fn dpns_section_header(open_contest_count: usize) -> String {
@@ -981,7 +978,7 @@ impl MasternodeDetailView {
                     self.remove_dialog = Some(
                         ConfirmationDialog::new(
                             "Remove masternode",
-                            remove_masternode_confirmation_message(
+                            identity_removal_confirmation_message(
                                 &self.identity,
                                 scheduled_vote_count,
                             ),
@@ -1023,20 +1020,6 @@ impl MasternodeDetailView {
     }
 }
 
-/// Removing a node also unloads its associated voting identity, which the shared
-/// identity disclosure does not cover — so that consequence is appended as its
-/// own sentence when such an identity exists.
-fn remove_masternode_confirmation_message(
-    identity: &QualifiedIdentity,
-    scheduled_vote_count: usize,
-) -> String {
-    let message = identity_unload_confirmation_message(identity, scheduled_vote_count);
-    match identity.associated_voter_identity {
-        Some(_) => format!("{message}\n\n{REMOVE_VOTING_IDENTITY_DISCLOSURE}"),
-        None => message,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,62 +1039,6 @@ mod tests {
         assert_eq!(
             SECTION_ORDER,
             ["Header", "Actions", "Keys", "DPNS", "Remove"]
-        );
-    }
-
-    /// Removal reuses the shared unload disclosure, and adds the voting-identity
-    /// consequence only for a node that actually has one.
-    #[test]
-    fn remove_dialog_reuses_the_shared_disclosure_and_names_the_voting_identity() {
-        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
-        use dash_sdk::dpp::dashcore::Network;
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::version::PlatformVersion;
-        use dash_sdk::platform::{Identifier, IdentityPublicKey};
-
-        let pv = PlatformVersion::latest();
-        let node = |voter: Option<(Identity, IdentityPublicKey)>| QualifiedIdentity {
-            identity: Identity::create_basic_identity(Identifier::from([0xD3; 32]), pv)
-                .expect("basic identity"),
-            associated_voter_identity: voter,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::Masternode,
-            alias: Some("Node".to_string()),
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        };
-
-        let without_voter = remove_masternode_confirmation_message(&node(None), 0);
-        assert!(
-            without_voter.contains("will be permanently unloaded from this device"),
-            "the dialog must reuse the shared unload disclosure: {without_voter}"
-        );
-        assert!(
-            !without_voter.contains(REMOVE_VOTING_IDENTITY_DISCLOSURE),
-            "a node without a voting identity must not claim one is removed: {without_voter}"
-        );
-
-        let voter = (
-            Identity::create_basic_identity(Identifier::from([0xD4; 32]), pv)
-                .expect("voter identity"),
-            IdentityPublicKey::random_key(1, Some(1), pv),
-        );
-        let with_voter = remove_masternode_confirmation_message(&node(Some(voter)), 2);
-        assert!(
-            with_voter.ends_with(REMOVE_VOTING_IDENTITY_DISCLOSURE),
-            "a node with a voting identity must disclose its removal: {with_voter}"
-        );
-        assert!(
-            with_voter.contains("This also cancels 2 scheduled vote(s)."),
-            "the shared scheduled-vote clause must survive the addition: {with_voter}"
         );
     }
 

@@ -679,7 +679,7 @@ As a user, I want to unload one identity from this device so that I can recover 
   cancelled. The confirmation also names the synced data that only a full
   database clear removes, and discloses that the app records the unload so
   automatic discovery does not bring the identity back.
-- Unloading removes only the selected identity's local keys, metadata, DashPay overlays, queued scheduled votes, and device record while leaving the Platform identity unchanged.
+- Unloading removes only the selected identity's local keys, metadata, its own DashPay overlay records, queued scheduled votes, and device record, while leaving the Platform identity unchanged. DashPay data held by another loaded identity that lists this one as a contact is not touched.
 - Other identities on the same wallet and the wallet's recovery seed remain available.
 
 ---

@@ -250,14 +250,23 @@ fn format_extended_epoch_info(
     )
 }
 
-fn format_unavailable_current_epoch_info(protocol_version: u32) -> String {
-    format!(
-        "Current Epoch Information:\n\
-         • Protocol Version: {protocol_version}\n\
-         • Epoch details and fee multiplier are temporarily unavailable while \
-         dashpay/platform#4231 is unresolved.\n\n\
-         (The fee multiplier cache was not updated.)"
-    )
+/// `protocol_version` is `None` while the connected network has not confirmed one.
+fn format_unavailable_current_epoch_info(protocol_version: Option<u32>) -> String {
+    match protocol_version {
+        Some(protocol_version) => format!(
+            "Current Epoch Information:\n\
+             • Protocol Version: {protocol_version}\n\
+             • Epoch details and fee multiplier are temporarily unavailable while \
+             dashpay/platform#4231 is unresolved.\n\n\
+             (The fee multiplier cache was not updated.)"
+        ),
+        None => "Current Epoch Information:\n\
+             • Protocol Version: the connected network has not confirmed one yet.\n\
+             • Epoch details and fee multiplier are temporarily unavailable while \
+             dashpay/platform#4231 is unresolved.\n\n\
+             (The fee multiplier cache was not updated.)"
+            .to_string(),
+    }
 }
 
 fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> String {
@@ -470,23 +479,6 @@ fn withdrawal_status_str(status: WithdrawalStatus) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn epoch_workaround_reports_protocol_version_and_stale_fee_cache() {
-        assert_eq!(
-            format_unavailable_current_epoch_info(12),
-            "Current Epoch Information:\n\
-             • Protocol Version: 12\n\
-             • Epoch details and fee multiplier are temporarily unavailable while \
-             dashpay/platform#4231 is unresolved.\n\n\
-             (The fee multiplier cache was not updated.)"
-        );
-    }
-}
-
 /// Flatten one withdrawal [`Document`] into a [`WithdrawalRecord`].
 fn extract_withdrawal_record(
     document: &Document,
@@ -580,20 +572,23 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                if let Err(error) = DataContract::fetch(sdk, self.dpns_contract.id()).await {
-                    tracing::warn!(
+                // dashpay/platform#4231 breaks `ExtendedEpochInfo::fetch_current`, so the
+                // network's version is learned from the ratchet a proved DPNS fetch drives.
+                // Only a successful fetch proves it came from the network, not the local seed.
+                match DataContract::fetch(sdk, self.dpns_contract.id()).await {
+                    Ok(_) => self.set_platform_protocol_version(sdk.protocol_version_number()),
+                    Err(error) => tracing::warn!(
                         %error,
                         "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
-                         keeping the SDK's previous protocol version"
-                    );
+                         the network's protocol version stays unconfirmed"
+                    ),
                 }
-                let protocol_version = sdk.protocol_version_number();
-                self.set_platform_protocol_version(protocol_version);
 
                 match ExtendedEpochInfo::fetch_current(sdk).await {
                     Ok(epoch_info) => {
                         let fee_multiplier = epoch_info.fee_multiplier_permille();
                         self.set_fee_multiplier_permille(fee_multiplier);
+                        self.set_platform_protocol_version(epoch_info.protocol_version());
 
                         let mut formatted =
                             format_extended_epoch_info(epoch_info, self.network, true);
@@ -611,9 +606,13 @@ impl AppContext {
                             "Current epoch fetch is blocked by dashpay/platform#4231; \
                              keeping the cached fee multiplier"
                         );
+                        let confirmed = match self.platform_protocol_version() {
+                            0 => None,
+                            version => Some(version),
+                        };
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(
-                                format_unavailable_current_epoch_info(protocol_version),
+                                format_unavailable_current_epoch_info(confirmed),
                             ),
                         ))
                     }
@@ -932,5 +931,53 @@ impl AppContext {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoch_workaround_reports_protocol_version_and_stale_fee_cache() {
+        assert_eq!(
+            format_unavailable_current_epoch_info(Some(12)),
+            "Current Epoch Information:\n\
+             • Protocol Version: 12\n\
+             • Epoch details and fee multiplier are temporarily unavailable while \
+             dashpay/platform#4231 is unresolved.\n\n\
+             (The fee multiplier cache was not updated.)"
+        );
+    }
+
+    #[test]
+    fn epoch_workaround_never_reports_an_unconfirmed_protocol_version_as_a_number() {
+        let formatted = format_unavailable_current_epoch_info(None);
+        assert!(
+            formatted
+                .contains("• Protocol Version: the connected network has not confirmed one yet."),
+            "an unconfirmed version must be named as such, got: {formatted}"
+        );
+    }
+
+    /// A failed ratchet trigger leaves the SDK reporting its local seed, which is
+    /// not a network observation: caching it would open the shielded capability
+    /// gate and defeat the `0` retry sentinel `mcp::resolve` polls.
+    #[tokio::test]
+    async fn a_failed_ratchet_trigger_leaves_the_protocol_version_unconfirmed() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = dash_sdk::Sdk::new_mock();
+        assert_ne!(
+            sdk.protocol_version_number(),
+            0,
+            "precondition: the mock SDK seeds a local version of its own"
+        );
+
+        ctx.run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("the epoch workaround degrades to a text result");
+
+        assert_eq!(ctx.platform_protocol_version(), 0);
     }
 }

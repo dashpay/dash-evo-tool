@@ -18,6 +18,8 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.35.0", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
+# TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
+# dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml). Re-check when these pins move.
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "288a6cae4f9653d6085d2b3d6c7410210a0c95ba", features = [
     "core_key_wallet",
     "core_key_wallet_manager",

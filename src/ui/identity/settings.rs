@@ -85,6 +85,8 @@ const TIP_UNLOAD_WALLET_DERIVED: &str = "Remove this identity, its private keys,
      device. It remains on Dash Platform, and its wallet-derived private keys can be restored when you load it again.";
 const TIP_UNLOAD_RECOVERY_REQUIRED: &str = "Remove this identity, its private keys, and its entry in this app from \
      this device. It remains on Dash Platform, but you will need its recovery information to load it again.";
+const TIP_UNLOAD_NODE: &str = "Remove this node, its private keys, and its entry in this app from this device. It \
+     remains on Dash Platform, and you can load it again using its ProTxHash.";
 const TIP_SAVE_ALIAS: &str = "Save this name on this device.";
 const TIP_ID_COPY: &str = "Copy the full identity ID to your clipboard.";
 
@@ -103,11 +105,18 @@ pub(crate) const UNLOAD_DETAILS_LOAD_FAILED: &str =
 /// identity — masternodes and evonodes, on every screen that removes them.
 const REMOVE_VOTING_IDENTITY_DISCLOSURE: &str =
     "This also removes the node's voting identity from this device.";
-/// How a node is loaded again. Nodes never came from a wallet seed, but the
-/// ProTxHash restores only the entry — never the keys this action deletes, so
-/// the sentence must not read as if it replaced them.
-const NODE_RELOAD_GUIDANCE: &str = "You can load a masternode or evonode identity again using its \
-     ProTxHash, but you must enter its private keys again.";
+// How the identity is restored after the unload — one complete statement per
+// identity kind. Nodes are loaded by ProTxHash and are never wallet-derived, so
+// they never carry the wallet or recovery-information wording; the ProTxHash
+// restores the entry, never the keys this action deletes.
+const USER_RESTORATION_RECOVERY_REQUIRED: &str =
+    "It remains on Dash Platform, but you will need its recovery information to load it again.";
+const USER_RESTORATION_WALLET_DERIVED: &str = "It remains on Dash Platform, and its wallet-derived \
+     private keys can be restored when you load it again.";
+const NODE_RESTORATION_WITH_KEYS: &str = "It remains on Dash Platform, and you can load it again \
+     using its ProTxHash, but the private keys deleted here must be entered again by hand.";
+const NODE_RESTORATION_WATCH_ONLY: &str =
+    "It remains on Dash Platform, and you can load it again using its ProTxHash.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
 // Marker strings for controls without a matching backend task. Surfaced in
 // disabled_tooltip and as a prefix on the row so users know it is a coming
@@ -1010,11 +1019,17 @@ fn identity_unload_label(identity: &QualifiedIdentity) -> String {
         .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58))
 }
 
-/// Hover text for the control that unloads or removes `identity`, branching on
-/// whether its keys can be restored from a wallet. Shared so no screen invents a
-/// third wording that contradicts the dialog it opens.
+/// Hover text for the control that unloads or removes `identity`. Shared so no
+/// screen invents a wording that contradicts the dialog it opens, and branched
+/// by identity kind for the same reason the dialog is: a node has no wallet to
+/// restore keys from, so the wallet-derived wording never applies to it.
 pub(crate) fn identity_unload_tip(identity: &QualifiedIdentity) -> &'static str {
-    identity_unload_tip_for(identity.requires_recovery_information_after_unload())
+    match identity.identity_type {
+        IdentityType::Masternode | IdentityType::Evonode => TIP_UNLOAD_NODE,
+        IdentityType::User => {
+            identity_unload_tip_for(identity.requires_recovery_information_after_unload())
+        }
+    }
 }
 
 fn identity_unload_tip_for(recovery_information_required: bool) -> &'static str {
@@ -1038,20 +1053,26 @@ pub(crate) fn identity_unload_confirmation_message(
     // Aliases are user-set and not unique, so a confirmation for an irreversible
     // action must carry the id too. A label that already is the id says it once.
     let identity_id = (identity_label != base58_id).then_some(base58_id.as_str());
-    let message = identity_unload_confirmation_message_for(
+    identity_unload_confirmation_message_for(
         &identity_label,
         identity_id,
-        identity.requires_recovery_information_after_unload(),
+        identity_restoration_clause(identity),
         scheduled_vote_count,
-    );
-    // Nodes are loaded by ProTxHash, never from a wallet seed, so the generic
-    // recovery-information wording would send their owners hunting for a
-    // recovery phrase they never had.
+    )
+}
+
+/// How `identity` is restored after the unload. Chosen by identity kind and
+/// composed into the message once — a correction appended after a clause written
+/// for a different kind of identity reads as a contradiction, not a correction.
+fn identity_restoration_clause(identity: &QualifiedIdentity) -> &'static str {
+    let holds_unrecoverable_keys = identity.requires_recovery_information_after_unload();
     match identity.identity_type {
-        IdentityType::Masternode | IdentityType::Evonode => {
-            format!("{message} {NODE_RELOAD_GUIDANCE}")
+        IdentityType::Masternode | IdentityType::Evonode if holds_unrecoverable_keys => {
+            NODE_RESTORATION_WITH_KEYS
         }
-        IdentityType::User => message,
+        IdentityType::Masternode | IdentityType::Evonode => NODE_RESTORATION_WATCH_ONLY,
+        IdentityType::User if holds_unrecoverable_keys => USER_RESTORATION_RECOVERY_REQUIRED,
+        IdentityType::User => USER_RESTORATION_WALLET_DERIVED,
     }
 }
 
@@ -1073,54 +1094,33 @@ pub(crate) fn identity_removal_confirmation_message(
 fn identity_unload_confirmation_message_for(
     identity_label: &str,
     identity_id: Option<&str>,
-    recovery_information_required: bool,
+    restoration: &str,
     scheduled_vote_count: usize,
 ) -> String {
-    // A complete sentence of its own, so it stays one translation unit rather
-    // than a fragment glued into the naming sentence. Empty when the identity is
-    // already named by its id.
+    // Complete sentences of their own, so each stays one translation unit rather
+    // than a fragment glued into a neighbouring sentence. The identification is
+    // empty when the identity is already named by its id.
     let identity_identification = match identity_id {
         Some(identity_id) => format!(" Its full identifier is {identity_id}."),
         None => String::new(),
     };
-    match (recovery_information_required, scheduled_vote_count > 0) {
-        (true, true) => format!(
+    match scheduled_vote_count > 0 {
+        true => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app.{identity_identification} Some \
              synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. It remains on Dash Platform, but you will need its recovery \
-             information to load it again. This also cancels {scheduled_vote_count} scheduled \
-             vote(s)."
-        ),
-        (true, false) => format!(
-            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
-             deleting its private keys and its entry in this app.{identity_identification} Some \
-             synced network data, such \
-             as contacts and payment history, is removed only by the \"Clear Database\" action in \
-             Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. It remains on Dash Platform, but you will need its recovery \
-             information to load it again."
-        ),
-        (false, true) => format!(
-            "Identity \"{identity_label}\" will be permanently unloaded from this device, \
-             deleting its private keys and its entry in this app.{identity_identification} Some \
-             synced network data, such \
-             as contacts and payment history, is removed only by the \"Clear Database\" action in \
-             Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. It remains on Dash Platform, and its wallet-derived private \
-             keys can be restored when you load it again. This also cancels {scheduled_vote_count} \
+             does not bring it back. {restoration} This also cancels {scheduled_vote_count} \
              scheduled vote(s)."
         ),
-        (false, false) => format!(
+        false => format!(
             "Identity \"{identity_label}\" will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app.{identity_identification} Some \
              synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
              Settings. This app remembers that you unloaded this identity, so automatic discovery \
-             does not bring it back. It remains on Dash Platform, and its wallet-derived private \
-             keys can be restored when you load it again."
+             does not bring it back. {restoration}"
         ),
     }
 }
@@ -1362,7 +1362,12 @@ mod tests {
     #[test]
     fn unload_dialog_omits_recovery_warning_for_wallet_derived_keys() {
         assert_eq!(
-            identity_unload_confirmation_message_for("Wallet identity", None, false, 0),
+            identity_unload_confirmation_message_for(
+                "Wallet identity",
+                None,
+                USER_RESTORATION_WALLET_DERIVED,
+                0,
+            ),
             "Identity \"Wallet identity\" will be permanently unloaded from this device, \
              deleting its private keys and its entry in this app. Some synced network data, such \
              as contacts and payment history, is removed only by the \"Clear Database\" action in \
@@ -1378,12 +1383,17 @@ mod tests {
     /// record of the unload — on every variant, not just one.
     #[test]
     fn unload_dialog_discloses_retained_data_and_the_remembered_unload() {
-        for recovery_information_required in [true, false] {
+        for restoration in [
+            USER_RESTORATION_RECOVERY_REQUIRED,
+            USER_RESTORATION_WALLET_DERIVED,
+            NODE_RESTORATION_WITH_KEYS,
+            NODE_RESTORATION_WATCH_ONLY,
+        ] {
             for scheduled_vote_count in [0, 2] {
                 let message = identity_unload_confirmation_message_for(
                     "Disclosure identity",
                     None,
-                    recovery_information_required,
+                    restoration,
                     scheduled_vote_count,
                 );
                 assert!(
@@ -1416,12 +1426,22 @@ mod tests {
     #[test]
     fn unload_dialog_mentions_scheduled_votes_only_when_queued() {
         assert!(
-            identity_unload_confirmation_message_for("Voting identity", None, true, 3)
-                .contains("This also cancels 3 scheduled vote(s).")
+            identity_unload_confirmation_message_for(
+                "Voting identity",
+                None,
+                USER_RESTORATION_RECOVERY_REQUIRED,
+                3,
+            )
+            .contains("This also cancels 3 scheduled vote(s).")
         );
         assert!(
-            !identity_unload_confirmation_message_for("Voting identity", None, true, 0)
-                .contains("scheduled vote")
+            !identity_unload_confirmation_message_for(
+                "Voting identity",
+                None,
+                USER_RESTORATION_RECOVERY_REQUIRED,
+                0,
+            )
+            .contains("scheduled vote")
         );
     }
 
@@ -1455,26 +1475,66 @@ mod tests {
         );
     }
 
-    /// Nodes are loaded by ProTxHash, never from a wallet seed, so the generic
-    /// recovery-information wording would send their owners looking for a
-    /// recovery phrase that never existed. The ProTxHash restores only the
-    /// entry, so the same sentence has to say the keys come back separately —
-    /// otherwise it reads as "the ProTxHash is the recovery information", on a
-    /// confirmation for deleting those keys.
+    /// A node is never wallet-derived and is loaded by ProTxHash, so neither the
+    /// wallet-derived nor the recovery-information wording may reach it — in
+    /// either of its two real states. Asserting only on an appended sentence
+    /// misses a contradictory claim made earlier in the same message, so these
+    /// assert the whole composed string.
     #[test]
-    fn unload_dialog_points_nodes_at_their_protxhash() {
+    fn unload_dialog_gives_nodes_a_restoration_clause_that_fits_them() {
         for identity_type in [IdentityType::Masternode, IdentityType::Evonode] {
-            let mut node = qualified_identity_with(17, Some("Node"));
-            node.identity_type = identity_type;
-            let message = identity_unload_confirmation_message(&node, 0);
+            // Watch-only: no keys imported, so there is nothing to recover and
+            // no key-restoration claim to make.
+            let mut watch_only = qualified_identity_with(17, Some("Node"));
+            watch_only.identity_type = identity_type;
             assert!(
-                message.ends_with(NODE_RELOAD_GUIDANCE),
-                "a {identity_type:?} must be told how it is actually loaded again: {message}"
+                !watch_only.requires_recovery_information_after_unload(),
+                "fixture check: a keyless node needs no recovery information"
+            );
+            let message = identity_unload_confirmation_message(&watch_only, 0);
+            assert!(
+                message.ends_with(NODE_RESTORATION_WATCH_ONLY),
+                "a watch-only {identity_type:?} must simply be loadable again: {message}"
+            );
+
+            // Keys present: they are deleted here and are not derivable from the
+            // ProTxHash, so the message must say they are re-entered by hand.
+            let mut keyed = watch_only.clone();
+            let key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+            keyed.private_keys.private_keys.insert(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    PrivateKeyData::InVault,
+                ),
             );
             assert!(
-                message.contains("you must enter its private keys again"),
-                "node guidance must not read as if the ProTxHash restored the deleted \
-                 keys: {message}"
+                keyed.requires_recovery_information_after_unload(),
+                "fixture check: a node holding its own keys has no wallet to restore them"
+            );
+            let message = identity_unload_confirmation_message(&keyed, 0);
+            assert!(
+                message.ends_with(NODE_RESTORATION_WITH_KEYS),
+                "a keyed {identity_type:?} must be told its keys are re-entered: {message}"
+            );
+
+            for message in [
+                identity_unload_confirmation_message(&watch_only, 0),
+                identity_unload_confirmation_message(&keyed, 0),
+            ] {
+                assert!(
+                    !message.contains("wallet-derived"),
+                    "a {identity_type:?} is never wallet-derived: {message}"
+                );
+                assert!(
+                    !message.contains("recovery information"),
+                    "a {identity_type:?} has no recovery information to ask for: {message}"
+                );
+            }
+            assert_eq!(
+                identity_unload_tip(&keyed),
+                TIP_UNLOAD_NODE,
+                "the tooltip must not promise a node's keys come back from a wallet"
             );
         }
 
@@ -1483,7 +1543,7 @@ mod tests {
             0,
         );
         assert!(
-            !user.contains(NODE_RELOAD_GUIDANCE),
+            !user.contains("ProTxHash"),
             "an ordinary identity must not be given node guidance: {user}"
         );
     }

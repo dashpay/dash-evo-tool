@@ -104,9 +104,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   contacts and payment history that this action does not remove, and discloses
   that the app remembers the unload so automatic discovery does not bring the
   identity back. Removing a masternode still states that its voting identity
-  goes with it, and a masternode or evonode confirmation now says the node can
-  be loaded again with its ProTxHash — while stating that its private keys have
-  to be entered again — instead of asking for recovery information it never had. An identity with a name you chose is now also identified by its
+  goes with it, and a masternode or evonode confirmation now describes how that
+  node is really restored — loaded again with its ProTxHash, with its private
+  keys entered again by hand if it held any — instead of promising wallet
+  recovery it never had. An identity with a name you chose is now also identified by its
   full identifier, so two identities sharing a name cannot be confused on an
   action that deletes keys.
 

@@ -2136,6 +2136,16 @@ impl ScreenLike for DPNSScreen {
             self.vote_overlay.take_and_clear();
             self.pending_vote_operation = None;
             self.clear_vote_overlay_on_error = false;
+            // The review window disables both Submit and Cancel while a
+            // submission is in flight, so a failed submission must leave that
+            // state here. Otherwise the window stays on "Submitting votes…"
+            // with no way to retry or close it.
+            if matches!(
+                self.bulk_vote_handling_status,
+                VoteHandlingStatus::CastingVotes | VoteHandlingStatus::SchedulingVotes
+            ) {
+                self.bulk_vote_handling_status = VoteHandlingStatus::Failed(error.to_string());
+            }
         }
         if let Err(refresh_error) = self.vote_operations.refresh(&self.app_context) {
             tracing::warn!(
@@ -2752,6 +2762,72 @@ mod tests {
             ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name)
                 if voter_id == Identifier::from([32; 32]) && contested_name == "dispatch"
         ));
+    }
+
+    /// A failed submission must release the review window's in-flight state.
+    /// While it is held, the window disables Submit *and* Cancel and offers no
+    /// close control, so a stuck status leaves the user with no way out.
+    #[test]
+    fn failed_submission_releases_the_review_window() {
+        let (ctx, _temp_dir) = offline_ctx();
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let operation_id = DpnsVoteOperationId::from_bytes([11; 16]);
+        let context = BackendTaskContext::DpnsVoteOperation {
+            network: ctx.network(),
+            operation_id,
+        };
+        let error = TaskError::DpnsCurrentVoteUnavailable;
+
+        for in_progress in [
+            VoteHandlingStatus::CastingVotes,
+            VoteHandlingStatus::SchedulingVotes,
+        ] {
+            screen.show_bulk_schedule_popup = true;
+            screen.bulk_vote_handling_status = in_progress;
+            screen.pending_vote_operation = Some(operation_id);
+            screen.raise_vote_overlay(ctx.egui_ctx(), "Submitting the selected votes…");
+
+            screen.display_backend_task_error(&context, &error);
+            screen.display_task_error(&error);
+
+            assert!(
+                !crate::ui::components::progress_overlay::ProgressOverlay::has_global(
+                    ctx.egui_ctx()
+                )
+            );
+            assert_eq!(screen.pending_vote_operation, None);
+            assert!(
+                screen.bulk_vote_handling_status == VoteHandlingStatus::Failed(error.to_string()),
+                "the review window must leave its in-flight state so Submit and Cancel work again"
+            );
+        }
+    }
+
+    /// An error belonging to a different operation must not disturb the review
+    /// window of the submission this screen is still waiting on.
+    #[test]
+    fn unrelated_error_keeps_the_pending_submission_in_progress() {
+        let (ctx, _temp_dir) = offline_ctx();
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        let error = TaskError::DpnsCurrentVoteUnavailable;
+        screen.show_bulk_schedule_popup = true;
+        screen.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
+        screen.pending_vote_operation = Some(DpnsVoteOperationId::from_bytes([11; 16]));
+
+        screen.display_backend_task_error(
+            &BackendTaskContext::DpnsVoteOperation {
+                network: ctx.network(),
+                operation_id: DpnsVoteOperationId::from_bytes([12; 16]),
+            },
+            &error,
+        );
+        screen.display_task_error(&error);
+
+        assert_eq!(
+            screen.pending_vote_operation,
+            Some(DpnsVoteOperationId::from_bytes([11; 16]))
+        );
+        assert!(screen.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes);
     }
 
     #[test]

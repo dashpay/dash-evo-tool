@@ -21,7 +21,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
     let platform_version = default_platform_version(&network);
 
     let sdk = SdkBuilder::new(address_list)
-        .with_version(platform_version)
+        .with_initial_version(platform_version)
         .with_network(network)
         .with_context_provider(context_provider)
         .with_settings(request_settings)

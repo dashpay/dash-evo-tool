@@ -41,7 +41,7 @@ use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v11::PLATFORM_V11;
+use dash_sdk::dpp::version::v12::PLATFORM_V12;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
@@ -57,6 +57,7 @@ use crate::model::settings::AppSettings;
 use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
 
 /// A guard that ensures settings cache invalidation happens atomically
 ///
@@ -1538,15 +1539,34 @@ impl AppContext {
 }
 
 /// Returns the default platform version for the given network.
-// TODO: Ideally use sdk.load().version() but this is a free function with no sdk access.
-// Every network currently pins the same version.
+// TODO(platform#4231): Seeded at v12 (not pinned) so `Sdk`'s protocol-version
+// ratchet stays active. See `PlatformInfoTaskRequestType::CurrentEpochInfo` for
+// why `ExtendedEpochInfo::fetch_current` can't be used directly right now.
+// Revert to `.with_version()` (a hard pin) or otherwise reconsider this once
+// https://github.com/dashpay/platform/pull/4231 merges and this repo's platform
+// pin advances past it.
 pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
-    &PLATFORM_V11
+    &PLATFORM_V12
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn epoch_workaround_uses_v12_for_every_network() {
+        for network in [
+            Network::Mainnet,
+            Network::Testnet,
+            Network::Devnet,
+            Network::Regtest,
+        ] {
+            assert_eq!(
+                default_platform_version(&network).protocol_version,
+                PLATFORM_V12.protocol_version
+            );
+        }
+    }
 
     #[test]
     fn install_secret_prompt_recovers_poisoned_slot() {

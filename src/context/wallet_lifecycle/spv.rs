@@ -290,6 +290,18 @@ impl AppContext {
             }
         }
 
+        // Resolve every forgotten-identity load claim now, right after the last
+        // step that still touches per-identity state (the marker retirement
+        // above). Everything from here on (`?`-fallible shielded cleanup
+        // included) must not be able to make these claims report `Failed` by
+        // early-returning past an unresolved guard — an identity whose ghost
+        // cleanup durably succeeded this pass must record `Loaded`, regardless
+        // of what happens to unrelated state afterward.
+        for load_guard in successful_forgotten_cleanup_guards {
+            load_guard.loaded();
+        }
+        drop(failed_forgotten_cleanup_guards);
+
         // Reset the upstream shielded coordinator (quiesces its sync loop and
         // empties the per-network store) and unlink DET's two retired legacy
         // shielded files. The legacy-file unlinks are synchronous and scoped
@@ -310,11 +322,6 @@ impl AppContext {
         }
 
         self.has_wallet.store(false, Ordering::Relaxed);
-
-        for load_guard in successful_forgotten_cleanup_guards {
-            load_guard.loaded();
-        }
-        drop(failed_forgotten_cleanup_guards);
 
         // Any secret-bearing delete that failed above means data may survive on
         // disk, so never report a clean wipe. The in-memory maps are still

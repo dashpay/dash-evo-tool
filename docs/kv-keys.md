@@ -82,14 +82,16 @@ Source: `src/model/selected_wallet.rs`, `src/wallet_backend/mod.rs`
 
 The identity blob and top-up history are **identity-scoped** (`DetScope::Identity(&id)`) so the upstream soft-cascade reaps them when the identity row is deleted. `DetScope::Identity` has no cross-identity listing, so a Global `det:identity_index:v1` slot holds the complete id roster the load-all paths iterate. `det:identity_order:v1` is a separate user-ordering view (may lag the full set) and stays Global.
 
-`det:forgotten_identities:v1` is Global for the opposite reason to the blob: the marker's whole purpose is to outlive the identity it names, so automatic discovery cannot resurrect a deliberate unload. An identity-scoped slot would be reaped by that same soft-cascade at exactly the moment the marker becomes load-bearing. Like the other Global identity keys it is per-network by virtue of the per-network store, not by anything in the key or the value.
+`det:forgotten_identity:<id>` is Global for the opposite reason to the blob: the marker's whole purpose is to outlive the identity it names, so automatic discovery cannot resurrect a deliberate unload. An identity-scoped slot would be reaped by that same soft-cascade at exactly the moment the marker becomes load-bearing. Like the other Global identity keys it is per-network by virtue of the per-network store, not by anything in the key or the value.
+
+The markers are **one key per identity**, enumerated by prefix scan, rather than a single slot holding the whole set. `DetKv` takes the persister lock per call, so a shared collection would make every marker write an unguarded read-modify-write: two identities unloading concurrently would clobber each other, either dropping a marker (the unload silently forgotten) or resurrecting a cleared one. Independent keys collide no more than the per-row SQL table this replaced, and confine a damaged marker to the one identity it names.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
 | `det:identity:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `StoredQualifiedIdentity` | Fields: `qi_bytes` (inner bincode, redacted in `Debug`), `status: u8`, `identity_type: String`, `wallet_hash: Option<[u8;32]>`, `wallet_index: Option<u32>` |
 | `det:identity_index:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids |
 | `det:identity_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
-| `det:forgotten_identities:v1` | `None` | `platform-wallet.sqlite` | `BTreeSet<[u8;32]>` | Identities the user deliberately unloaded; discovery must not restore them. Retiring the last marker deletes the slot |
+| `det:forgotten_identity:<base58_id>` | `None` | `platform-wallet.sqlite` | `()` | Presence-only flag: the user deliberately unloaded this identity and discovery must not restore it. One key per identity |
 | `det:top_ups:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
 
 Source: `src/context/identity_db.rs`

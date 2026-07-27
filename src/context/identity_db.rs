@@ -11,7 +11,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 /// Identity blob slot, scoped to [`DetScope::Identity`]. One entry per
@@ -33,12 +33,22 @@ const IDENTITY_ORDER_KEY: &str = "det:identity_order:v1";
 /// full set.
 const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
 
-/// Global set of identities the user deliberately unloaded, which automatic
-/// discovery must not restore. Lives in [`DetScope::Global`] because the marker
-/// has to outlive the identity it names: a [`DetScope::Identity`] slot is reaped
-/// by the upstream soft-cascade at exactly the moment the marker becomes load-
-/// bearing. Per-network by virtue of the store, like [`IDENTITY_INDEX_KEY`].
-const FORGOTTEN_IDENTITIES_KEY: &str = "det:forgotten_identities:v1";
+/// "Deliberately unloaded" marker, one Global key per identity. The full key
+/// is `det:forgotten_identity:<base58_id>`; presence is the whole signal, so
+/// the value is empty. Enumerated by prefix scan.
+///
+/// One key per identity rather than one shared set: the adapter takes the
+/// persister lock per call, so a shared collection would turn every marker
+/// write into an unguarded read-modify-write and let two identities' unloads
+/// clobber each other. Independent keys collide no more than the per-row SQL
+/// table this replaced.
+///
+/// [`DetScope::Global`] rather than [`DetScope::Identity`] because the marker
+/// has to outlive the identity it names: an identity-scoped slot is reaped by
+/// the upstream soft-cascade at exactly the moment the marker becomes
+/// load-bearing. Per-network by virtue of the store, like
+/// [`IDENTITY_INDEX_KEY`].
+const FORGOTTEN_IDENTITY_KEY_PREFIX: &str = "det:forgotten_identity:";
 
 /// Scheduled-vote slot key, scoped to [`DetScope::Identity`] of the
 /// voter. The full key is `det:scheduled_vote:<contested_name>` — the
@@ -286,47 +296,54 @@ fn index_remove_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Res
         .map_err(identity_err)
 }
 
-/// Read the Global forgotten-identity marker set. Returns an empty set
-/// when nothing on this network has ever been deliberately unloaded.
-fn load_forgotten_identities(kv: &DetKv) -> std::result::Result<BTreeSet<[u8; 32]>, TaskError> {
+/// The marker key naming `identity_id`.
+fn forgotten_identity_key(identity_id: &Identifier) -> String {
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    format!(
+        "{FORGOTTEN_IDENTITY_KEY_PREFIX}{}",
+        identity_id.to_string(Encoding::Base58)
+    )
+}
+
+/// Recover the identity a marker key names. `None` when the suffix is not a
+/// valid identifier — a damaged or foreign key sharing the prefix, which the
+/// enumeration skips rather than failing the whole listing over.
+fn forgotten_identity_from_key(key: &str) -> Option<Identifier> {
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    let suffix = key.strip_prefix(FORGOTTEN_IDENTITY_KEY_PREFIX)?;
+    Identifier::from_string(suffix, Encoding::Base58).ok()
+}
+
+/// Mark `identity_id` as deliberately unloaded. Idempotent — the write is a
+/// blind upsert of a presence-only key, so it neither reads nor rewrites any
+/// other identity's marker.
+fn forgotten_marker_put(
+    kv: &DetKv,
+    identity_id: &Identifier,
+) -> std::result::Result<(), TaskError> {
+    kv.put::<()>(DetScope::Global, &forgotten_identity_key(identity_id), &())
+        .map_err(forgotten_err)
+}
+
+/// Drop `identity_id`'s marker. Idempotent — deleting an absent key is `Ok`.
+fn forgotten_marker_delete(
+    kv: &DetKv,
+    identity_id: &Identifier,
+) -> std::result::Result<(), TaskError> {
+    kv.delete(DetScope::Global, &forgotten_identity_key(identity_id))
+        .map_err(forgotten_err)
+}
+
+/// Whether `identity_id` carries a marker. A damaged marker fails only this
+/// identity's check; every other identity's guard is unaffected.
+fn forgotten_marker_exists(
+    kv: &DetKv,
+    identity_id: &Identifier,
+) -> std::result::Result<bool, TaskError> {
     Ok(kv
-        .get::<BTreeSet<[u8; 32]>>(DetScope::Global, FORGOTTEN_IDENTITIES_KEY)
+        .get::<()>(DetScope::Global, &forgotten_identity_key(identity_id))
         .map_err(forgotten_err)?
-        .unwrap_or_default())
-}
-
-/// Mark `identity_id` as deliberately unloaded. No-op when it is already
-/// marked, so repeated unload attempts stay idempotent.
-fn forgotten_add_identity(
-    kv: &DetKv,
-    identity_id: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
-    let mut forgotten = load_forgotten_identities(kv)?;
-    if !forgotten.insert(*identity_id) {
-        return Ok(());
-    }
-    kv.put(DetScope::Global, FORGOTTEN_IDENTITIES_KEY, &forgotten)
-        .map_err(forgotten_err)
-}
-
-/// Drop `identity_id`'s marker. No-op when it is not marked. Retiring the
-/// last marker removes the slot outright rather than leaving an empty set
-/// behind, so a device with nothing forgotten carries no marker record.
-fn forgotten_remove_identity(
-    kv: &DetKv,
-    identity_id: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
-    let mut forgotten = load_forgotten_identities(kv)?;
-    if !forgotten.remove(identity_id) {
-        return Ok(());
-    }
-    if forgotten.is_empty() {
-        return kv
-            .delete(DetScope::Global, FORGOTTEN_IDENTITIES_KEY)
-            .map_err(forgotten_err);
-    }
-    kv.put(DetScope::Global, FORGOTTEN_IDENTITIES_KEY, &forgotten)
-        .map_err(forgotten_err)
+        .is_some())
 }
 
 /// Delete every Identity-scoped child of `id` (blob, top-up history, all
@@ -1025,7 +1042,7 @@ impl AppContext {
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
-        forgotten_add_identity(&self.det_kv()?, &identifier.to_buffer())
+        forgotten_marker_put(&self.det_kv()?, identifier)
     }
 
     /// Whether automatic discovery must leave this identity unloaded.
@@ -1033,16 +1050,28 @@ impl AppContext {
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<bool, TaskError> {
-        Ok(load_forgotten_identities(&self.det_kv()?)?.contains(&identifier.to_buffer()))
+        forgotten_marker_exists(&self.det_kv()?, identifier)
     }
 
-    /// Every identity deliberately unloaded on this network.
+    /// Every identity deliberately unloaded on this network, read by prefix
+    /// scan. A marker key whose suffix does not decode is skipped with a
+    /// warning rather than failing the sweep that consumes this list.
     pub(crate) fn list_forgotten_identities(
         &self,
     ) -> std::result::Result<Vec<Identifier>, TaskError> {
-        Ok(load_forgotten_identities(&self.det_kv()?)?
+        let kv = self.det_kv()?;
+        let keys = kv
+            .list(DetScope::Global, Some(FORGOTTEN_IDENTITY_KEY_PREFIX))
+            .map_err(forgotten_err)?;
+        Ok(keys
             .into_iter()
-            .map(Identifier::from)
+            .filter_map(|key| {
+                let identity_id = forgotten_identity_from_key(&key);
+                if identity_id.is_none() {
+                    tracing::warn!(key = %key, "Skipping unreadable forgotten-identity marker");
+                }
+                identity_id
+            })
             .collect())
     }
 
@@ -1051,7 +1080,7 @@ impl AppContext {
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
-        forgotten_remove_identity(&self.det_kv()?, &identifier.to_buffer())
+        forgotten_marker_delete(&self.det_kv()?, identifier)
     }
 
     /// Finish cleanup for a forgotten, unindexed identity whose blob remains.
@@ -1102,7 +1131,7 @@ impl AppContext {
 
         self.cleanup_identity_after_index_removal(&identifier)?;
         if clear_forgotten_marker {
-            forgotten_remove_identity(&self.det_kv()?, id)?;
+            forgotten_marker_delete(&self.det_kv()?, &identifier)?;
         }
         Ok(true)
     }
@@ -1228,7 +1257,8 @@ impl AppContext {
         // `purge_identity_scope`, since it reads the identity blob that
         // `purge_identity_scope` deletes.
         if let Err(error) = index_remove_identity(&kv, &id) {
-            if remember_unload && let Err(rollback_error) = forgotten_remove_identity(&kv, &id) {
+            if remember_unload && let Err(rollback_error) = forgotten_marker_delete(&kv, identifier)
+            {
                 tracing::warn!(
                     identity_id = %identifier,
                     original_error = ?error,
@@ -1846,24 +1876,26 @@ mod tests {
     // unload.
     // ---------------------------------------------------------------
 
+    fn identifier(b: u8) -> Identifier {
+        Identifier::from(id(b))
+    }
+
     #[test]
     fn forgotten_marker_round_trips_and_is_per_identity() {
         let kv = empty_kv();
-        assert!(load_forgotten_identities(&kv).unwrap().is_empty());
+        assert!(!forgotten_marker_exists(&kv, &identifier(1)).unwrap());
 
-        forgotten_add_identity(&kv, &id(1)).unwrap();
-        forgotten_add_identity(&kv, &id(2)).unwrap();
+        forgotten_marker_put(&kv, &identifier(1)).unwrap();
+        forgotten_marker_put(&kv, &identifier(2)).unwrap();
 
-        let forgotten = load_forgotten_identities(&kv).unwrap();
-        assert!(forgotten.contains(&id(1)));
-        assert!(forgotten.contains(&id(2)));
-        assert!(!forgotten.contains(&id(3)));
+        assert!(forgotten_marker_exists(&kv, &identifier(1)).unwrap());
+        assert!(forgotten_marker_exists(&kv, &identifier(2)).unwrap());
+        assert!(!forgotten_marker_exists(&kv, &identifier(3)).unwrap());
 
-        forgotten_remove_identity(&kv, &id(1)).unwrap();
-        let forgotten = load_forgotten_identities(&kv).unwrap();
-        assert!(!forgotten.contains(&id(1)));
+        forgotten_marker_delete(&kv, &identifier(1)).unwrap();
+        assert!(!forgotten_marker_exists(&kv, &identifier(1)).unwrap());
         assert!(
-            forgotten.contains(&id(2)),
+            forgotten_marker_exists(&kv, &identifier(2)).unwrap(),
             "clearing one marker keeps the rest"
         );
     }
@@ -1871,26 +1903,50 @@ mod tests {
     #[test]
     fn forgotten_marker_writes_are_idempotent() {
         let kv = empty_kv();
-        forgotten_add_identity(&kv, &id(1)).unwrap();
-        forgotten_add_identity(&kv, &id(1)).unwrap();
-        assert_eq!(load_forgotten_identities(&kv).unwrap().len(), 1);
+        forgotten_marker_put(&kv, &identifier(1)).unwrap();
+        forgotten_marker_put(&kv, &identifier(1)).unwrap();
+        assert_eq!(
+            kv.list(DetScope::Global, Some(FORGOTTEN_IDENTITY_KEY_PREFIX))
+                .unwrap()
+                .len(),
+            1
+        );
 
-        forgotten_remove_identity(&kv, &id(1)).unwrap();
-        forgotten_remove_identity(&kv, &id(1)).unwrap();
-        forgotten_remove_identity(&kv, &id(9)).unwrap();
-        assert!(load_forgotten_identities(&kv).unwrap().is_empty());
+        forgotten_marker_delete(&kv, &identifier(1)).unwrap();
+        forgotten_marker_delete(&kv, &identifier(1)).unwrap();
+        forgotten_marker_delete(&kv, &identifier(9)).unwrap();
+        assert!(
+            kv.list(DetScope::Global, Some(FORGOTTEN_IDENTITY_KEY_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
     }
 
+    /// Each identity owns a private key, so no marker write ever reads or
+    /// rewrites another identity's marker. This is what makes concurrent
+    /// unloads safe; a shared collection would reintroduce the lost update.
     #[test]
-    fn retiring_the_last_forgotten_marker_removes_the_slot() {
+    fn each_forgotten_marker_is_an_independent_key() {
         let kv = empty_kv();
-        forgotten_add_identity(&kv, &id(1)).unwrap();
-        forgotten_remove_identity(&kv, &id(1)).unwrap();
-        assert!(
-            kv.get::<BTreeSet<[u8; 32]>>(DetScope::Global, FORGOTTEN_IDENTITIES_KEY)
-                .unwrap()
-                .is_none(),
-            "an emptied marker set must leave no residual slot behind"
+        forgotten_marker_put(&kv, &identifier(1)).unwrap();
+        forgotten_marker_put(&kv, &identifier(2)).unwrap();
+
+        let keys = kv
+            .list(DetScope::Global, Some(FORGOTTEN_IDENTITY_KEY_PREFIX))
+            .unwrap();
+        assert_eq!(keys.len(), 2, "two identities must occupy two keys");
+        assert!(keys.contains(&forgotten_identity_key(&identifier(1))));
+        assert!(keys.contains(&forgotten_identity_key(&identifier(2))));
+
+        // A marker key round-trips through its own encoding.
+        assert_eq!(
+            forgotten_identity_from_key(&forgotten_identity_key(&identifier(1))),
+            Some(identifier(1))
+        );
+        // A key that merely shares the prefix is skipped, not fatal.
+        assert_eq!(
+            forgotten_identity_from_key(&format!("{FORGOTTEN_IDENTITY_KEY_PREFIX}not-base58!")),
+            None
         );
     }
 
@@ -1901,13 +1957,13 @@ mod tests {
     fn forgotten_marker_outlives_its_identity_scope() {
         let kv = empty_kv();
         put_identity(&kv, &id(1), "User");
-        forgotten_add_identity(&kv, &id(1)).unwrap();
+        forgotten_marker_put(&kv, &identifier(1)).unwrap();
 
         purge_identity_scope(&kv, &id(1)).unwrap();
         index_remove_identity(&kv, &id(1)).unwrap();
 
         assert!(
-            load_forgotten_identities(&kv).unwrap().contains(&id(1)),
+            forgotten_marker_exists(&kv, &identifier(1)).unwrap(),
             "purging every identity-scoped record must not touch the marker"
         );
         assert!(
@@ -1944,17 +2000,18 @@ mod tests {
             ctx.list_forgotten_identities().expect("list markers"),
             vec![identity_id]
         );
+        let marker_key = forgotten_identity_key(&identity_id);
         assert!(
             ctx.det_kv()
                 .expect("per-network k/v")
-                .get::<BTreeSet<[u8; 32]>>(DetScope::Global, FORGOTTEN_IDENTITIES_KEY)
+                .get::<()>(DetScope::Global, &marker_key)
                 .expect("read per-network marker slot")
                 .is_some(),
             "the marker belongs to the per-network wallet store"
         );
         assert!(
             ctx.app_kv()
-                .get::<BTreeSet<[u8; 32]>>(DetScope::Global, FORGOTTEN_IDENTITIES_KEY)
+                .get::<()>(DetScope::Global, &marker_key)
                 .expect("read cross-network marker slot")
                 .is_none(),
             "the cross-network app store must hold no marker"
@@ -1967,6 +2024,82 @@ mod tests {
                 .expect("list cleared markers")
                 .is_empty()
         );
+
+        backend.shutdown().await;
+    }
+
+    /// Concurrent marker work on *different* identities must not lose an
+    /// update. Records and clears run interleaved against the real persister,
+    /// so any read-modify-write over a shared blob would drop a marker one way
+    /// (an unload silently forgotten, #889 back) or resurrect one the other
+    /// (a cleared identity kept unloaded).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_marker_writes_for_distinct_identities_do_not_clobber() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        const IDENTITIES: u8 = 12;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        // Half start marked and get cleared; half start clear and get marked.
+        // Both directions run at once so a lost update in either direction
+        // shows up as a wrong final state.
+        let to_record: Vec<Identifier> = (0..IDENTITIES).map(identifier).collect();
+        let to_clear: Vec<Identifier> = (100..100 + IDENTITIES).map(identifier).collect();
+        for identity_id in &to_clear {
+            ctx.record_forgotten_identity(identity_id)
+                .expect("seed a marker the race will clear");
+        }
+
+        // `(identity, is_clear)` work items, owned so each task can take one.
+        let mut work: Vec<(Identifier, bool)> = to_record.iter().map(|id| (*id, false)).collect();
+        work.extend(to_clear.iter().map(|id| (*id, true)));
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for (identity_id, clearing) in work {
+            let ctx = Arc::clone(&ctx);
+            tasks.spawn(async move {
+                if clearing {
+                    ctx.clear_forgotten_identity_after_explicit_load(&identity_id)
+                        .expect("concurrent marker clear");
+                } else {
+                    ctx.record_forgotten_identity(&identity_id)
+                        .expect("concurrent marker record");
+                }
+            });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            joined.expect("no marker task may panic");
+        }
+
+        for identity_id in &to_record {
+            assert!(
+                ctx.is_identity_forgotten(identity_id)
+                    .expect("read recorded marker"),
+                "a concurrent record was lost for {identity_id}"
+            );
+        }
+        for identity_id in &to_clear {
+            assert!(
+                !ctx.is_identity_forgotten(identity_id)
+                    .expect("read cleared marker"),
+                "a concurrent clear was resurrected for {identity_id}"
+            );
+        }
+        let mut listed = ctx.list_forgotten_identities().expect("list markers");
+        listed.sort_unstable();
+        let mut expected = to_record;
+        expected.sort_unstable();
+        assert_eq!(listed, expected, "the surviving marker set must be exact");
 
         backend.shutdown().await;
     }
@@ -2795,9 +2928,8 @@ mod tests {
         ctx.insert_local_qualified_identity(&target, &Some(([0xBC; 32], 2)))
             .expect("insert target identity");
 
-        let persister_path = backend.spv_storage_dir().join("platform-wallet.sqlite");
         let fault_connection =
-            rusqlite::Connection::open(&persister_path).expect("open persister second handle");
+            crate::context::test_support::open_persister_fault_connection(&backend);
         fault_connection
             .execute_batch(
                 "CREATE TRIGGER fail_identity_index_commit
@@ -2808,14 +2940,14 @@ mod tests {
                  END;",
             )
             .expect("install identity-index trigger");
-        // The marker write is an upsert and its rollback a delete, so the two
-        // halves of the unload can be faulted independently: recording the
-        // marker still succeeds, only rolling it back fails.
+        // Recording the marker is a write and rolling it back a delete, so the
+        // two halves of the unload fault independently: the marker still gets
+        // recorded, only its rollback fails.
         fault_connection
             .execute_batch(
                 "CREATE TRIGGER fail_forgotten_marker_rollback
                  BEFORE DELETE ON meta_global
-                 WHEN OLD.key = 'det:forgotten_identities:v1'
+                 WHEN OLD.key LIKE 'det:forgotten_identity:%'
                  BEGIN
                      SELECT RAISE(FAIL, 'injected marker-rollback failure');
                  END;",

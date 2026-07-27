@@ -18,10 +18,14 @@
 //! `private` / `address_index` overlays are all identity-scoped.
 //!
 //! All keys carried by this adapter follow a colon-separated namespace
-//! convention, with a mandatory `<network>:` prefix for global slots so
-//! mainnet / testnet / devnet entries cannot collide inside the same
-//! upstream database file. See the documentation on the consumer
-//! callers (e.g. settings storage) for the canonical key schema.
+//! convention. Whether a key needs a `<network>:` prefix depends on the
+//! store behind it, not on the scope: entries in the cross-network
+//! `det-app.sqlite` (wallet-meta and single-key sidecars, migration
+//! sentinels) share one file across every network and must carry the
+//! prefix so mainnet / testnet / devnet cannot collide. Entries in the
+//! per-network `spv/<net>/platform-wallet.sqlite` get one file per
+//! network already, so they omit it — see `det:identity_index:v1` and
+//! its siblings. `docs/kv-keys.md` catalogues every key and its store.
 //!
 //! ## Encoding
 //!

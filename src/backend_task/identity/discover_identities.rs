@@ -625,13 +625,12 @@ mod tests {
         ctx.record_forgotten_identity(&identity_id)
             .expect("record forgotten marker");
         let fault_connection =
-            rusqlite::Connection::open(backend.spv_storage_dir().join("platform-wallet.sqlite"))
-                .expect("open persister second handle");
+            crate::context::test_support::open_persister_fault_connection(&backend);
         fault_connection
             .execute_batch(
                 "CREATE TRIGGER fail_discovery_marker_cleanup
                  BEFORE DELETE ON meta_global
-                 WHEN OLD.key = 'det:forgotten_identities:v1'
+                 WHEN OLD.key LIKE 'det:forgotten_identity:%'
                  BEGIN
                      SELECT RAISE(FAIL, 'injected discovery marker cleanup failure');
                  END;",

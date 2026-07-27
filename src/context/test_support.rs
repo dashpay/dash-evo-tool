@@ -40,3 +40,26 @@ pub(crate) fn test_app_context_with_kv(dir: &Path, app_kv: Arc<DetKv>) -> Arc<Ap
     )
     .expect("AppContext")
 }
+
+/// Persister busy timeout matching `SqlitePersisterConfig`'s default. A raw
+/// handle opened alongside the live persister inherits none of its settings,
+/// so without this a fault-injection connection fails fast with `SQLITE_BUSY`
+/// the moment it contends with a real write.
+const PERSISTER_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Open a second handle on the per-network persister for fault injection —
+/// installing a trigger that makes a specific k/v write or delete fail.
+///
+/// The live persister runs WAL with a busy timeout; this handle is configured
+/// to match so trigger setup cannot lose a race with the backend's own writes.
+pub(crate) fn open_persister_fault_connection(
+    backend: &crate::wallet_backend::WalletBackend,
+) -> rusqlite::Connection {
+    let connection =
+        rusqlite::Connection::open(backend.spv_storage_dir().join("platform-wallet.sqlite"))
+            .expect("open persister second handle");
+    connection
+        .busy_timeout(PERSISTER_BUSY_TIMEOUT)
+        .expect("match the persister's busy timeout");
+    connection
+}

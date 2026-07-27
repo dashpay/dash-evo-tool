@@ -37,7 +37,7 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::context::identity_load_registry::IdentityLoadPhase;
-    use crate::context::test_support::test_app_context;
+    use crate::context::test_support::{open_persister_fault_connection, test_app_context};
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
         IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -97,14 +97,12 @@ mod tests {
         let identity_id = Identifier::from([0x72; 32]);
         ctx.record_forgotten_identity(&identity_id)
             .expect("record forgotten marker");
-        let fault_connection =
-            rusqlite::Connection::open(backend.spv_storage_dir().join("platform-wallet.sqlite"))
-                .expect("open persister second handle");
+        let fault_connection = open_persister_fault_connection(&backend);
         fault_connection
             .execute_batch(
                 "CREATE TRIGGER fail_forgotten_marker_cleanup
                  BEFORE DELETE ON meta_global
-                 WHEN OLD.key = 'det:forgotten_identities:v1'
+                 WHEN OLD.key LIKE 'det:forgotten_identity:%'
                  BEGIN
                      SELECT RAISE(FAIL, 'injected forgotten marker cleanup failure');
                  END;",

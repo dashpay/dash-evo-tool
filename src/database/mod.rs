@@ -1,3 +1,11 @@
+//! Frozen legacy `data.db` — a migration-read source and recovery artifact,
+//! not a general persistence layer. Production opens an existing file
+//! read-only (`Database::open_legacy_read_only`) and never runs the schema
+//! ladder in `initialization.rs` against it; only a fresh install with no
+//! `data.db` yet initializes and writes. Never add a table, column, or write
+//! path here. Current durable state is a `DetKv` key (`docs/kv-keys.md`) or a
+//! `SecretStore` entry (`wallet_backend/secret_seam.rs`).
+
 mod initialization;
 #[cfg(test)]
 pub(crate) use initialization::DEFAULT_DB_VERSION;

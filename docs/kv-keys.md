@@ -10,6 +10,11 @@ Three backing stores exist:
 | `platform-wallet.sqlite` | `<data_dir>/spv/<net>/platform-wallet.sqlite` | Per-network identities, tokens, contracts, DashPay overlays, platform addresses, selected wallet |
 | `SecretStore` | `<data_dir>/secrets/det-secrets.*` | Encrypted HD-wallet seed envelopes and imported single-key private bytes |
 
+Deliberately absent from this table: the legacy `data.db` behind `src/database/`. It is a
+frozen v0.9.3→v1.0 migration-read source, opened read-only in production whenever it already
+exists — never a target for new state. New persistent state is always a new `DetKv` key
+registered below, never a new SQL table.
+
 In the per-domain tables below, a `Scope` of `None` denotes `DetScope::Global`.
 
 ---

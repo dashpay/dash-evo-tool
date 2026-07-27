@@ -180,16 +180,16 @@ impl AppContext {
         // before any network fetch — so the existing node's alias/keys/protection
         // tier are never silently overwritten. Checked here, at the storage
         // layer, so every `RejectIfExists` caller is guarded uniformly.
-        let existing_stored = self.get_local_qualified_identity(&identity_id)?;
-        match load_mode {
-            IdentityLoadMode::RejectIfExists
-                if existing_stored
-                    .as_ref()
-                    .is_some_and(|identity| !is_bare_placeholder(identity)) =>
+        let mut existing_stored = self.get_local_qualified_identity(&identity_id)?;
+        if load_mode == IdentityLoadMode::RejectIfExists {
+            if self.prepare_stuck_unload_cleanup_for_reload(&identity_id.to_buffer())? {
+                existing_stored = None;
+            } else if existing_stored
+                .as_ref()
+                .is_some_and(|identity| !is_bare_placeholder(identity))
             {
                 return Err(TaskError::DuplicateProTxHash { identity_id });
             }
-            _ => {}
         }
 
         // An in-place merge into a password-protected (Tier-2) node must
@@ -1192,6 +1192,9 @@ mod tests {
         let identity_id = qi.identity.id();
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("insert first masternode identity");
+        ctx.db()
+            .record_forgotten_identity(Network::Testnet, &identity_id)
+            .expect("record stale forgotten marker");
 
         let input = IdentityInputToLoad {
             identity_id_input: identity_id.to_string(Encoding::Hex),

@@ -684,7 +684,7 @@ pub enum TaskError {
     /// an identity. Cleanup continues after failures, but only the first failure
     /// is preserved in the nested typed error for logs.
     #[error(
-        "Some local data for identity {identity_id} could not be fully removed. Load the identity again, then unload it to retry."
+        "Some local data for identity {identity_id} could not be fully removed. Wait a moment and try again."
     )]
     IdentityUnloadCleanupFailed {
         identity_id: Identifier,

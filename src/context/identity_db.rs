@@ -443,9 +443,12 @@ fn encode_identity_blob_vault_first(
 
 fn purge_identity_scope(kv: &DetKv, id: &[u8; 32]) -> std::result::Result<(), TaskError> {
     let scope = DetScope::Identity(id);
-    kv.delete(scope, IDENTITY_KEY).map_err(identity_err)?;
+    // The identity blob is the recovery inventory for its vault keys. Delete
+    // auxiliary records first and the blob last so a partial purge remains
+    // discoverable and retryable.
     kv.delete(scope, TOP_UPS_KEY).map_err(top_up_err)?;
-    delete_scheduled_votes_for_voter(kv, id)
+    delete_scheduled_votes_for_voter(kv, id)?;
+    kv.delete(scope, IDENTITY_KEY).map_err(identity_err)
 }
 
 /// Read the Global scheduled-vote voter index. Returns an empty vector
@@ -982,11 +985,113 @@ impl AppContext {
             .map_err(|source| TaskError::ForgottenIdentityStorage { source })
     }
 
-    /// Clear every discovery block for the active network.
-    pub(crate) fn clear_all_forgotten_identities(&self) -> std::result::Result<(), TaskError> {
-        self.db
-            .clear_all_forgotten_identities(self.network)
-            .map_err(|source| TaskError::ForgottenIdentityStorage { source })
+    /// Finish cleanup for a forgotten, unindexed identity whose blob remains.
+    ///
+    /// Returns `Ok(true)` after cleanup, `Ok(false)` for a non-ghost state, and
+    /// preserves the blob and marker when vault-key clearing or purging fails.
+    pub(crate) fn retry_stuck_unload_cleanup(
+        &self,
+        id: &[u8; 32],
+    ) -> std::result::Result<bool, TaskError> {
+        self.retry_stuck_unload_cleanup_inner(id, true)
+    }
+
+    /// Load-path form of [`Self::retry_stuck_unload_cleanup`]. The forgotten
+    /// marker remains in place across the later network fetch and persistence;
+    /// [`Self::finish_identity_load_after_persist`] clears it only after the
+    /// replacement identity is durably stored.
+    pub(crate) fn prepare_stuck_unload_cleanup_for_reload(
+        &self,
+        id: &[u8; 32],
+    ) -> std::result::Result<bool, TaskError> {
+        let identifier = Identifier::from(*id);
+        if !self.is_identity_forgotten(&identifier)?
+            || self.local_identity_ids()?.contains(&identifier)
+        {
+            return Ok(false);
+        }
+
+        // This also handles a marker-only unload residue whose vault/blob tail
+        // succeeded after an earlier sidecar failure. Cleanup is idempotent, and
+        // the marker deliberately remains until the fresh load is persisted.
+        self.cleanup_identity_after_index_removal(&identifier)?;
+        Ok(true)
+    }
+
+    fn retry_stuck_unload_cleanup_inner(
+        &self,
+        id: &[u8; 32],
+        clear_forgotten_marker: bool,
+    ) -> std::result::Result<bool, TaskError> {
+        let identifier = Identifier::from(*id);
+        if !self.is_identity_forgotten(&identifier)?
+            || !self.has_local_qualified_identity(&identifier)?
+            || self.local_identity_ids()?.contains(&identifier)
+        {
+            return Ok(false);
+        }
+
+        self.cleanup_identity_after_index_removal(&identifier)?;
+        if clear_forgotten_marker {
+            self.db
+                .clear_forgotten_identity(self.network, &identifier)
+                .map_err(|source| TaskError::ForgottenIdentityStorage { source })?;
+        }
+        Ok(true)
+    }
+
+    /// Remove identity-scoped residue for a forgotten identity whose recovery
+    /// blob is already gone. Vault cleanup already completed before that blob
+    /// could be purged; this finishes best-effort sidecar and metadata cleanup.
+    pub(crate) fn purge_forgotten_identity_residue(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        self.cleanup_identity_after_index_removal(identifier)
+    }
+
+    /// Idempotent cleanup tail shared by normal deletion, ghost recovery, and
+    /// marker-only full-wipe recovery. The blob is retained whenever its vault
+    /// inventory could not be cleared.
+    fn cleanup_identity_after_index_removal(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        let backend = self.wallet_backend()?;
+        let id = identifier.to_buffer();
+        let mut cleanup_error = None;
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.dashpay_clear_owner_overlays(identifier),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.dashpay_clear_identity_timestamps(identifier),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.dashpay_clear_identity_addr_map(identifier),
+        );
+        keep_first_unload_cleanup_error(
+            &mut cleanup_error,
+            *identifier,
+            backend.identity_meta().delete(self.network, &id),
+        );
+        match self.clear_identity_vault_keys(&kv, &id) {
+            Ok(()) => keep_first_unload_cleanup_error(
+                &mut cleanup_error,
+                *identifier,
+                purge_identity_scope(&kv, &id),
+            ),
+            Err(error) => {
+                keep_first_unload_cleanup_error(&mut cleanup_error, *identifier, Err(error))
+            }
+        }
+        cleanup_error.map_or(Ok(()), Err)
     }
 
     fn delete_local_qualified_identity_inner(
@@ -994,15 +1099,44 @@ impl AppContext {
         identifier: &Identifier,
         remember_unload: bool,
     ) -> std::result::Result<(), TaskError> {
+        let load_guard = self.begin_identity_cleanup_claim(identifier)?;
+        self.delete_local_qualified_identity_with_claim(identifier, remember_unload)?;
+        load_guard.loaded();
+        Ok(())
+    }
+
+    /// Full-wipe deletion that returns its exclusive identity claim so the
+    /// caller can retain it through marker retirement and wipe completion.
+    pub(crate) fn delete_local_qualified_identity_retaining_claim(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<crate::context::identity_load_registry::IdentityLoadGuard, TaskError>
+    {
+        let load_guard = self.begin_identity_cleanup_claim(identifier)?;
+        self.delete_local_qualified_identity_with_claim(identifier, false)?;
+        Ok(load_guard)
+    }
+
+    fn begin_identity_cleanup_claim(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<crate::context::identity_load_registry::IdentityLoadGuard, TaskError>
+    {
         // The load registry provides the existing per-identity exclusive claim.
-        let load_guard =
-            self.begin_identity_load(*identifier, None)
-                .map_err(|error| match error {
-                    TaskError::IdentityLoadInProgress { identity_id } => {
-                        TaskError::IdentityBusyWithLoad { identity_id }
-                    }
-                    other => other,
-                })?;
+        self.begin_identity_load(*identifier, None)
+            .map_err(|error| match error {
+                TaskError::IdentityLoadInProgress { identity_id } => {
+                    TaskError::IdentityBusyWithLoad { identity_id }
+                }
+                other => other,
+            })
+    }
+
+    fn delete_local_qualified_identity_with_claim(
+        &self,
+        identifier: &Identifier,
+        remember_unload: bool,
+    ) -> std::result::Result<(), TaskError> {
         let _migration_guard = self
             .migration_run
             .try_lock()
@@ -1011,7 +1145,6 @@ impl AppContext {
             return Err(TaskError::WalletStorageNotReady);
         }
         let kv = self.det_kv()?;
-        let backend = self.wallet_backend()?;
         let id = identifier.to_buffer();
         crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(
             |source| TaskError::IdentityDeletionMigrationRecord {
@@ -1043,45 +1176,7 @@ impl AppContext {
             }
             return Err(error);
         }
-        let mut cleanup_error = None;
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            *identifier,
-            backend.dashpay_clear_owner_overlays(identifier),
-        );
-        // Conversation/payment timestamps that are not keyed by this identity
-        // may be shared; full-wallet teardown is the safe reclamation boundary.
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            *identifier,
-            backend.dashpay_clear_identity_timestamps(identifier),
-        );
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            *identifier,
-            backend.dashpay_clear_identity_addr_map(identifier),
-        );
-        keep_first_unload_cleanup_error(
-            &mut cleanup_error,
-            *identifier,
-            backend.identity_meta().delete(self.network, &id),
-        );
-        match self.clear_identity_vault_keys(&kv, &id) {
-            Ok(()) => keep_first_unload_cleanup_error(
-                &mut cleanup_error,
-                *identifier,
-                purge_identity_scope(&kv, &id),
-            ),
-            // The identity blob inventories its vault labels. Keep it when the
-            // clear fails so a later retry can finish deleting those keys.
-            Err(error) => {
-                keep_first_unload_cleanup_error(&mut cleanup_error, *identifier, Err(error))
-            }
-        }
-        if let Some(error) = cleanup_error {
-            return Err(error);
-        }
-        load_guard.loaded();
+        self.cleanup_identity_after_index_removal(identifier)?;
         Ok(())
     }
 
@@ -1370,6 +1465,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::BackendTaskSuccessResult;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use DetKv;
     use std::io::Write;
@@ -2536,7 +2632,7 @@ mod tests {
             .execute_batch(&trigger_sql)
             .expect("install owner-overlay delete trigger");
 
-        match ctx.delete_local_qualified_identity(&target_id) {
+        match ctx.unload_local_qualified_identity(&target_id) {
             Err(TaskError::IdentityUnloadCleanupFailed {
                 identity_id,
                 source,
@@ -2583,10 +2679,34 @@ mod tests {
                 .is_none(),
             "target vault keys must be removed despite the cleanup failure"
         );
+        assert!(
+            ctx.is_identity_forgotten(&target_id)
+                .expect("read marker after partial cleanup"),
+            "the partial unload must remain discoverable after its blob is purged"
+        );
+        assert!(
+            !ctx.has_local_qualified_identity(&target_id)
+                .expect("read blob after partial cleanup"),
+            "vault cleanup success allows the recovery blob to be purged"
+        );
 
         fault_connection
             .execute_batch(&format!("DROP TRIGGER {trigger_name};"))
             .expect("remove owner-overlay delete trigger");
+        ctx.clear_network_database()
+            .await
+            .expect("full wipe must retry marker-only identity residue");
+        assert!(
+            kv.get::<ContactPrivateInfo>(DetScope::Identity(&target_buf), overlay_key)
+                .expect("read owner overlay after full wipe")
+                .is_none(),
+            "the full wipe must remove owner residue even when no blob remains"
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&target_id)
+                .expect("read marker after full wipe"),
+            "the marker must clear only after its residue cleanup succeeds"
+        );
         backend.shutdown().await;
     }
 
@@ -2735,10 +2855,10 @@ mod tests {
         kv.put(DetScope::Identity(&id_buf), IDENTITY_KEY, &stored("User"))
             .expect("corrupt the stored blob");
 
-        assert!(
-            ctx.delete_local_qualified_identity(&target_id).is_err(),
-            "the corrupted blob must surface as an error"
-        );
+        assert!(matches!(
+            ctx.unload_local_qualified_identity(&target_id),
+            Err(TaskError::IdentityUnloadCleanupFailed { .. })
+        ));
         assert!(
             !ctx.local_identity_ids()
                 .expect("read index")
@@ -2751,17 +2871,37 @@ mod tests {
                 .is_some(),
             "a vault-clear failure must retain the only on-disk inventory of key labels"
         );
+        assert!(
+            ctx.is_identity_forgotten(&target_id)
+                .expect("read forgotten marker"),
+            "the interrupted unload must remain discoverable for retry"
+        );
+        assert!(matches!(
+            ctx.retry_stuck_unload_cleanup(&id_buf),
+            Err(TaskError::IdentityUnloadCleanupFailed { .. })
+        ));
+        assert!(
+            ctx.has_local_qualified_identity(&target_id)
+                .expect("read retained identity after failed retry"),
+            "a failed retry must preserve the identity blob"
+        );
+        assert!(
+            ctx.is_identity_forgotten(&target_id)
+                .expect("read retained marker after failed retry"),
+            "a failed retry must preserve the forgotten marker"
+        );
 
-        // Repair the transiently unreadable inventory and retry by the known
-        // identity id, as the unload caller can after the reported failure.
         kv.put(
             DetScope::Identity(&id_buf),
             IDENTITY_KEY,
             &stored_before_fault,
         )
         .expect("restore stored identity");
-        ctx.delete_local_qualified_identity(&target_id)
-            .expect("retry identity deletion");
+        assert!(
+            ctx.retry_stuck_unload_cleanup(&id_buf)
+                .expect("retry repaired cleanup"),
+            "repairing the inventory must let the retry finish"
+        );
 
         assert!(
             target_vault
@@ -2769,6 +2909,295 @@ mod tests {
                 .expect("read target key after retry")
                 .is_none(),
             "the retained inventory must let a retry delete the vault key"
+        );
+        assert!(
+            !ctx.has_local_qualified_identity(&target_id)
+                .expect("read identity after successful retry"),
+            "a successful retry must purge the retained blob"
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&target_id)
+                .expect("read marker after successful retry"),
+            "a successful retry must clear the forgotten marker"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stuck_unload_retry_ignores_non_ghost_states() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let stored_id = Identifier::from([0xA4; 32]);
+        let stored_identity = qi_with_id_plaintext_and_derived(stored_id, [0xA5; 32], [0xA6; 32]);
+        ctx.insert_local_qualified_identity(&stored_identity, &None)
+            .expect("insert non-forgotten identity");
+        assert!(
+            !ctx.retry_stuck_unload_cleanup(&stored_id.to_buffer())
+                .expect("check non-forgotten identity"),
+            "an identity that was never forgotten is not a cleanup ghost"
+        );
+        assert!(
+            ctx.has_local_qualified_identity(&stored_id)
+                .expect("read non-forgotten identity"),
+            "the non-forgotten identity must remain stored"
+        );
+
+        let purged_id = Identifier::from([0xA7; 32]);
+        ctx.db()
+            .record_forgotten_identity(Network::Testnet, &purged_id)
+            .expect("record marker without a blob");
+        assert!(
+            !ctx.retry_stuck_unload_cleanup(&purged_id.to_buffer())
+                .expect("check marker without blob"),
+            "a forgotten identity with no residual blob needs no retry"
+        );
+        assert!(
+            ctx.is_identity_forgotten(&purged_id)
+                .expect("read marker without blob"),
+            "normal marker lifecycle remains the caller's responsibility"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reject_if_exists_retries_a_repaired_unload_ghost() {
+        use crate::app::TaskResult;
+        use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
+        use crate::context::test_support::test_app_context;
+        use crate::model::secret::Secret;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use dash_sdk::SdkBuilder;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
+        use dash_sdk::platform::{DocumentQuery, Identifier, Identity};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let target_id = Identifier::from([0xA8; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0xA9; 32], [0xAA; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+        let id_buf = target_id.to_buffer();
+        let kv = ctx.det_kv().expect("det kv");
+        let stored_before_fault = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .expect("read stored identity")
+            .expect("stored identity exists");
+        kv.put(DetScope::Identity(&id_buf), IDENTITY_KEY, &stored("User"))
+            .expect("corrupt the stored blob");
+        assert!(matches!(
+            ctx.unload_local_qualified_identity(&target_id),
+            Err(TaskError::IdentityUnloadCleanupFailed { .. })
+        ));
+        let failed_wipe = ctx.clear_network_database().await;
+        assert!(
+            matches!(
+                failed_wipe,
+                Err(TaskError::WalletDataClearIncomplete { .. })
+            ),
+            "an unreadable ghost must make the full wipe report incomplete"
+        );
+        assert!(
+            ctx.has_local_qualified_identity(&target_id)
+                .expect("read retained ghost after failed wipe"),
+            "a failed full-wipe retry must preserve the ghost blob"
+        );
+        assert!(
+            ctx.is_identity_forgotten(&target_id)
+                .expect("read retained marker after failed wipe"),
+            "a failed full-wipe retry must preserve the forgotten marker"
+        );
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &stored_before_fault,
+        )
+        .expect("restore stored identity");
+
+        let input = IdentityInputToLoad {
+            identity_id_input: target_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::User,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::RejectIfExists,
+            load_token: None,
+        };
+        let (task_tx, _task_rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let task_sender = SenderAsync::new(task_tx, ctx.egui_ctx().clone());
+        let mut missing_sdk = SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("build pinned mock SDK");
+        missing_sdk
+            .mock()
+            .expect_fetch(target_id, None::<Identity>)
+            .await
+            .expect("mock missing identity fetch");
+        let failed_result = ctx
+            .run_identity_task(
+                IdentityTask::LoadIdentity(input.clone()),
+                &missing_sdk,
+                task_sender.clone(),
+            )
+            .await;
+        assert!(
+            matches!(failed_result, Err(TaskError::IdentityNotFound)),
+            "a missing network identity must fail the reload: {failed_result:?}"
+        );
+        assert!(
+            ctx.is_identity_forgotten(&target_id)
+                .expect("read marker after failed reload"),
+            "a failed reload must preserve the user's unload marker"
+        );
+        assert!(
+            !ctx.has_local_qualified_identity(&target_id)
+                .expect("read slot after failed reload"),
+            "the repaired ghost blob should remain purged"
+        );
+
+        let mut sdk = SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("build pinned mock SDK");
+        sdk.mock()
+            .expect_fetch(target_id, Some(target.identity.clone()))
+            .await
+            .expect("mock identity fetch");
+        let dpns_query = DocumentQuery {
+            select: SelectProjection::documents(),
+            data_contract: ctx.dpns_contract.clone(),
+            document_type_name: "domain".to_string(),
+            where_clauses: vec![WhereClause {
+                field: "records.identity".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(target_id.into()),
+            }],
+            group_by: Vec::new(),
+            having: Vec::new(),
+            order_by_clauses: vec![],
+            limit: 100,
+            start: None,
+        };
+        sdk.mock()
+            .expect_fetch_many(
+                dpns_query,
+                Some(dash_sdk::query_types::Documents::default()),
+            )
+            .await
+            .expect("mock DPNS fetch");
+        let result = ctx
+            .run_identity_task(IdentityTask::LoadIdentity(input), &sdk, task_sender)
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::LoadedIdentity(ref identity))
+                    if identity.identity.id() == target_id
+            ),
+            "a repaired ghost must load successfully: {result:?}"
+        );
+        assert!(
+            ctx.has_local_qualified_identity(&target_id)
+                .expect("read identity after retry"),
+            "the fresh identity must be stored after the ghost is purged"
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&target_id)
+                .expect("read marker after retry"),
+            "the fresh load must clear the recovered ghost marker"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_network_database_purges_a_repaired_unload_ghost() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let target_id = Identifier::from([0xAB; 32]);
+        let target = qi_with_id_plaintext_and_derived(target_id, [0xAC; 32], [0xAD; 32]);
+        ctx.insert_local_qualified_identity(&target, &None)
+            .expect("insert target identity");
+        let id_buf = target_id.to_buffer();
+        let target_vault = IdentityKeyView::new(backend.secret_store(), id_buf);
+        let kv = ctx.det_kv().expect("det kv");
+        let stored_before_fault = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .expect("read stored identity")
+            .expect("stored identity exists");
+        kv.put(DetScope::Identity(&id_buf), IDENTITY_KEY, &stored("User"))
+            .expect("corrupt the stored blob");
+        assert!(matches!(
+            ctx.unload_local_qualified_identity(&target_id),
+            Err(TaskError::IdentityUnloadCleanupFailed { .. })
+        ));
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &stored_before_fault,
+        )
+        .expect("restore stored identity");
+
+        ctx.clear_network_database()
+            .await
+            .expect("full wipe must recover and purge the ghost");
+
+        assert!(
+            !ctx.has_local_qualified_identity(&target_id)
+                .expect("read identity after full wipe"),
+            "the full wipe must purge the ghost blob"
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&target_id)
+                .expect("read marker after full wipe"),
+            "the full wipe must clear the recovered ghost marker"
+        );
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read vault after full wipe")
+                .is_none(),
+            "the full wipe must remove the ghost's vault key"
         );
 
         backend.shutdown().await;

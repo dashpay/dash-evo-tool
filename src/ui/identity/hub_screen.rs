@@ -542,6 +542,11 @@ impl ScreenLike for IdentityHubScreen {
                     MessageType::Success,
                 );
             }
+            BackendTaskSuccessResult::RemovedIdentities { identity_ids, .. } => {
+                for identity_id in identity_ids {
+                    self.profile_cache.remove_identity(identity_id);
+                }
+            }
             // Populate the Received/Sent request caches so the Contacts tab
             // can render real RequestCard rows instead of hardcoded empties.
             // The result arrives from LoadContactRequests,
@@ -978,6 +983,42 @@ mod tests {
             screen.profile_cache.get_or_request(&identity).is_none(),
             "a profile request started before the committed unload must be discarded"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removed_identities_invalidate_every_profile_cache_entry() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let first_id = seed_user_identity(&context, 4);
+        let second_id = seed_user_identity(&context, 5);
+        let first = context
+            .get_local_qualified_identity(&first_id)
+            .expect("read first identity")
+            .expect("first identity exists");
+        let second = context
+            .get_local_qualified_identity(&second_id)
+            .expect("read second identity")
+            .expect("second identity exists");
+        let mut screen = IdentityHubScreen::new(&context);
+
+        for identity_id in [first_id, second_id] {
+            screen.profile_cache.record_saved(
+                identity_id,
+                crate::ui::identity::profile_cache::ProfileFields {
+                    display_name: "Cached name".to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![first_id, second_id],
+            primary_cleanup_failed: false,
+            associated_cleanup_failed: false,
+            associated_removal_failed: false,
+        });
+
+        assert!(screen.profile_cache.get_or_request(&first).is_none());
+        assert!(screen.profile_cache.get_or_request(&second).is_none());
     }
 
     #[test]

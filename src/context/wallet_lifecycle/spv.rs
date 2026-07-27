@@ -74,16 +74,172 @@ impl AppContext {
                 failures.push(TaskError::DashpaySidecarStorage { source });
             }
         }
-        if let Err(error) = self.clear_all_forgotten_identities() {
-            tracing::warn!(error = ?error, "Forgotten identity marker clear failed");
-            failures.push(error);
+        // Hold successful ghost cleanup claims until the whole wipe finishes.
+        // Otherwise a concurrent explicit load could repopulate the just-purged
+        // slot after the index sweep and make a reported-success wipe incomplete.
+        let mut successful_forgotten_cleanup_guards = Vec::new();
+        let mut failed_forgotten_cleanup_guards = Vec::new();
+        let mut forgotten_marker_clear_candidates = Vec::new();
+        let mut forgotten_indexed_identities = Vec::new();
+        match self.db.list_forgotten_identities(self.network) {
+            Ok(forgotten_identities) => {
+                for identity_id in forgotten_identities {
+                    let load_guard = self
+                        .begin_identity_load(identity_id, None)
+                        .map_err(|error| match error {
+                            TaskError::IdentityLoadInProgress { identity_id } => {
+                                TaskError::IdentityBusyWithLoad { identity_id }
+                            }
+                            other => other,
+                        });
+                    let (retry_result, load_guard) = match load_guard {
+                        Ok(load_guard) => {
+                            let retry_result = match self.migration_run.try_lock() {
+                                Ok(_migration_guard)
+                                    if self.migration_status().state().is_in_progress() =>
+                                {
+                                    Err(TaskError::WalletStorageNotReady)
+                                }
+                                Ok(_migration_guard) => {
+                                    self.retry_stuck_unload_cleanup(&identity_id.to_buffer())
+                                }
+                                Err(_) => Err(TaskError::WalletStorageNotReady),
+                            };
+                            (retry_result, Some(load_guard))
+                        }
+                        Err(error) => (Err(error), None),
+                    };
+                    match retry_result {
+                        Ok(true) => {
+                            if let Some(load_guard) = load_guard {
+                                successful_forgotten_cleanup_guards.push(load_guard);
+                            }
+                        }
+                        Ok(false) => {
+                            let Some(load_guard) = load_guard else {
+                                unreachable!("a successful retry check owns its load claim");
+                            };
+                            match self.local_identity_ids() {
+                                Ok(indexed) if indexed.contains(&identity_id) => {
+                                    // The normal indexed wipe below owns this
+                                    // identity and acquires its own claim.
+                                    forgotten_indexed_identities.push(identity_id);
+                                }
+                                Ok(_) => {
+                                    let residue_result = match self.migration_run.try_lock() {
+                                        Ok(_migration_guard)
+                                            if self.migration_status().state().is_in_progress() =>
+                                        {
+                                            Err(TaskError::WalletStorageNotReady)
+                                        }
+                                        Ok(_migration_guard) => {
+                                            self.purge_forgotten_identity_residue(&identity_id)
+                                        }
+                                        Err(_) => Err(TaskError::WalletStorageNotReady),
+                                    };
+                                    match residue_result {
+                                        Ok(()) => {
+                                            forgotten_marker_clear_candidates.push(identity_id);
+                                            successful_forgotten_cleanup_guards.push(load_guard);
+                                        }
+                                        Err(error) => {
+                                            failed_forgotten_cleanup_guards.push(load_guard);
+                                            tracing::warn!(
+                                                identity_id = %identity_id,
+                                                error = ?error,
+                                                "Forgotten identity residue cleanup failed during full wipe"
+                                            );
+                                            failures.push(error);
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    failed_forgotten_cleanup_guards.push(load_guard);
+                                    tracing::warn!(
+                                        identity_id = %identity_id,
+                                        error = ?error,
+                                        "Identity index check failed during full wipe"
+                                    );
+                                    failures.push(error);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            if let Some(load_guard) = load_guard {
+                                failed_forgotten_cleanup_guards.push(load_guard);
+                            }
+                            // Keep the marker so a later load or full wipe can retry
+                            // cleanup using the residual blob's vault-key inventory.
+                            tracing::warn!(
+                                identity_id = %identity_id,
+                                error = ?error,
+                                "Forgotten identity cleanup retry failed during full wipe"
+                            );
+                            failures.push(error);
+                        }
+                    }
+                }
+            }
+            Err(source) => {
+                let error = TaskError::ForgottenIdentityStorage { source };
+                tracing::warn!(error = ?error, "Forgotten identity listing failed during full wipe");
+                failures.push(error);
+            }
         }
         match self.local_identity_ids() {
             Ok(owners) => {
+                for identity_id in &forgotten_indexed_identities {
+                    if !owners.contains(identity_id) {
+                        // The identity changed between the guarded forgotten
+                        // classification and this indexed snapshot. Fail closed
+                        // and keep its marker; the next wipe can classify the
+                        // resulting state without a handoff gap.
+                        tracing::warn!(
+                            identity_id = %identity_id,
+                            "Forgotten identity changed during full-wipe handoff"
+                        );
+                        failures.push(TaskError::WalletStorageNotReady);
+                    }
+                }
                 for owner in owners {
                     // Wipe each identity's vault keys and det:identity:* records too —
                     // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)
                     // are plaintext-recoverable, so a full wipe must remove them as well.
+                    if forgotten_indexed_identities.contains(&owner) {
+                        let mut attempts_remaining = IDENTITY_WIPE_ATTEMPTS;
+                        let deletion_result = loop {
+                            match self.delete_local_qualified_identity_retaining_claim(&owner) {
+                                Err(TaskError::IdentityBusyWithLoad { .. })
+                                    if attempts_remaining > 1 =>
+                                {
+                                    attempts_remaining -= 1;
+                                    tokio::time::sleep(IDENTITY_WIPE_RETRY_DELAY).await;
+                                }
+                                result => break result,
+                            }
+                        };
+                        match deletion_result {
+                            Ok(load_guard) => {
+                                forgotten_marker_clear_candidates.push(owner);
+                                successful_forgotten_cleanup_guards.push(load_guard);
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    owner = %owner,
+                                    "Identity private-key wipe failed during clear: {error:?}"
+                                );
+                                let underlying_error = match error {
+                                    TaskError::IdentityUnloadCleanupFailed { source, .. } => {
+                                        *source
+                                    }
+                                    other => other,
+                                };
+                                failures.push(underlying_error);
+                            }
+                        }
+                        continue;
+                    }
+
                     let mut attempts_remaining = IDENTITY_WIPE_ATTEMPTS;
                     let deletion_result = loop {
                         match self.delete_local_qualified_identity(&owner) {
@@ -96,16 +252,19 @@ impl AppContext {
                             result => break result,
                         }
                     };
-                    if let Err(e) = deletion_result {
-                        tracing::warn!(
-                            owner = %owner,
-                            "Identity private-key wipe failed during clear: {e:?}"
-                        );
-                        let underlying_error = match e {
-                            TaskError::IdentityUnloadCleanupFailed { source, .. } => *source,
-                            other => other,
-                        };
-                        failures.push(underlying_error);
+                    match deletion_result {
+                        Ok(()) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                owner = %owner,
+                                "Identity private-key wipe failed during clear: {e:?}"
+                            );
+                            let underlying_error = match e {
+                                TaskError::IdentityUnloadCleanupFailed { source, .. } => *source,
+                                other => other,
+                            };
+                            failures.push(underlying_error);
+                        }
                     }
                 }
             }
@@ -115,6 +274,19 @@ impl AppContext {
                 // leaves identity private keys on disk.
                 tracing::warn!("Identity index listing for DashPay clear failed: {e:?}");
                 failures.push(e);
+            }
+        }
+        // Retire only markers captured by this sweep whose attributable cleanup
+        // completed. A blanket clear could erase a recovery marker created by a
+        // concurrent unload after the listing snapshot.
+        for identity_id in forgotten_marker_clear_candidates {
+            if let Err(error) = self.clear_forgotten_identity_after_explicit_load(&identity_id) {
+                tracing::warn!(
+                    identity_id = %identity_id,
+                    error = ?error,
+                    "Forgotten identity marker clear failed during full wipe"
+                );
+                failures.push(error);
             }
         }
 
@@ -138,6 +310,11 @@ impl AppContext {
         }
 
         self.has_wallet.store(false, Ordering::Relaxed);
+
+        for load_guard in successful_forgotten_cleanup_guards {
+            load_guard.loaded();
+        }
+        drop(failed_forgotten_cleanup_guards);
 
         // Any secret-bearing delete that failed above means data may survive on
         // disk, so never report a clean wipe. The in-memory maps are still

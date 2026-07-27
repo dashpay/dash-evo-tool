@@ -46,14 +46,28 @@ impl Database {
         Ok(())
     }
 
-    /// Clear every deliberately unloaded identity marker on one network.
-    pub(crate) fn clear_all_forgotten_identities(&self, network: Network) -> rusqlite::Result<()> {
-        self.execute(
-            "DELETE FROM forgotten_identities
+    /// List every identity deliberately unloaded on one network.
+    pub(crate) fn list_forgotten_identities(
+        &self,
+        network: Network,
+    ) -> rusqlite::Result<Vec<Identifier>> {
+        let conn = self.locked_conn();
+        let mut statement = conn.prepare(
+            "SELECT identity_id FROM forgotten_identities
              WHERE network = ?1",
-            params![network.to_string()],
         )?;
-        Ok(())
+        let rows = statement.query_map(params![network.to_string()], |row| {
+            let bytes: Vec<u8> = row.get(0)?;
+            let id: [u8; 32] = bytes.as_slice().try_into().map_err(|source| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(source),
+                )
+            })?;
+            Ok(Identifier::from(id))
+        })?;
+        rows.collect()
     }
 
     /// Whether an identity is deliberately unloaded on one network.
@@ -101,6 +115,33 @@ mod tests {
         assert!(
             !db.is_identity_forgotten(Network::Testnet, &identity_id)
                 .expect("read cleared marker")
+        );
+    }
+
+    #[test]
+    fn forgotten_identity_listing_is_network_scoped() {
+        let db = create_test_database().expect("create database");
+        let testnet_ids = [Identifier::from([0x41; 32]), Identifier::from([0x42; 32])];
+        let mainnet_id = Identifier::from([0x43; 32]);
+
+        for identity_id in &testnet_ids {
+            db.record_forgotten_identity(Network::Testnet, identity_id)
+                .expect("record testnet marker");
+        }
+        db.record_forgotten_identity(Network::Mainnet, &mainnet_id)
+            .expect("record mainnet marker");
+
+        let mut listed = db
+            .list_forgotten_identities(Network::Testnet)
+            .expect("list testnet markers");
+        listed.sort_unstable();
+        let mut expected = testnet_ids.to_vec();
+        expected.sort_unstable();
+
+        assert_eq!(listed, expected);
+        assert!(
+            !listed.contains(&mainnet_id),
+            "identities from another network must not be returned"
         );
     }
 }

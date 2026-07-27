@@ -2707,6 +2707,105 @@ async fn clear_network_database_holds_ordinary_identity_claim_until_the_wipe_end
         .await;
 }
 
+/// An identity that is both forgotten-marked and still indexed is classified in
+/// the forgotten pass, which releases its claim and leaves the owners loop to
+/// reacquire one, so a load can win that hand-off gap. However the race lands,
+/// the wipe must never report success while leaving that identity on disk: it
+/// either owns the identity and removes it, or fails to claim it and reports the
+/// clear incomplete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn clear_network_database_never_reports_success_for_a_reclaimed_forgotten_identity() {
+    use crate::context::identity_load_registry::IdentityLoadPhase;
+    use dash_sdk::platform::Identifier;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    // Inserted first, so the owners loop stalls on their held claims long enough
+    // for the probe below to reach the target's hand-off window.
+    let blocked_ids: Vec<Identifier> = (0..5).map(|i| Identifier::from([0x50u8 + i; 32])).collect();
+    for (i, blocked_id) in blocked_ids.iter().enumerate() {
+        ctx.insert_local_qualified_identity(
+            &keyed_qualified_identity(*blocked_id, [0x70u8 + i as u8; 32]),
+            &None,
+        )
+        .expect("persist a blocked identity");
+    }
+
+    let target_id = Identifier::from([0x99u8; 32]);
+    ctx.insert_local_qualified_identity(&keyed_qualified_identity(target_id, [0x98u8; 32]), &None)
+        .expect("persist target identity");
+    ctx.db()
+        .record_forgotten_identity(Network::Testnet, &target_id)
+        .expect("mark the target forgotten while it is still indexed");
+
+    let blocking_claims: Vec<_> = blocked_ids
+        .iter()
+        .map(|blocked_id| {
+            ctx.begin_identity_load(*blocked_id, None)
+                .expect("hold a claim the wipe has to retry against")
+        })
+        .collect();
+
+    let wipe = tokio::spawn({
+        let ctx = Arc::clone(&ctx);
+        async move { ctx.clear_network_database().await }
+    });
+
+    // Wait for the classification pass to release the target's claim, then race
+    // the owners loop for it exactly as a background load would.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !wipe.is_finished()
+        && !matches!(
+            ctx.latest_identity_load_phase(&target_id),
+            Some(IdentityLoadPhase::Failed)
+        )
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the target's classification claim was never observed being released"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    let concurrent_load = ctx.begin_identity_load(target_id, None);
+    let load_won_the_gap = concurrent_load.is_ok();
+
+    drop(blocking_claims);
+    let result = wipe.await.expect("the wipe task must not panic");
+    let target_survived = ctx
+        .has_local_qualified_identity(&target_id)
+        .expect("read the target after the wipe");
+    // Only now — the claim has to outlive the wipe to contest it at all.
+    drop(concurrent_load);
+
+    if load_won_the_gap {
+        assert!(
+            matches!(result, Err(TaskError::WalletDataClearIncomplete { .. })),
+            "a wipe that could not claim the identity must report incomplete: {result:?}"
+        );
+        assert!(
+            target_survived,
+            "an incomplete report must correspond to an identity actually left on disk"
+        );
+    } else {
+        assert!(
+            result.is_ok(),
+            "an uncontested wipe must succeed: {result:?}"
+        );
+        assert!(
+            !target_survived,
+            "a successful wipe must leave no trace of the identity"
+        );
+    }
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
 /// Guards are resolved after the legacy shielded-file cleanup, so that cleanup
 /// must never early-return: a `?` there would drop every held claim unresolved
 /// and report durably-wiped identities as failed loads.

@@ -133,7 +133,11 @@ impl AppContext {
                             match self.local_identity_ids() {
                                 Ok(indexed) if indexed.contains(&identity_id) => {
                                     // The normal indexed wipe below owns this
-                                    // identity and acquires its own claim.
+                                    // identity and acquires its own claim. This
+                                    // arm's claim drops here, so a load can win
+                                    // the gap before that reacquisition — the
+                                    // wipe then fails to claim it and reports
+                                    // incomplete rather than a clean sweep.
                                     forgotten_indexed_identities.push(identity_id);
                                 }
                                 Ok(_) => {
@@ -299,7 +303,7 @@ impl AppContext {
 
         self.has_wallet.store(false, Ordering::Relaxed);
 
-        // Resolve every identity load claim only now, once every step that can
+        // Resolve the claims collected above only now, once every step that can
         // restore or touch per-identity state is done: marker retirement, the
         // shielded and legacy-file cleanup, and the in-memory wallet teardown.
         // Holding them this long is what makes a reported-clean wipe true — a
@@ -307,6 +311,9 @@ impl AppContext {
         // load, which could persist a fresh blob after this function's only
         // index sweep. Nothing between guard capture and here early-returns, so
         // an identity whose cleanup durably succeeded still records `Loaded`.
+        // The forgotten-and-still-indexed classification above is the one claim
+        // not collected here: it hands off to the owners loop by reacquiring,
+        // and a load winning that gap makes the wipe report incomplete.
         for load_guard in successful_identity_cleanup_guards {
             load_guard.loaded();
         }

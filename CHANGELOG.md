@@ -82,10 +82,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the wipe has already passed it and still be reported as erased. A failure
   while removing retired shielded files no longer aborts the wipe partway or
   makes identities that were erased successfully look as though they failed.
-  This closes the race against a concurrent load of the same identity
-  specifically; other identity operations in flight during a wipe (refreshing,
-  adding a key, sending funds, and similar) are not guarded yet and are tracked
-  as follow-up work.
+  This closes the race against a concurrent load of the same identity in the
+  common case; one narrow exception remains (an identity that is both marked
+  unloaded and still on the device briefly reopens its slot between two
+  internal steps), and a wipe that loses that narrow race still reports itself
+  incomplete rather than succeeding silently. Other identity operations in
+  flight during a wipe (refreshing, adding a key, sending funds, and similar)
+  are not guarded yet and are tracked as follow-up work.
 
 - **A removal interrupted by a cleanup failure stays findable**: if the app
   cannot finish clearing an identity's local data, it now records the identity

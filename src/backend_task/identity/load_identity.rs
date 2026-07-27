@@ -181,15 +181,15 @@ impl AppContext {
         // tier are never silently overwritten. Checked here, at the storage
         // layer, so every `RejectIfExists` caller is guarded uniformly.
         let mut existing_stored = self.get_local_qualified_identity(&identity_id)?;
-        if load_mode == IdentityLoadMode::RejectIfExists {
-            if self.prepare_stuck_unload_cleanup_for_reload(&identity_id.to_buffer())? {
-                existing_stored = None;
-            } else if existing_stored
+        if self.prepare_stuck_unload_cleanup_for_reload(&identity_id.to_buffer())? {
+            existing_stored = None;
+        }
+        if load_mode == IdentityLoadMode::RejectIfExists
+            && existing_stored
                 .as_ref()
                 .is_some_and(|identity| !is_bare_placeholder(identity))
-            {
-                return Err(TaskError::DuplicateProTxHash { identity_id });
-            }
+        {
+            return Err(TaskError::DuplicateProTxHash { identity_id });
         }
 
         // An in-place merge into a password-protected (Tier-2) node must
@@ -1682,5 +1682,137 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    async fn assert_generic_reload_clears_repaired_unload_ghost(
+        load_mode: IdentityLoadMode,
+        id_byte: u8,
+    ) {
+        use crate::context::test_support::test_app_context;
+        use dash_sdk::SdkBuilder;
+        use dash_sdk::dpp::platform_value::Value;
+        use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
+        use dash_sdk::platform::DocumentQuery;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let identity_id = Identifier::from([id_byte; 32]);
+        let identity = Identity::create_basic_identity(identity_id, PlatformVersion::latest())
+            .expect("identity");
+        let old_key_id =
+            ctx.install_repaired_unload_ghost_for_test(identity.clone(), [id_byte + 1; 32]);
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert!(
+            view.get(&M, old_key_id)
+                .expect("read old vault key before reload")
+                .is_some(),
+            "precondition: the interrupted unload retains its old vault key",
+        );
+
+        let mut sdk = SdkBuilder::new_mock()
+            .with_version(PlatformVersion::latest())
+            .build()
+            .expect("build pinned mock SDK");
+        sdk.mock()
+            .expect_fetch(identity_id, Some(identity))
+            .await
+            .expect("mock identity fetch");
+        let dpns_query = DocumentQuery {
+            select: SelectProjection::documents(),
+            data_contract: ctx.dpns_contract.clone(),
+            document_type_name: "domain".to_string(),
+            where_clauses: vec![WhereClause {
+                field: "records.identity".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(identity_id.into()),
+            }],
+            group_by: Vec::new(),
+            having: Vec::new(),
+            order_by_clauses: vec![],
+            limit: 100,
+            start: None,
+        };
+        sdk.mock()
+            .expect_fetch_many(
+                dpns_query,
+                Some(dash_sdk::query_types::Documents::default()),
+            )
+            .await
+            .expect("mock DPNS fetch");
+        let input = IdentityInputToLoad {
+            identity_id_input: identity_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::User,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode,
+            load_token: None,
+        };
+
+        let result = ctx.load_identity(&sdk, input).await;
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::LoadedIdentity(ref loaded))
+                    if loaded.identity.id() == identity_id
+            ),
+            "the repaired ghost must reload successfully: {result:?}",
+        );
+        let Ok(BackendTaskSuccessResult::LoadedIdentity(loaded)) = &result else {
+            unreachable!("the successful load shape was asserted above");
+        };
+        assert!(
+            !loaded
+                .private_keys
+                .private_keys
+                .contains_key(&(M, old_key_id)),
+            "the replacement identity must not retain the ghost's stale key metadata",
+        );
+        let persisted = ctx
+            .get_local_qualified_identity(&identity_id)
+            .expect("read replacement identity")
+            .expect("replacement identity is stored");
+        assert!(
+            !persisted
+                .private_keys
+                .private_keys
+                .contains_key(&(M, old_key_id)),
+            "the replacement blob must not retain the ghost's stale key metadata",
+        );
+        assert!(
+            view.get(&M, old_key_id)
+                .expect("read old vault key after reload")
+                .is_none(),
+            "the old vault key must be cleared before the replacement blob is written",
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&identity_id)
+                .expect("read marker after reload"),
+            "a successful replacement load must retire the forgotten marker",
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn overwrite_and_merge_clear_repaired_unload_ghost_keys() {
+        assert_generic_reload_clears_repaired_unload_ghost(IdentityLoadMode::Overwrite, 0xB1).await;
+        assert_generic_reload_clears_repaired_unload_ghost(
+            IdentityLoadMode::MergeIntoExisting,
+            0xB3,
+        )
+        .await;
     }
 }

@@ -252,6 +252,7 @@ impl AppContext {
 
         // Carry the user-assigned alias from any existing record so a re-load
         // refreshes keys/DPNS without wiping DET-only metadata.
+        self.prepare_stuck_unload_cleanup_for_reload(&identity_id.to_buffer())?;
         if let Some(existing) = self.get_identity_by_id(&identity_id)? {
             qualified_identity.alias = existing.alias;
             self.update_local_qualified_identity(&qualified_identity)?;
@@ -299,5 +300,148 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::IdentitiesLoaded {
             count: summary.found,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::model::wallet::Wallet;
+    use crate::model::wallet::birth_height::WalletOrigin;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::SdkBuilder;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+        IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+    };
+    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wallet_load_clears_repaired_unload_ghost_key() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender.clone())
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let seed = [0xC1; 64];
+        let identity_index = 4;
+        let wallet = Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("Ghost reload".to_string()),
+            None,
+        )
+        .expect("build wallet");
+        let derived_public_key = wallet
+            .identity_authentication_ecdsa_public_key_from_seed(
+                &seed,
+                Network::Testnet,
+                identity_index,
+                0,
+            )
+            .expect("derive identity authentication key");
+        let (wallet_seed_hash, wallet) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+
+        let platform_version = PlatformVersion::latest();
+        let identity_id = Identifier::from([0xC2; 32]);
+        let mut identity_key = IdentityPublicKey::random_key(1, Some(1), platform_version);
+        identity_key.set_purpose(Purpose::AUTHENTICATION);
+        identity_key.set_security_level(SecurityLevel::MASTER);
+        identity_key.set_key_type(KeyType::ECDSA_SECP256K1);
+        identity_key.set_data(BinaryData::new(
+            derived_public_key.inner.serialize().to_vec(),
+        ));
+        let identity = Identity::new_with_id_and_keys(
+            identity_id,
+            BTreeMap::from([(identity_key.id(), identity_key)]),
+            platform_version,
+        )
+        .expect("build wallet-backed identity");
+        let old_key_id = ctx.install_repaired_unload_ghost_for_test(identity.clone(), [0xC3; 32]);
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
+                .expect("read old vault key before reload")
+                .is_some(),
+            "precondition: the interrupted unload retains its old vault key",
+        );
+
+        let mut sdk = SdkBuilder::new_mock()
+            .with_version(platform_version)
+            .build()
+            .expect("build pinned mock SDK");
+        let identity_query = NonUniquePublicKeyHashQuery {
+            key_hash: derived_public_key.pubkey_hash().into(),
+            after: None,
+        };
+        sdk.mock()
+            .expect_fetch(identity_query, Some(identity))
+            .await
+            .expect("mock wallet identity fetch");
+        let dpns_query = DocumentQuery {
+            select: SelectProjection::documents(),
+            data_contract: ctx.dpns_contract.clone(),
+            document_type_name: "domain".to_string(),
+            where_clauses: vec![WhereClause {
+                field: "records.identity".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(identity_id.into()),
+            }],
+            group_by: Vec::new(),
+            having: Vec::new(),
+            order_by_clauses: vec![],
+            limit: 100,
+            start: None,
+        };
+        sdk.mock()
+            .expect_fetch_many(
+                dpns_query,
+                Some(dash_sdk::query_types::Documents::default()),
+            )
+            .await
+            .expect("mock DPNS fetch");
+
+        let result = ctx
+            .load_user_identity_from_wallet(
+                &sdk,
+                WalletArcRef {
+                    wallet,
+                    seed_hash: wallet_seed_hash,
+                },
+                identity_index,
+                sender,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 })
+            ),
+            "the repaired ghost must reload from its wallet: {result:?}",
+        );
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
+                .expect("read old vault key after reload")
+                .is_none(),
+            "the old vault key must be cleared before the wallet load writes its blob",
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&identity_id)
+                .expect("read marker after reload"),
+            "a successful wallet load must retire the forgotten marker",
+        );
+
+        backend.shutdown().await;
     }
 }

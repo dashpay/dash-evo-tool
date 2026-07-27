@@ -1463,6 +1463,97 @@ impl AppContext {
 }
 
 #[cfg(test)]
+impl AppContext {
+    /// Install and repair the retained blob for an interrupted unload.
+    pub(crate) fn install_repaired_unload_ghost_for_test(
+        &self,
+        identity: dash_sdk::platform::Identity,
+        secret: [u8; 32],
+    ) -> dash_sdk::dpp::identity::KeyID {
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::IdentityPublicKey;
+
+        let identity_id = identity.id();
+        let identity_buf = identity_id.to_buffer();
+        let key = IdentityPublicKey::random_key(97, Some(97), PlatformVersion::latest());
+        let key_id = key.id();
+        let mut private_keys = KeyStorage::default();
+        private_keys.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+            (
+                QualifiedIdentityPublicKey::from(key),
+                PrivateKeyData::Clear(secret),
+            ),
+        );
+        let qualified_identity = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("Interrupted unload".to_string()),
+            private_keys,
+            dpns_names: Vec::new(),
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: self.network,
+        };
+        self.insert_local_qualified_identity(&qualified_identity, &None)
+            .expect("insert identity before faulted unload");
+
+        let kv = self.det_kv().expect("open identity k/v");
+        let stored_before_fault = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&identity_buf), IDENTITY_KEY)
+            .expect("read stored identity")
+            .expect("stored identity exists");
+        kv.put(
+            DetScope::Identity(&identity_buf),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                qi_bytes: vec![0xAB; 16],
+                status: IdentityStatus::Active.as_u8(),
+                identity_type: IdentityType::User.as_tag().to_string(),
+                wallet_hash: None,
+                wallet_index: None,
+            },
+        )
+        .expect("corrupt retained identity inventory");
+
+        assert!(matches!(
+            self.unload_local_qualified_identity(&identity_id),
+            Err(TaskError::IdentityUnloadCleanupFailed { .. })
+        ));
+        kv.put(
+            DetScope::Identity(&identity_buf),
+            IDENTITY_KEY,
+            &stored_before_fault,
+        )
+        .expect("repair retained identity inventory");
+        assert!(
+            !self
+                .local_identity_ids()
+                .expect("read identity index")
+                .contains(&identity_id),
+            "precondition: the interrupted unload is not indexed",
+        );
+        assert!(
+            self.is_identity_forgotten(&identity_id)
+                .expect("read forgotten marker"),
+            "precondition: the interrupted unload remains marked",
+        );
+
+        key_id
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend_task::BackendTaskSuccessResult;
@@ -3000,6 +3091,14 @@ mod tests {
         ctx.insert_local_qualified_identity(&target, &None)
             .expect("insert target identity");
         let id_buf = target_id.to_buffer();
+        let target_vault = IdentityKeyView::new(backend.secret_store(), id_buf);
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read old key before ghost recovery")
+                .is_some(),
+            "precondition: the interrupted unload retains its old vault key",
+        );
         let kv = ctx.det_kv().expect("det kv");
         let stored_before_fault = kv
             .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
@@ -3081,6 +3180,13 @@ mod tests {
             !ctx.has_local_qualified_identity(&target_id)
                 .expect("read slot after failed reload"),
             "the repaired ghost blob should remain purged"
+        );
+        assert!(
+            target_vault
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .expect("read old key after ghost recovery")
+                .is_none(),
+            "ghost recovery must clear the old vault key before any replacement is written",
         );
 
         let mut sdk = SdkBuilder::new_mock()

@@ -7,6 +7,7 @@ use crate::model::qualified_identity::{
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
@@ -154,14 +155,102 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
+        self.persist_identity_loaded_by_dpns_name(qualified_identity, load_guard)
+    }
+
+    fn persist_identity_loaded_by_dpns_name(
+        &self,
+        qualified_identity: QualifiedIdentity,
+        load_guard: crate::context::identity_load_registry::IdentityLoadGuard,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let identity_id = qualified_identity.identity.id();
         let wallet_info = qualified_identity
             .determine_wallet_info()
             .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
         // Insert qualified identity into the database
+        self.prepare_stuck_unload_cleanup_for_reload(&identity_id.to_buffer())?;
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
         self.finish_identity_load_after_persist(&identity_id, load_guard);
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dpns_load_clears_repaired_unload_ghost_key() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+
+        let platform_version = PlatformVersion::latest();
+        let identity_id = Identifier::from([0xD1; 32]);
+        let identity =
+            Identity::create_basic_identity(identity_id, platform_version).expect("identity");
+        let old_key_id = ctx.install_repaired_unload_ghost_for_test(identity.clone(), [0xD2; 32]);
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
+                .expect("read old vault key before reload")
+                .is_some(),
+            "precondition: the interrupted unload retains its old vault key",
+        );
+
+        let load_guard = ctx
+            .begin_identity_load_and_validate_type(IdentityType::User, &identity, None)
+            .expect("claim replacement load");
+        let qualified_identity = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("alice.dash".to_string()),
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: Default::default(),
+            secret_access: Some(backend.secret_access()),
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: ctx.network(),
+        };
+        let result = ctx.persist_identity_loaded_by_dpns_name(qualified_identity, load_guard);
+        assert!(
+            matches!(
+                result,
+                Ok(BackendTaskSuccessResult::LoadedIdentity(ref loaded))
+                    if loaded.identity.id() == identity_id
+            ),
+            "the repaired ghost must reload by DPNS name: {result:?}",
+        );
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
+                .expect("read old vault key after reload")
+                .is_none(),
+            "the old vault key must be cleared before the DPNS load writes its blob",
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&identity_id)
+                .expect("read marker after reload"),
+            "a successful DPNS load must retire the forgotten marker",
+        );
+
+        backend.shutdown().await;
     }
 }

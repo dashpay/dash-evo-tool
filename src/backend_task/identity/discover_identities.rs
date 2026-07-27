@@ -333,6 +333,7 @@ impl AppContext {
             return Ok(None);
         }
 
+        self.prepare_stuck_unload_cleanup_for_reload(&identity_id.to_buffer())?;
         match self.get_identity_by_id(&identity_id)? {
             Some(existing) => {
                 // Carry DET-only metadata onto the refreshed identity, then
@@ -517,8 +518,11 @@ mod tests {
     use crate::app::TaskResult;
     use crate::context::identity_load_registry::IdentityLoadPhase;
     use crate::context::test_support::test_app_context;
-    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
     use crate::utils::egui_mpsc::SenderAsync;
+    use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Identifier, Identity};
@@ -644,6 +648,58 @@ mod tests {
             ctx.is_identity_forgotten(&identity_id)
                 .expect("read retained marker"),
             "the injected cleanup fault must leave the marker in place"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_discovery_clears_repaired_unload_ghost_key() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        let backend = ctx.wallet_backend().expect("wallet backend");
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed([0x66; 64], Network::Testnet, None, None).expect("build wallet"),
+        ));
+        let identity_index = 6;
+        let wallet_seed_hash = wallet.read().expect("read wallet").seed_hash();
+        ctx.wallets()
+            .write()
+            .expect("write wallets")
+            .insert(wallet_seed_hash, Arc::clone(&wallet));
+        let identity_id = Identifier::from([0x67; 32]);
+        let replacement = wallet_derived_identity(identity_id, &wallet, identity_index);
+        let old_key_id =
+            ctx.install_repaired_unload_ghost_for_test(replacement.identity.clone(), [0x68; 32]);
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
+                .expect("read old vault key before reload")
+                .is_some(),
+            "precondition: the interrupted unload retains its old vault key",
+        );
+
+        let load_guard = ctx
+            .persist_discovered_identity(replacement, wallet_seed_hash, identity_index, true)
+            .expect("persist explicit discovery")
+            .expect("explicit discovery must restore the identity");
+        ctx.finish_identity_load_after_persist(&identity_id, load_guard);
+
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, old_key_id,)
+                .expect("read old vault key after reload")
+                .is_none(),
+            "the old vault key must be cleared before explicit discovery writes its blob",
+        );
+        assert!(
+            !ctx.is_identity_forgotten(&identity_id)
+                .expect("read marker after reload"),
+            "a successful explicit discovery must retire the forgotten marker",
         );
 
         backend.shutdown().await;

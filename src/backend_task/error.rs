@@ -1563,6 +1563,15 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The funding transaction output has already been used for another operation.
+    #[error(
+        "This deposit has already been used and cannot be used again. Choose a different deposit, or start a new deposit."
+    )]
+    AssetLockOutPointAlreadyConsumed {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Fetching address information from the platform failed.
     #[error("Could not retrieve address information from the platform. Please retry.")]
     PlatformFetchError {
@@ -2920,6 +2929,11 @@ impl From<SdkError> for TaskError {
                             }
                         }))
                     }
+                    ConsensusError::BasicError(
+                        BasicError::IdentityAssetLockTransactionOutPointAlreadyConsumedError(_),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::AssetLockOutPointAlreadyConsumed { source_error }
+                    })),
                     ConsensusError::StateError(StateError::InsufficientPoolNotesError(e)) => {
                         let (current_count, minimum_required) =
                             (e.current_count(), e.minimum_required());
@@ -4338,6 +4352,44 @@ mod tests {
                 }
             ),
             "Expected AssetLockOutPointInsufficientBalance, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_asset_lock_outpoint_already_consumed_via_consensus() {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
+        use dashcore::hashes::Hash;
+        let consensus = ConsensusError::from(
+            IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
+                dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+            ),
+        );
+        let err = TaskError::from(SdkError::from(consensus));
+        assert!(
+            matches!(err, TaskError::AssetLockOutPointAlreadyConsumed { .. }),
+            "Expected AssetLockOutPointAlreadyConsumed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn asset_lock_outpoint_already_consumed_display_is_actionable_and_non_retryable() {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointAlreadyConsumedError;
+        use dashcore::hashes::Hash;
+        let consensus = ConsensusError::from(
+            IdentityAssetLockTransactionOutPointAlreadyConsumedError::new(
+                dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+            ),
+        );
+        let message = TaskError::from(SdkError::from(consensus)).to_string();
+        assert!(
+            message.contains("different deposit") && message.contains("new deposit"),
+            "Expected an alternative funding action, got: {message}"
+        );
+        assert!(
+            !message.to_lowercase().contains("retry"),
+            "A permanently consumed deposit must not suggest retrying: {message}"
         );
     }
 

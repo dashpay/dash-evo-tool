@@ -9,6 +9,7 @@ pub mod qualified_identity_public_key;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, ResolvedPrivateKey};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
@@ -886,6 +887,23 @@ impl QualifiedIdentity {
         keys
     }
 
+    /// Whether the active role can attempt a withdrawal with this identity.
+    ///
+    /// Uniform across every role: a withdrawal is only ever executable with a
+    /// locally-held TRANSFER or OWNER key (see
+    /// [`resolve_withdrawal_signing_key`](Self::resolve_withdrawal_signing_key),
+    /// the backend's unconditional enforcement layer — no role currently
+    /// relaxes it). A Developer-only "any on-chain key" carve-out previously
+    /// existed here and in [`default_withdrawal_key`](Self::default_withdrawal_key)'s
+    /// caller, but nothing downstream ever accepted an on-chain-only key for
+    /// signing, so that carve-out only produced an enabled button that led to
+    /// a blank or failing withdrawal screen. Gate on the same invariant the
+    /// backend enforces, so this predicate never lies about what the screen
+    /// can actually do.
+    pub fn can_attempt_withdrawal(&self, _role: UserRole) -> bool {
+        !self.available_withdrawal_keys().is_empty()
+    }
+
     /// Returns the key to pre-select for signing a withdrawal.
     ///
     /// Only keys whose private material is held locally are considered (via
@@ -1343,6 +1361,36 @@ mod withdrawal_key_tests {
             .map(|qk| qk.identity_public_key.id())
             .collect();
         assert_eq!(ids, vec![1]);
+    }
+
+    /// An on-chain-only key (no local private material) can never be used to
+    /// sign a withdrawal (see `resolve_withdrawal_signing_key`), for any
+    /// role — including Developer. Enabling the gate for it previously led
+    /// `WithdrawalScreen` to a blank or failing screen.
+    #[test]
+    fn can_attempt_withdrawal_ignores_on_chain_only_keys_for_every_role() {
+        let without_keys = build_identity(IdentityType::User, vec![], vec![]);
+        let authentication = key(1, Purpose::AUTHENTICATION);
+        let on_chain_only = build_identity(IdentityType::User, vec![authentication], vec![]);
+
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            assert!(!without_keys.can_attempt_withdrawal(role));
+            assert!(
+                !on_chain_only.can_attempt_withdrawal(role),
+                "on-chain-only AUTHENTICATION key must not enable withdrawal for {role:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn can_attempt_withdrawal_uses_local_withdrawal_keys_for_every_role() {
+        let transfer = key(2, Purpose::TRANSFER);
+        let locally_signable =
+            build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
+
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            assert!(locally_signable.can_attempt_withdrawal(role));
+        }
     }
 
     /// A wholly disabled key set leaves no signable withdrawal key.

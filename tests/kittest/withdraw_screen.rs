@@ -170,7 +170,7 @@ fn ghost_transfer_key_shows_no_keys_empty_state_not_a_form() {
 
         assert!(
             harness
-                .query_by_label_contains("You do not have any withdrawal keys loaded")
+                .query_by_label_contains("This identity has no loaded key")
                 .is_some(),
             "a ghost-key-only identity must show the no-keys empty state"
         );
@@ -241,7 +241,7 @@ fn ghost_key_construction_does_not_leak_raw_error_banner() {
         let harness = mount_withdrawal_screen(screen);
         assert!(
             harness
-                .query_by_label_contains("You do not have any withdrawal keys loaded")
+                .query_by_label_contains("This identity has no loaded key")
                 .is_some(),
             "the no-keys empty state must still render after the banner-leak fix"
         );
@@ -288,7 +288,7 @@ fn private_backed_transfer_key_is_selected_and_rendered_in_combo() {
         );
         assert!(
             harness
-                .query_by_label_contains("You do not have any withdrawal keys loaded")
+                .query_by_label_contains("This identity has no loaded key")
                 .is_none()
         );
 

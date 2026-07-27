@@ -16,7 +16,9 @@ use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_
 use dash_sdk::dpp::dashcore::{ScriptBuf, TxOut};
 use dash_sdk::dpp::key_wallet::account::Account;
 use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionError;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::{
+    SelectionError, SelectionStrategy,
+};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::{
     BuilderError, TransactionBuilder,
@@ -29,10 +31,17 @@ use super::{DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend};
 // cannot reuse the real path's source.
 // TODO(upstream): export that default or expose an asset-lock ceiling quote primitive.
 const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
+const MAX_DRAIN_SEARCH_DOUBLINGS: u32 = 40;
 
 enum AssetLockDryRun {
     Builds,
     Rejected { available: u64 },
+}
+
+enum AssetLockDrainSeed {
+    Ceiling(u64),
+    Unavailable,
+    TooManyInputs,
 }
 
 fn asset_lock_builder_height(
@@ -82,14 +91,46 @@ fn dry_run_asset_lock_amount(
     }
 }
 
-/// Return the largest credit-output amount the real asset-lock builder accepts.
-///
-/// Every probe is a no-broadcast `TransactionBuilder` build with the same
-/// funding account, fee rate, payload shape, and final-input requirement used
-/// by `create_asset_lock_proof`. Cloning the account keeps address-pool state
-/// unchanged; successful probes release their shared UTXO reservation before
-/// returning.
-fn asset_lock_max_amount_from_account(
+fn asset_lock_drain_ceiling(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+) -> Result<AssetLockDrainSeed, BuilderError> {
+    let mut dry_run_account = managed_account.clone();
+    let result = TransactionBuilder::new()
+        .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
+        .set_current_height(current_height)
+        .set_selection_strategy(SelectionStrategy::All)
+        .set_special_payload(TransactionPayload::AssetLockPayloadType(
+            AssetLockPayload::new(vec![TxOut {
+                value: 1,
+                script_pubkey: ScriptBuf::new(),
+            }]),
+        ))
+        .set_funding(&mut dry_run_account, account)
+        .require_final_inputs()
+        .build_unsigned();
+
+    match result {
+        Ok((transaction, _)) => {
+            dry_run_account.release_reservation(&transaction);
+            transaction
+                .output
+                .first()
+                .map(|output| AssetLockDrainSeed::Ceiling(output.value))
+                .ok_or_else(|| {
+                    BuilderError::InvalidData("asset-lock drain produced no credit output".into())
+                })
+        }
+        Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable))
+        | Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
+        | Err(BuilderError::InsufficientFunds { .. }) => Ok(AssetLockDrainSeed::Unavailable),
+        Err(BuilderError::TooManyInputs { .. }) => Ok(AssetLockDrainSeed::TooManyInputs),
+        Err(source) => Err(source),
+    }
+}
+
+fn full_range_asset_lock_max_amount(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
     current_height: u32,
@@ -114,6 +155,54 @@ fn asset_lock_max_amount_from_account(
     }
 
     Ok(low)
+}
+
+/// Return the largest credit-output amount the real asset-lock builder accepts.
+///
+/// A drain build supplies a tight upper bound, then default-strategy probes find
+/// the exact boundary without reproducing the selector's internal fee model.
+fn asset_lock_max_amount_from_account(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+) -> Result<u64, BuilderError> {
+    let drain_ceiling = match asset_lock_drain_ceiling(managed_account, account, current_height)? {
+        AssetLockDrainSeed::Ceiling(ceiling) => ceiling,
+        AssetLockDrainSeed::Unavailable => return Ok(0),
+        AssetLockDrainSeed::TooManyInputs => {
+            return full_range_asset_lock_max_amount(managed_account, account, current_height);
+        }
+    };
+    let mut step = 1_u64;
+    let mut high = drain_ceiling;
+    for _ in 0..MAX_DRAIN_SEARCH_DOUBLINGS {
+        let candidate = drain_ceiling.saturating_sub(step);
+        match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
+            AssetLockDryRun::Builds => {
+                let mut low = candidate;
+                while low < high {
+                    let midpoint = low + (high - low).div_ceil(2);
+                    match dry_run_asset_lock_amount(
+                        managed_account,
+                        account,
+                        current_height,
+                        midpoint,
+                    )? {
+                        AssetLockDryRun::Builds => low = midpoint,
+                        AssetLockDryRun::Rejected { .. } => high = midpoint - 1,
+                    }
+                }
+                return Ok(low);
+            }
+            AssetLockDryRun::Rejected { .. } if candidate == 0 => return Ok(0),
+            AssetLockDryRun::Rejected { .. } => {
+                high = candidate - 1;
+                step = step.saturating_mul(2);
+            }
+        }
+    }
+
+    full_range_asset_lock_max_amount(managed_account, account, current_height)
 }
 
 impl WalletBackend {

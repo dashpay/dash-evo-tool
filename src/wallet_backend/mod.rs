@@ -2398,6 +2398,11 @@ impl WalletBackend {
         self.inner.snapshots.snapshot(seed_hash).balance
     }
 
+    /// Generation of the latest event-pushed wallet snapshot.
+    pub fn wallet_snapshot_generation(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.inner.snapshots.snapshot(seed_hash).generation
+    }
+
     /// Full transaction history for the wallet (event-sourced).
     pub fn transaction_history(
         &self,

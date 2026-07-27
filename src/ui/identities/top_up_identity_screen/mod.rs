@@ -642,8 +642,9 @@ impl ScreenLike for TopUpIdentityScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if let Some(seed_hash) = context.asset_lock_max_amount_wallet() {
-            self.asset_lock_balance.mark_loading_failed(&seed_hash);
+        if let Some((seed_hash, snapshot_generation)) = context.asset_lock_max_amount_request() {
+            self.asset_lock_balance
+                .mark_loading_failed(&seed_hash, snapshot_generation);
         }
         let selected_seed_hash = self
             .wallet
@@ -659,10 +660,12 @@ impl ScreenLike for TopUpIdentityScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::AssetLockMaxAmount {
             seed_hash,
+            snapshot_generation,
             amount_duffs,
         } = &backend_task_success_result
         {
-            self.asset_lock_balance.store(*seed_hash, *amount_duffs);
+            self.asset_lock_balance
+                .store(*seed_hash, *snapshot_generation, *amount_duffs);
             return;
         }
         if let BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } =

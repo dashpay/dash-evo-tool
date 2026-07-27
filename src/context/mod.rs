@@ -1460,6 +1460,13 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Monotonic generation of the event-pushed snapshot for one wallet.
+    pub fn snapshot_generation(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wb| wb.wallet_snapshot_generation(seed_hash))
+            .unwrap_or_default()
+    }
+
     /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
     /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
     ///

@@ -1361,8 +1361,9 @@ impl ScreenLike for AddNewIdentityScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if let Some(seed_hash) = context.asset_lock_max_amount_wallet() {
-            self.asset_lock_balance.mark_loading_failed(&seed_hash);
+        if let Some((seed_hash, snapshot_generation)) = context.asset_lock_max_amount_request() {
+            self.asset_lock_balance
+                .mark_loading_failed(&seed_hash, snapshot_generation);
         }
         let selected_seed_hash = self
             .selected_wallet
@@ -1400,9 +1401,11 @@ impl ScreenLike for AddNewIdentityScreen {
             }
             BackendTaskSuccessResult::AssetLockMaxAmount {
                 seed_hash,
+                snapshot_generation,
                 amount_duffs,
             } => {
-                self.asset_lock_balance.store(*seed_hash, *amount_duffs);
+                self.asset_lock_balance
+                    .store(*seed_hash, *snapshot_generation, *amount_duffs);
                 return;
             }
             BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {

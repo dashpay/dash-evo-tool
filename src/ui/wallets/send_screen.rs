@@ -648,7 +648,9 @@ impl WalletSendScreen {
             return None;
         }
         let seed_hash = self.selected_wallet_seed_hash?;
-        self.asset_lock_balance.ensure_requested(seed_hash)
+        let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
+        self.asset_lock_balance
+            .ensure_requested(seed_hash, snapshot_generation)
     }
 
     fn render_asset_lock_balance_status(&mut self, ui: &mut Ui) {
@@ -4295,10 +4297,12 @@ impl ScreenLike for WalletSendScreen {
     ) {
         if let crate::backend_task::BackendTaskSuccessResult::AssetLockMaxAmount {
             seed_hash,
+            snapshot_generation,
             amount_duffs,
         } = &backend_task_success_result
         {
-            self.asset_lock_balance.store(*seed_hash, *amount_duffs);
+            self.asset_lock_balance
+                .store(*seed_hash, *snapshot_generation, *amount_duffs);
             return;
         }
         self.send_banner.take_and_clear();
@@ -4429,8 +4433,9 @@ impl ScreenLike for WalletSendScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if let Some(seed_hash) = context.asset_lock_max_amount_wallet() {
-            self.asset_lock_balance.mark_loading_failed(&seed_hash);
+        if let Some((seed_hash, snapshot_generation)) = context.asset_lock_max_amount_request() {
+            self.asset_lock_balance
+                .mark_loading_failed(&seed_hash, snapshot_generation);
         }
     }
 }
@@ -4543,9 +4548,16 @@ mod tests {
             .estimate_shield_from_core_fees_duffs();
         assert!(BUILDER_MAX_DUFFS > platform_fee_duffs);
 
+        let snapshot_generation = screen.app_context.snapshot_generation(&seed_hash);
+        assert!(
+            screen
+                .asset_lock_balance
+                .ensure_requested(seed_hash, snapshot_generation)
+                .is_some()
+        );
         screen
             .asset_lock_balance
-            .store(seed_hash, BUILDER_MAX_DUFFS);
+            .store(seed_hash, snapshot_generation, BUILDER_MAX_DUFFS);
         screen.selected_source = Some(SourceSelection::CoreWallet);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
 

@@ -89,6 +89,8 @@ pub struct DetUtxo {
 /// Per-wallet display snapshot. Cheap to clone-share via the enclosing `Arc`.
 #[derive(Debug, Clone, Default)]
 pub struct WalletSnapshot {
+    /// Monotonic per-wallet publish counter used to invalidate derived UI caches.
+    pub(super) generation: u64,
     pub balance: DetWalletBalance,
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
@@ -679,7 +681,8 @@ impl SnapshotStore {
             .and_then(|log| log.get(wallet_id).map(|m| m.values().cloned().collect()))
             .unwrap_or_default();
 
-        let snapshot = Arc::new(WalletSnapshot {
+        let snapshot = WalletSnapshot {
+            generation: 0,
             balance: state.balance,
             transactions,
             utxos: state.utxos,
@@ -692,11 +695,15 @@ impl SnapshotStore {
                 .ok()
                 .and_then(|statuses| statuses.get(wallet_id).cloned())
                 .unwrap_or_default(),
-        });
+        };
 
         self.snapshots.rcu(|current| {
             let mut next = (**current).clone();
-            next.insert(*seed_hash, snapshot.clone());
+            let mut published = snapshot.clone();
+            published.generation = current
+                .get(seed_hash)
+                .map_or(1, |prior| prior.generation.saturating_add(1));
+            next.insert(*seed_hash, Arc::new(published));
             next
         });
     }
@@ -771,11 +778,23 @@ mod tests {
     fn empty_store_yields_default_snapshot() {
         let store = SnapshotStore::new();
         let snap = store.snapshot(&seed(1));
+        assert_eq!(snap.generation, 0);
         assert_eq!(snap.balance, DetWalletBalance::default());
         assert!(snap.transactions.is_empty());
         assert!(snap.utxos.is_empty());
         // Pre-sync: no watched receive set is published yet.
         assert!(snap.monitored_receive_addresses.is_empty());
+    }
+
+    #[test]
+    fn wallet_snapshot_generation_advances_on_each_publish() {
+        let store = SnapshotStore::new();
+
+        publish_tx_only(&store, seed(2), wid(2));
+        assert_eq!(store.snapshot(&seed(2)).generation, 1);
+
+        publish_tx_only(&store, seed(2), wid(2));
+        assert_eq!(store.snapshot(&seed(2)).generation, 2);
     }
 
     /// FUNDS-SAFETY (display list): the Receive list is sourced from the
@@ -1106,6 +1125,7 @@ mod tests {
         address_paths.insert(a.clone(), DerivationPath::from(Vec::new()));
         address_paths.insert(b.clone(), DerivationPath::from(Vec::new()));
         WalletSnapshot {
+            generation: 1,
             balance: DetWalletBalance {
                 confirmed: 6_000,
                 unconfirmed: 0,

@@ -332,7 +332,10 @@ pub enum BackendTaskContext {
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
     /// Live asset-lock builder ceiling query for one wallet.
-    AssetLockMaxAmount { seed_hash: WalletSeedHash },
+    AssetLockMaxAmount {
+        seed_hash: WalletSeedHash,
+        snapshot_generation: u64,
+    },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
     /// A known backend task that needs no finer UI correlation.
@@ -389,9 +392,12 @@ impl BackendTaskContext {
         }
     }
 
-    pub(crate) fn asset_lock_max_amount_wallet(&self) -> Option<WalletSeedHash> {
+    pub(crate) fn asset_lock_max_amount_request(&self) -> Option<(WalletSeedHash, u64)> {
         match self.operation() {
-            Self::AssetLockMaxAmount { seed_hash } => Some(*seed_hash),
+            Self::AssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+            } => Some((*seed_hash, *snapshot_generation)),
             _ => None,
         }
     }
@@ -443,11 +449,13 @@ impl From<&BackendTask> for BackendTaskContext {
                     seed_hash: *seed_hash,
                 }
             }
-            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount { seed_hash }) => {
-                Self::AssetLockMaxAmount {
-                    seed_hash: *seed_hash,
-                }
-            }
+            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+            }) => Self::AssetLockMaxAmount {
+                seed_hash: *seed_hash,
+                snapshot_generation: *snapshot_generation,
+            },
             BackendTask::WalletTask(
                 task @ (WalletTask::RenameHdWallet { .. }
                 | WalletTask::RenameSingleKeyWallet { .. }),
@@ -618,6 +626,7 @@ pub enum BackendTaskSuccessResult {
     /// Largest asset-lock credit output the live upstream builder accepts.
     AssetLockMaxAmount {
         seed_hash: WalletSeedHash,
+        snapshot_generation: u64,
         amount_duffs: u64,
     },
     /// Platform address balances fetched from Platform
@@ -1262,12 +1271,16 @@ impl AppContext {
                 .list_tracked_asset_locks(&seed_hash)
                 .await
                 .map(|locks| BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks }),
-            WalletTask::GetAssetLockMaxAmount { seed_hash } => backend
+            WalletTask::GetAssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+            } => backend
                 .asset_lock_max_amount(&seed_hash)
                 .await
                 .map(
                     |amount_duffs| BackendTaskSuccessResult::AssetLockMaxAmount {
                         seed_hash,
+                        snapshot_generation,
                         amount_duffs,
                     },
                 ),

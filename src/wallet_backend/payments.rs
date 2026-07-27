@@ -25,12 +25,22 @@ use std::sync::Arc;
 
 use super::{DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend};
 
-// Must match platform-wallet's asset-lock manager builder configuration.
+// `AssetLockManager` passes its private `DEFAULT_FEE_PER_KB` explicitly to key-wallet, so DET
+// cannot reuse the real path's source.
+// TODO(upstream): export that default or expose an asset-lock ceiling quote primitive.
 const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
 
 enum AssetLockDryRun {
     Builds,
     Rejected { available: u64 },
+}
+
+fn asset_lock_builder_height(
+    info: &dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+) -> u32 {
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+
+    info.last_processed_height()
 }
 
 fn dry_run_asset_lock_amount(
@@ -116,8 +126,6 @@ impl WalletBackend {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<u64, TaskError> {
-        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
         let mut wallet_manager = wallet.wallet_manager().write().await;
@@ -128,7 +136,7 @@ impl WalletBackend {
             .get_bip44_account(DEFAULT_BIP44_ACCOUNT)
             .ok_or(TaskError::WalletStateInconsistent)?
             .clone();
-        let current_height = info.core_wallet.synced_height();
+        let current_height = asset_lock_builder_height(&info.core_wallet);
         let managed_account = info
             .core_wallet
             .accounts
@@ -397,7 +405,9 @@ impl WalletBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{ASSET_LOCK_FEE_PER_KB, asset_lock_max_amount_from_account};
+    use super::{
+        ASSET_LOCK_FEE_PER_KB, asset_lock_builder_height, asset_lock_max_amount_from_account,
+    };
     use crate::model::fee_estimation::core_max_send_amount_duffs;
     use crate::wallet_backend::snapshot::DetWalletBalance;
     use dash_sdk::dpp::dashcore::ScriptBuf;
@@ -412,6 +422,7 @@ mod tests {
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
     /// Reproduces <https://github.com/dashpay/dash-evo-tool/issues/909>.
     /// The root cause is upstream in `dashpay/rust-dashcore` key-wallet's
@@ -570,6 +581,24 @@ mod tests {
         assert!(
             overshoot.is_err(),
             "the display-only snapshot amount must reproduce the builder rejection"
+        );
+    }
+
+    #[test]
+    fn asset_lock_max_uses_last_processed_height_when_sync_watermarks_diverge() {
+        let wallet = Wallet::new_random(Network::Testnet, WalletAccountCreationOptions::Default)
+            .expect("test wallet");
+        let mut wallet_info =
+            ManagedWalletInfo::from_wallet_with_name(&wallet, "Test".to_string(), 0);
+        wallet_info.update_last_processed_height(200);
+        wallet_info.update_synced_height(300);
+
+        assert_eq!(wallet_info.last_processed_height(), 200);
+        assert_eq!(wallet_info.synced_height(), 300);
+        assert_eq!(
+            asset_lock_builder_height(&wallet_info),
+            wallet_info.last_processed_height(),
+            "the Max probe must use the same block-processed watermark as the real asset-lock builder"
         );
     }
 }

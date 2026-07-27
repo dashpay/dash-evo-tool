@@ -103,10 +103,11 @@ pub(crate) const UNLOAD_DETAILS_LOAD_FAILED: &str =
 /// identity — masternodes and evonodes, on every screen that removes them.
 const REMOVE_VOTING_IDENTITY_DISCLOSURE: &str =
     "This also removes the node's voting identity from this device.";
-/// How a node is loaded again. Nodes never came from a wallet seed, so the
-/// generic recovery-information wording does not apply to them.
-const NODE_RELOAD_GUIDANCE: &str =
-    "You can load a masternode or evonode identity again using its ProTxHash.";
+/// How a node is loaded again. Nodes never came from a wallet seed, but the
+/// ProTxHash restores only the entry — never the keys this action deletes, so
+/// the sentence must not read as if it replaced them.
+const NODE_RELOAD_GUIDANCE: &str = "You can load a masternode or evonode identity again using its \
+     ProTxHash, but you must enter its private keys again.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
 // Marker strings for controls without a matching backend task. Surfaced in
 // disabled_tooltip and as a prefix on the row so users know it is a coming
@@ -1456,7 +1457,10 @@ mod tests {
 
     /// Nodes are loaded by ProTxHash, never from a wallet seed, so the generic
     /// recovery-information wording would send their owners looking for a
-    /// recovery phrase that never existed.
+    /// recovery phrase that never existed. The ProTxHash restores only the
+    /// entry, so the same sentence has to say the keys come back separately —
+    /// otherwise it reads as "the ProTxHash is the recovery information", on a
+    /// confirmation for deleting those keys.
     #[test]
     fn unload_dialog_points_nodes_at_their_protxhash() {
         for identity_type in [IdentityType::Masternode, IdentityType::Evonode] {
@@ -1466,6 +1470,11 @@ mod tests {
             assert!(
                 message.ends_with(NODE_RELOAD_GUIDANCE),
                 "a {identity_type:?} must be told how it is actually loaded again: {message}"
+            );
+            assert!(
+                message.contains("you must enter its private keys again"),
+                "node guidance must not read as if the ProTxHash restored the deleted \
+                 keys: {message}"
             );
         }
 

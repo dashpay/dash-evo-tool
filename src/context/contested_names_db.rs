@@ -356,7 +356,7 @@ impl AppContext {
         let contests = self.ongoing_contested_names()?;
         let open_polls: Vec<Option<Identifier>> = contests
             .iter()
-            .filter(|contest| contest.is_open_for_voter(&voter_id))
+            .filter(|contest| contest.is_votable())
             .map(|contest| {
                 self.dpns_vote_poll_id(&contest.normalized_contested_name)
                     .ok()

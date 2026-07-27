@@ -39,8 +39,8 @@ pub struct ContestedName {
 }
 
 impl ContestedName {
-    /// Whether the contest still accepts this node's initial vote or a change.
-    pub fn is_open_for_voter(&self, _voter_id: &Identifier) -> bool {
+    /// Whether the contest's state still accepts votes.
+    pub fn is_votable(&self) -> bool {
         self.state.state_is_votable()
     }
 
@@ -247,7 +247,6 @@ pub struct Contestant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
     fn contest(state: ContestState) -> ContestedName {
         ContestedName {
@@ -285,43 +284,16 @@ mod tests {
     }
 
     #[test]
-    fn open_for_voter_when_votable_and_not_yet_voted() {
-        let voter = Identifier::from([7u8; 32]);
-        assert!(contest(ContestState::Ongoing).is_open_for_voter(&voter));
-        assert!(contest(ContestState::Joinable).is_open_for_voter(&voter));
-    }
-
-    #[test]
-    fn not_open_when_state_not_votable() {
-        let voter = Identifier::from([7u8; 32]);
-        assert!(!contest(ContestState::Locked).is_open_for_voter(&voter));
-        assert!(!contest(ContestState::Unknown).is_open_for_voter(&voter));
-        assert!(
-            !contest(ContestState::WonBy(Identifier::from([9u8; 32]))).is_open_for_voter(&voter)
-        );
-    }
-
-    #[test]
-    fn existing_vote_remains_actionable_while_contest_is_votable() {
-        let voter = Identifier::from([7u8; 32]);
-        let mut c = contest(ContestState::Ongoing);
-        c.my_votes.insert(
-            (voter, PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0),
-            ResourceVoteChoice::Abstain,
-        );
-        assert!(c.is_open_for_voter(&voter));
-    }
-
-    #[test]
-    fn open_when_a_different_voter_already_voted() {
-        let voter = Identifier::from([7u8; 32]);
-        let other = Identifier::from([8u8; 32]);
-        let mut c = contest(ContestState::Ongoing);
-        c.my_votes.insert(
-            (other, PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0),
-            ResourceVoteChoice::Abstain,
-        );
-        assert!(c.is_open_for_voter(&voter));
+    fn contest_is_votable_only_in_open_states() {
+        for (state, expected) in [
+            (ContestState::Unknown, false),
+            (ContestState::Joinable, true),
+            (ContestState::Ongoing, true),
+            (ContestState::WonBy(Identifier::from([9u8; 32])), false),
+            (ContestState::Locked, false),
+        ] {
+            assert_eq!(contest(state).is_votable(), expected);
+        }
     }
 
     // ----------------------------------------------------------------

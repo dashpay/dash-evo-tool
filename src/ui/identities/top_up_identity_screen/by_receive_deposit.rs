@@ -135,6 +135,19 @@ impl TopUpIdentityScreen {
         let mut action = AppAction::None;
         self.reconcile_funding_deposit();
         let step = self.current_step();
+        let seed_hash = self
+            .wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
+        if let Some(seed_hash) = seed_hash {
+            let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
+            if let Some(task) = self
+                .asset_lock_balance
+                .ensure_requested(seed_hash, snapshot_generation)
+            {
+                action |= AppAction::BackendTask(task);
+            }
+        }
 
         if step == WalletFundedScreenStep::WaitingOnFunds {
             ui.heading(format!(
@@ -161,6 +174,20 @@ impl TopUpIdentityScreen {
         // committed to the pending transaction, so the input's max recomputes to
         // 0 and would show a stale "exceeds maximum" error over a succeeding op.
         if step == WalletFundedScreenStep::FundsReceived {
+            let Some(seed_hash) = seed_hash else {
+                return action;
+            };
+            if self.asset_lock_balance.is_failed(&seed_hash) {
+                ui.label("The available amount could not be checked.");
+                if ui.button("Retry available amount check").clicked() {
+                    self.asset_lock_balance.invalidate_one(&seed_hash);
+                }
+                return action;
+            }
+            if self.asset_lock_balance.get(&seed_hash).is_none() {
+                ui.label("Checking the available amount…");
+                return action;
+            }
             self.top_up_funding_amount_input(ui);
 
             let has_valid_amount = self.funding_amount_exact.is_some_and(|d| d > 0);

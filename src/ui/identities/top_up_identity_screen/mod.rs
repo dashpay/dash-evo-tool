@@ -36,7 +36,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits, Duffs};
+use dash_sdk::dpp::balances::credits::{Credits, Duffs};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -167,8 +167,17 @@ impl TopUpIdentityScreen {
             .unwrap_or(FundingMethod::NoSelection)
     }
 
-    /// Whether `wallet` currently has the resources the given funding method
-    /// needs. A busy wallet lock reads as "no resources" rather than panicking.
+    /// Whether the loaded builder ceiling covers the top-up minimum.
+    /// An unloaded quote does not block the funding option.
+    fn wallet_balance_can_afford_top_up(&self, seed_hash: &WalletSeedHash) -> bool {
+        let minimum = self.app_context.fee_estimator().estimate_identity_topup();
+        self.asset_lock_balance
+            .get(seed_hash)
+            .is_none_or(|ceiling| spendable_covers_minimum(ceiling, minimum))
+    }
+
+    /// Whether `wallet` remains eligible; an unloaded ceiling does not block it.
+    /// A busy wallet lock reads as ineligible rather than panicking.
     fn wallet_has_resources_for(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
@@ -179,7 +188,7 @@ impl TopUpIdentityScreen {
         };
         match method {
             FundingMethod::UseWalletBalance => {
-                self.app_context.snapshot_has_balance(&w.seed_hash())
+                self.wallet_balance_can_afford_top_up(&w.seed_hash())
             }
             FundingMethod::UseUnusedAssetLock => self.asset_lock_cache.has_unused(&w.seed_hash()),
             _ => true,
@@ -231,16 +240,7 @@ impl TopUpIdentityScreen {
                         let can_afford = wallet
                             .read()
                             .ok()
-                            .map(|w| {
-                                let spendable = self
-                                    .app_context
-                                    .snapshot_balance(&w.seed_hash())
-                                    .spendable();
-                                let minimum =
-                                    self.app_context.fee_estimator().estimate_identity_topup();
-                                spendable_covers_minimum(spendable, minimum)
-                            })
-                            .unwrap_or(false);
+                            .is_some_and(|w| self.wallet_balance_can_afford_top_up(&w.seed_hash()));
                         let (recommended, _) = default_funding_state(can_afford);
                         if let Ok(mut m) = self.funding_method.write() {
                             *m = recommended;
@@ -344,7 +344,7 @@ impl TopUpIdentityScreen {
                     {
                         has_unused_asset_lock = true;
                     }
-                    if self.app_context.snapshot_has_balance(&seed_hash) {
+                    if self.wallet_balance_can_afford_top_up(&seed_hash) {
                         has_balance = true;
                     }
                     if wallet.total_platform_balance() > 0 {
@@ -478,59 +478,42 @@ impl TopUpIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
-                if funding_method == FundingMethod::UseWalletBalance {
-                    let seed_hash = match selected_wallet.read() {
-                        Ok(wallet) => wallet.seed_hash(),
-                        Err(error) => {
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "The wallet is busy. Wait a moment and try again.",
-                                MessageType::Warning,
-                            )
-                            .with_details(error);
-                            return AppAction::None;
-                        }
-                    };
-                    let Some(max_amount) = self.asset_lock_balance.get(&seed_hash) else {
+                let seed_hash = match selected_wallet.read() {
+                    Ok(wallet) => wallet.seed_hash(),
+                    Err(error) => {
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
-                            "Your wallet's available amount is still being checked. Wait a moment and try again.",
+                            "The wallet is busy. Wait a moment and try again.",
                             MessageType::Warning,
-                        );
-                        return AppAction::None;
-                    };
-                    if let Err(error) = validate_asset_lock_amount(amount, 0, max_amount) {
-                        let maximum_amount_duffs = match error {
-                            AssetLockAmountError::Overflow => max_amount,
-                            AssetLockAmountError::ExceedsMaximum {
-                                maximum_amount_duffs,
-                            } => maximum_amount_duffs,
-                        };
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            format!(
-                                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
-                                format_duffs_as_dash(maximum_amount_duffs)
-                            ),
-                            MessageType::Warning,
-                        );
+                        )
+                        .with_details(error);
                         return AppAction::None;
                     }
-                }
-                if funding_method == FundingMethod::ReceiveDeposit {
-                    let fee_credits = self.app_context.fee_estimator().estimate_identity_topup();
-                    let available_credits = max_amount_after_fee_reserve(
-                        self.funding_address_balance_duffs,
-                        fee_credits,
+                };
+                let Some(max_amount) = self.asset_lock_balance.get(&seed_hash) else {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Your wallet's available amount is still being checked. Wait a moment and try again.",
+                        MessageType::Warning,
                     );
-                    if amount.saturating_mul(CREDITS_PER_DUFF) > available_credits {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            "That deposit cannot cover this amount. Wait for more funds or choose a smaller amount.",
-                            MessageType::Warning,
-                        );
-                        return AppAction::None;
-                    }
+                    return AppAction::None;
+                };
+                if let Err(error) = validate_asset_lock_amount(amount, 0, max_amount) {
+                    let maximum_amount_duffs = match error {
+                        AssetLockAmountError::Overflow => max_amount,
+                        AssetLockAmountError::ExceedsMaximum {
+                            maximum_amount_duffs,
+                        } => maximum_amount_duffs,
+                    };
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!(
+                            "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
+                            format_duffs_as_dash(maximum_amount_duffs)
+                        ),
+                        MessageType::Warning,
+                    );
+                    return AppAction::None;
                 }
                 let identity_input = IdentityTopUpInfo {
                     qualified_identity: self.identity.clone(),
@@ -568,15 +551,12 @@ impl TopUpIdentityScreen {
             funding_method,
             FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
         ) {
-            let available_ceiling_duffs = if funding_method == FundingMethod::ReceiveDeposit {
-                self.funding_address_balance_duffs
-            } else {
-                self.wallet
-                    .as_ref()
-                    .and_then(|w| w.read().ok())
-                    .and_then(|w| self.asset_lock_balance.get(&w.seed_hash()))
-                    .unwrap_or(0)
-            };
+            let available_ceiling_duffs = self
+                .wallet
+                .as_ref()
+                .and_then(|w| w.read().ok())
+                .and_then(|w| self.asset_lock_balance.get(&w.seed_hash()))
+                .unwrap_or(0);
             let fee_estimator = self.app_context.fee_estimator();
             let estimated_fee = fee_estimator.estimate_identity_topup();
             let max_with_fee_reserved =
@@ -657,6 +637,15 @@ impl ScreenLike for TopUpIdentityScreen {
             self.funding_address_request_failed = true;
         }
     }
+
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.asset_lock_max_amount_request().is_some()
+    }
+
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::AssetLockMaxAmount {
             seed_hash,

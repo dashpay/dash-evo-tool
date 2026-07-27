@@ -19,10 +19,11 @@ impl AddNewIdentityScreen {
                 }
             };
 
-            let spendable_balance: u64 = self
-                .app_context
-                .snapshot_balance(&wallet.seed_hash())
-                .spendable();
+            let seed_hash = wallet.seed_hash();
+            let spendable_balance = self
+                .asset_lock_balance
+                .get(&seed_hash)
+                .unwrap_or_else(|| self.app_context.snapshot_balance(&seed_hash).spendable());
 
             let dash_balance = spendable_balance as f64 * 1e-8; // Convert to DASH units
 

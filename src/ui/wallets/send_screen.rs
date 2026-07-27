@@ -642,7 +642,7 @@ impl WalletSendScreen {
         if !matches!(self.selected_source, Some(SourceSelection::CoreWallet))
             || !matches!(
                 self.destination_kind(),
-                Some(AddressKind::Shielded | AddressKind::Identity)
+                Some(AddressKind::Platform | AddressKind::Shielded | AddressKind::Identity)
             )
         {
             return None;
@@ -660,7 +660,7 @@ impl WalletSendScreen {
         if !matches!(self.selected_source, Some(SourceSelection::CoreWallet))
             || !matches!(
                 self.destination_kind(),
-                Some(AddressKind::Shielded | AddressKind::Identity)
+                Some(AddressKind::Platform | AddressKind::Shielded | AddressKind::Identity)
             )
         {
             return;
@@ -948,6 +948,19 @@ impl WalletSendScreen {
         if amount_duffs == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
+        let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
+        if let Err(error) = validate_asset_lock_amount(amount_duffs, 0, asset_lock_max) {
+            let maximum_amount_duffs = match error {
+                AssetLockAmountError::Overflow => asset_lock_max,
+                AssetLockAmountError::ExceedsMaximum {
+                    maximum_amount_duffs,
+                } => maximum_amount_duffs,
+            };
+            return Err(format!(
+                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
+                format_duffs_as_dash(maximum_amount_duffs)
+            ));
+        }
 
         // Extract validated platform address
         let destination = self
@@ -955,17 +968,6 @@ impl WalletSendScreen {
             .as_ref()
             .and_then(|v| v.as_platform().copied())
             .ok_or_else(|| "Invalid platform address".to_string())?;
-
-        // Check balance; fees will be subtracted from amount
-        let required = amount_duffs;
-        let balance = self.get_core_balance();
-        if required > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} (including fee) but have {}",
-                format_duffs_as_dash(required),
-                format_duffs_as_dash(balance)
-            ));
-        }
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -2448,7 +2450,11 @@ impl WalletSendScreen {
                         let seed_hash = wallet.seed_hash();
                         let max_duffs = if matches!(
                             dest_kind,
-                            Some(AddressKind::Shielded | AddressKind::Identity)
+                            Some(
+                                AddressKind::Platform
+                                    | AddressKind::Shielded
+                                    | AddressKind::Identity
+                            )
                         ) {
                             self.asset_lock_balance.get(&seed_hash)
                         } else {
@@ -4438,6 +4444,14 @@ impl ScreenLike for WalletSendScreen {
                 .mark_loading_failed(&seed_hash, snapshot_generation);
         }
     }
+
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.asset_lock_max_amount_request().is_some()
+    }
 }
 
 #[cfg(test)]
@@ -4631,6 +4645,50 @@ mod tests {
         assert!(
             error.starts_with("You can transfer up to "),
             "validation should report the builder-derived identity ceiling: {error}"
+        );
+
+        let platform_destination =
+            PlatformAddress::try_from(testnet_core_address(4)).expect("platform destination");
+        harness.state_mut().validated_destination = Some(ValidatedAddress::Platform {
+            address: platform_destination,
+            bech32m: platform_destination.to_bech32m_string(Network::Testnet),
+        });
+        harness.step();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        let platform_max_duffs = harness
+            .state()
+            .amount
+            .as_ref()
+            .expect("Platform Max sets the amount")
+            .dash_to_duffs()
+            .expect("DASH amount");
+        let platform_fee_credits = estimate_address_funding_fee_from_transition(
+            harness.state().app_context.platform_version(),
+            &platform_destination,
+        );
+        assert_eq!(
+            platform_max_duffs,
+            BUILDER_MAX_DUFFS
+                .saturating_mul(CREDITS_PER_DUFF)
+                .saturating_sub(platform_fee_credits)
+                / CREDITS_PER_DUFF,
+            "Platform Max must start from the builder ceiling before reserving its fee"
+        );
+        assert!(
+            harness.state_mut().send_core_to_platform(seed_hash).is_ok(),
+            "the builder-derived Platform Max must pass pre-send validation"
+        );
+
+        harness.state_mut().amount = Some(Amount::dash_from_duffs(BUILDER_MAX_DUFFS + 1));
+        let error = harness
+            .state_mut()
+            .send_core_to_platform(seed_hash)
+            .expect_err("one duff above the builder ceiling must be rejected before dispatch");
+        assert!(
+            error.starts_with("You can transfer up to "),
+            "Platform validation should report the builder-derived ceiling: {error}"
         );
     }
 

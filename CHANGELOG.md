@@ -76,6 +76,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   different deposit or start a new one, instead of the generic rejection
   message that suggested retrying the same one.
 
+- **Shielded features now detect network support correctly**: the app's
+  live check of the connected network's protocol version — used to enable
+  shielded sending, receiving, and transfers — no longer gets stuck at its
+  startup default. It was silently keeping shielded operations unavailable
+  regardless of what the connected network actually supports, and also kept
+  the send-fee estimate from picking up the network's current rate. A
+  temporary workaround is in place while the underlying issue is fixed
+  upstream; the send-fee estimate will keep using its last known rate until
+  that lands.
+
 ### Changed
 
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:

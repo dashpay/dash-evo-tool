@@ -1,12 +1,20 @@
 //! Per-screen DPNS vote-operation snapshot for immediate-mode render paths.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
-    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey, DpnsVoteTargetStatus,
+    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ScheduledDpnsVoteRow {
+    pub vote: ScheduledDPNSVote,
+    pub journal_target: Option<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
+    pub status: DpnsVoteTargetStatus,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DpnsVoteOperationSnapshot {
@@ -43,6 +51,75 @@ impl DpnsVoteOperationSnapshot {
         self.loaded
     }
 
+    pub(crate) fn scheduled_vote_rows(
+        &self,
+        legacy_votes: &[ScheduledDPNSVote],
+    ) -> Vec<ScheduledDpnsVoteRow> {
+        let mut journal_rows = BTreeMap::<
+            (dash_sdk::platform::Identifier, String),
+            ((u64, usize), ScheduledDpnsVoteRow),
+        >::new();
+        for (operation_index, operation) in self.operations.iter().enumerate() {
+            for outcome in &operation.targets {
+                let VoteTiming::Scheduled(timestamp) = outcome.target.timing else {
+                    continue;
+                };
+                let pair = (
+                    outcome.target.key.voter_id,
+                    outcome.target.contested_name.clone(),
+                );
+                let rank = (operation.created_at, operation_index);
+                if journal_rows
+                    .get(&pair)
+                    .is_some_and(|(current_rank, _)| *current_rank > rank)
+                {
+                    continue;
+                }
+                journal_rows.insert(
+                    pair,
+                    (
+                        rank,
+                        ScheduledDpnsVoteRow {
+                            vote: ScheduledDPNSVote {
+                                contested_name: outcome.target.contested_name.clone(),
+                                voter_id: outcome.target.key.voter_id,
+                                choice: outcome.target.requested_choice,
+                                unix_timestamp: timestamp,
+                                executed_successfully: outcome.status
+                                    == DpnsVoteTargetStatus::Confirmed,
+                            },
+                            journal_target: Some((operation.id, outcome.target.key.clone())),
+                            status: outcome.status,
+                        },
+                    ),
+                );
+            }
+        }
+
+        let journal_pairs = journal_rows.keys().cloned().collect::<BTreeSet<_>>();
+        let mut rows = journal_rows
+            .into_values()
+            .map(|(_, row)| row)
+            .collect::<Vec<_>>();
+        rows.extend(
+            legacy_votes
+                .iter()
+                .filter(|vote| {
+                    !journal_pairs.contains(&(vote.voter_id, vote.contested_name.clone()))
+                })
+                .map(|vote| ScheduledDpnsVoteRow {
+                    vote: vote.clone(),
+                    journal_target: None,
+                    status: if vote.executed_successfully {
+                        DpnsVoteTargetStatus::Confirmed
+                    } else {
+                        DpnsVoteTargetStatus::Scheduled
+                    },
+                }),
+        );
+        rows
+    }
+
     fn replace(&mut self, operations: Vec<DpnsVoteOperation>) {
         self.target_statuses = operations
             .iter()
@@ -58,6 +135,7 @@ impl DpnsVoteOperationSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::contested_names::ScheduledDPNSVote;
     use crate::model::dpns_voting::{DpnsVoteTarget, VoteTiming};
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -99,5 +177,176 @@ mod tests {
         assert_eq!(snapshot.operation(live.id), Some(&live));
         assert_eq!(snapshot.operations(), &[live, terminal]);
         assert!(snapshot.is_loaded());
+    }
+
+    fn scheduled_operation(
+        created_at: u64,
+        status: DpnsVoteTargetStatus,
+        choice: ResourceVoteChoice,
+        timestamp: u64,
+    ) -> DpnsVoteOperation {
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([7; 32]),
+                vote_poll_id: Identifier::from([8; 32]),
+            },
+            voter_alias: Some("node-7".to_owned()),
+            contested_name: "alice".to_owned(),
+            requested_choice: choice,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(timestamp),
+        }]);
+        operation.created_at = created_at;
+        operation.targets[0].status = status;
+        operation
+    }
+
+    fn legacy_vote(
+        voter_id: Identifier,
+        name: &str,
+        choice: ResourceVoteChoice,
+        timestamp: u64,
+        executed_successfully: bool,
+    ) -> ScheduledDPNSVote {
+        ScheduledDPNSVote {
+            contested_name: name.to_owned(),
+            voter_id,
+            choice,
+            unix_timestamp: timestamp,
+            executed_successfully,
+        }
+    }
+
+    #[test]
+    fn scheduled_rows_prefer_the_newest_journal_outcome_over_legacy_data() {
+        let older = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Confirmed,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let newer = scheduled_operation(
+            20,
+            DpnsVoteTargetStatus::Rejected,
+            ResourceVoteChoice::Abstain,
+            200,
+        );
+        let expected_id = newer.id;
+        let expected_key = newer.targets[0].target.key.clone();
+        let legacy = legacy_vote(
+            Identifier::from([7; 32]),
+            "alice",
+            ResourceVoteChoice::Lock,
+            999,
+            true,
+        );
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![older, newer]);
+
+        let rows = snapshot.scheduled_vote_rows(&[legacy]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].journal_target, Some((expected_id, expected_key)));
+        assert_eq!(rows[0].status, DpnsVoteTargetStatus::Rejected);
+        assert_eq!(rows[0].vote.choice, ResourceVoteChoice::Abstain);
+        assert_eq!(rows[0].vote.unix_timestamp, 200);
+        assert!(!rows[0].vote.executed_successfully);
+    }
+
+    #[test]
+    fn scheduled_rows_use_later_persisted_order_when_created_times_match() {
+        let first = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Rejected,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let second = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Cancelled,
+            ResourceVoteChoice::Abstain,
+            200,
+        );
+        let expected_id = second.id;
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![first, second]);
+
+        let rows = snapshot.scheduled_vote_rows(&[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].journal_target.as_ref().map(|(id, _)| *id),
+            Some(expected_id)
+        );
+        assert_eq!(rows[0].status, DpnsVoteTargetStatus::Cancelled);
+        assert_eq!(rows[0].vote.unix_timestamp, 200);
+    }
+
+    #[test]
+    fn scheduled_rows_derive_compatibility_execution_only_from_confirmed_status() {
+        let confirmed = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Confirmed,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![confirmed]);
+
+        let rows = snapshot.scheduled_vote_rows(&[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, DpnsVoteTargetStatus::Confirmed);
+        assert!(rows[0].vote.executed_successfully);
+    }
+
+    #[test]
+    fn scheduled_rows_append_only_unseen_legacy_pairs() {
+        let journal = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Scheduled,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let voter_id = journal.targets[0].target.key.voter_id;
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![journal]);
+        let legacy = [
+            legacy_vote(voter_id, "alice", ResourceVoteChoice::Abstain, 999, true),
+            legacy_vote(
+                Identifier::from([9; 32]),
+                "confirmed-legacy",
+                ResourceVoteChoice::Lock,
+                300,
+                true,
+            ),
+            legacy_vote(
+                Identifier::from([10; 32]),
+                "pending-legacy",
+                ResourceVoteChoice::Abstain,
+                400,
+                false,
+            ),
+        ];
+
+        let rows = snapshot.scheduled_vote_rows(&legacy);
+
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().any(|row| {
+            row.vote.contested_name == "alice"
+                && row.status == DpnsVoteTargetStatus::Scheduled
+                && row.journal_target.is_some()
+        }));
+        assert!(rows.iter().any(|row| {
+            row.vote.contested_name == "confirmed-legacy"
+                && row.status == DpnsVoteTargetStatus::Confirmed
+                && row.journal_target.is_none()
+        }));
+        assert!(rows.iter().any(|row| {
+            row.vote.contested_name == "pending-legacy"
+                && row.status == DpnsVoteTargetStatus::Scheduled
+                && row.journal_target.is_none()
+        }));
     }
 }

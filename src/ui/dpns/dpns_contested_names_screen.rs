@@ -1,6 +1,6 @@
 use crate::wallet_backend::poison::MutexRecover;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
-use tracing::error;
 
 use chrono::{DateTime, LocalResult, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use chrono_humanize::HumanTime;
@@ -12,7 +12,7 @@ use eframe::egui::{self, Button, Color32, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
 use crate::app::{AppAction, DesiredAppAction, scheduled_vote_sweep_is_quiet};
-use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
+use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext};
@@ -20,8 +20,8 @@ use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::dpns::normalize_dpns_label;
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteOperation, DpnsVoteOperationId,
+    DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
 };
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::ui::components::component_trait::Component;
@@ -34,7 +34,8 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
-use crate::ui::state::dpns_vote_operations::DpnsVoteOperationSnapshot;
+use crate::ui::state::dpns_contests::{ActiveDpnsContestSnapshot, ActiveDpnsContestView};
+use crate::ui::state::dpns_vote_operations::{DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow};
 use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -153,6 +154,42 @@ fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
     }
 }
 
+fn scheduled_vote_remove_enabled(status: DpnsVoteTargetStatus) -> bool {
+    !matches!(
+        status,
+        DpnsVoteTargetStatus::Queued
+            | DpnsVoteTargetStatus::Submitting
+            | DpnsVoteTargetStatus::Confirming
+            | DpnsVoteTargetStatus::Unconfirmed
+    )
+}
+
+fn scheduled_vote_cast_enabled(status: DpnsVoteTargetStatus, dispatch_pending: bool) -> bool {
+    !dispatch_pending
+        && matches!(
+            status,
+            DpnsVoteTargetStatus::Scheduled
+                | DpnsVoteTargetStatus::Rejected
+                | DpnsVoteTargetStatus::FailedBeforeSubmission
+                | DpnsVoteTargetStatus::Cancelled
+                | DpnsVoteTargetStatus::NotApplied
+        )
+}
+
+fn scheduled_vote_removal_task(row: &ScheduledDpnsVoteRow) -> ContestedResourceTask {
+    match &row.journal_target {
+        Some((operation_id, key)) => ContestedResourceTask::CancelScheduledDpnsVote {
+            operation_id: *operation_id,
+            key: key.clone(),
+            contested_name: row.vote.contested_name.clone(),
+        },
+        None => ContestedResourceTask::DeleteScheduledVote(
+            row.vote.voter_id,
+            row.vote.contested_name.clone(),
+        ),
+    }
+}
+
 fn dpns_operation_id(context: &BackendTaskContext) -> Option<DpnsVoteOperationId> {
     match context {
         BackendTaskContext::Dispatched { operation, .. } => dpns_operation_id(operation),
@@ -185,15 +222,6 @@ pub enum VoteOption {
     NoVote,
     CastNow,
     Scheduled { days: u32, hours: u32, minutes: u32 },
-}
-
-/// Tracks the casting status for each scheduled vote item.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ScheduledVoteCastingStatus {
-    NotStarted,
-    InProgress,
-    Failed,
-    Completed,
 }
 
 #[derive(PartialEq)]
@@ -235,9 +263,9 @@ pub struct DPNSScreen {
     voting_identities: Vec<QualifiedIdentity>,
     user_identities: Vec<QualifiedIdentity>,
     contested_names: Arc<Mutex<Vec<ContestedName>>>,
+    active_contests: ActiveDpnsContestSnapshot,
     local_dpns_names: Arc<Mutex<Vec<(Identifier, DPNSNameInfo)>>>,
-    pub scheduled_votes: Arc<Mutex<Vec<(ScheduledDPNSVote, ScheduledVoteCastingStatus)>>>,
-    pub scheduled_vote_cast_in_progress: bool,
+    scheduled_votes: Arc<Mutex<Vec<ScheduledDpnsVoteRow>>>,
     pub selected_votes: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
     pending_backend_task: Option<BackendTask>,
@@ -245,6 +273,7 @@ pub struct DPNSScreen {
     vote_state: DpnsVoteStateSnapshot,
     vote_overlay: Option<OverlayHandle>,
     pending_vote_operation: Option<DpnsVoteOperationId>,
+    pending_scheduled_casts: BTreeSet<DpnsScheduledVoteKey>,
     clear_vote_overlay_on_error: bool,
     scheduled_clear_dialog: Option<(bool, ConfirmationDialog)>,
 
@@ -272,39 +301,6 @@ pub struct DPNSScreen {
 
 impl DPNSScreen {
     pub fn new(app_context: &Arc<AppContext>, dpns_subscreen: DPNSSubscreen) -> Self {
-        // Load contested names, local dpns, scheduled, etc.:
-        let contested_names = Arc::new(Mutex::new(match dpns_subscreen {
-            DPNSSubscreen::Active => app_context.ongoing_contested_names().unwrap_or_default(),
-            DPNSSubscreen::Past => app_context.all_contested_names().unwrap_or_default(),
-            DPNSSubscreen::Owned => Vec::new(),
-            DPNSSubscreen::ScheduledVotes => app_context.all_contested_names().unwrap_or_default(),
-        }));
-
-        let local_dpns_names = Arc::new(Mutex::new(match dpns_subscreen {
-            DPNSSubscreen::Active => Vec::new(),
-            DPNSSubscreen::Past => Vec::new(),
-            DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
-            DPNSSubscreen::ScheduledVotes => Vec::new(),
-        }));
-
-        let scheduled_votes = app_context.get_scheduled_votes().unwrap_or_default();
-        let scheduled_votes_with_status = Arc::new(Mutex::new(
-            scheduled_votes
-                .iter()
-                .map(|vote| {
-                    if vote.executed_successfully {
-                        (vote.clone(), ScheduledVoteCastingStatus::Completed)
-                    } else {
-                        (vote.clone(), ScheduledVoteCastingStatus::NotStarted)
-                    }
-                })
-                .collect::<Vec<_>>(),
-        ));
-
-        let voting_identities = app_context
-            .load_local_voting_identities()
-            .unwrap_or_default();
-        let user_identities = app_context.load_local_user_identities().unwrap_or_default();
         let vote_operations =
             DpnsVoteOperationSnapshot::load(app_context).unwrap_or_else(|error| {
                 tracing::warn!(
@@ -313,15 +309,39 @@ impl DPNSScreen {
                 );
                 DpnsVoteOperationSnapshot::default()
             });
-        let vote_poll_ids = contested_names
-            .lock_recover()
-            .iter()
-            .filter_map(|contest| {
-                app_context
-                    .dpns_vote_poll_id(&contest.normalized_contested_name)
-                    .ok()
-            })
-            .collect::<Vec<_>>();
+        let legacy_scheduled_votes = app_context.get_scheduled_votes().unwrap_or_default();
+        let scheduled_votes = Arc::new(Mutex::new(
+            vote_operations.scheduled_vote_rows(&legacy_scheduled_votes),
+        ));
+
+        // Load contested names, local dpns, scheduled, etc.:
+        let contested_names = Arc::new(Mutex::new(match dpns_subscreen {
+            DPNSSubscreen::Active => Vec::new(),
+            DPNSSubscreen::Past => app_context.all_contested_names().unwrap_or_default(),
+            DPNSSubscreen::Owned => Vec::new(),
+            DPNSSubscreen::ScheduledVotes => app_context.all_contested_names().unwrap_or_default(),
+        }));
+        let active_contests = if dpns_subscreen == DPNSSubscreen::Active {
+            ActiveDpnsContestSnapshot::new(
+                app_context,
+                app_context.ongoing_contested_names().unwrap_or_default(),
+            )
+        } else {
+            ActiveDpnsContestSnapshot::default()
+        };
+
+        let local_dpns_names = Arc::new(Mutex::new(match dpns_subscreen {
+            DPNSSubscreen::Active => Vec::new(),
+            DPNSSubscreen::Past => Vec::new(),
+            DPNSSubscreen::Owned => app_context.local_dpns_names().unwrap_or_default(),
+            DPNSSubscreen::ScheduledVotes => Vec::new(),
+        }));
+
+        let voting_identities = app_context
+            .load_local_voting_identities()
+            .unwrap_or_default();
+        let user_identities = app_context.load_local_user_identities().unwrap_or_default();
+        let vote_poll_ids = active_contests.vote_poll_ids();
         let voter_ids = voting_identities
             .iter()
             .map(|identity| identity.identity.id())
@@ -341,8 +361,9 @@ impl DPNSScreen {
             voting_identities,
             user_identities,
             contested_names,
+            active_contests,
             local_dpns_names,
-            scheduled_votes: scheduled_votes_with_status,
+            scheduled_votes,
             selected_votes: Vec::new(),
             app_context: app_context.clone(),
             sort_column: SortColumn::ContestedName,
@@ -350,12 +371,12 @@ impl DPNSScreen {
             active_filter_term: String::new(),
             past_filter_term: String::new(),
             owned_filter_term: String::new(),
-            scheduled_vote_cast_in_progress: false,
             pending_backend_task: None,
             vote_operations,
             vote_state,
             vote_overlay: None,
             pending_vote_operation: None,
+            pending_scheduled_casts: BTreeSet::new(),
             clear_vote_overlay_on_error: false,
             scheduled_clear_dialog: None,
             dpns_subscreen,
@@ -535,15 +556,10 @@ impl DPNSScreen {
         ui.add_space(8.0);
 
         let filter = normalize_dpns_label(&self.active_filter_term);
-        let contests = self
-            .contested_names
-            .lock_recover()
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let contests = self.active_contests.contests();
         let mut groups = [Vec::new(), Vec::new(), Vec::new()];
-        for contest in contests {
-            let index = match self.contest_group(&contest) {
+        for contest in contests.iter() {
+            let index = match self.contest_group(contest.vote_poll_id) {
                 ActiveContestGroup::NeedsVote => 0,
                 ActiveContestGroup::Voted => 1,
                 ActiveContestGroup::NotVotable => 2,
@@ -554,7 +570,7 @@ impl DPNSScreen {
         let closes_within_day = groups[0]
             .iter()
             .filter(|contest| {
-                contest.end_time.is_some_and(|end_time| {
+                contest.contest.end_time.is_some_and(|end_time| {
                     let remaining = end_time as i64 - Utc::now().timestamp_millis();
                     remaining > 0 && remaining <= chrono::Duration::days(1).num_milliseconds()
                 })
@@ -573,6 +589,7 @@ impl DPNSScreen {
             for group in &mut groups {
                 group.retain(|contest| {
                     contest
+                        .contest
                         .normalized_contested_name
                         .to_lowercase()
                         .contains(&filter)
@@ -615,11 +632,8 @@ impl DPNSScreen {
         });
     }
 
-    fn contest_group(&self, contest: &ContestedName) -> ActiveContestGroup {
-        let Ok(poll_id) = self
-            .app_context
-            .dpns_vote_poll_id(&contest.normalized_contested_name)
-        else {
+    fn contest_group(&self, vote_poll_id: Option<Identifier>) -> ActiveContestGroup {
+        let Some(poll_id) = vote_poll_id else {
             return ActiveContestGroup::NotVotable;
         };
         classify_vote_states(
@@ -633,7 +647,7 @@ impl DPNSScreen {
         &mut self,
         ui: &mut Ui,
         title: &str,
-        contests: &[ContestedName],
+        contests: &[&ActiveDpnsContestView],
         default_open: bool,
         voting_enabled: bool,
         show_current_vote: bool,
@@ -646,20 +660,23 @@ impl DPNSScreen {
                 }
                 for contest in contests {
                     let contest_enabled =
-                        voting_enabled && self.contest_has_available_target(contest);
+                        voting_enabled && self.contest_has_available_target(contest.vote_poll_id);
                     ui.add_enabled_ui(contest_enabled, |ui| {
-                        self.render_contest_card(ui, contest, contest_enabled, show_current_vote);
+                        self.render_contest_card(
+                            ui,
+                            contest.contest.as_ref(),
+                            contest.vote_poll_id,
+                            contest_enabled,
+                            show_current_vote,
+                        );
                     });
                     ui.add_space(8.0);
                 }
             });
     }
 
-    fn contest_has_available_target(&self, contest: &ContestedName) -> bool {
-        let Ok(vote_poll_id) = self
-            .app_context
-            .dpns_vote_poll_id(&contest.normalized_contested_name)
-        else {
+    fn contest_has_available_target(&self, vote_poll_id: Option<Identifier>) -> bool {
+        let Some(vote_poll_id) = vote_poll_id else {
             return false;
         };
         self.voting_identities.iter().any(|identity| {
@@ -678,11 +695,8 @@ impl DPNSScreen {
         })
     }
 
-    fn proved_vote_for_contest(&self, contest: &ContestedName) -> ProvedVoteSummary {
-        let Ok(poll_id) = self
-            .app_context
-            .dpns_vote_poll_id(&contest.normalized_contested_name)
-        else {
+    fn proved_vote_for_contest(&self, vote_poll_id: Option<Identifier>) -> ProvedVoteSummary {
+        let Some(poll_id) = vote_poll_id else {
             return ProvedVoteSummary::None;
         };
         proved_vote_summary(
@@ -711,6 +725,7 @@ impl DPNSScreen {
         &mut self,
         ui: &mut Ui,
         contest: &ContestedName,
+        vote_poll_id: Option<Identifier>,
         voting_enabled: bool,
         show_current_vote: bool,
     ) {
@@ -721,7 +736,7 @@ impl DPNSScreen {
             .find(|vote| vote.contested_name == contest.normalized_contested_name)
             .map(|vote| vote.vote_choice);
         let proved = if show_current_vote {
-            self.proved_vote_for_contest(contest)
+            self.proved_vote_for_contest(vote_poll_id)
         } else {
             ProvedVoteSummary::None
         };
@@ -1300,9 +1315,8 @@ impl DPNSScreen {
             let guard = self.scheduled_votes.lock_recover();
             guard.clone()
         };
-        // Sort by contested_name or time
         sorted_votes.sort_by(|a, b| {
-            let order = a.0.contested_name.cmp(&b.0.contested_name);
+            let order = a.vote.contested_name.cmp(&b.vote.contested_name);
             if self.sort_order == SortOrder::Descending {
                 order.reverse()
             } else {
@@ -1358,47 +1372,40 @@ impl DPNSScreen {
                     });
                 })
                 .body(|mut body| {
-                    for vote in sorted_votes.iter_mut() {
-                        let operation_status = self
-                            .app_context
-                            .dpns_vote_poll_id(&vote.0.contested_name)
-                            .ok()
-                            .and_then(|vote_poll_id| {
-                                self.vote_operations
-                                    .target_status(&DpnsVoteTargetKey {
-                                        network: self.app_context.network(),
-                                        voter_id: vote.0.voter_id,
-                                        vote_poll_id,
-                                    })
-                            });
+                    for scheduled_row in &sorted_votes {
+                        let vote = &scheduled_row.vote;
+                        let pending_key = DpnsScheduledVoteKey {
+                            network: scheduled_row
+                                .journal_target
+                                .as_ref()
+                                .map_or(self.app_context.network(), |(_, key)| key.network),
+                            voter_id: vote.voter_id,
+                            contested_name: vote.contested_name.clone(),
+                        };
                         body.row(25.0, |mut row| {
-                            // Contested name
                             row.col(|ui| {
-                                ui.add(Label::new(format!("{}.dash", vote.0.contested_name)));
+                                ui.add(Label::new(format!("{}.dash", vote.contested_name)));
                             });
-                            // Voter
                             row.col(|ui| {
                                 let voter = self
                                     .voting_identities
                                     .iter()
-                                    .find(|identity| identity.identity.id() == vote.0.voter_id)
+                                    .find(|identity| identity.identity.id() == vote.voter_id)
                                     .and_then(|identity| identity.alias.clone())
-                                    .unwrap_or_else(|| short_identifier(vote.0.voter_id));
+                                    .unwrap_or_else(|| short_identifier(vote.voter_id));
                                 ui.add(Label::new(voter));
                             });
-                            // Choice
                             row.col(|ui| {
                                 let candidate_name =
-                                    self.candidate_name(&vote.0.contested_name, vote.0.choice);
+                                    self.candidate_name(&vote.contested_name, vote.choice);
                                 let display_text =
-                                    vote_choice_label(vote.0.choice, candidate_name.as_deref());
+                                    vote_choice_label(vote.choice, candidate_name.as_deref());
                                 ui.add(Label::new(display_text));
                             });
-                            // Time
                             row.col(|ui| {
                                 let dark_mode = ui.style().visuals.dark_mode;
                                 if let LocalResult::Single(dt) =
-                                    Utc.timestamp_millis_opt(vote.0.unix_timestamp as i64)
+                                    Utc.timestamp_millis_opt(vote.unix_timestamp as i64)
                                 {
                                     let iso = dt.format("%Y-%m-%d %H:%M:%S").to_string();
                                     let rel_time = HumanTime::from(dt).to_string();
@@ -1419,129 +1426,55 @@ impl DPNSScreen {
                                     );
                                 }
                             });
-                            // Status
                             row.col(|ui| {
                                 let dark_mode = ui.style().visuals.dark_mode;
-                                if matches!(
-                                    operation_status,
-                                    Some(DpnsVoteTargetStatus::Queued)
-                                        | Some(DpnsVoteTargetStatus::Submitting)
-                                        | Some(DpnsVoteTargetStatus::Confirming)
-                                ) {
-                                    ui.label(
-                                        RichText::new("Submitting…")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                    return;
-                                }
-                                if operation_status == Some(DpnsVoteTargetStatus::Unconfirmed) {
-                                    ui.colored_label(
-                                        DashColors::warning_color(dark_mode),
-                                        "Checking result",
-                                    );
-                                    return;
-                                }
-                                match vote.1 {
-                                    ScheduledVoteCastingStatus::NotStarted => {
-                                        ui.label(
-                                            RichText::new("Pending")
-                                                .color(DashColors::text_primary(dark_mode)),
-                                        );
-                                    }
-                                    ScheduledVoteCastingStatus::InProgress => {
-                                        ui.label(
-                                            RichText::new("Casting...")
-                                                .color(DashColors::text_primary(dark_mode)),
-                                        );
-                                    }
-                                    ScheduledVoteCastingStatus::Failed => {
-                                        ui.colored_label(
-                                            DashColors::error_color(dark_mode),
-                                            "Failed",
-                                        );
-                                    }
-                                    ScheduledVoteCastingStatus::Completed => {
-                                        ui.colored_label(
-                                            DashColors::success_color(dark_mode),
-                                            "Cast",
-                                        );
-                                    }
-                                }
-                            });
-                            // Actions
-                            row.col(|ui| {
-                                let target_is_busy = matches!(
-                                    operation_status,
-                                    Some(DpnsVoteTargetStatus::Queued)
-                                        | Some(DpnsVoteTargetStatus::Submitting)
-                                        | Some(DpnsVoteTargetStatus::Confirming)
-                                        | Some(DpnsVoteTargetStatus::Unconfirmed)
+                                ui.label(
+                                    RichText::new(target_status_label(scheduled_row.status))
+                                        .color(DashColors::text_primary(dark_mode)),
                                 );
+                            });
+                            row.col(|ui| {
+                                let remove_enabled =
+                                    scheduled_vote_remove_enabled(scheduled_row.status);
                                 if ui
-                                    .add_enabled(!target_is_busy, Button::new("Remove"))
+                                    .add_enabled(remove_enabled, Button::new("Remove"))
                                     .disabled_tooltip(
                                         "This scheduled vote cannot be removed while its result is being checked.",
                                     )
                                     .clicked()
                                 {
-                                    action =
-                                        AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                                            ContestedResourceTask::DeleteScheduledVote(
-                                                vote.0.voter_id,
-                                                vote.0.contested_name.clone(),
-                                            ),
-                                        ));
-                                }
-                                // If the user wants to do "Cast Now" from here, they can
-                                // if NotStarted or Failed. If in progress or done, disabled.
-                                let cast_button_enabled = matches!(
-                                    vote.1,
-                                    ScheduledVoteCastingStatus::NotStarted
-                                        | ScheduledVoteCastingStatus::Failed
-                                ) && !target_is_busy;
-
-                                let cast_button = if cast_button_enabled {
-                                    Button::new("Cast now")
-                                } else {
-                                    Button::new("Cast now").sense(egui::Sense::hover())
-                                };
-
-                                if ui.add(cast_button).clicked() && cast_button_enabled {
-                                    self.scheduled_vote_cast_in_progress = true;
-                                    vote.1 = ScheduledVoteCastingStatus::InProgress;
-
-                                    // Mark in our Arc as well
-                                    if let Ok(mut sched_guard) = self.scheduled_votes.lock()
-                                        && let Some(t) = sched_guard.iter_mut().find(|(sv, _)| {
-                                            sv.voter_id == vote.0.voter_id
-                                                && sv.contested_name == vote.0.contested_name
-                                        })
-                                    {
-                                        t.1 = ScheduledVoteCastingStatus::InProgress;
-                                    }
-                                    // dispatch the actual cast
-                                    let local_ids =
-                                        match self.app_context.load_local_voting_identities() {
-                                            Ok(ids) => ids,
-                                            Err(e) => {
-                                                error!("{}", e);
-                                                return;
-                                            }
-                                        };
-                                    if let Some(found) = local_ids
-                                        .iter()
-                                        .find(|i| i.identity.id() == vote.0.voter_id)
-                                    {
                                     action = AppAction::BackendTask(
-                                            BackendTask::ContestedResourceTask(
-                                                ContestedResourceTask::CastScheduledVote(
-                                                    vote.0.clone(),
-                                                    Box::new(found.clone()),
-                                                ),
+                                        BackendTask::ContestedResourceTask(
+                                            scheduled_vote_removal_task(scheduled_row),
+                                        ),
+                                    );
+                                }
+                                let cast_button_enabled = scheduled_vote_cast_enabled(
+                                    scheduled_row.status,
+                                    self.pending_scheduled_casts.contains(&pending_key),
+                                );
+                                if ui
+                                    .add_enabled(cast_button_enabled, Button::new("Cast now"))
+                                    .clicked()
+                                    && let Some(found) = self
+                                        .voting_identities
+                                        .iter()
+                                        .find(|identity| {
+                                            identity.identity.id() == vote.voter_id
+                                        })
+                                        .cloned()
+                                {
+                                    self.pending_scheduled_casts
+                                        .insert(pending_key.clone());
+                                    action = AppAction::BackendTask(
+                                        BackendTask::ContestedResourceTask(
+                                            ContestedResourceTask::CastScheduledVote(
+                                                vote.clone(),
+                                                Box::new(found),
                                             ),
-                                        );
-                                        show_cast_overlay = true;
-                                    }
+                                        ),
+                                    );
+                                    show_cast_overlay = true;
                                 }
                             });
                         });
@@ -1582,6 +1515,19 @@ impl DPNSScreen {
         let ResourceVoteChoice::TowardsIdentity(candidate_id) = choice else {
             return None;
         };
+        if let Some(candidate_name) = self
+            .active_contests
+            .contest(contested_name)
+            .and_then(|contest| contest.contestants.as_ref())
+            .and_then(|contestants| {
+                contestants
+                    .iter()
+                    .find(|candidate| candidate.id == candidate_id)
+            })
+            .map(|candidate| candidate.name.clone())
+        {
+            return Some(candidate_name);
+        }
         self.contested_names
             .lock_recover()
             .iter()
@@ -1593,6 +1539,12 @@ impl DPNSScreen {
                     .find(|candidate| candidate.id == candidate_id)
             })
             .map(|candidate| candidate.name.clone())
+    }
+
+    fn rebuild_scheduled_vote_rows(&mut self) {
+        let legacy_votes = self.app_context.get_scheduled_votes().unwrap_or_default();
+        *self.scheduled_votes.lock_recover() =
+            self.vote_operations.scheduled_vote_rows(&legacy_votes);
     }
 
     fn show_review_and_cast_window(&mut self, ui: &mut Ui) -> AppAction {
@@ -2108,75 +2060,40 @@ impl DPNSScreen {
 // ---------------------------
 impl ScreenLike for DPNSScreen {
     fn refresh(&mut self) {
-        self.scheduled_vote_cast_in_progress = false;
         if let Err(error) = self.vote_operations.refresh(&self.app_context) {
             tracing::warn!(?error, "Could not refresh cached DPNS vote operations");
         }
-        let mut contested_names = self.contested_names.lock_recover();
-        let mut dpns_names = self.local_dpns_names.lock_recover();
-        let mut scheduled_votes = self.scheduled_votes.lock_recover();
+        self.rebuild_scheduled_vote_rows();
 
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
-                *contested_names = self
-                    .app_context
-                    .ongoing_contested_names()
-                    .unwrap_or_default();
+                self.active_contests = ActiveDpnsContestSnapshot::new(
+                    &self.app_context,
+                    self.app_context
+                        .ongoing_contested_names()
+                        .unwrap_or_default(),
+                );
             }
             DPNSSubscreen::Past => {
-                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
+                *self.contested_names.lock_recover() =
+                    self.app_context.all_contested_names().unwrap_or_default();
             }
             DPNSSubscreen::Owned => {
-                *dpns_names = self.app_context.local_dpns_names().unwrap_or_default();
+                *self.local_dpns_names.lock_recover() =
+                    self.app_context.local_dpns_names().unwrap_or_default();
             }
             DPNSSubscreen::ScheduledVotes => {
-                *contested_names = self.app_context.all_contested_names().unwrap_or_default();
-                let new_scheduled = self.app_context.get_scheduled_votes().unwrap_or_default();
-                *scheduled_votes = new_scheduled
-                    .iter()
-                    .map(|newv| {
-                        if newv.executed_successfully {
-                            (newv.clone(), ScheduledVoteCastingStatus::Completed)
-                        } else if let Some(existing) = scheduled_votes.iter().find(|(old, _)| {
-                            old.contested_name == newv.contested_name
-                                && old.voter_id == newv.voter_id
-                        }) {
-                            // preserve old status if InProgress/Failed
-                            match existing.1 {
-                                ScheduledVoteCastingStatus::InProgress => {
-                                    (newv.clone(), ScheduledVoteCastingStatus::InProgress)
-                                }
-                                ScheduledVoteCastingStatus::Failed => {
-                                    (newv.clone(), ScheduledVoteCastingStatus::Failed)
-                                }
-                                _ => (newv.clone(), ScheduledVoteCastingStatus::NotStarted),
-                            }
-                        } else {
-                            (newv.clone(), ScheduledVoteCastingStatus::NotStarted)
-                        }
-                    })
-                    .collect();
+                *self.contested_names.lock_recover() =
+                    self.app_context.all_contested_names().unwrap_or_default();
             }
         }
-        drop(contested_names);
-        drop(dpns_names);
-        drop(scheduled_votes);
 
         let voter_ids = self
             .voting_identities
             .iter()
             .map(|identity| identity.identity.id())
             .collect::<Vec<_>>();
-        let poll_ids = self
-            .contested_names
-            .lock_recover()
-            .iter()
-            .filter_map(|contest| {
-                self.app_context
-                    .dpns_vote_poll_id(&contest.normalized_contested_name)
-                    .ok()
-            })
-            .collect::<Vec<_>>();
+        let poll_ids = self.active_contests.vote_poll_ids();
         if let Err(error) = self
             .vote_state
             .refresh(&self.app_context, &voter_ids, &poll_ids)
@@ -2214,6 +2131,7 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        self.pending_scheduled_casts.clear();
         if self.clear_vote_overlay_on_error {
             self.vote_overlay.take_and_clear();
             self.pending_vote_operation = None;
@@ -2225,30 +2143,14 @@ impl ScreenLike for DPNSScreen {
                 "Could not refresh DPNS voting state after a task error"
             );
         }
-        let handled = scheduled_vote_sweep_is_quiet(error);
-        if matches!(
-            error,
-            TaskError::ScheduledVoteRejected { .. }
-                | TaskError::ScheduledVoteAllAddressesExhausted { .. }
-                | TaskError::ScheduledVoteResultUnavailable
-                | TaskError::ScheduledVoteSweepFailed { .. }
-                | TaskError::ScheduledVoteSweepAllAddressesExhausted { .. }
-        ) {
-            self.scheduled_vote_cast_in_progress = false;
-            if let Ok(mut guard) = self.scheduled_votes.lock() {
-                for vote in guard.iter_mut() {
-                    if vote.1 == ScheduledVoteCastingStatus::InProgress {
-                        vote.1 = ScheduledVoteCastingStatus::Failed;
-                    }
-                }
-            }
-        }
-        handled
+        self.rebuild_scheduled_vote_rows();
+        scheduled_vote_sweep_is_quiet(error)
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::DpnsVoteOperationUpdated { operation_id, .. } => {
+                self.pending_scheduled_casts.clear();
                 if let Err(error) = self.vote_state.reload(&self.app_context) {
                     tracing::warn!(
                         ?error,
@@ -2267,23 +2169,29 @@ impl ScreenLike for DPNSScreen {
                         self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                     }
                 }
+                if let Err(error) = self.vote_operations.refresh(&self.app_context) {
+                    tracing::warn!(
+                        ?error,
+                        "Could not refresh scheduled votes after an operation update"
+                    );
+                }
+                self.rebuild_scheduled_vote_rows();
             }
-            BackendTaskSuccessResult::ScheduledVotesInProgress(votes) => {
+            BackendTaskSuccessResult::ScheduledVotesInProgress(_) => {
                 if let Err(error) = self.vote_operations.refresh(&self.app_context) {
                     tracing::warn!(?error, "Could not refresh scheduled-vote operation state");
                 }
-                // The periodic sweep is about to cast these votes; reflect that
-                // in the list so the user sees them move before results land.
-                self.scheduled_vote_cast_in_progress = true;
-                if let Ok(mut guard) = self.scheduled_votes.lock() {
-                    for vote in &votes {
-                        if let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
-                            v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
-                        }) {
-                            *status = ScheduledVoteCastingStatus::InProgress;
-                        }
-                    }
+                self.rebuild_scheduled_vote_rows();
+            }
+            BackendTaskSuccessResult::ScheduledVotesCleared(_) => {
+                self.pending_scheduled_casts.clear();
+                if let Err(error) = self.vote_operations.refresh(&self.app_context) {
+                    tracing::warn!(
+                        ?error,
+                        "Could not refresh scheduled votes after clearing them"
+                    );
                 }
+                self.rebuild_scheduled_vote_rows();
             }
             BackendTaskSuccessResult::RefreshedDpnsContests
             | BackendTaskSuccessResult::RefreshedOwnedDpnsNames => {
@@ -2429,7 +2337,7 @@ impl ScreenLike for DPNSScreen {
             // Render sub-screen
             match self.dpns_subscreen {
                 DPNSSubscreen::Active => {
-                    let has_any = !self.contested_names.lock_recover().is_empty();
+                    let has_any = !self.active_contests.is_empty();
                     if self.voting_identities.is_empty() {
                         inner_action |= self.render_no_voting_nodes(ui);
                     } else if has_any {
@@ -2528,6 +2436,7 @@ impl ScreenLike for DPNSScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::contested_names::ScheduledDPNSVote;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::user_role::UserRoleCell;
@@ -2556,6 +2465,14 @@ mod tests {
         (ctx, temp_dir)
     }
 
+    fn pending_scheduled_key(context: &AppContext) -> DpnsScheduledVoteKey {
+        DpnsScheduledVoteKey {
+            network: context.network(),
+            voter_id: Identifier::from([1; 32]),
+            contested_name: "pending".to_owned(),
+        }
+    }
+
     #[test]
     fn vote_submission_overlay_clears_when_the_operation_finishes() {
         let (ctx, _temp_dir) = offline_ctx();
@@ -2578,6 +2495,9 @@ mod tests {
             crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
         );
 
+        screen
+            .pending_scheduled_casts
+            .insert(pending_scheduled_key(&ctx));
         screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: ctx.network(),
             operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
@@ -2586,6 +2506,7 @@ mod tests {
         assert!(
             !crate::ui::components::progress_overlay::ProgressOverlay::has_global(ctx.egui_ctx())
         );
+        assert!(screen.pending_scheduled_casts.is_empty());
     }
 
     #[test]
@@ -2709,9 +2630,11 @@ mod tests {
             }),
         };
 
-        screen.scheduled_vote_cast_in_progress = true;
+        screen
+            .pending_scheduled_casts
+            .insert(pending_scheduled_key(&ctx));
         assert!(screen.display_task_error(&error));
-        assert!(!screen.scheduled_vote_cast_in_progress);
+        assert!(screen.pending_scheduled_casts.is_empty());
     }
 
     #[test]
@@ -2719,9 +2642,11 @@ mod tests {
         let (ctx, _temp_dir) = offline_ctx();
         let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
 
-        screen.scheduled_vote_cast_in_progress = true;
+        screen
+            .pending_scheduled_casts
+            .insert(pending_scheduled_key(&ctx));
         assert!(!screen.display_task_error(&TaskError::ScheduledVoteResultUnavailable));
-        assert!(!screen.scheduled_vote_cast_in_progress);
+        assert!(screen.pending_scheduled_casts.is_empty());
 
         let sweep_error = TaskError::ScheduledVoteSweepFailed {
             network: Network::Regtest,
@@ -2729,7 +2654,9 @@ mod tests {
         };
         assert!(!screen.display_task_error(&sweep_error));
 
-        screen.scheduled_vote_cast_in_progress = true;
+        screen
+            .pending_scheduled_casts
+            .insert(pending_scheduled_key(&ctx));
         let exhausted_error = TaskError::ScheduledVoteSweepAllAddressesExhausted {
             network: Network::Regtest,
             source: Box::new(TaskError::DapiNoAddresses {
@@ -2739,6 +2666,136 @@ mod tests {
             }),
         };
         assert!(!screen.display_task_error(&exhausted_error));
-        assert!(!screen.scheduled_vote_cast_in_progress);
+        assert!(screen.pending_scheduled_casts.is_empty());
+    }
+
+    #[test]
+    fn scheduled_vote_actions_follow_the_journal_status() {
+        for status in [
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Cancelled,
+            DpnsVoteTargetStatus::NotApplied,
+        ] {
+            assert!(scheduled_vote_remove_enabled(status), "{status:?}");
+        }
+        for status in [
+            DpnsVoteTargetStatus::Queued,
+            DpnsVoteTargetStatus::Submitting,
+            DpnsVoteTargetStatus::Confirming,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ] {
+            assert!(!scheduled_vote_remove_enabled(status), "{status:?}");
+        }
+        for status in [
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Cancelled,
+            DpnsVoteTargetStatus::NotApplied,
+        ] {
+            assert!(scheduled_vote_cast_enabled(status, false), "{status:?}");
+        }
+        for status in [
+            DpnsVoteTargetStatus::Queued,
+            DpnsVoteTargetStatus::Submitting,
+            DpnsVoteTargetStatus::Confirming,
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ] {
+            assert!(!scheduled_vote_cast_enabled(status, false), "{status:?}");
+        }
+        assert!(!scheduled_vote_cast_enabled(
+            DpnsVoteTargetStatus::Scheduled,
+            true
+        ));
+    }
+
+    #[test]
+    fn scheduled_vote_removal_dispatches_the_journal_or_legacy_task() {
+        let operation_id = DpnsVoteOperationId::from_bytes([31; 16]);
+        let key = DpnsVoteTargetKey {
+            network: Network::Testnet,
+            voter_id: Identifier::from([32; 32]),
+            vote_poll_id: Identifier::from([33; 32]),
+        };
+        let vote = ScheduledDPNSVote {
+            contested_name: "dispatch".to_owned(),
+            voter_id: key.voter_id,
+            choice: ResourceVoteChoice::Lock,
+            unix_timestamp: 42,
+            executed_successfully: false,
+        };
+        let journal_row = ScheduledDpnsVoteRow {
+            vote: vote.clone(),
+            journal_target: Some((operation_id, key.clone())),
+            status: DpnsVoteTargetStatus::Scheduled,
+        };
+        let legacy_row = ScheduledDpnsVoteRow {
+            vote,
+            journal_target: None,
+            status: DpnsVoteTargetStatus::Scheduled,
+        };
+
+        assert!(matches!(
+            scheduled_vote_removal_task(&journal_row),
+            ContestedResourceTask::CancelScheduledDpnsVote {
+                operation_id: id,
+                key: task_key,
+                contested_name,
+            } if id == operation_id && task_key == key && contested_name == "dispatch"
+        ));
+        assert!(matches!(
+            scheduled_vote_removal_task(&legacy_row),
+            ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name)
+                if voter_id == Identifier::from([32; 32]) && contested_name == "dispatch"
+        ));
+    }
+
+    #[test]
+    fn clear_all_result_rebuilds_scheduled_rows_immediately() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        let ctx = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        ctx.set_det_kv_override_for_test(kv);
+        let voter_id = Identifier::from([21; 32]);
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: ctx.network(),
+                voter_id,
+                vote_poll_id: Identifier::from([22; 32]),
+            },
+            voter_alias: None,
+            contested_name: "clear-me".to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(42),
+        }]);
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .expect("insert scheduled operation");
+        ctx.insert_scheduled_votes(&[ScheduledDPNSVote {
+            contested_name: "clear-me".to_owned(),
+            voter_id,
+            choice: ResourceVoteChoice::Lock,
+            unix_timestamp: 42,
+            executed_successfully: false,
+        }])
+        .expect("insert compatibility mirror");
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        assert_eq!(screen.scheduled_votes.lock_recover().len(), 1);
+
+        let outcomes = ctx
+            .clear_all_scheduled_dpns_votes()
+            .expect("clear scheduled votes");
+        screen.display_task_result(BackendTaskSuccessResult::ScheduledVotesCleared(outcomes));
+
+        assert!(screen.scheduled_votes.lock_recover().is_empty());
     }
 }

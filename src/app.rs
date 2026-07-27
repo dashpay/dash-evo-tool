@@ -16,7 +16,10 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
-use crate::model::dpns_voting::{DpnsVoteOperation, DpnsVoteTargetStatus};
+use crate::model::dpns_voting::{
+    DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsVoteOperation,
+    DpnsVoteTargetStatus,
+};
 use crate::model::settings::AppSettings;
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
@@ -350,6 +353,43 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
     (message, MessageType::Warning, counts.unconfirmed > 0)
 }
 
+fn scheduled_vote_clear_feedback(
+    outcomes: &[DpnsScheduledVoteClearOutcome],
+) -> (String, MessageType) {
+    let cleared = outcomes
+        .iter()
+        .filter(|outcome| outcome.disposition == DpnsScheduledVoteClearDisposition::Cleared)
+        .count();
+    let in_flight = outcomes.len().saturating_sub(cleared);
+    let cleared_message = match cleared {
+        0 => "No scheduled votes were removed.".to_owned(),
+        1 => "1 scheduled vote was removed.".to_owned(),
+        count => format!("{count} scheduled votes were removed."),
+    };
+    if in_flight == 0 {
+        let message_type = if cleared == 0 {
+            MessageType::Info
+        } else {
+            MessageType::Success
+        };
+        return (cleared_message, message_type);
+    }
+    let retained_message = if in_flight == 1 {
+        "1 vote already in progress remains listed. Wait for it to finish before trying again."
+    } else {
+        return (
+            format!(
+                "{cleared_message} {in_flight} votes already in progress remain listed. Wait for them to finish before trying again."
+            ),
+            MessageType::Info,
+        );
+    };
+    (
+        format!("{cleared_message} {retained_message}"),
+        MessageType::Info,
+    )
+}
+
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
 /// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
 /// with no terminal signal — so a button-less hard block would trap the user
@@ -385,6 +425,7 @@ fn dpns_result_needs_hidden_active_contests_route(
         BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
             | BackendTaskSuccessResult::RefreshedDpnsContests
             | BackendTaskSuccessResult::ScheduledVoteSweepCompleted { .. }
+            | BackendTaskSuccessResult::ScheduledVotesCleared(_)
     ) && (selected != RootScreenType::RootScreenDPNSActiveContests || !screen_stack_is_empty)
 }
 
@@ -2842,6 +2883,15 @@ impl App for AppState {
                                 self.visible_screen_mut().refresh();
                             }
                         }
+                        BackendTaskSuccessResult::ScheduledVotesCleared(outcomes) => {
+                            let (message, message_type) = scheduled_vote_clear_feedback(&outcomes);
+                            MessageBanner::set_global(ctx, message, message_type);
+                            self.visible_screen_mut().display_backend_task_result(
+                                &context,
+                                BackendTaskSuccessResult::ScheduledVotesCleared(outcomes),
+                            );
+                            self.visible_screen_mut().refresh();
+                        }
                         BackendTaskSuccessResult::NetworkContextCreated {
                             network,
                             context,
@@ -3786,7 +3836,10 @@ mod contact_request_routing_tests {
 #[cfg(test)]
 mod dpns_result_routing_tests {
     use super::*;
-    use crate::model::dpns_voting::DpnsVoteOperationId;
+    use crate::model::dpns_voting::{
+        DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome, DpnsScheduledVoteKey,
+        DpnsVoteOperationId,
+    };
 
     #[test]
     fn correlated_vote_result_routes_when_active_contests_is_hidden() {
@@ -3843,6 +3896,54 @@ mod dpns_result_routing_tests {
             true,
             &result,
         ));
+    }
+
+    #[test]
+    fn cleared_scheduled_votes_route_when_active_contests_is_hidden() {
+        assert!(dpns_result_needs_hidden_active_contests_route(
+            RootScreenType::RootScreenDPNSScheduledVotes,
+            true,
+            &BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+        ));
+    }
+
+    #[test]
+    fn scheduled_vote_clear_feedback_reports_removed_and_retained_counts() {
+        let outcome = |name: &str, disposition| DpnsScheduledVoteClearOutcome {
+            operation_id: None,
+            key: DpnsScheduledVoteKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([name.len() as u8; 32]),
+                contested_name: name.to_owned(),
+            },
+            disposition,
+        };
+        let outcomes = vec![
+            outcome("removed", DpnsScheduledVoteClearDisposition::Cleared),
+            outcome(
+                "queued",
+                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Queued),
+            ),
+            outcome(
+                "submitting",
+                DpnsScheduledVoteClearDisposition::InFlight(DpnsVoteTargetStatus::Submitting),
+            ),
+        ];
+
+        assert_eq!(
+            scheduled_vote_clear_feedback(&outcomes),
+            (
+                "1 scheduled vote was removed. 2 votes already in progress remain listed. Wait for them to finish before trying again.".to_owned(),
+                MessageType::Info,
+            )
+        );
+        assert_eq!(
+            scheduled_vote_clear_feedback(&outcomes[..1]),
+            (
+                "1 scheduled vote was removed.".to_owned(),
+                MessageType::Success,
+            )
+        );
     }
 }
 

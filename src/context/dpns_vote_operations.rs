@@ -972,27 +972,19 @@ impl AppContext {
                         .map(|outcome| (operation.id, outcome.status))
                 }),
             None => {
-                if let Some(operation_id) = lock_index.get(key) {
-                    let operation = operations
-                        .iter()
-                        .find(|operation| operation.id == *operation_id)
-                        .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
-                    let outcome = operation
-                        .outcome(key)
-                        .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
-                    Some((operation.id, outcome.status))
-                } else {
-                    operations
-                        .iter()
-                        .filter_map(|operation| {
-                            operation
-                                .outcome(key)
-                                .filter(|outcome| !outcome.status.holds_lock())
-                                .map(|outcome| (operation.created_at, operation.id, outcome.status))
-                        })
-                        .max_by_key(|(created_at, operation_id, _)| (*created_at, *operation_id))
-                        .map(|(_, operation_id, status)| (operation_id, status))
+                if lock_index.contains_key(key) {
+                    return Err(TaskError::DpnsScheduledVoteAlreadyStarted);
                 }
+                operations
+                    .iter()
+                    .filter_map(|operation| {
+                        operation
+                            .outcome(key)
+                            .filter(|outcome| !outcome.status.holds_lock())
+                            .map(|outcome| (operation.created_at, operation.id, outcome.status))
+                    })
+                    .max_by_key(|(created_at, operation_id, _)| (*created_at, *operation_id))
+                    .map(|(_, operation_id, status)| (operation_id, status))
             }
         };
 
@@ -1159,7 +1151,6 @@ impl AppContext {
             }
         }
 
-        let _surviving_mirror_keys = durable_scheduled_vote_keys(&kv, self.network)?;
         prune_terminal_operations(&kv, self.network)?;
         Ok(outcomes.into_values().map(|(_, outcome)| outcome).collect())
     }
@@ -1570,6 +1561,60 @@ mod tests {
                         && operation.targets[0].status == DpnsVoteTargetStatus::Scheduled
                 })
         );
+    }
+
+    #[test]
+    fn legacy_removal_without_expected_operation_deletes_an_unlocked_mirror() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv);
+        let voter_id = Identifier::from([12; 32]);
+        let key = DpnsVoteTargetKey {
+            network: context.network,
+            voter_id,
+            vote_poll_id: Identifier::from([13; 32]),
+        };
+        context
+            .insert_scheduled_votes(&[ScheduledDPNSVote {
+                contested_name: "legacy-only".to_owned(),
+                voter_id,
+                choice: ResourceVoteChoice::Lock,
+                unix_timestamp: 42,
+                executed_successfully: false,
+            }])
+            .unwrap();
+
+        context
+            .remove_scheduled_dpns_vote(None, &key, "legacy-only")
+            .unwrap();
+
+        assert!(context.get_scheduled_votes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_removal_without_expected_operation_preserves_a_locked_mirror() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv);
+        let mut scheduled =
+            scheduled_operation(DpnsVoteTargetStatus::Scheduled, 12, "locked-target");
+        let key = scheduled.targets[0].target.key.clone();
+        context
+            .insert_dpns_vote_operation(&mut scheduled, None)
+            .unwrap();
+        context
+            .insert_scheduled_votes(&[scheduled_vote(&scheduled)])
+            .unwrap();
+
+        assert!(matches!(
+            context
+                .remove_scheduled_dpns_vote(None, &key, "locked-target")
+                .expect_err("a current journal lock must preserve the mirror"),
+            TaskError::DpnsScheduledVoteAlreadyStarted
+        ));
+        assert_eq!(context.get_scheduled_votes().unwrap().len(), 1);
     }
 
     #[test]

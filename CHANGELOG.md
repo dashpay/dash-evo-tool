@@ -46,6 +46,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Shield and identity-funding "Max" now matches what will actually send**:
+  pressing "Max" when shielding DASH, creating an identity, or topping up an
+  identity from your Core wallet balance could suggest an amount larger than
+  the wallet could actually send, so the transaction was rejected no matter
+  how you adjusted it. Max and the amount check now ask the wallet for the
+  real spendable amount instead of an on-screen estimate, so Max always
+  produces an amount that goes through.
+
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and
   wallet removals also keep displayed aliases and deleted-wallet metadata

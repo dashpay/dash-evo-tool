@@ -101,7 +101,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the send-fee estimate from picking up the network's current rate. A
   temporary workaround is in place while the underlying issue is fixed
   upstream; the send-fee estimate will keep using its last known rate until
-  that lands.
+  that lands. The check only accepts a protocol version the connected network
+  actually confirms: when the network cannot be reached, shielded operations
+  stay unavailable and the app keeps retrying, instead of assuming the version
+  the app was built with.
 
 ### Changed
 

@@ -66,6 +66,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   throughout, now consistently says "Add funds" instead of "Top Up Identity",
   and its step-by-step deposit messages no longer use technical wording.
 
+- **Fewer native crashes while verifying a deposit**: background worker
+  threads now get a larger stack, fixing a crash that could occur during
+  deposit verification.
+
+- **Clearer guidance for an already-used deposit**: registering an identity,
+  topping one up, or funding a platform address with a deposit that was
+  already consumed by another operation now tells you directly to choose a
+  different deposit or start a new one, instead of the generic rejection
+  message that suggested retrying the same one.
+
 ### Changed
 
 - **Shielded transactions are available on supported networks**: sending,

@@ -107,6 +107,11 @@ fn dry_run_asset_lock_amount_with_strategy(
 
     match result {
         Ok((transaction, _)) => {
+            // `ManagedCoreFundsAccount::clone` shares the live `ReservationSet`
+            // (`Arc<Mutex<_>>`; source of truth: key-wallet's
+            // `managed_account/reservation.rs` doc comment). Every successful probe
+            // reserves real wallet outpoints, so this call MUST run on every success
+            // path; deleting it silently strands real UTXOs for the 24-block TTL.
             dry_run_account.release_reservation(&transaction);
             Ok(AssetLockDryRun::Builds)
         }
@@ -147,6 +152,11 @@ fn asset_lock_drain_ceiling(
 
     match result {
         Ok((transaction, _)) => {
+            // `ManagedCoreFundsAccount::clone` shares the live `ReservationSet`
+            // (`Arc<Mutex<_>>`; source of truth: key-wallet's
+            // `managed_account/reservation.rs` doc comment). Every successful probe
+            // reserves real wallet outpoints, so this call MUST run on every success
+            // path; deleting it silently strands real UTXOs for the 24-block TTL.
             dry_run_account.release_reservation(&transaction);
             transaction
                 .output
@@ -381,7 +391,7 @@ fn asset_lock_max_amount_from_account(
 impl WalletBackend {
     /// Query the largest asset-lock credit output accepted by the live wallet.
     ///
-    /// This is the read-only counterpart of [`Self::create_asset_lock_proof`].
+    /// This is the non-broadcasting counterpart of [`Self::create_asset_lock_proof`].
     /// It runs off the UI thread against the upstream wallet manager and never
     /// exposes or reconstructs UTXO selection in the UI.
     pub async fn asset_lock_max_amount(
@@ -390,27 +400,33 @@ impl WalletBackend {
     ) -> Result<u64, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
-        let mut wallet_manager = wallet.wallet_manager().write().await;
-        let (key_wallet, info) = wallet_manager
-            .get_wallet_and_info_mut(&wallet_id)
-            .ok_or(TaskError::WalletStateInconsistent)?;
-        let account = key_wallet
-            .get_bip44_account(DEFAULT_BIP44_ACCOUNT)
-            .ok_or(TaskError::WalletStateInconsistent)?
-            .clone();
-        let current_height = asset_lock_builder_height(&info.core_wallet);
-        let managed_account = info
-            .core_wallet
-            .accounts
-            .standard_bip44_accounts
-            .get(&DEFAULT_BIP44_ACCOUNT)
-            .ok_or(TaskError::WalletStateInconsistent)?;
+        let (managed_account, account, current_height) = {
+            let wallet_manager = wallet.wallet_manager().read().await;
+            let (key_wallet, info) = wallet_manager
+                .get_wallet_and_info(&wallet_id)
+                .ok_or(TaskError::WalletStateInconsistent)?;
+            let account = key_wallet
+                .get_bip44_account(DEFAULT_BIP44_ACCOUNT)
+                .ok_or(TaskError::WalletStateInconsistent)?
+                .clone();
+            let current_height = asset_lock_builder_height(&info.core_wallet);
+            let managed_account = info
+                .core_wallet
+                .accounts
+                .standard_bip44_accounts
+                .get(&DEFAULT_BIP44_ACCOUNT)
+                .ok_or(TaskError::WalletStateInconsistent)?
+                .clone();
+            (managed_account, account, current_height)
+        };
 
-        asset_lock_max_amount_from_account(managed_account, &account, current_height).map_err(
-            |source| TaskError::AssetLockBalanceQueryFailed {
-                source: Box::new(source),
-            },
-        )
+        tokio::task::spawn_blocking(move || {
+            asset_lock_max_amount_from_account(&managed_account, &account, current_height)
+        })
+        .await?
+        .map_err(|source| TaskError::AssetLockBalanceQueryFailed {
+            source: Box::new(source),
+        })
     }
 
     /// Derive the secp256k1 [`PrivateKey`](dash_sdk::dpp::dashcore::PrivateKey) at `path` from a held HD seed.

@@ -234,7 +234,7 @@ pub enum TaskError {
         >,
     },
 
-    /// The read-only asset-lock builder probe could not determine a safe Max.
+    /// The non-broadcasting asset-lock builder probe could not determine a safe Max.
     #[error(
         "The wallet's available amount could not be checked. Wait a moment and try again."
     )]

@@ -1,6 +1,8 @@
 # Legacy identity recovery flow (issue #889)
 
-**Status:** implemented — see the task decomposition in §8.
+**Status:** implemented. The proposal below is the design as written; §10 records
+where the implementation deliberately departs from it, and is authoritative
+wherever the two disagree.
 **Scope:** exactly GitHub issue #889: an explicit, opt-in, per-identity recovery
 action that reads the preserved legacy `data.db` and restores private keys and
 role associations stranded by the migration's skip-if-present rule.
@@ -542,3 +544,116 @@ Ordered; each independently implementable and reviewable by a single developer.
 - **Wallet-link restoration** for identities whose modern record lost the
   link — interacts with funds flows and wallet presence; deliberately not
   bundled with key recovery.
+
+---
+
+## 10. Deviations from the proposal (as implemented)
+
+Written after the code landed, and after the review round that followed. Where
+this section and §1–§9 disagree, this section describes what shipped.
+
+### 10.1 Detection is dispatched from the render latch, not `refresh_on_arrival`
+
+§2.1 step 2 and §4.5 put the `CheckLegacyRecovery` dispatch on
+`refresh_on_arrival`. Shipped: a dispatch-once latch inside the view's own
+render (`ui/state/legacy_recovery.rs`, consumed by `detail_screen.rs` and
+`key_info_screen.rs`). The masternode list screen rebuilds the detail view on
+every task result, so an arrival-only hook would miss those rebuilds, while a
+naive re-dispatch on every render would loop (result → rebuild → re-check →
+result). The preview result is routed *into* the open view instead of
+triggering a rebuild; a restore result does rebuild, which re-arms the check.
+
+Arrival still matters, but for a different reason: a restore run from the Key
+Info screen the node page pushed never reaches the node page, so
+`refresh_on_arrival` re-reads the node and re-arms its check.
+
+### 10.2 Progress is inline, not a banner
+
+§4.5 said progress and success both go through the standard `BannerHandle`
+lifecycle. Shipped: progress replaces the button inside the section with a
+spinner, which also makes a double dispatch impossible; only the success banner
+is global.
+
+### 10.3 `ui/state/legacy_recovery.rs` holds the cross-screen fetch state
+
+Neither §4.5 nor §8 lists it. The per-identity fetch state is a six-state
+machine that renders nothing, so the module-placement policy's render/no-render
+discriminator puts it in `ui/state/`, not `ui/components/`. It is also what
+lets the Key Info surface reuse the masternode surface's work wholesale.
+`ui/masternodes/list_screen.rs` is likewise part of the change: it carries the
+result-routing rule §10.1 describes.
+
+### 10.4 The Key Info offer is not gated to `User` identities
+
+§2.1 and §8 T-889-05 frame that surface as the `User`-identity variant.
+Shipped: the offer is identity-scoped and correct on any type, so a node
+operator who reaches Key Info through "Manage keys" sees the same
+self-extinguishing offer.
+
+### 10.5 Candidates must still correspond to the identity
+
+§3.2 admits a candidate on absence alone. Shipped: a key must also still
+*correspond* to the identity — its saved private half derives the public half
+it is stored with, that public half is still a live (not retired) key of the
+identity the target names, and an `AtWalletDerivationPath` reference names a
+wallet this install holds. The voter-identity link is a candidate only
+alongside a voting key the node will actually hold.
+
+The reason is §3.2's own blind spot: `masternode_key_presence` reports a role as
+held from the record alone, so restoring a key the node rotated away from — or
+a voter link with no key behind it — flips the role to "present", retires both
+the recovery offer and the missing-voter remedy, and surfaces later as a
+rejected transaction. Failing candidates go to `RecoveryPlan::excluded` with
+their own reasons (`KeyNoLongerOnIdentity`, `VoterLinkWithoutVotingKey`), the
+same treatment §3.2 already gave the legacy `Encrypted` format. This is the
+check the manual "type the WIF" path (`verify_voting_key_exists_on_identity` and
+friends) has always enforced; restoring should not be a way around it.
+
+### 10.6 The migration guard is not held across the password prompt
+
+§4.3's sketch holds `migration_run` for the whole task, prompt included, on the
+grounds that the delete path takes the same guard. The comparison does not
+hold: the delete path is fully synchronous and holds it for microseconds. As
+written, an open Tier-2 recovery prompt made deleting an *unrelated* identity
+fail with `WalletStorageNotReady` and could park `finish_unwire`'s awaiting
+acquire indefinitely — both reproduced.
+
+Shipped: an unguarded preflight (read, dry-run the merge, decide whether a
+password is needed, prompt) followed by one fully synchronous critical section
+that re-acquires the guard, re-checks the migration state, re-reads the record,
+merges again and writes. §5's per-identity `begin_identity_load` claim still
+spans the whole flow.
+
+Re-reading also turns two properties from side effects into code. A concurrent
+writer that lands during the prompt — refresh, DPNS registration, transfer,
+none of which take the claim — is no longer reverted by the write of a
+pre-prompt snapshot, and a delete that lands during the prompt surfaces as
+`IdentityNotFoundLocally` instead of being undone by the upsert. §3.6's
+downgrade-guard predicate is evaluated over the *merged* record, the one the
+encoder sees, rather than over the pre-merge record; an identity that gains
+password protection during the prompt therefore stops with the typed
+`LegacyRecoveryIdentityChanged` rather than sealing under a password for a
+state that no longer exists.
+
+### 10.7 §7 row 4's "`finish_unwire.rs` is not modified"
+
+The importer's *behaviour* is unchanged and its skip-if-present rule stands,
+which is what that row asserts. The file itself is touched: its private
+`open_legacy_read_only` was hoisted into `database/`, as §4.2 says. Mechanical,
+and covered by the importer's existing suite.
+
+### 10.8 Item labels live in the UI, not the model
+
+§4.1 gave `RecoveryItemDescriptor` a display label. Shipped: the model carries
+`(target, key_id, purpose)` and nothing else; the UI names items through the
+shared `role_label_and_tip` vocabulary that already labels the "Manage keys"
+buttons, and tells two rows in one role apart by key id. Two mappings meant two
+names for one key, six lines apart, on the same screen.
+
+### 10.9 Outcome buckets are disjoint
+
+§3.4 left `skipped_stale` to mean "approved but no longer a candidate", which
+swept in items that were never restorable at all. Shipped: `AppliedRecovery`
+reports `excluded` alongside `applied` and `skipped_stale`, and the three are
+disjoint — "cannot be restored" and "already back in place" are opposite
+answers, and a caller reading the outcome has to be able to tell them apart.

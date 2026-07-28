@@ -36,8 +36,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   identity the identity password is asked for first — cancelling or mistyping
   it leaves everything as it was. For a node with no voting key this is offered
   as the first remedy, with entering the key by hand still available for anyone
-  who still has it. The previous version's data is only ever read, so this is
-  safe to repeat.
+  who still has it. A saved key that no longer matches one this identity uses —
+  a key rotated or retired since the previous version saved it — is listed with
+  an explanation instead of being restored, so a key that could not sign can
+  never make the app report a role as held. The previous version's data is only
+  ever read, so this is safe to repeat.
 
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.

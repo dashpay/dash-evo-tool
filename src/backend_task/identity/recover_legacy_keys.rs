@@ -271,14 +271,9 @@ impl AppContext {
     }
 
     /// The identity `identity_id` names in the preserved legacy `data.db`, or
-    /// `None` when there is nothing there to recover from.
-    ///
-    /// `None` covers every ordinary "not here" answer: an install with no
-    /// legacy file at all, a missing table, a missing row, an
-    /// observed-identity cache row, a NULL blob. A row that exists but will not
-    /// decode is an error instead — reading it as an empty record would look
-    /// like the previous version held nothing and would close the recovery
-    /// affordance on data that is still on disk.
+    /// `None` for every ordinary "not here" answer. A row that exists but will
+    /// not decode is an error instead: reading it as empty would close the
+    /// recovery offer on data that is still on disk.
     fn legacy_identity_record(
         &self,
         identity_id: Identifier,

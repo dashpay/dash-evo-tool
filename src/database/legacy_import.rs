@@ -348,14 +348,10 @@ pub(crate) fn read_identities(
 
 /// Read the one local identity stored under `id` on `network`.
 ///
-/// The single-row twin of [`read_identities`], for the explicit per-identity
-/// recovery flow: it applies the identical filter and the identical per-row
-/// decode, so an identity the bulk import would have carried across is exactly
-/// the one this finds. A missing table, a missing row, an observed-identity
-/// cache row (`is_local = 0`) and a NULL blob are all
-/// [`LegacyIdentityLookup::Absent`] — "nothing to recover", not a failure. Only
-/// a row that will not decode is [`LegacyIdentityLookup::Unreadable`], which
-/// the caller must never treat as an empty record.
+/// The single-row twin of [`read_identities`], same filter and same decoder.
+/// Every ordinary "not here" answer is [`LegacyIdentityLookup::Absent`]; only a
+/// row that will not decode is [`LegacyIdentityLookup::Unreadable`], which a
+/// caller must never read as an empty record.
 pub(crate) fn read_identity_row(
     conn: &Connection,
     network: Network,
@@ -387,20 +383,10 @@ pub(crate) fn read_identity_row(
 const LOCAL_IDENTITY_SELECT: &str = "SELECT id, data, status, wallet, wallet_index, alias FROM identity \
      WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)";
 
-/// Decode one legacy `identity` row into the modern domain type, or `None` when
-/// the row is corrupt.
-///
-/// Every rejection logs its own reason here and is tallied by the caller, so
-/// the bulk import and the single-row lookup share one decoder and cannot
-/// disagree about which rows are readable. A row is rejected — never partially
-/// salvaged — for a wrong column storage class, an id that is not 32 bytes, an
-/// out-of-range `status` or `wallet_index`, a half-filled wallet link, a blob
-/// that will not decode, or a row `id` that disagrees with the id inside the
-/// blob.
-///
-/// The `data` blob and everything it decodes to — private keys above all — are
-/// never logged, at any level; a rejected row is named by its identity id
-/// alone, the public on-chain handle.
+/// Decode one legacy `identity` row, or `None` when it is corrupt — the one
+/// decoder behind both readers, so they cannot disagree about which rows are
+/// readable. Each rejection below logs its own reason; a rejected row is named
+/// by its identity id alone, never by anything the blob decodes to.
 fn decode_identity_row(row: &rusqlite::Row<'_>, network: Network) -> Option<LegacyIdentityRow> {
     // A wrong SQLite storage class on any column is row-level corruption:
     // decode through a `Result` so a bad column costs its own row, not the

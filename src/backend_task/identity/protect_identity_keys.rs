@@ -148,9 +148,11 @@ impl AppContext {
     }
 }
 
-/// Fail-closed guard for every boundary that seals an identity's keys — the
-/// protect opt-in and the legacy-recovery merge: reject an identity that
-/// still carries resident plaintext (`Clear`/`AlwaysClear`) keys on disk. Such a
+/// Fail-closed guard for two of the three boundaries that seal an identity's
+/// keys — the protect opt-in and the legacy-recovery merge, but *not* the
+/// merge-load path (see the TODO at its seal in `load_identity.rs`): reject an
+/// identity that still carries resident plaintext (`Clear`/`AlwaysClear`) keys
+/// on disk. Such a
 /// key means the eager load-path vault migration did not complete — its vault
 /// write failed, or it was skipped on an already-protected identity — so the key
 /// has no vault label and [`seal_identity_keys`] would silently skip its

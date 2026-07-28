@@ -675,8 +675,9 @@ As a user whose identity was already in the app before the upgrade — a mastern
 - Keys already saved for the identity are never replaced or removed — only missing ones are added. An identity the user deleted is never brought back.
 - On a password-protected identity the identity password is asked for first; cancelling, or getting it wrong, leaves everything exactly as it was.
 - For a node with no voting key, restoring is offered as the first remedy and entering the key by hand remains available for anyone who still has it.
-- A key saved in a format this version cannot read is listed with its own explanation rather than dropped silently.
-- The previous version's data is never modified, so restoring can be repeated safely; repeating it reports that everything was already in place and changes nothing.
+- A key saved in a format this version cannot read, or one that no longer matches a key the identity uses, is listed with its own explanation rather than dropped silently — and never restored, so a key that could not sign can never make the app report a role as held.
+- The previous version's data is never modified, so restoring can be repeated safely; repeating it reports that there was nothing left to restore and changes nothing.
+- Restoring keeps the app usable while it waits for the identity password: other identities can still be removed, and anything else saved for this identity while the password prompt is open survives the restore.
 
 ---
 

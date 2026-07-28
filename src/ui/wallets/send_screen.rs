@@ -3309,6 +3309,22 @@ impl WalletSendScreen {
 
     #[cfg(feature = "testing")]
     #[doc(hidden)]
+    /// Seeds the completed asset-lock maximum lookup for headless integration tests.
+    pub fn seed_asset_lock_max_amount_for_test(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        amount_duffs: u64,
+    ) {
+        let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
+        let _ = self
+            .asset_lock_balance
+            .ensure_requested(seed_hash, snapshot_generation);
+        self.asset_lock_balance
+            .store(seed_hash, snapshot_generation, amount_duffs);
+    }
+
+    #[cfg(feature = "testing")]
+    #[doc(hidden)]
     /// Runs the production simple-send validation and dispatch selection.
     pub fn validate_and_send_for_test(&mut self) -> Result<AppAction, String> {
         self.validate_and_send()

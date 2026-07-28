@@ -70,6 +70,18 @@ fn dry_run_asset_lock_amount(
     )
 }
 
+// INTENTIONAL(upstream-bnb-dos): when `selection_strategy` is `None` below, the
+// real `TransactionBuilder` falls through to its default `SelectionStrategy::
+// BranchAndBound`. That strategy's `find_exact_match` (key-wallet crate,
+// `coin_selection.rs`) has no undershoot/feasibility prune, so a target close
+// to the wallet's total balance can degenerate into an exponential (2^N)
+// search over the UTXO set — see https://github.com/dashpay/rust-dashcore/issues/918.
+// `asset_lock_max_below_upper_bound` and `default_strategy_max_from_seed`
+// deliberately probe exactly that near-total-balance regime as part of
+// computing a safe max-sendable ceiling, so they reliably exercise this
+// upstream gap. Accepted for now, pending the upstream fix; not worked around
+// here because bounding the probe would trade a real DoS risk for a less
+// accurate ceiling on every call, and the fix belongs in the shared selector.
 fn dry_run_asset_lock_amount_with_strategy(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,

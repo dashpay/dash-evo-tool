@@ -25,12 +25,15 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, Ident
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::secret::Secret;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::legacy_recovery_section::LegacyRecoverySection;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
@@ -39,6 +42,7 @@ use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
 use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY, key_status_tokens};
+use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
@@ -49,6 +53,15 @@ use crate::wallet_backend::secret_seam::SecretScheme;
 /// §7 copy: shown when the node has no voting key loaded.
 const MISSING_VOTER_MESSAGE: &str =
     "This node has no voting key loaded. Add its voting private key to cast votes.";
+/// Replaces [`MISSING_VOTER_MESSAGE`] when the previous version's saved data
+/// still holds this node's voting key: restoring it needs nothing the operator
+/// has to still have on hand, so typing the key in becomes the fallback.
+const MISSING_VOTER_RECOVERABLE_MESSAGE: &str = "This node has no voting key loaded. Its voting key was saved by your previous Dash Evo Tool \
+     version and can be restored from the Keys section.";
+/// Tooltip on the manual prompt once restoring is on offer, naming when typing
+/// the key in is still the right choice.
+const ADD_VOTING_KEY_FALLBACK_TOOLTIP: &str =
+    "Use this if you have the voting private key on hand and would rather enter it yourself.";
 /// §7 copy: shown when the node has a voter identity but no open contests.
 const NO_OPEN_CONTESTS_MESSAGE: &str =
     "There are no open name contests for this node to vote on right now.";
@@ -260,6 +273,9 @@ pub struct MasternodeDetailView {
     /// from FR-4's load form. `Some` while the prompt is open.
     voter_key_prompt: Option<PasswordInput>,
     remove_dialog: Option<ConfirmationDialog>,
+    /// The offer to restore keys this node left behind in the previous
+    /// version's saved data (issue #889).
+    recovery: LegacyRecoveryState,
 }
 
 #[cfg(test)]
@@ -290,6 +306,7 @@ impl MasternodeDetailView {
             .masternode_contest_summary(voter_id)
             .unwrap_or_default();
         let open_contests = Self::load_open_contests(app_context, voter_id);
+        let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());
         Self {
             app_context: app_context.clone(),
             identity,
@@ -301,7 +318,37 @@ impl MasternodeDetailView {
             vote_selections: BTreeMap::new(),
             voter_key_prompt: None,
             remove_dialog: None,
+            recovery,
         }
+    }
+
+    /// Record the plan the on-arrival detection task returned.
+    pub(crate) fn set_recovery_plan(
+        &mut self,
+        identity_id: dash_sdk::platform::Identifier,
+        plan: RecoveryPlan,
+    ) {
+        self.recovery.offered(identity_id, plan);
+    }
+
+    /// Re-arm detection after a finished restore, so the offer recomputes and
+    /// disappears once nothing is left stranded.
+    pub(crate) fn recovery_completed(&mut self) {
+        self.recovery.completed();
+    }
+
+    /// End whatever recovery operation was in flight when a task failed.
+    pub(crate) fn recovery_failed(&mut self) {
+        self.recovery.failed();
+    }
+
+    /// Whether the previous version's saved data still holds this node's voting
+    /// key, which makes restoring it the primary remedy for a missing voter and
+    /// typing the key in the fallback.
+    fn voting_key_is_recoverable(&self) -> bool {
+        self.recovery
+            .plan()
+            .is_some_and(|plan| plan.contains_voting_key())
     }
 
     /// Load the contests this node can still vote on. Empty when the node has no
@@ -445,6 +492,15 @@ impl MasternodeDetailView {
                 outcome = DetailOutcome::Removed;
             }
         });
+
+        // Passive detection, dispatched once per opened view. It never competes
+        // with a click made this frame: the click already owns the outcome, and
+        // the check simply goes out on the next frame instead.
+        if matches!(outcome, DetailOutcome::None)
+            && let Some(task) = self.recovery.ensure_checked()
+        {
+            outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTask(task)));
+        }
 
         outcome
     }
@@ -670,7 +726,29 @@ impl MasternodeDetailView {
         {
             action = Some(self.open_key_info_with_protection_prompt(target, &key));
         }
+
+        if let Some(approved) = self.render_recovery_section(ui)
+            && let Some(task) = self.recovery.restore(approved)
+        {
+            action = Some(AppAction::BackendTask(task));
+        }
         action
+    }
+
+    /// Render the offer to restore keys stranded in the previous version's
+    /// saved data, returning the items the user approved this frame. Renders
+    /// nothing at all when detection found nothing, so the section appears only
+    /// where it has something to say and vanishes once a restore lands.
+    fn render_recovery_section(&self, ui: &mut Ui) -> Option<Vec<RecoveryItem>> {
+        let restoring = self.recovery.is_restoring();
+        let plan = self.recovery.plan().filter(|plan| !plan.is_empty())?;
+        ui.add_space(8.0);
+        LegacyRecoverySection::new(plan)
+            .restoring(restoring)
+            .show(ui)
+            .inner
+            .changed_value()
+            .clone()
     }
 
     /// Every key of this node, main-identity keys first then voter-identity
@@ -781,11 +859,26 @@ impl MasternodeDetailView {
     /// FR-4's load form.
     fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
         let mut action = None;
-        ui.label(RichText::new(MISSING_VOTER_MESSAGE).color(DashColors::warning_color(dark_mode)));
+        // When the key is sitting in the previous version's saved data,
+        // restoring it is the remedy that asks nothing of the operator, so the
+        // message points there and the manual prompt becomes the fallback.
+        let recoverable = self.voting_key_is_recoverable();
+        let message = if recoverable {
+            MISSING_VOTER_RECOVERABLE_MESSAGE
+        } else {
+            MISSING_VOTER_MESSAGE
+        };
+        ui.label(RichText::new(message).color(DashColors::warning_color(dark_mode)));
 
         match self.voter_key_prompt.as_mut() {
             None => {
-                if ui.button("Add voting key").clicked() {
+                let button = ui.button("Add voting key");
+                let button = if recoverable {
+                    button.on_hover_text(ADD_VOTING_KEY_FALLBACK_TOOLTIP)
+                } else {
+                    button
+                };
+                if button.clicked() {
                     // Node context is already bound (`self.identity`) — the
                     // prompt only asks for the voting key, no ProTxHash re-entry.
                     self.voter_key_prompt = Some(
@@ -980,7 +1073,6 @@ impl MasternodeDetailView {
 
         let mut removed = false;
         if let Some(dialog) = self.remove_dialog.as_mut() {
-            use crate::ui::components::component_trait::Component;
             let response = dialog.show(ui);
             if let Some(status) = response.inner.dialog_response {
                 self.remove_dialog = None;

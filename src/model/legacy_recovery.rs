@@ -70,22 +70,31 @@ impl RecoveryItemDescriptor {
         }
     }
 
+    /// Whether this item is the identity's voting key, either because it sits
+    /// on the voter identity or because its own purpose says so.
+    pub fn is_voting_key(&self) -> bool {
+        match &self.item {
+            RecoveryItem::Key { target, .. } => {
+                *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
+                    || self.purpose == Some(Purpose::VOTING)
+            }
+            _ => false,
+        }
+    }
+
     /// The user-facing name of this item, in the role words a node operator
     /// uses. One translation unit per label — no fragments are concatenated.
     pub fn label(&self) -> &'static str {
+        if self.is_voting_key() {
+            return "Voting key";
+        }
         match &self.item {
-            RecoveryItem::Key { target, .. } => {
-                if *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity {
-                    return "Voting key";
-                }
-                match self.purpose {
-                    Some(Purpose::VOTING) => "Voting key",
-                    Some(Purpose::OWNER) => "Owner key",
-                    Some(Purpose::TRANSFER) => "Payout key",
-                    Some(Purpose::AUTHENTICATION) => "Authentication key",
-                    _ => "Identity key",
-                }
-            }
+            RecoveryItem::Key { .. } => match self.purpose {
+                Some(Purpose::OWNER) => "Owner key",
+                Some(Purpose::TRANSFER) => "Payout key",
+                Some(Purpose::AUTHENTICATION) => "Authentication key",
+                _ => "Identity key",
+            },
             RecoveryItem::VoterAssociation => "Voting identity link",
             RecoveryItem::OperatorAssociation => "Operator identity link",
             RecoveryItem::OwnerKeyAssociation => "Owner key link",
@@ -159,6 +168,13 @@ impl RecoveryPlan {
             .iter()
             .filter(|d| !(grouped && d.item == RecoveryItem::VoterAssociation))
             .collect()
+    }
+
+    /// Whether a candidate is this identity's voting key. A node that cannot
+    /// vote has a remedy that needs no key on hand, which changes what its
+    /// missing-voter prompt should offer first.
+    pub fn contains_voting_key(&self) -> bool {
+        self.items.iter().any(RecoveryItemDescriptor::is_voting_key)
     }
 
     /// Whether approving a candidate voting key also approves the candidate

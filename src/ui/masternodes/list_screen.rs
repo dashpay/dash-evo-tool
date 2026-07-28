@@ -11,9 +11,9 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
@@ -21,8 +21,10 @@ use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
 use crate::model::wallet_association::WalletAssociation;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::global_nav_switcher::GlobalNavEffect;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::legacy_recovery_section::completion_message;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::identity::identity_pill::shorten_id;
@@ -33,7 +35,7 @@ use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
@@ -551,7 +553,33 @@ impl ScreenLike for MasternodesScreen {
         }
     }
 
-    fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
+    fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
+        match result {
+            // A recovery preview changed nothing in the store, so it is routed
+            // into the open detail view instead of reloading and re-opening it.
+            // Re-opening would rebuild the view, re-dispatch its check, and
+            // never settle.
+            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
+                if let MasternodesView::Detail(detail) = &mut self.view {
+                    detail.set_recovery_plan(identity_id, plan);
+                }
+                return;
+            }
+            // A restore did change the store. Confirm it, then fall through to
+            // the reload that re-reads this node and re-arms its check, which
+            // now finds nothing stranded and retires the offer.
+            BackendTaskSuccessResult::LegacyRecoveryCompleted { ref applied, .. } => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    completion_message(!applied.is_empty()),
+                    MessageType::Success,
+                );
+                if let MasternodesView::Detail(detail) = &mut self.view {
+                    detail.recovery_completed();
+                }
+            }
+            _ => {}
+        }
         self.reload();
         // Settle the submitted load against the phase its task reported. This
         // screen also receives detail-view results (voting, RefreshIdentity) and
@@ -576,6 +604,12 @@ impl ScreenLike for MasternodesScreen {
         // this load's phase outstanding and the gate held. Let the global banner
         // render the error (return false).
         self.reconcile_pending_load();
+        // End whatever recovery operation the open detail view had in flight. A
+        // failed restore returns to its offer so the user can correct a mistyped
+        // identity password and press Restore again.
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.recovery_failed();
+        }
         false
     }
 

@@ -3,6 +3,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
@@ -11,15 +12,17 @@ use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::Component;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::legacy_recovery_section::{LegacyRecoverySection, completion_message};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::IdentityKeyView;
@@ -102,6 +105,13 @@ pub struct KeyInfoScreen {
     pending_protect: Option<(Secret, Option<String>)>,
     /// A queued opt-out dispatch (current password), drained in `ui()`.
     pending_unprotect: Option<Secret>,
+    /// The offer to restore keys this identity left behind in the previous
+    /// version's saved data (issue #889). Scoped to the identity, not to the
+    /// key on screen, so it appears wherever a key of a partially-restored
+    /// identity is opened.
+    recovery: LegacyRecoveryState,
+    /// A queued restore (the approved items), drained in `ui()`.
+    pending_recovery_restore: Option<Vec<RecoveryItem>>,
 }
 
 /// At-rest protection posture of an identity's vault-stored keys.
@@ -197,6 +207,21 @@ impl ScreenLike for KeyInfoScreen {
                     MessageType::Success,
                 );
             }
+            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
+                self.recovery.offered(identity_id, plan);
+            }
+            BackendTaskSuccessResult::LegacyRecoveryCompleted { ref applied, .. } => {
+                // Restored keys land in the vault, so the protection line has to
+                // re-read it; re-arming the check retires the offer once nothing
+                // is left stranded.
+                self.protection_status = None;
+                self.recovery.completed();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    completion_message(!applied.is_empty()),
+                    MessageType::Success,
+                );
+            }
             _ => {}
         }
     }
@@ -208,6 +233,12 @@ impl ScreenLike for KeyInfoScreen {
         if self.protection_in_flight && matches!(message_type, MessageType::Error) {
             self.protection_in_flight = false;
             self.protection_status = None;
+        }
+        // End whatever recovery operation was in flight. A failed restore
+        // returns to its offer, so a mistyped identity password can be
+        // corrected and Restore pressed again.
+        if matches!(message_type, MessageType::Error) {
+            self.recovery.failed();
         }
     }
 
@@ -619,6 +650,11 @@ impl ScreenLike for KeyInfoScreen {
                     self.show_remove_private_key_dialog(ui);
                 }
 
+                // Identity-scoped, so it renders whatever this key's own state
+                // is: the keys it offers are precisely the ones this identity
+                // does not hold.
+                self.render_recovery_section(ui);
+
                 ui.add_space(10.0);
             });
 
@@ -732,6 +768,18 @@ impl ScreenLike for KeyInfoScreen {
             ));
         }
 
+        // Legacy recovery: the passive check goes out once per opened screen,
+        // and a restore only after the user pressed Restore — so the two can
+        // never contend for `action`, which keeps only its most recent value.
+        if let Some(task) = self.recovery.ensure_checked() {
+            action |= AppAction::BackendTask(task);
+        }
+        if let Some(approved) = self.pending_recovery_restore.take()
+            && let Some(task) = self.recovery.restore(approved)
+        {
+            action |= AppAction::BackendTask(task);
+        }
+
         action
     }
 }
@@ -752,6 +800,7 @@ impl KeyInfoScreen {
             } else {
                 None
             };
+        let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());
         Self {
             identity,
             key,
@@ -787,6 +836,31 @@ impl KeyInfoScreen {
             protection_in_flight: false,
             pending_protect: None,
             pending_unprotect: None,
+            recovery,
+            pending_recovery_restore: None,
+        }
+    }
+
+    /// Render the offer to restore this identity's keys from the previous
+    /// version's saved data, queueing the approved items for dispatch. Renders
+    /// nothing when detection found nothing, so the section appears only where
+    /// it has something to say and retires itself once a restore lands.
+    fn render_recovery_section(&mut self, ui: &mut egui::Ui) {
+        let restoring = self.recovery.is_restoring();
+        let Some(plan) = self.recovery.plan().filter(|plan| !plan.is_empty()) else {
+            return;
+        };
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+        let approved = LegacyRecoverySection::new(plan)
+            .restoring(restoring)
+            .show(ui)
+            .inner
+            .changed_value()
+            .clone();
+        if approved.is_some() {
+            self.pending_recovery_restore = approved;
         }
     }
 

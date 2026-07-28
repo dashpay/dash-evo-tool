@@ -180,7 +180,10 @@ pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Op
         "Dash masternodes vote on who receives this username. A decision is expected in about 1 hour."
             .to_string()
     } else if secs < DAY {
-        let hours = secs / HOUR;
+        // Round rather than floor: `secs` is measured from an independent
+        // clock read than the caller's target, so a few elapsed
+        // milliseconds must not drop the displayed hour count by one.
+        let hours = (secs + HOUR / 2) / HOUR;
         format!(
             "Dash masternodes vote on who receives this username. A decision is expected in about {hours} hours."
         )
@@ -188,7 +191,7 @@ pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Op
         "Dash masternodes vote on who receives this username. A decision is expected in about 1 day."
             .to_string()
     } else {
-        let days = secs / DAY;
+        let days = (secs + DAY / 2) / DAY;
         format!(
             "Dash masternodes vote on who receives this username. A decision is expected in about {days} days."
         )
@@ -452,6 +455,28 @@ mod tests {
         );
         assert_eq!(
             approximate_time_until(ms(3 * 86_400), now).as_deref(),
+            Some(
+                "Dash masternodes vote on who receives this username. A decision is expected in about 3 days."
+            )
+        );
+    }
+
+    #[test]
+    fn approximate_time_until_rounds_instead_of_flooring_near_an_hour_or_day_boundary() {
+        // Callers compute the target from one clock read and pass `now_ms` from
+        // a second, later read (see `pill::pending_username_tooltip`) — a few
+        // elapsed milliseconds must not drop the displayed count by a whole
+        // bucket.
+        let now = 1_000_000_000_000u64;
+        let ms = |secs: u64| now + secs * 1_000;
+        assert_eq!(
+            approximate_time_until(ms(3 * 3_600 - 1), now).as_deref(),
+            Some(
+                "Dash masternodes vote on who receives this username. A decision is expected in about 3 hours."
+            )
+        );
+        assert_eq!(
+            approximate_time_until(ms(3 * 86_400 - 1), now).as_deref(),
             Some(
                 "Dash masternodes vote on who receives this username. A decision is expected in about 3 days."
             )

@@ -28,8 +28,8 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
-    max_amount_after_fee_reserve, spendable_covers_minimum, step_after_task_failure,
-    wallet_selection_combo,
+    max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, spendable_covers_minimum,
+    step_after_task_failure, wallet_selection_combo,
 };
 use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::{MessageType, ScreenLike};
@@ -545,33 +545,39 @@ impl TopUpIdentityScreen {
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = self.current_funding_method();
 
-        // Apply the max-amount restriction for wallet-balance funding and for a
-        // received deposit (which also spends from the wallet balance).
-        let (max_amount, show_max_button, fee_hint) = if matches!(
-            funding_method,
-            FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
-        ) {
-            let available_ceiling_duffs = self
-                .wallet
+        let wallet_ceiling_duffs = || {
+            self.wallet
                 .as_ref()
                 .and_then(|w| w.read().ok())
                 .and_then(|w| self.asset_lock_balance.get(&w.seed_hash()))
-                .unwrap_or(0);
-            let fee_estimator = self.app_context.fee_estimator();
-            let estimated_fee = fee_estimator.estimate_identity_topup();
-            let max_with_fee_reserved =
-                max_amount_after_fee_reserve(available_ceiling_duffs, estimated_fee);
-            (
-                Some(max_with_fee_reserved),
-                true,
-                Some(format!(
-                    "The estimated fee reserves about {}.",
-                    format_credits_as_dash(estimated_fee),
-                )),
-            )
-        } else {
-            (None, false, None)
+                .unwrap_or(0)
         };
+        let available_ceiling_duffs = match funding_method {
+            FundingMethod::UseWalletBalance => Some(wallet_ceiling_duffs()),
+            FundingMethod::ReceiveDeposit => Some(receive_deposit_ceiling_duffs(
+                wallet_ceiling_duffs(),
+                self.funding_address_balance_duffs,
+            )),
+            _ => None,
+        };
+
+        let (max_amount, show_max_button, fee_hint) =
+            if let Some(available_ceiling_duffs) = available_ceiling_duffs {
+                let fee_estimator = self.app_context.fee_estimator();
+                let estimated_fee = fee_estimator.estimate_identity_topup();
+                let max_with_fee_reserved =
+                    max_amount_after_fee_reserve(available_ceiling_duffs, estimated_fee);
+                (
+                    Some(max_with_fee_reserved),
+                    true,
+                    Some(format!(
+                        "The estimated fee reserves about {}.",
+                        format_credits_as_dash(estimated_fee),
+                    )),
+                )
+            } else {
+                (None, false, None)
+            };
 
         // Lazy initialization of the AmountInput component
         let should_prefill = self.prefill_funding_amount;

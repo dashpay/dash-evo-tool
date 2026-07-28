@@ -185,6 +185,9 @@ impl AddNewIdentityScreen {
         // 0 and would show a stale "exceeds maximum" error over a succeeding op.
         if step == WalletFundedScreenStep::FundsReceived {
             let Some(seed_hash) = seed_hash else {
+                if ui.button("Choose a different funding method").clicked() {
+                    self.reset_to_choose_funding();
+                }
                 return action;
             };
             if self.asset_lock_balance.is_failed(&seed_hash) {
@@ -192,10 +195,16 @@ impl AddNewIdentityScreen {
                 if ui.button("Retry available amount check").clicked() {
                     self.asset_lock_balance.invalidate_one(&seed_hash);
                 }
+                if ui.button("Choose a different funding method").clicked() {
+                    self.reset_to_choose_funding();
+                }
                 return action;
             }
             if self.asset_lock_balance.get(&seed_hash).is_none() {
                 ui.label("Checking the available amount…");
+                if ui.button("Choose a different funding method").clicked() {
+                    self.reset_to_choose_funding();
+                }
                 return action;
             }
             self.render_funding_amount_input(ui);

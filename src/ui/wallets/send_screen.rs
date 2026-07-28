@@ -948,8 +948,21 @@ impl WalletSendScreen {
         if amount_duffs == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
+
+        let destination = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_platform().copied())
+            .ok_or_else(|| "Invalid platform address".to_string())?;
+        let platform_fee_duffs = estimate_address_funding_fee_from_transition(
+            self.app_context.platform_version(),
+            &destination,
+        )
+        .div_ceil(CREDITS_PER_DUFF);
         let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Err(error) = validate_asset_lock_amount(amount_duffs, 0, asset_lock_max) {
+        if let Err(error) =
+            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
+        {
             let maximum_amount_duffs = match error {
                 AssetLockAmountError::Overflow => asset_lock_max,
                 AssetLockAmountError::ExceedsMaximum {
@@ -961,13 +974,6 @@ impl WalletSendScreen {
                 format_duffs_as_dash(maximum_amount_duffs)
             ));
         }
-
-        // Extract validated platform address
-        let destination = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_platform().copied())
-            .ok_or_else(|| "Invalid platform address".to_string())?;
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -1673,8 +1679,15 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
+        let identity_fee_duffs = self
+            .app_context
+            .fee_estimator()
+            .estimate_identity_topup()
+            .div_ceil(CREDITS_PER_DUFF);
         let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        if let Err(error) = validate_asset_lock_amount(amount_duffs, 0, asset_lock_max) {
+        if let Err(error) =
+            validate_asset_lock_amount(amount_duffs, identity_fee_duffs, asset_lock_max)
+        {
             let maximum_amount_duffs = match error {
                 AssetLockAmountError::Overflow => asset_lock_max,
                 AssetLockAmountError::ExceedsMaximum {
@@ -2496,6 +2509,14 @@ impl WalletSendScreen {
                         let fee = format_credits_as_dash(total_fee_credits);
                         Some(format!(
                             "Shielding fees of approximately {fee} are reserved from your balance."
+                        ))
+                    }
+                    Some(AddressKind::Identity) => {
+                        let estimated_fee = fee_estimator.estimate_identity_topup();
+                        max = max.map(|amount| amount.saturating_sub(estimated_fee));
+                        let fee = format_credits_as_dash(estimated_fee);
+                        Some(format!(
+                            "An identity top-up fee of approximately {fee} is reserved from your balance."
                         ))
                     }
                     Some(AddressKind::Core) => {
@@ -4625,7 +4646,17 @@ mod tests {
             .expect("Identity Max sets the amount")
             .dash_to_duffs()
             .expect("DASH amount");
-        assert_eq!(identity_max_duffs, BUILDER_MAX_DUFFS);
+        let identity_fee_credits = harness
+            .state()
+            .app_context
+            .fee_estimator()
+            .estimate_identity_topup();
+        let identity_fee_duffs = identity_fee_credits.div_ceil(CREDITS_PER_DUFF);
+        assert_eq!(
+            identity_max_duffs,
+            BUILDER_MAX_DUFFS.saturating_sub(identity_fee_duffs),
+            "Identity Max must reserve the same top-up fee as the identity top-up screen"
+        );
         let downstream_error = harness
             .state_mut()
             .send_core_to_identity(seed_hash)
@@ -4681,11 +4712,11 @@ mod tests {
             "the builder-derived Platform Max must pass pre-send validation"
         );
 
-        harness.state_mut().amount = Some(Amount::dash_from_duffs(BUILDER_MAX_DUFFS + 1));
+        harness.state_mut().amount = Some(Amount::dash_from_duffs(platform_max_duffs + 1));
         let error = harness
             .state_mut()
             .send_core_to_platform(seed_hash)
-            .expect_err("one duff above the builder ceiling must be rejected before dispatch");
+            .expect_err("one duff above Platform Max must be rejected before dispatch");
         assert!(
             error.starts_with("You can transfer up to "),
             "Platform validation should report the builder-derived ceiling: {error}"

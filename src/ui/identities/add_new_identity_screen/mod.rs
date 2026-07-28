@@ -28,8 +28,8 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
-    funding_method_after_switch, max_amount_after_fee_reserve, spendable_covers_minimum,
-    step_after_task_failure, wallet_selection_combo,
+    funding_method_after_switch, max_amount_after_fee_reserve, receive_deposit_ceiling_duffs,
+    spendable_covers_minimum, step_after_task_failure, wallet_selection_combo,
 };
 use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::theme::DashColors;
@@ -1165,37 +1165,43 @@ impl AddNewIdentityScreen {
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = *self.funding_method.read_recover();
 
-        // Apply the max-amount restriction for both wallet-balance funding and a
-        // received deposit (which also spends from the wallet balance); reserve
-        // the estimated identity-creation fee from the relevant ceiling.
-        let (max_amount_credits, show_max_button, fee_hint) = if matches!(
-            funding_method,
-            FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
-        ) {
-            let available_ceiling_duffs = self
-                .selected_wallet
+        let wallet_ceiling_duffs = || {
+            self.selected_wallet
                 .as_ref()
                 .and_then(|wallet| wallet.read().ok())
                 .and_then(|wallet| self.asset_lock_balance.get(&wallet.seed_hash()))
-                .unwrap_or(0);
-            let key_count = self.identity_keys.others.len() + 1; // +1 for master key
-            let estimated_fee = self
-                .app_context
-                .fee_estimator()
-                .estimate_identity_create(key_count);
-            let max_with_fee_reserved =
-                max_amount_after_fee_reserve(available_ceiling_duffs, estimated_fee);
-            (
-                Some(max_with_fee_reserved),
-                true,
-                Some(format!(
-                    "The estimated fee reserves about {}.",
-                    format_credits_as_dash(estimated_fee),
-                )),
-            )
-        } else {
-            (None, false, None)
+                .unwrap_or(0)
         };
+        let available_ceiling_duffs = match funding_method {
+            FundingMethod::UseWalletBalance => Some(wallet_ceiling_duffs()),
+            FundingMethod::ReceiveDeposit => Some(receive_deposit_ceiling_duffs(
+                wallet_ceiling_duffs(),
+                self.funding_address_balance_duffs,
+            )),
+            _ => None,
+        };
+
+        // Reserve the estimated identity-creation fee from the relevant ceiling.
+        let (max_amount_credits, show_max_button, fee_hint) =
+            if let Some(available_ceiling_duffs) = available_ceiling_duffs {
+                let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+                let estimated_fee = self
+                    .app_context
+                    .fee_estimator()
+                    .estimate_identity_create(key_count);
+                let max_with_fee_reserved =
+                    max_amount_after_fee_reserve(available_ceiling_duffs, estimated_fee);
+                (
+                    Some(max_with_fee_reserved),
+                    true,
+                    Some(format!(
+                        "The estimated fee reserves about {}.",
+                        format_credits_as_dash(estimated_fee),
+                    )),
+                )
+            } else {
+                (None, false, None)
+            };
 
         let should_prefill = self.prefill_funding_amount;
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {

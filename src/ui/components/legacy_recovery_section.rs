@@ -7,10 +7,14 @@
 //! The listed items *are* the preview, so pressing Restore approves exactly
 //! what is on screen — key bytes are never rendered and never logged.
 
+use dash_sdk::dpp::identity::Purpose;
 use egui::{InnerResponse, RichText, Ui};
 
-use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
+use crate::model::legacy_recovery::{
+    ExclusionReason, RecoveryItem, RecoveryItemDescriptor, RecoveryPlan,
+};
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::masternodes::{disambiguate_role_labels, role_label_and_tip};
 use crate::ui::theme::DashColors;
 
 /// Section lead-in. Avoids "migration", "blob" and "vault" — the user knows
@@ -21,7 +25,9 @@ const INTRO: &str = "Some keys for this identity from your previous Dash Evo Too
 /// most here — what it cannot do.
 const RESTORE_TOOLTIP: &str = "Bring the keys listed above back into this identity. Keys already saved here are left \
      exactly as they are.";
-const RESTORE_LABEL: &str = "Restore keys…";
+/// No ellipsis: on an identity without a password this button restores the keys
+/// on the spot rather than opening anything.
+const RESTORE_LABEL: &str = "Restore keys";
 /// Shown in place of the button while the restore runs.
 const RESTORING_LABEL: &str = "Restoring…";
 /// Introduces the items this flow cannot restore, so they are never silently
@@ -44,6 +50,60 @@ pub fn completion_message(restored: bool) -> &'static str {
     } else {
         NOTHING_RESTORED_MESSAGE
     }
+}
+
+/// What the user can do about an item this flow cannot restore, as a complete
+/// sentence for the Everyday User.
+pub fn exclusion_explanation(reason: ExclusionReason) -> &'static str {
+    match reason {
+        ExclusionReason::LegacyEncryptedFormat => {
+            "This key is saved in an older format that cannot be restored automatically. \
+             Load this identity again and enter the key to bring it back."
+        }
+        ExclusionReason::NoMaterial => {
+            "The previous version kept no copy of this key. \
+             Load this identity again and enter the key to bring it back."
+        }
+        ExclusionReason::KeyNoLongerOnIdentity => {
+            "This saved key is not one of the keys this identity uses now. \
+             Load this identity again and enter the current key to bring it back."
+        }
+        ExclusionReason::VoterLinkWithoutVotingKey => {
+            "The voting key this link needs was not saved, so restoring the link alone would \
+             report this node as able to vote when it cannot. \
+             Load this identity again and enter the voting key to bring both back."
+        }
+    }
+}
+
+/// The user-facing name (and role tooltip) of every item in `items`, in order.
+///
+/// Delegates to the shared role vocabulary
+/// [`role_label_and_tip`](crate::ui::masternodes::role_label_and_tip), so an
+/// item is named here exactly as the "Manage keys" list names the same key, and
+/// two rows that would otherwise read alike are told apart by their key id.
+pub fn recovery_item_labels(
+    items: &[&RecoveryItemDescriptor],
+) -> Vec<(String, Option<&'static str>)> {
+    let mut labels: Vec<(String, Option<&'static str>)> = items
+        .iter()
+        .map(|item| match &item.item {
+            RecoveryItem::Key { .. } => {
+                let (role, tip) = role_label_and_tip(
+                    item.is_on_voter_identity(),
+                    item.purpose.unwrap_or(Purpose::AUTHENTICATION),
+                );
+                (format!("{role} key"), tip)
+            }
+            RecoveryItem::VoterAssociation => ("Voting identity link".to_string(), None),
+            RecoveryItem::OperatorAssociation => ("Operator identity link".to_string(), None),
+            RecoveryItem::OwnerKeyAssociation => ("Owner key link".to_string(), None),
+        })
+        .collect();
+
+    let key_ids: Vec<_> = items.iter().map(|item| item.key_id()).collect();
+    disambiguate_role_labels(&mut labels, &key_ids);
+    labels
 }
 
 /// What the user approved this frame.
@@ -117,12 +177,15 @@ impl Component for LegacyRecoverySection<'_> {
                 }
                 ui.label(RichText::new(INTRO).color(DashColors::warning_color(dark_mode)));
 
-                for item in self.plan.preview_items() {
+                let previewed = self.plan.preview_items();
+                for (label, tip) in recovery_item_labels(&previewed) {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
-                        ui.label(
-                            RichText::new(item.label()).color(DashColors::text_primary(dark_mode)),
-                        );
+                        let row = ui
+                            .label(RichText::new(label).color(DashColors::text_primary(dark_mode)));
+                        if let Some(tip) = tip {
+                            row.on_hover_text(tip);
+                        }
                     });
                 }
 
@@ -151,14 +214,18 @@ impl Component for LegacyRecoverySection<'_> {
                     ui.label(
                         RichText::new(EXCLUDED_INTRO).color(DashColors::text_secondary(dark_mode)),
                     );
-                    for (item, reason) in &self.plan.excluded {
+                    let excluded: Vec<&RecoveryItemDescriptor> =
+                        self.plan.excluded.iter().map(|(item, _)| item).collect();
+                    let reasons = self.plan.excluded.iter().map(|(_, reason)| *reason);
+                    for ((label, _), reason) in
+                        recovery_item_labels(&excluded).into_iter().zip(reasons)
+                    {
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);
                             ui.label(
-                                RichText::new(item.label())
-                                    .color(DashColors::text_secondary(dark_mode)),
+                                RichText::new(label).color(DashColors::text_secondary(dark_mode)),
                             )
-                            .on_hover_text(reason.explanation());
+                            .on_hover_text(exclusion_explanation(reason));
                         });
                     }
                 }

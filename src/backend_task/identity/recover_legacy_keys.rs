@@ -143,8 +143,8 @@ impl AppContext {
         approved: &[RecoveryItem],
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let identity_id = modern.identity.id();
-        let excluded = compute_recovery_plan(modern, &legacy).excluded;
         let mut applied = apply_recovery_plan(modern, legacy, approved);
+        let excluded = std::mem::take(&mut applied.excluded);
 
         // Nothing left to restore: no write, and — on a protected identity —
         // no password prompt for work that would not happen.
@@ -283,6 +283,8 @@ mod tests {
     use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
     use crate::wallet_backend::secret_seam::SecretScheme;
     use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
     use dash_sdk::dpp::platform_value::BinaryData;
@@ -377,42 +379,79 @@ mod tests {
         }
     }
 
-    /// A deterministic public key with a chosen id and purpose.
-    fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id,
-            purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: None,
-        })
+    /// A fixture key pair: a private half plus the public half genuinely
+    /// derived from it. The plan only offers a key that still corresponds to
+    /// the identity, so these have to be real pairs.
+    #[derive(Clone)]
+    struct TestKey {
+        secret: [u8; 32],
+        public: IdentityPublicKey,
     }
 
-    /// An identity of `identity_type` holding `keys`, with no associations.
+    impl TestKey {
+        fn clear(&self) -> PrivateKeyData {
+            PrivateKeyData::Clear(self.secret)
+        }
+
+        fn id(&self) -> KeyID {
+            self.public.id()
+        }
+    }
+
+    /// A key pair for `purpose`, keyed by `secret_byte`.
+    fn test_key(id: KeyID, purpose: Purpose, secret_byte: u8) -> TestKey {
+        let key_type = KeyType::ECDSA_HASH160;
+        let secret = [secret_byte; 32];
+        let data = key_type
+            .public_key_data_from_private_key_data(&secret, Network::Testnet)
+            .expect("derive the public half");
+        TestKey {
+            secret,
+            public: IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id,
+                purpose,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type,
+                read_only: false,
+                data: BinaryData::new(data),
+                disabled_at: None,
+            }),
+        }
+    }
+
+    /// Register `keys` on `identity` as public keys the chain holds.
+    fn publish_on(identity: &mut Identity, keys: &[&TestKey]) {
+        let mut public_keys = identity.public_keys().clone();
+        for key in keys {
+            public_keys.insert(key.id(), key.public.clone());
+        }
+        identity.set_public_keys(public_keys);
+    }
+
+    /// The chain's view of a node: `identity_type`, publishing `published` and
+    /// holding the private halves listed in `held`. A record that holds a key
+    /// publishes it too, which is what any real load produces.
     fn identity_with_keys(
         id: u8,
         identity_type: IdentityType,
-        keys: Vec<(PrivateKeyTarget, KeyID, Purpose, PrivateKeyData)>,
+        published: &[&TestKey],
+        held: Vec<(PrivateKeyTarget, &TestKey, PrivateKeyData)>,
     ) -> QualifiedIdentity {
         let mut private_keys = KeyStorage::default();
-        for (target, key_id, purpose, data) in keys {
+        let mut identity =
+            Identity::create_basic_identity(Identifier::from([id; 32]), PlatformVersion::latest())
+                .expect("basic identity");
+        publish_on(&mut identity, published);
+        for (target, key, data) in held {
+            publish_on(&mut identity, &[key]);
             private_keys.private_keys.insert(
-                (target, key_id),
-                (
-                    QualifiedIdentityPublicKey::from(public_key(key_id, purpose)),
-                    data,
-                ),
+                (target, key.id()),
+                (QualifiedIdentityPublicKey::from(key.public.clone()), data),
             );
         }
         QualifiedIdentity {
-            identity: Identity::create_basic_identity(
-                Identifier::from([id; 32]),
-                PlatformVersion::latest(),
-            )
-            .expect("basic identity"),
+            identity,
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
@@ -429,13 +468,18 @@ mod tests {
         }
     }
 
-    /// A separate identity usable as an association value.
-    fn voter_identity(id: u8) -> (Identity, IdentityPublicKey) {
-        (
+    /// A separate voter identity publishing `keys`, in the shape
+    /// `associated_voter_identity` carries.
+    fn voter_identity(id: u8, keys: &[&TestKey]) -> (Identity, IdentityPublicKey) {
+        let mut identity =
             Identity::create_basic_identity(Identifier::from([id; 32]), PlatformVersion::latest())
-                .expect("voter identity"),
-            public_key(0, Purpose::VOTING),
-        )
+                .expect("voter identity");
+        publish_on(&mut identity, keys);
+        let paired = keys
+            .first()
+            .map(|key| key.public.clone())
+            .unwrap_or_else(|| test_key(0, Purpose::VOTING, 0xF0).public);
+        (identity, paired)
     }
 
     /// The plan a `CheckLegacyRecovery` result carries.
@@ -468,14 +512,17 @@ mod tests {
     /// legacy rows must survive untouched (AC-5).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn b1_tier1_bare_masternode_recovers_owner_and_voting_keys() {
-        let owner_secret = [0xA1; 32];
-        let voting_secret = [0xB2; 32];
+        let owner = test_key(1, Purpose::OWNER, 0xA1);
+        let voting = test_key(2, Purpose::VOTING, 0xB2);
+        let owner_secret = owner.secret;
+        let voting_secret = voting.secret;
 
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        // The modern record: loaded from its ProTxHash alone, so no keys.
-        let modern = identity_with_keys(0x11, IdentityType::Masternode, vec![]);
+        // The modern record: loaded from its ProTxHash alone, so the chain's
+        // keys are known but none of their private halves are held.
+        let modern = identity_with_keys(0x11, IdentityType::Masternode, &[&owner], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
             .expect("insert the bare modern record");
@@ -484,12 +531,10 @@ mod tests {
         let mut legacy = identity_with_keys(
             0x11,
             IdentityType::Masternode,
-            vec![
-                (M, 1, Purpose::OWNER, PrivateKeyData::Clear(owner_secret)),
-                (V, 2, Purpose::VOTING, PrivateKeyData::Clear(voting_secret)),
-            ],
+            &[],
+            vec![(M, &owner, owner.clear()), (V, &voting, voting.clear())],
         );
-        legacy.associated_voter_identity = Some(voter_identity(0x99));
+        legacy.associated_voter_identity = Some(voter_identity(0x99, &[&voting]));
         offline.stage_legacy(&legacy);
 
         let plan = plan_of(
@@ -576,10 +621,13 @@ mod tests {
             Offline::new(Some(Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)])))).await;
         let ctx = &offline.ctx;
 
+        let owner = test_key(1, Purpose::OWNER, 0xC1);
+        let payout = test_key(2, Purpose::TRANSFER, 0xD2);
         let modern = identity_with_keys(
             0x22,
             IdentityType::Masternode,
-            vec![(M, 1, Purpose::OWNER, PrivateKeyData::Clear([0xC1; 32]))],
+            &[&payout],
+            vec![(M, &owner, owner.clear())],
         );
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
@@ -590,10 +638,8 @@ mod tests {
         let legacy = identity_with_keys(
             0x22,
             IdentityType::Masternode,
-            vec![
-                (M, 1, Purpose::OWNER, PrivateKeyData::Clear([0xC1; 32])),
-                (M, 2, Purpose::TRANSFER, PrivateKeyData::Clear([0xD2; 32])),
-            ],
+            &[],
+            vec![(M, &owner, owner.clear()), (M, &payout, payout.clear())],
         );
         offline.stage_legacy(&legacy);
 
@@ -621,7 +667,7 @@ mod tests {
                     .get_protected(&M, 2, &SecretString::new(PW))
                     .expect("get_protected")
                     .expect("sealed key present"),
-                [0xD2; 32],
+                payout.secret,
                 "the restored key opens under the identity's existing password",
             );
         });
@@ -727,10 +773,14 @@ mod tests {
         let offline = Offline::new(Some(Arc::new(TestPrompt::never()))).await;
         let ctx = &offline.ctx;
 
+        let owner = test_key(1, Purpose::OWNER, 0xE1);
+        let stranded = test_key(2, Purpose::TRANSFER, 0xE2);
+        let resident = test_key(3, Purpose::AUTHENTICATION, 0xE3);
         let stored = identity_with_keys(
             0x55,
             IdentityType::Masternode,
-            vec![(M, 1, Purpose::OWNER, PrivateKeyData::Clear([0xE1; 32]))],
+            &[],
+            vec![(M, &owner, owner.clear())],
         );
         let identity_id = stored.identity.id();
         ctx.insert_local_qualified_identity(&stored, &None)
@@ -747,20 +797,17 @@ mod tests {
         let modern = identity_with_keys(
             0x55,
             IdentityType::Masternode,
+            &[&stranded],
             vec![
-                (M, 1, Purpose::OWNER, PrivateKeyData::InVault),
-                (
-                    M,
-                    3,
-                    Purpose::AUTHENTICATION,
-                    PrivateKeyData::Clear([0xE3; 32]),
-                ),
+                (M, &owner, PrivateKeyData::InVault),
+                (M, &resident, resident.clear()),
             ],
         );
         let legacy = identity_with_keys(
             0x55,
             IdentityType::Masternode,
-            vec![(M, 2, Purpose::TRANSFER, PrivateKeyData::Clear([0xE2; 32]))],
+            &[],
+            vec![(M, &stranded, stranded.clear())],
         );
 
         let error = ctx
@@ -801,14 +848,16 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        let modern = identity_with_keys(0x66, IdentityType::Masternode, vec![]);
+        let owner = test_key(1, Purpose::OWNER, 0xF1);
+        let modern = identity_with_keys(0x66, IdentityType::Masternode, &[&owner], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
             .expect("insert modern record");
         let legacy = identity_with_keys(
             0x66,
             IdentityType::Masternode,
-            vec![(M, 1, Purpose::OWNER, PrivateKeyData::Clear([0xF1; 32]))],
+            &[],
+            vec![(M, &owner, owner.clear())],
         );
         offline.stage_legacy(&legacy);
 
@@ -867,14 +916,16 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        let modern = identity_with_keys(0x77, IdentityType::Masternode, vec![]);
+        let owner = test_key(1, Purpose::OWNER, 0x71);
+        let modern = identity_with_keys(0x77, IdentityType::Masternode, &[&owner], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
             .expect("insert modern record");
         let legacy = identity_with_keys(
             0x77,
             IdentityType::Masternode,
-            vec![(M, 1, Purpose::OWNER, PrivateKeyData::Clear([0x71; 32]))],
+            &[],
+            vec![(M, &owner, owner.clear())],
         );
         offline.stage_legacy(&legacy);
         ctx.delete_local_qualified_identity(&identity_id)
@@ -912,7 +963,7 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        let modern = identity_with_keys(0x88, IdentityType::Masternode, vec![]);
+        let modern = identity_with_keys(0x88, IdentityType::Masternode, &[], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
             .expect("insert modern record");
@@ -957,9 +1008,9 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        let no_row = identity_with_keys(0x91, IdentityType::Masternode, vec![]);
-        let cache_row = identity_with_keys(0x92, IdentityType::Masternode, vec![]);
-        let null_blob = identity_with_keys(0x93, IdentityType::Masternode, vec![]);
+        let no_row = identity_with_keys(0x91, IdentityType::Masternode, &[], vec![]);
+        let cache_row = identity_with_keys(0x92, IdentityType::Masternode, &[], vec![]);
+        let null_blob = identity_with_keys(0x93, IdentityType::Masternode, &[], vec![]);
         for identity in [&no_row, &cache_row, &null_blob] {
             ctx.insert_local_qualified_identity(identity, &None)
                 .expect("insert modern record");
@@ -997,7 +1048,7 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        let modern = identity_with_keys(0xA0, IdentityType::Masternode, vec![]);
+        let modern = identity_with_keys(0xA0, IdentityType::Masternode, &[], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
             .expect("insert modern record");
@@ -1030,15 +1081,13 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
+        let held = test_key(1, Purpose::AUTHENTICATION, 0x01);
+        let stranded = test_key(2, Purpose::TRANSFER, 0x02);
         let modern = identity_with_keys(
             0xB0,
             IdentityType::User,
-            vec![(
-                M,
-                1,
-                Purpose::AUTHENTICATION,
-                PrivateKeyData::Clear([0x01; 32]),
-            )],
+            &[&stranded],
+            vec![(M, &held, held.clear())],
         );
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
@@ -1046,15 +1095,8 @@ mod tests {
         let legacy = identity_with_keys(
             0xB0,
             IdentityType::User,
-            vec![
-                (
-                    M,
-                    1,
-                    Purpose::AUTHENTICATION,
-                    PrivateKeyData::Clear([0x01; 32]),
-                ),
-                (M, 2, Purpose::TRANSFER, PrivateKeyData::Clear([0x02; 32])),
-            ],
+            &[],
+            vec![(M, &held, held.clear()), (M, &stranded, stranded.clear())],
         );
         offline.stage_legacy(&legacy);
 
@@ -1079,7 +1121,7 @@ mod tests {
                 .get(&M, 2)
                 .expect("restored key")
                 .expect("stored")),
-            [0x02; 32],
+            stranded.secret,
         );
 
         offline.shutdown().await;
@@ -1094,19 +1136,16 @@ mod tests {
         let ctx = &offline.ctx;
 
         let seed_hash = [0x77; 32];
-        let modern = identity_with_keys(0xC0, IdentityType::User, vec![]);
+        let stranded = test_key(1, Purpose::AUTHENTICATION, 0x0C);
+        let modern = identity_with_keys(0xC0, IdentityType::User, &[&stranded], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &Some((seed_hash, 4)))
             .expect("insert modern record with a wallet link");
         let legacy = identity_with_keys(
             0xC0,
             IdentityType::User,
-            vec![(
-                M,
-                1,
-                Purpose::AUTHENTICATION,
-                PrivateKeyData::Clear([0x0C; 32]),
-            )],
+            &[],
+            vec![(M, &stranded, stranded.clear())],
         );
         offline.stage_legacy(&legacy);
 
@@ -1137,19 +1176,16 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        let modern = identity_with_keys(0xD0, IdentityType::Masternode, vec![]);
+        let modern = identity_with_keys(0xD0, IdentityType::Masternode, &[], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
             .expect("insert modern record");
+        let unreadable = test_key(1, Purpose::OWNER, 0x33);
         let legacy = identity_with_keys(
             0xD0,
             IdentityType::Masternode,
-            vec![(
-                M,
-                1,
-                Purpose::OWNER,
-                PrivateKeyData::Encrypted(vec![0x33; 48]),
-            )],
+            &[],
+            vec![(M, &unreadable, PrivateKeyData::Encrypted(vec![0x33; 48]))],
         );
         offline.stage_legacy(&legacy);
 
@@ -1164,6 +1200,74 @@ mod tests {
         offline.shutdown().await;
     }
 
+    /// A saved key the node rotated away from cannot sign for it any more.
+    /// Restoring it would report the payout role as held and retire the remedy
+    /// the operator actually needs, so the check reports it as unrestorable and
+    /// an approval naming it changes nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_the_node_rotated_away_from_is_not_restorable() {
+        let offline = Offline::new(None).await;
+        let ctx = &offline.ctx;
+
+        let current = test_key(2, Purpose::TRANSFER, 0xD5);
+        let rotated_out = test_key(1, Purpose::TRANSFER, 0xD6);
+        // The chain knows only the current payout key.
+        let modern = identity_with_keys(0xF0, IdentityType::Masternode, &[&current], vec![]);
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert modern record");
+        let legacy = identity_with_keys(
+            0xF0,
+            IdentityType::Masternode,
+            &[],
+            vec![(M, &rotated_out, rotated_out.clear())],
+        );
+        offline.stage_legacy(&legacy);
+
+        let plan = plan_of(
+            ctx.check_legacy_recovery(identity_id)
+                .expect("check must succeed"),
+        );
+        assert!(
+            plan.items.is_empty(),
+            "a rotated-away key is not restorable"
+        );
+        assert_eq!(
+            plan.excluded
+                .iter()
+                .map(|(_, reason)| *reason)
+                .collect::<Vec<_>>(),
+            vec![ExclusionReason::KeyNoLongerOnIdentity],
+        );
+
+        let (applied, stale) = completion_of(
+            ctx.recover_legacy_identity_data(
+                identity_id,
+                vec![RecoveryItem::Key {
+                    target: M,
+                    key_id: 1,
+                }],
+            )
+            .await
+            .expect("an approval naming an unrestorable key is reported, not an error"),
+        );
+        assert!(applied.is_empty(), "nothing was restorable");
+        assert!(
+            stale.is_empty(),
+            "an unrestorable key is excluded, never reported as already in place",
+        );
+        assert!(
+            !ctx.get_local_qualified_identity(&identity_id)
+                .expect("read back")
+                .expect("still stored")
+                .masternode_key_presence()
+                .payout,
+            "the node must still report its payout role as missing",
+        );
+
+        offline.shutdown().await;
+    }
+
     /// An empty approval list is refused rather than widened into "restore
     /// everything" — nothing is restored without an explicit per-item decision.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1171,7 +1275,7 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        let modern = identity_with_keys(0xE0, IdentityType::Masternode, vec![]);
+        let modern = identity_with_keys(0xE0, IdentityType::Masternode, &[], vec![]);
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
             .expect("insert modern record");
@@ -1193,10 +1297,13 @@ mod tests {
     /// change. Shared by the three password-failure cases.
     async fn seed_tier2_with_a_stranded_key(offline: &Offline) -> (Identifier, Vec<u8>) {
         let ctx = &offline.ctx;
+        let owner = test_key(1, Purpose::OWNER, 0xC1);
+        let payout = test_key(2, Purpose::TRANSFER, 0xD2);
         let modern = identity_with_keys(
             0x33,
             IdentityType::Masternode,
-            vec![(M, 1, Purpose::OWNER, PrivateKeyData::Clear([0xC1; 32]))],
+            &[&payout],
+            vec![(M, &owner, owner.clear())],
         );
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
@@ -1207,10 +1314,8 @@ mod tests {
         let legacy = identity_with_keys(
             0x33,
             IdentityType::Masternode,
-            vec![
-                (M, 1, Purpose::OWNER, PrivateKeyData::Clear([0xC1; 32])),
-                (M, 2, Purpose::TRANSFER, PrivateKeyData::Clear([0xD2; 32])),
-            ],
+            &[],
+            vec![(M, &owner, owner.clear()), (M, &payout, payout.clear())],
         );
         offline.stage_legacy(&legacy);
 

@@ -41,7 +41,7 @@ use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
-use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY, key_status_tokens};
+use crate::ui::masternodes::{disambiguate_role_labels, key_status_tokens, role_label_and_tip};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -129,15 +129,8 @@ fn contest_status_line(candidate_count: usize, end_time: Option<TimestampMillis>
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
 
-/// Tooltip for an authentication key — Platform-only, so it has no DIP-3 role
-/// counterpart and lives here rather than in the shared masternode tooltips.
-const TIP_AUTH_KEY: &str = "An authentication key signs this identity's actions on Dash Platform.";
-
-/// A short role name for a masternode key and its tooltip, aligned with the Dash
-/// Core DIP-3 ProRegTx roles. Voter-identity keys are always the voting key; on
-/// the main identity, the Platform Owner and Transfer keys of a masternode
-/// identity mirror the ProTx owner key and payout address respectively. Unknown
-/// purposes fall back to their name with no tooltip.
+/// A short role name for a masternode key and its tooltip, from the shared
+/// [`role_label_and_tip`] vocabulary.
 fn key_role_label(
     target: &PrivateKeyTarget,
     key: &dash_sdk::platform::IdentityPublicKey,
@@ -148,37 +141,18 @@ fn key_role_label(
     )
 }
 
-/// The pure label/tooltip mapping behind [`key_role_label`], split out so it can
-/// be unit-tested without constructing an `IdentityPublicKey`.
-fn role_label_and_tip(
-    is_voter: bool,
-    purpose: dash_sdk::dpp::identity::Purpose,
-) -> (String, Option<&'static str>) {
-    use dash_sdk::dpp::identity::Purpose;
-    if is_voter {
-        return ("Voting".to_string(), Some(TIP_VOTING_KEY));
-    }
-    match purpose {
-        Purpose::OWNER => ("Owner".to_string(), Some(TIP_OWNER_KEY)),
-        Purpose::TRANSFER => ("Payout address".to_string(), Some(TIP_PAYOUT_KEY)),
-        Purpose::AUTHENTICATION => ("Authentication".to_string(), Some(TIP_AUTH_KEY)),
-        other => (format!("{other:?}"), None),
-    }
-}
-
 /// Button labels (and DIP-3-aligned tooltips) for the "Manage keys" list, one
 /// per entry of `keys`, in order.
 ///
 /// Each label is the key's role word (`Owner`/`Payout address`/`Voting`/…)
 /// plus a `(disabled)` marker for keys platform has retired: a node that
 /// rotates its payout address keeps the old, disabled Payout key on-chain
-/// next to the new active one, so a role word alone is not unique. When two
-/// keys would still collide (e.g. two retired Payout keys), the key id
-/// disambiguates them, so every button carries a distinct, correct label.
+/// next to the new active one, so a role word alone is not unique. Keys that
+/// would still collide are told apart by their key id.
 fn manage_keys_labels(
     keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
 ) -> Vec<(String, Option<&'static str>)> {
-    let base: Vec<(String, Option<&'static str>)> = keys
+    let mut labels: Vec<(String, Option<&'static str>)> = keys
         .iter()
         .map(|(target, key)| {
             let (role, tip) = key_role_label(target, key);
@@ -191,21 +165,9 @@ fn manage_keys_labels(
         })
         .collect();
 
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for (label, _) in &base {
-        *counts.entry(label.as_str()).or_default() += 1;
-    }
-
-    base.iter()
-        .zip(keys.iter())
-        .map(|((label, tip), (_, key))| {
-            if counts.get(label.as_str()).copied().unwrap_or(0) > 1 {
-                (format!("{label} #{key_id}", key_id = key.id()), *tip)
-            } else {
-                (label.clone(), *tip)
-            }
-        })
-        .collect()
+    let key_ids: Vec<_> = keys.iter().map(|(_, key)| Some(key.id())).collect();
+    disambiguate_role_labels(&mut labels, &key_ids);
+    labels
 }
 
 /// At-rest protection posture of a node's vault keys, reduced to what the detail
@@ -1236,35 +1198,6 @@ mod tests {
         );
         let unique: std::collections::BTreeSet<_> = labels.iter().collect();
         assert_eq!(unique.len(), labels.len(), "labels must be unique");
-    }
-
-    #[test]
-    fn role_labels_follow_dip3_protx_terms() {
-        use dash_sdk::dpp::identity::Purpose;
-        // A voter-identity key is always the voting key, regardless of purpose.
-        assert_eq!(
-            role_label_and_tip(true, Purpose::AUTHENTICATION),
-            ("Voting".to_string(), Some(TIP_VOTING_KEY))
-        );
-        // Main-identity roles mirror the DIP-3 ProRegTx owner key and payout
-        // address; the Platform Transfer key surfaces as "Payout address".
-        assert_eq!(
-            role_label_and_tip(false, Purpose::OWNER),
-            ("Owner".to_string(), Some(TIP_OWNER_KEY))
-        );
-        assert_eq!(
-            role_label_and_tip(false, Purpose::TRANSFER),
-            ("Payout address".to_string(), Some(TIP_PAYOUT_KEY))
-        );
-        assert_eq!(
-            role_label_and_tip(false, Purpose::AUTHENTICATION),
-            ("Authentication".to_string(), Some(TIP_AUTH_KEY))
-        );
-        // An unmapped purpose keeps its name and carries no tooltip.
-        assert_eq!(
-            role_label_and_tip(false, Purpose::ENCRYPTION),
-            (format!("{purpose:?}", purpose = Purpose::ENCRYPTION), None,)
-        );
     }
 
     #[test]

@@ -11,8 +11,10 @@
 //! modern record does not; whether an item should come back is the user's
 //! decision, carried into [`apply_recovery_plan`] as an item-level allowlist.
 
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{KeyID, Purpose};
+use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
+use dash_sdk::platform::IdentityPublicKey;
 
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
@@ -70,34 +72,32 @@ impl RecoveryItemDescriptor {
         }
     }
 
-    /// Whether this item is the identity's voting key, either because it sits
-    /// on the voter identity or because its own purpose says so.
-    pub fn is_voting_key(&self) -> bool {
-        match &self.item {
-            RecoveryItem::Key { target, .. } => {
-                *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
-                    || self.purpose == Some(Purpose::VOTING)
-            }
-            _ => false,
-        }
+    /// Whether this item is a key held on the identity's voter identity.
+    ///
+    /// The grouping invariant keys off the target, not the purpose: it is the
+    /// target that decides which identity a key belongs to, and therefore
+    /// whether the voter-identity link has to travel with it.
+    pub fn is_on_voter_identity(&self) -> bool {
+        matches!(
+            &self.item,
+            RecoveryItem::Key { target, .. } if *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
+        )
     }
 
-    /// The user-facing name of this item, in the role words a node operator
-    /// uses. One translation unit per label — no fragments are concatenated.
-    pub fn label(&self) -> &'static str {
-        if self.is_voting_key() {
-            return "Voting key";
-        }
+    /// Whether this item plays the voting role, either because it sits on the
+    /// voter identity or because its own purpose says so. Wider than
+    /// [`Self::is_on_voter_identity`] — a voting-purpose key on the main
+    /// identity also lets a node vote.
+    pub fn is_voting_role(&self) -> bool {
+        matches!(&self.item, RecoveryItem::Key { .. })
+            && (self.is_on_voter_identity() || self.purpose == Some(Purpose::VOTING))
+    }
+
+    /// The key id this item names, or `None` for an association.
+    pub fn key_id(&self) -> Option<KeyID> {
         match &self.item {
-            RecoveryItem::Key { .. } => match self.purpose {
-                Some(Purpose::OWNER) => "Owner key",
-                Some(Purpose::TRANSFER) => "Payout key",
-                Some(Purpose::AUTHENTICATION) => "Authentication key",
-                _ => "Identity key",
-            },
-            RecoveryItem::VoterAssociation => "Voting identity link",
-            RecoveryItem::OperatorAssociation => "Operator identity link",
-            RecoveryItem::OwnerKeyAssociation => "Owner key link",
+            RecoveryItem::Key { key_id, .. } => Some(*key_id),
+            _ => None,
         }
     }
 }
@@ -110,24 +110,13 @@ pub enum ExclusionReason {
     LegacyEncryptedFormat,
     /// The legacy entry holds no key material to restore.
     NoMaterial,
-}
-
-impl ExclusionReason {
-    /// What the user can do instead, written as a complete sentence for the
-    /// Everyday User. Both reasons share one remedy: re-load the identity with
-    /// the key in hand.
-    pub fn explanation(self) -> &'static str {
-        match self {
-            ExclusionReason::LegacyEncryptedFormat => {
-                "This key is saved in an older format that cannot be restored automatically. \
-                 Load this identity again and enter the key to bring it back."
-            }
-            ExclusionReason::NoMaterial => {
-                "The previous version kept no copy of this key. \
-                 Load this identity again and enter the key to bring it back."
-            }
-        }
-    }
+    /// The saved key does not correspond to a key this identity uses now: its
+    /// public half is not on the identity, has been retired, does not match the
+    /// saved private half, or names a wallet this install does not hold.
+    KeyNoLongerOnIdentity,
+    /// The voter-identity link would be restored with no voting key behind it,
+    /// which would report the node as able to vote when it still cannot.
+    VoterLinkWithoutVotingKey,
 }
 
 /// Everything a legacy record could restore into a modern one, split into what
@@ -174,7 +163,9 @@ impl RecoveryPlan {
     /// vote has a remedy that needs no key on hand, which changes what its
     /// missing-voter prompt should offer first.
     pub fn contains_voting_key(&self) -> bool {
-        self.items.iter().any(RecoveryItemDescriptor::is_voting_key)
+        self.items
+            .iter()
+            .any(RecoveryItemDescriptor::is_voting_role)
     }
 
     /// Whether approving a candidate voting key also approves the candidate
@@ -188,11 +179,21 @@ impl RecoveryPlan {
     }
 
     fn has_voter_key(&self) -> bool {
-        self.items.iter().any(|d| is_voter_key(&d.item))
+        self.items
+            .iter()
+            .any(RecoveryItemDescriptor::is_on_voter_identity)
+    }
+
+    fn is_excluded(&self, item: &RecoveryItem) -> bool {
+        self.excluded.iter().any(|(d, _)| &d.item == item)
     }
 }
 
 /// The outcome of applying an approved allowlist to a modern record.
+///
+/// The three item lists are disjoint: an item this flow cannot restore at all
+/// is reported in [`Self::excluded`] and never in [`Self::skipped_stale`],
+/// which means only "already back in place, nothing to do".
 #[derive(Debug, Clone)]
 pub struct AppliedRecovery {
     /// The modern record with the approved candidates inserted. Never
@@ -203,6 +204,10 @@ pub struct AppliedRecovery {
     /// Approved items that were no longer missing when the merge ran, so there
     /// was nothing to restore. Reported, not failed.
     pub skipped_stale: Vec<RecoveryItemDescriptor>,
+    /// Legacy items this flow cannot restore, each with its reason — the
+    /// `excluded` list of the plan recomputed inside the merge, so a caller
+    /// never has to compute the same plan twice to report it.
+    pub excluded: Vec<(RecoveryItemDescriptor, ExclusionReason)>,
 }
 
 /// Everything `legacy` holds that `modern` does not, with no judgement about
@@ -219,6 +224,13 @@ pub struct AppliedRecovery {
 /// appears. `alias`, `status`, the dpp identity, DPNS names, and the wallet
 /// link are never candidates: the modern copy of each is the newer one, and
 /// refilling them from a stale legacy blob would resurrect a user's edit.
+///
+/// A candidate must also still *correspond* to the identity (see
+/// [`ExclusionReason::KeyNoLongerOnIdentity`]). The legacy file is an
+/// unauthenticated copy that can predate a key rotation by months, and
+/// `masternode_key_presence` reports a role as held from the record alone: a
+/// restored key that cannot sign would retire the very remedy the operator
+/// needs, and the failure would surface as a rejected transaction instead.
 pub fn compute_recovery_plan(
     modern: &QualifiedIdentity,
     legacy: &QualifiedIdentity,
@@ -231,27 +243,56 @@ pub fn compute_recovery_plan(
         }
         let (target, key_id) = map_key.clone();
         let descriptor = RecoveryItemDescriptor::key(
-            target,
+            target.clone(),
             key_id,
             Some(public_key.identity_public_key.purpose()),
         );
-        match data {
-            PrivateKeyData::Clear(_)
-            | PrivateKeyData::AlwaysClear(_)
-            | PrivateKeyData::AtWalletDerivationPath(_) => plan.items.push(descriptor),
-            PrivateKeyData::Encrypted(_) => plan
-                .excluded
-                .push((descriptor, ExclusionReason::LegacyEncryptedFormat)),
-            PrivateKeyData::InVault => plan
-                .excluded
-                .push((descriptor, ExclusionReason::NoMaterial)),
+        let plaintext = match data {
+            PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => Some(bytes),
+            PrivateKeyData::AtWalletDerivationPath(_) => None,
+            PrivateKeyData::Encrypted(_) => {
+                plan.excluded
+                    .push((descriptor, ExclusionReason::LegacyEncryptedFormat));
+                continue;
+            }
+            PrivateKeyData::InVault => {
+                plan.excluded
+                    .push((descriptor, ExclusionReason::NoMaterial));
+                continue;
+            }
+        };
+        let derivable = match data {
+            PrivateKeyData::AtWalletDerivationPath(path) => modern
+                .associated_wallets
+                .contains_key(&path.wallet_seed_hash),
+            _ => true,
+        };
+        if derivable
+            && key_corresponds_to_identity(
+                modern,
+                legacy,
+                &target,
+                &public_key.identity_public_key,
+                plaintext,
+            )
+        {
+            plan.items.push(descriptor);
+        } else {
+            plan.excluded
+                .push((descriptor, ExclusionReason::KeyNoLongerOnIdentity));
         }
     }
 
     if modern.associated_voter_identity.is_none() && legacy.associated_voter_identity.is_some() {
-        plan.items.push(RecoveryItemDescriptor::association(
-            RecoveryItem::VoterAssociation,
-        ));
+        let descriptor = RecoveryItemDescriptor::association(RecoveryItem::VoterAssociation);
+        // The link alone reports the node as able to vote. It is worth
+        // restoring only alongside a voting key the node will actually hold.
+        if holds_a_voting_key(modern) || plan.contains_voting_key() {
+            plan.items.push(descriptor);
+        } else {
+            plan.excluded
+                .push((descriptor, ExclusionReason::VoterLinkWithoutVotingKey));
+        }
     }
     if modern.associated_operator_identity.is_none()
         && legacy.associated_operator_identity.is_some()
@@ -277,10 +318,16 @@ pub fn compute_recovery_plan(
 /// Candidacy is recomputed from `(modern, legacy)` rather than trusted from the
 /// caller, so an approval that went stale between preview and execution merges
 /// nothing and is reported in [`AppliedRecovery::skipped_stale`]; a candidate
-/// the user did not approve is left alone.
+/// the user did not approve is left alone. An approval naming something this
+/// flow can never restore is reported in [`AppliedRecovery::excluded`] only —
+/// "cannot be restored" and "already back in place" are not the same answer.
 ///
 /// Approving a voting key also applies the candidate voter-identity link — a
 /// voting key without it cannot vote.
+///
+/// Whatever plaintext the legacy record still holds when the merge finishes is
+/// zeroized before it is dropped: the same record is decoded again on every
+/// preview, so its unapproved keys must not accumulate in freed heap.
 pub fn apply_recovery_plan(
     modern: &QualifiedIdentity,
     legacy: QualifiedIdentity,
@@ -301,7 +348,9 @@ pub fn apply_recovery_plan(
 
     // A voting key is unusable without its voter-identity link, so approving
     // one approves both even if the caller listed only the key.
-    if to_apply.iter().any(|d| is_voter_key(&d.item))
+    if to_apply
+        .iter()
+        .any(RecoveryItemDescriptor::is_on_voter_identity)
         && !to_apply
             .iter()
             .any(|d| d.item == RecoveryItem::VoterAssociation)
@@ -313,13 +362,13 @@ pub fn apply_recovery_plan(
         to_apply.push(link.clone());
     }
 
-    let mut skipped_stale = Vec::new();
+    let mut skipped_stale: Vec<RecoveryItemDescriptor> = Vec::new();
     for item in approved {
         let still_a_candidate = plan.items.iter().any(|d| &d.item == item);
-        let already_reported = skipped_stale
-            .iter()
-            .any(|d: &RecoveryItemDescriptor| &d.item == item);
-        if !still_a_candidate && !already_reported {
+        let already_reported = skipped_stale.iter().any(|d| &d.item == item);
+        // An excluded item is enumerated with its reason instead: it was never
+        // restorable, which is the opposite of "nothing left to restore".
+        if !still_a_candidate && !already_reported && !plan.is_excluded(item) {
             skipped_stale.push(stale_descriptor(modern, item));
         }
     }
@@ -360,10 +409,15 @@ pub fn apply_recovery_plan(
         applied.push(descriptor);
     }
 
+    // Whatever was not moved into `merged` is about to be dropped; wipe its
+    // resident arrays first. The returned bytes are already zeroize-on-drop.
+    let _ = legacy.private_keys.take_plaintext_for_vault();
+
     AppliedRecovery {
         merged,
         applied,
         skipped_stale,
+        excluded: plan.excluded,
     }
 }
 
@@ -384,12 +438,80 @@ fn stale_descriptor(modern: &QualifiedIdentity, item: &RecoveryItem) -> Recovery
     }
 }
 
-/// Whether `item` is a key on the voter identity.
-fn is_voter_key(item: &RecoveryItem) -> bool {
-    matches!(
-        item,
-        RecoveryItem::Key { target, .. } if *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
-    )
+/// Whether a saved key still belongs to the identity it claims.
+///
+/// Two independent tests, both of which the manual "type the WIF" path this
+/// flow replaces already enforces: the saved private half must derive the
+/// public half it is stored with, and that public half must still be a live
+/// (not retired) key of the identity the target names. A key type this build
+/// cannot derive skips only the first test — a saved key is never rejected for
+/// being unverifiable in a way the identity itself can settle.
+fn key_corresponds_to_identity(
+    modern: &QualifiedIdentity,
+    legacy: &QualifiedIdentity,
+    target: &PrivateKeyTarget,
+    public_key: &IdentityPublicKey,
+    plaintext: Option<&[u8; 32]>,
+) -> bool {
+    if let Some(bytes) = plaintext
+        && let Ok(derived) = public_key
+            .key_type()
+            .public_key_data_from_private_key_data(bytes, modern.network)
+        && derived.as_slice() != public_key.data().as_slice()
+    {
+        return false;
+    }
+    let Some(identity) = reference_identity(modern, legacy, target) else {
+        return false;
+    };
+    identity.public_keys().values().any(|on_identity| {
+        on_identity.key_type() == public_key.key_type()
+            && on_identity.data() == public_key.data()
+            && !on_identity.is_disabled()
+    })
+}
+
+/// The identity whose key set decides whether a key at `target` still exists:
+/// the node's own identity, or the voter/operator identity the record links to.
+/// The modern link wins; the legacy one stands in for a link this same plan
+/// would restore. `None` when nothing names that identity, which leaves the key
+/// unverifiable and therefore not restorable.
+fn reference_identity<'a>(
+    modern: &'a QualifiedIdentity,
+    legacy: &'a QualifiedIdentity,
+    target: &PrivateKeyTarget,
+) -> Option<&'a Identity> {
+    let linked = |modern_link: &'a Option<(Identity, IdentityPublicKey)>,
+                  legacy_link: &'a Option<(Identity, IdentityPublicKey)>| {
+        modern_link
+            .as_ref()
+            .or(legacy_link.as_ref())
+            .map(|(identity, _)| identity)
+    };
+    match target {
+        PrivateKeyTarget::PrivateKeyOnMainIdentity => Some(&modern.identity),
+        PrivateKeyTarget::PrivateKeyOnVoterIdentity => linked(
+            &modern.associated_voter_identity,
+            &legacy.associated_voter_identity,
+        ),
+        PrivateKeyTarget::PrivateKeyOnOperatorIdentity => linked(
+            &modern.associated_operator_identity,
+            &legacy.associated_operator_identity,
+        ),
+    }
+}
+
+/// Whether `record` already holds a key that lets it vote — the same two
+/// signals [`QualifiedIdentity::masternode_key_presence`] reads.
+fn holds_a_voting_key(record: &QualifiedIdentity) -> bool {
+    record
+        .private_keys
+        .private_keys
+        .iter()
+        .any(|((target, _), (public_key, _))| {
+            *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
+                || public_key.identity_public_key.purpose() == Purpose::VOTING
+        })
 }
 
 #[cfg(test)]
@@ -400,31 +522,72 @@ mod tests {
     };
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType};
+    use crate::model::wallet::test_support::open_wallet;
     use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-    use dash_sdk::dpp::identity::{Identity, KeyType, SecurityLevel};
+    use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::platform_value::BinaryData;
     use dash_sdk::dpp::version::PlatformVersion;
-    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use dash_sdk::platform::Identifier;
     use std::collections::BTreeMap;
+    use std::sync::{Arc, RwLock};
 
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
-    /// A deterministic public key with a chosen id and purpose, so a test can
-    /// assert on the label a purpose produces.
-    fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
-        IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id,
-            purpose,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_HASH160,
-            read_only: false,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: None,
-        })
+    /// A fixture key pair: a private half plus the public half genuinely
+    /// derived from it. Real material, because the correspondence check the
+    /// plan applies would reject any placeholder that cannot verify.
+    #[derive(Clone)]
+    struct TestKey {
+        secret: [u8; 32],
+        public: IdentityPublicKey,
+    }
+
+    impl TestKey {
+        fn clear(&self) -> PrivateKeyData {
+            PrivateKeyData::Clear(self.secret)
+        }
+
+        fn id(&self) -> KeyID {
+            self.public.id()
+        }
+
+        /// The same key as the chain holds it after a rotation: still listed,
+        /// no longer usable.
+        fn retired(&self) -> Self {
+            let IdentityPublicKey::V0(mut v0) = self.public.clone();
+            v0.disabled_at = Some(1);
+            Self {
+                secret: self.secret,
+                public: IdentityPublicKey::V0(v0),
+            }
+        }
+    }
+
+    /// A key pair for `purpose`, keyed by `secret_byte` so two fixtures in one
+    /// test are genuinely different keys.
+    fn test_key(id: KeyID, purpose: Purpose, secret_byte: u8) -> TestKey {
+        let secret = [secret_byte; 32];
+        let key_type = KeyType::ECDSA_HASH160;
+        let data = key_type
+            .public_key_data_from_private_key_data(&secret, Network::Testnet)
+            .expect("derive the public half");
+        TestKey {
+            secret,
+            public: IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id,
+                purpose,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type,
+                read_only: false,
+                data: BinaryData::new(data),
+                disabled_at: None,
+            }),
+        }
     }
 
     /// A `QualifiedIdentity` with no keys, no associations and no alias — the
@@ -450,31 +613,54 @@ mod tests {
         }
     }
 
-    /// An `(Identity, IdentityPublicKey)` pair usable as an association value.
-    fn association_pair(id: u8) -> (Identity, IdentityPublicKey) {
-        let pv = PlatformVersion::latest();
-        (
-            Identity::create_basic_identity(Identifier::from([id; 32]), pv)
-                .expect("association identity"),
-            public_key(0, Purpose::VOTING),
-        )
+    /// Register `key` on `identity` as one of the public keys the chain holds.
+    fn publish_on(identity: &mut Identity, key: &IdentityPublicKey) {
+        let mut keys = identity.public_keys().clone();
+        keys.insert(key.id(), key.clone());
+        identity.set_public_keys(keys);
     }
 
-    /// Put a key at `(target, key_id)` carrying `data`.
-    fn put_key(
+    /// Hold `key`'s private half at `(target, key id)` as `data`.
+    fn hold(
         qi: &mut QualifiedIdentity,
         target: PrivateKeyTarget,
-        key_id: KeyID,
-        purpose: Purpose,
+        key: &TestKey,
         data: PrivateKeyData,
     ) {
         qi.private_keys.private_keys.insert(
-            (target, key_id),
-            (
-                QualifiedIdentityPublicKey::from(public_key(key_id, purpose)),
-                data,
-            ),
+            (target, key.id()),
+            (QualifiedIdentityPublicKey::from(key.public.clone()), data),
         );
+    }
+
+    /// A voter identity publishing `keys`, in the shape
+    /// `associated_voter_identity` carries.
+    fn voter_identity(id: u8, keys: &[&IdentityPublicKey]) -> (Identity, IdentityPublicKey) {
+        let mut identity =
+            Identity::create_basic_identity(Identifier::from([id; 32]), PlatformVersion::latest())
+                .expect("voter identity");
+        for key in keys {
+            publish_on(&mut identity, key);
+        }
+        let paired = keys
+            .first()
+            .map(|key| (*key).clone())
+            .unwrap_or_else(|| test_key(0, Purpose::VOTING, 0xF0).public);
+        (identity, paired)
+    }
+
+    /// The partial-load shape this whole flow exists for: the modern record
+    /// knows the key from the chain, the legacy file still holds its private
+    /// half.
+    fn strand(
+        modern: &mut QualifiedIdentity,
+        legacy: &mut QualifiedIdentity,
+        target: PrivateKeyTarget,
+        key: &TestKey,
+        data: PrivateKeyData,
+    ) {
+        publish_on(&mut modern.identity, &key.public);
+        hold(legacy, target, key, data);
     }
 
     fn key_item(target: PrivateKeyTarget, key_id: KeyID) -> RecoveryItem {
@@ -483,6 +669,13 @@ mod tests {
 
     fn plan_items(plan: &RecoveryPlan) -> Vec<RecoveryItem> {
         plan.items.iter().map(|d| d.item.clone()).collect()
+    }
+
+    fn excluded_items(plan: &RecoveryPlan) -> Vec<(RecoveryItem, ExclusionReason)> {
+        plan.excluded
+            .iter()
+            .map(|(d, reason)| (d.item.clone(), *reason))
+            .collect()
     }
 
     fn applied_items(applied: &AppliedRecovery) -> Vec<RecoveryItem> {
@@ -509,15 +702,10 @@ mod tests {
     /// M1 — a plaintext key only the legacy record holds is a candidate.
     #[test]
     fn m1_legacy_only_clear_key_is_a_candidate() {
-        let modern = bare_identity(0x01);
+        let mut modern = bare_identity(0x01);
         let mut legacy = bare_identity(0x01);
-        put_key(
-            &mut legacy,
-            M,
-            1,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0xA0; 32]),
-        );
+        let owner = test_key(1, Purpose::OWNER, 0xA0);
+        strand(&mut modern, &mut legacy, M, &owner, owner.clear());
 
         let plan = compute_recovery_plan(&modern, &legacy);
 
@@ -530,22 +718,14 @@ mod tests {
     /// collision.
     #[test]
     fn m2_key_present_in_both_keeps_the_modern_bytes() {
+        let owner = test_key(1, Purpose::OWNER, 0x11);
+        let rotated = test_key(1, Purpose::OWNER, 0x99);
+
         let mut modern = bare_identity(0x02);
-        put_key(
-            &mut modern,
-            M,
-            1,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0x11; 32]),
-        );
+        publish_on(&mut modern.identity, &owner.public);
+        hold(&mut modern, M, &owner, owner.clear());
         let mut legacy = bare_identity(0x02);
-        put_key(
-            &mut legacy,
-            M,
-            1,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0x99; 32]),
-        );
+        hold(&mut legacy, M, &rotated, rotated.clear());
 
         let plan = compute_recovery_plan(&modern, &legacy);
         assert!(
@@ -556,7 +736,7 @@ mod tests {
         let applied = apply_recovery_plan(&modern, legacy, &[key_item(M, 1)]);
         assert_eq!(
             key_data(&applied.merged, M, 1),
-            PrivateKeyData::Clear([0x11; 32]),
+            owner.clear(),
             "the modern key bytes must survive an approval that named the same slot",
         );
         assert!(applied.applied.is_empty(), "nothing was restorable");
@@ -566,22 +746,14 @@ mod tests {
     /// through the merge byte-identical.
     #[test]
     fn m3_modern_only_key_is_untouched() {
+        let held = test_key(7, Purpose::TRANSFER, 0x33);
+        let stranded = test_key(8, Purpose::OWNER, 0x44);
+
         let mut modern = bare_identity(0x03);
-        put_key(
-            &mut modern,
-            M,
-            7,
-            Purpose::TRANSFER,
-            PrivateKeyData::Clear([0x33; 32]),
-        );
+        publish_on(&mut modern.identity, &held.public);
+        hold(&mut modern, M, &held, held.clear());
         let mut legacy = bare_identity(0x03);
-        put_key(
-            &mut legacy,
-            M,
-            8,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0x44; 32]),
-        );
+        strand(&mut modern, &mut legacy, M, &stranded, stranded.clear());
 
         let plan = compute_recovery_plan(&modern, &legacy);
         assert_eq!(plan_items(&plan), vec![key_item(M, 8)]);
@@ -589,13 +761,10 @@ mod tests {
         let applied = apply_recovery_plan(&modern, legacy, &plan.approved_items());
         assert_eq!(
             key_data(&applied.merged, M, 7),
-            PrivateKeyData::Clear([0x33; 32]),
+            held.clear(),
             "the modern-only key must survive the merge byte-identical",
         );
-        assert_eq!(
-            key_data(&applied.merged, M, 8),
-            PrivateKeyData::Clear([0x44; 32])
-        );
+        assert_eq!(key_data(&applied.merged, M, 8), stranded.clear());
     }
 
     /// M4 — each association is a candidate exactly when the modern record
@@ -609,15 +778,20 @@ mod tests {
             (true, false, false),
         ] {
             let mut modern = bare_identity(0x04);
+            // The voter link is only worth restoring alongside a voting key,
+            // so the node holds one already.
+            let voting = test_key(1, Purpose::VOTING, 0xB1);
+            publish_on(&mut modern.identity, &voting.public);
+            hold(&mut modern, M, &voting, voting.clear());
             let mut legacy = bare_identity(0x04);
             if modern_has {
-                modern.associated_voter_identity = Some(association_pair(0xC0));
-                modern.associated_operator_identity = Some(association_pair(0xC1));
+                modern.associated_voter_identity = Some(voter_identity(0xC0, &[]));
+                modern.associated_operator_identity = Some(voter_identity(0xC1, &[]));
                 modern.associated_owner_key_id = Some(5);
             }
             if legacy_has {
-                legacy.associated_voter_identity = Some(association_pair(0xD0));
-                legacy.associated_operator_identity = Some(association_pair(0xD1));
+                legacy.associated_voter_identity = Some(voter_identity(0xD0, &[]));
+                legacy.associated_operator_identity = Some(voter_identity(0xD1, &[]));
                 legacy.associated_owner_key_id = Some(9);
             }
 
@@ -641,13 +815,14 @@ mod tests {
     /// and never merged, even when an allowlist names it.
     #[test]
     fn m5_legacy_encrypted_key_is_excluded_and_never_applied() {
-        let modern = bare_identity(0x05);
+        let owner = test_key(1, Purpose::OWNER, 0xA0);
+        let mut modern = bare_identity(0x05);
         let mut legacy = bare_identity(0x05);
-        put_key(
+        strand(
+            &mut modern,
             &mut legacy,
             M,
-            1,
-            Purpose::OWNER,
+            &owner,
             PrivateKeyData::Encrypted(vec![0x77; 48]),
         );
 
@@ -656,9 +831,10 @@ mod tests {
             plan.items.is_empty(),
             "an unreadable key is not a candidate"
         );
-        assert_eq!(plan.excluded.len(), 1);
-        assert_eq!(plan.excluded[0].0.item, key_item(M, 1));
-        assert_eq!(plan.excluded[0].1, ExclusionReason::LegacyEncryptedFormat);
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 1), ExclusionReason::LegacyEncryptedFormat)],
+        );
 
         let applied = apply_recovery_plan(&modern, legacy, &[key_item(M, 1)]);
         assert!(
@@ -676,16 +852,11 @@ mod tests {
     /// one preview row, and approving the key alone still applies the link.
     #[test]
     fn m6_voting_key_groups_its_voter_association() {
+        let voting = test_key(2, Purpose::VOTING, 0xB0);
         let modern = bare_identity(0x06);
         let mut legacy = bare_identity(0x06);
-        put_key(
-            &mut legacy,
-            V,
-            2,
-            Purpose::VOTING,
-            PrivateKeyData::Clear([0xB0; 32]),
-        );
-        legacy.associated_voter_identity = Some(association_pair(0xD0));
+        hold(&mut legacy, V, &voting, voting.clear());
+        legacy.associated_voter_identity = Some(voter_identity(0xD0, &[&voting.public]));
 
         let plan = compute_recovery_plan(&modern, &legacy);
         assert!(plan.voter_association_is_grouped());
@@ -710,15 +881,11 @@ mod tests {
     /// offered when there is nothing to restore.
     #[test]
     fn m7_identical_records_produce_an_empty_plan() {
+        let owner = test_key(1, Purpose::OWNER, 0x55);
         let mut modern = bare_identity(0x07);
-        put_key(
-            &mut modern,
-            M,
-            1,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0x55; 32]),
-        );
-        modern.associated_voter_identity = Some(association_pair(0xE0));
+        publish_on(&mut modern.identity, &owner.public);
+        hold(&mut modern, M, &owner, owner.clear());
+        modern.associated_voter_identity = Some(voter_identity(0xE0, &[]));
         let legacy = modern.clone();
 
         let plan = compute_recovery_plan(&modern, &legacy);
@@ -730,30 +897,22 @@ mod tests {
     /// load) offers the legacy record's whole key set and its associations.
     #[test]
     fn m8_bare_modern_record_offers_every_legacy_key() {
-        let modern = bare_identity(0x08);
+        let owner = test_key(1, Purpose::OWNER, 0xA0);
+        let payout = test_key(2, Purpose::TRANSFER, 0xA1);
+        let voting = test_key(3, Purpose::VOTING, 0xA2);
+
+        let mut modern = bare_identity(0x08);
         let mut legacy = bare_identity(0x08);
-        put_key(
+        strand(&mut modern, &mut legacy, M, &owner, owner.clear());
+        strand(
+            &mut modern,
             &mut legacy,
             M,
-            1,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0xA0; 32]),
+            &payout,
+            PrivateKeyData::AlwaysClear(payout.secret),
         );
-        put_key(
-            &mut legacy,
-            M,
-            2,
-            Purpose::TRANSFER,
-            PrivateKeyData::AlwaysClear([0xA1; 32]),
-        );
-        put_key(
-            &mut legacy,
-            V,
-            3,
-            Purpose::VOTING,
-            PrivateKeyData::Clear([0xA2; 32]),
-        );
-        legacy.associated_voter_identity = Some(association_pair(0xD0));
+        hold(&mut legacy, V, &voting, voting.clear());
+        legacy.associated_voter_identity = Some(voter_identity(0xD0, &[&voting.public]));
         legacy.associated_owner_key_id = Some(1);
 
         let plan = compute_recovery_plan(&modern, &legacy);
@@ -777,16 +936,16 @@ mod tests {
     /// untouched no matter what the legacy record holds.
     #[test]
     fn m9_merge_is_additive_and_touches_no_other_field() {
+        let held = test_key(1, Purpose::OWNER, 0x11);
+        let rotated = test_key(1, Purpose::OWNER, 0x99);
+        let stranded = test_key(2, Purpose::TRANSFER, 0x22);
+
         for legacy_alias in [None, Some("legacy-name")] {
             let mut modern = bare_identity(0x09);
             modern.alias = Some("modern-name".to_string());
-            put_key(
-                &mut modern,
-                M,
-                1,
-                Purpose::OWNER,
-                PrivateKeyData::Clear([0x11; 32]),
-            );
+            publish_on(&mut modern.identity, &held.public);
+            publish_on(&mut modern.identity, &stranded.public);
+            hold(&mut modern, M, &held, held.clear());
             let mut modern_no_alias = modern.clone();
             modern_no_alias.alias = None;
 
@@ -800,20 +959,8 @@ mod tests {
                     name: "legacy".to_string(),
                     acquired_at: 1,
                 }];
-                put_key(
-                    &mut legacy,
-                    M,
-                    1,
-                    Purpose::OWNER,
-                    PrivateKeyData::Clear([0x99; 32]),
-                );
-                put_key(
-                    &mut legacy,
-                    M,
-                    2,
-                    Purpose::TRANSFER,
-                    PrivateKeyData::Clear([0x22; 32]),
-                );
+                hold(&mut legacy, M, &rotated, rotated.clear());
+                hold(&mut legacy, M, &stranded, stranded.clear());
 
                 let plan = compute_recovery_plan(&base, &legacy);
                 let applied = apply_recovery_plan(&base, legacy, &plan.approved_items());
@@ -858,29 +1005,17 @@ mod tests {
     /// execution).
     #[test]
     fn m10_merge_is_the_intersection_of_approved_and_still_missing() {
+        let held = test_key(1, Purpose::OWNER, 0x11);
+        let rotated = test_key(1, Purpose::OWNER, 0x99);
+        let unapproved = test_key(2, Purpose::TRANSFER, 0x22);
+
         let mut modern = bare_identity(0x0A);
-        put_key(
-            &mut modern,
-            M,
-            1,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0x11; 32]),
-        );
+        publish_on(&mut modern.identity, &held.public);
+        publish_on(&mut modern.identity, &unapproved.public);
+        hold(&mut modern, M, &held, held.clear());
         let mut legacy = bare_identity(0x0A);
-        put_key(
-            &mut legacy,
-            M,
-            1,
-            Purpose::OWNER,
-            PrivateKeyData::Clear([0x99; 32]),
-        );
-        put_key(
-            &mut legacy,
-            M,
-            2,
-            Purpose::TRANSFER,
-            PrivateKeyData::Clear([0x22; 32]),
-        );
+        hold(&mut legacy, M, &rotated, rotated.clear());
+        hold(&mut legacy, M, &unapproved, unapproved.clear());
 
         // Key 1 was re-added since the preview; key 2 is still missing but was
         // never approved.
@@ -892,10 +1027,7 @@ mod tests {
             "an approval that is no longer missing is reported stale",
         );
         assert!(applied.applied.is_empty());
-        assert_eq!(
-            key_data(&applied.merged, M, 1),
-            PrivateKeyData::Clear([0x11; 32]),
-        );
+        assert_eq!(key_data(&applied.merged, M, 1), held.clear());
         assert!(
             !applied
                 .merged
@@ -906,27 +1038,125 @@ mod tests {
         );
     }
 
-    /// A wallet-derivation reference carries no plaintext, so it is a candidate
-    /// and lands verbatim.
+    /// A saved key whose public half is not one of the identity's keys cannot
+    /// sign for it. Offering it would flip the role to "present" and retire the
+    /// remedy that would actually fix the node.
     #[test]
-    fn wallet_derived_key_is_a_candidate_and_lands_verbatim() {
-        let modern = bare_identity(0x0B);
-        let mut legacy = bare_identity(0x0B);
-        let reference = WalletDerivationPath {
-            wallet_seed_hash: [0x07; 32],
-            derivation_path: DerivationPath::from(vec![]),
-        };
-        put_key(
+    fn a_key_the_identity_no_longer_uses_is_excluded() {
+        let modern = bare_identity(0x21);
+        let mut legacy = bare_identity(0x21);
+        let orphan = test_key(1, Purpose::OWNER, 0xA0);
+        hold(&mut legacy, M, &orphan, orphan.clear());
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert!(plan.items.is_empty());
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
+        );
+    }
+
+    /// A saved private half that does not derive the public half it is stored
+    /// with is not the identity's key, whatever the record claims.
+    #[test]
+    fn a_key_that_does_not_derive_its_public_half_is_excluded() {
+        let published = test_key(1, Purpose::OWNER, 0xA0);
+        let mut modern = bare_identity(0x24);
+        publish_on(&mut modern.identity, &published.public);
+
+        // The stored pair keeps the published public key but a different secret.
+        let mut legacy = bare_identity(0x24);
+        hold(
             &mut legacy,
             M,
-            1,
-            Purpose::AUTHENTICATION,
-            PrivateKeyData::AtWalletDerivationPath(reference.clone()),
+            &published,
+            PrivateKeyData::Clear([0x5C; 32]),
         );
 
         let plan = compute_recovery_plan(&modern, &legacy);
-        let applied = apply_recovery_plan(&modern, legacy, &plan.approved_items());
 
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
+        );
+    }
+
+    /// A key the chain has retired cannot sign either, so restoring it would
+    /// report a role as held on a node that still cannot use it.
+    #[test]
+    fn a_retired_key_is_excluded() {
+        let rotated_out = test_key(1, Purpose::TRANSFER, 0xA0).retired();
+        let mut modern = bare_identity(0x25);
+        publish_on(&mut modern.identity, &rotated_out.public);
+        let mut legacy = bare_identity(0x25);
+        hold(&mut legacy, M, &rotated_out, rotated_out.clear());
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
+        );
+    }
+
+    /// The voter-identity link alone reports the node as able to vote. Without
+    /// a voting key behind it that is a false assurance, so it is not offered.
+    #[test]
+    fn a_voter_link_without_a_voting_key_is_excluded() {
+        let modern = bare_identity(0x22);
+        let mut legacy = bare_identity(0x22);
+        legacy.associated_voter_identity = Some(voter_identity(0xD0, &[]));
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert!(plan.items.is_empty());
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(
+                RecoveryItem::VoterAssociation,
+                ExclusionReason::VoterLinkWithoutVotingKey,
+            )],
+        );
+    }
+
+    /// A wallet-derivation reference carries no plaintext, so it is a candidate
+    /// and lands verbatim — but only while this install still holds the wallet
+    /// it names, since the reference resolves through nothing else.
+    #[test]
+    fn a_wallet_derived_key_needs_the_wallet_this_install_holds() {
+        let derived = test_key(1, Purpose::AUTHENTICATION, 0x0B);
+        let wallet = open_wallet();
+        let seed_hash = wallet.seed_hash();
+        let reference = WalletDerivationPath {
+            wallet_seed_hash: seed_hash,
+            derivation_path: DerivationPath::from(vec![]),
+        };
+
+        let mut modern = bare_identity(0x0B);
+        let mut legacy = bare_identity(0x0B);
+        strand(
+            &mut modern,
+            &mut legacy,
+            M,
+            &derived,
+            PrivateKeyData::AtWalletDerivationPath(reference.clone()),
+        );
+
+        let unknown_wallet = compute_recovery_plan(&modern, &legacy);
+        assert_eq!(
+            excluded_items(&unknown_wallet),
+            vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
+            "a reference to a wallet this install does not hold resolves to nothing",
+        );
+
+        modern
+            .associated_wallets
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        let plan = compute_recovery_plan(&modern, &legacy);
+        assert_eq!(plan_items(&plan), vec![key_item(M, 1)]);
+
+        let applied = apply_recovery_plan(&modern, legacy, &plan.approved_items());
         assert_eq!(
             key_data(&applied.merged, M, 1),
             PrivateKeyData::AtWalletDerivationPath(reference),
@@ -937,36 +1167,55 @@ mod tests {
     /// is excluded rather than merged as an empty reference.
     #[test]
     fn in_vault_legacy_key_is_excluded_as_having_no_material() {
-        let modern = bare_identity(0x0C);
+        let placeholder = test_key(1, Purpose::OWNER, 0x0C);
+        let mut modern = bare_identity(0x0C);
         let mut legacy = bare_identity(0x0C);
-        put_key(&mut legacy, M, 1, Purpose::OWNER, PrivateKeyData::InVault);
+        strand(
+            &mut modern,
+            &mut legacy,
+            M,
+            &placeholder,
+            PrivateKeyData::InVault,
+        );
 
         let plan = compute_recovery_plan(&modern, &legacy);
 
         assert!(plan.items.is_empty());
-        assert_eq!(plan.excluded[0].1, ExclusionReason::NoMaterial);
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 1), ExclusionReason::NoMaterial)],
+        );
     }
 
-    /// Every label a plan can produce is a distinct role word the operator
-    /// recognises, with the voter target overriding the key's own purpose.
+    /// Approving something that was never restorable reports it as excluded,
+    /// with its reason — never as a stale approval, which means the opposite:
+    /// already back in place, nothing to do.
     #[test]
-    fn labels_name_each_role_in_operator_terms() {
-        assert_eq!(
-            RecoveryItemDescriptor::key(M, 1, Some(Purpose::OWNER)).label(),
-            "Owner key",
+    fn an_excluded_approval_is_reported_excluded_and_never_stale() {
+        let unreadable = test_key(1, Purpose::OWNER, 0x0D);
+        let mut modern = bare_identity(0x0D);
+        let mut legacy = bare_identity(0x0D);
+        strand(
+            &mut modern,
+            &mut legacy,
+            M,
+            &unreadable,
+            PrivateKeyData::Encrypted(vec![0x77; 48]),
+        );
+
+        let applied = apply_recovery_plan(&modern, legacy, &[key_item(M, 1)]);
+
+        assert!(
+            applied.skipped_stale.is_empty(),
+            "an always-excluded item must not be reported as a stale approval",
         );
         assert_eq!(
-            RecoveryItemDescriptor::key(M, 1, Some(Purpose::TRANSFER)).label(),
-            "Payout key",
-        );
-        assert_eq!(
-            RecoveryItemDescriptor::key(V, 1, Some(Purpose::AUTHENTICATION)).label(),
-            "Voting key",
-            "a key on the voter identity is always the voting key",
-        );
-        assert_eq!(
-            RecoveryItemDescriptor::association(RecoveryItem::VoterAssociation).label(),
-            "Voting identity link",
+            applied
+                .excluded
+                .iter()
+                .map(|(d, reason)| (d.item.clone(), *reason))
+                .collect::<Vec<_>>(),
+            vec![(key_item(M, 1), ExclusionReason::LegacyEncryptedFormat)],
         );
     }
 }

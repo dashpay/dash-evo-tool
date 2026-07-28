@@ -17,7 +17,7 @@ use crate::support;
 
 const INTRO: &str = "Some keys for this identity from your previous Dash Evo Tool version haven't been brought \
      across.";
-const RESTORE: &str = "Restore keys…";
+const RESTORE: &str = "Restore keys";
 
 const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
 const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
@@ -89,13 +89,36 @@ fn restorable_items_are_listed_by_role_with_the_voter_link_folded_in() {
 
     assert!(harness.query_by_label(INTRO).is_some());
     assert!(harness.query_by_label("Owner key").is_some());
-    assert!(harness.query_by_label("Payout key").is_some());
+    assert!(harness.query_by_label("Payout address key").is_some());
     assert!(harness.query_by_label("Voting key").is_some());
     assert!(
         harness.query_by_label("Voting identity link").is_none(),
         "the voter link is previewed as part of its voting key, not as its own row",
     );
     assert!(harness.query_by_label(RESTORE).is_some());
+}
+
+/// An evonode that rotated its payout address can strand two Transfer keys.
+/// The list the user is asked to approve must name each row exactly once, so a
+/// role word that would repeat is told apart by its key id.
+#[test]
+fn two_keys_in_the_same_role_are_named_apart() {
+    let plan = RecoveryPlan {
+        items: vec![
+            key(MAIN.clone(), 2, Purpose::TRANSFER),
+            key(MAIN.clone(), 5, Purpose::TRANSFER),
+        ],
+        excluded: vec![],
+    };
+
+    let (harness, _) = render(plan, false);
+
+    assert!(harness.query_by_label("Payout address key #2").is_some());
+    assert!(harness.query_by_label("Payout address key #5").is_some());
+    assert!(
+        harness.query_by_label("Payout address key").is_none(),
+        "no row may carry the ambiguous label",
+    );
 }
 
 /// Pressing Restore approves exactly the previewed set — including the voter

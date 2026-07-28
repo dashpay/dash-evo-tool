@@ -2294,29 +2294,24 @@ impl AddressProvider for WalletAddressProvider {
     }
 }
 
+/// Wallet values for tests elsewhere in the crate that need a `Wallet` to exist
+/// rather than to behave — a record's wallet link, an `associated_wallets`
+/// entry. Lives outside `mod tests` so any module's tests can reach it.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 
-    /// The deterministic 64-byte seed every [`test_wallet`] is built from.
+    /// The deterministic 64-byte seed every [`open_wallet`] is built from.
     ///
     /// Since R3 the seed is no longer parked in `WalletSeed::Open`, so tests
     /// that need the wallet's raw seed take it from here rather than from a
     /// (removed) parked-seed accessor — the value is known by construction.
-    const TEST_SEED: [u8; 64] = [42u8; 64];
+    pub(crate) const TEST_SEED: [u8; 64] = [42u8; 64];
 
-    /// The known seed behind [`test_wallet`]. Test-only replacement for the
-    /// removed `Wallet::seed_bytes()` — derives nothing, just hands back the
-    /// constant the wallet was built from.
-    fn test_seed() -> [u8; 64] {
-        TEST_SEED
-    }
-
-    /// Helper: create a minimal open wallet for testing.
-    /// Uses a deterministic 64-byte seed and derives the BIP44 master public key.
-    fn test_wallet() -> Wallet {
+    /// A minimal open wallet on [`TEST_SEED`], with its BIP44 master public key
+    /// derived and every optional field left empty.
+    pub(crate) fn open_wallet() -> Wallet {
         let seed = TEST_SEED;
         let network = Network::Testnet;
         let secp = Secp256k1::new();
@@ -2363,6 +2358,21 @@ mod tests {
             platform_address_info: BTreeMap::new(),
             core_wallet_name: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+
+    use super::test_support::{TEST_SEED, open_wallet as test_wallet};
+
+    /// The known seed behind [`test_wallet`]. Test-only replacement for the
+    /// removed `Wallet::seed_bytes()` — derives nothing, just hands back the
+    /// constant the wallet was built from.
+    fn test_seed() -> [u8; 64] {
+        TEST_SEED
     }
 
     /// Helper: create a test address on Testnet

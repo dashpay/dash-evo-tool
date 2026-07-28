@@ -64,15 +64,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **"Max" now matches what your Core wallet can actually send**: pressing
-  "Max" when shielding DASH, funding a Platform address, or funding an
-  identity (creating or topping up, from your wallet balance or a received
-  deposit) could suggest an amount larger than the wallet could actually
-  send, so the transaction was rejected no matter how you adjusted it. Max
-  and the amount check now ask the wallet directly what it can send instead
-  of estimating from an on-screen balance, so the two stay in agreement.
-  While that check is running, the amount field shows "Checking the
-  available amount..."; if the check fails, a "Retry" button appears in its
-  place.
+  "Max" when shielding DASH, funding a Platform address, sending directly to
+  an identity, or funding an identity (creating or topping up, from your
+  wallet balance or a received deposit) could suggest an amount larger than
+  the wallet could actually send, so the transaction was rejected no matter
+  how you adjusted it. Max and the amount check now ask the wallet directly
+  what it can send instead of estimating from an on-screen balance, so the
+  two stay in agreement, and both reserve room for the fee. Funding from a
+  received deposit is also now capped by what actually arrived at that
+  deposit address, never by unrelated funds elsewhere in the wallet. While
+  the check is running, the amount field shows "Checking the available
+  amount…"; if it fails, "The available amount could not be checked."
+  appears with a "Retry available amount check" button, and you can still
+  switch to a different funding method at any point.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

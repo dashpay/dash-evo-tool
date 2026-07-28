@@ -457,6 +457,15 @@ As a developer, I want to transfer credits privately from my shielded pool to an
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
+### SND-017: "Max" is verified against what the wallet can actually build [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want "Max" (and the amount check behind it) to reflect what my Core wallet can genuinely send when shielding DASH, funding a Platform address, sending directly to an identity, or funding an identity from my wallet balance, so that the amount I'm offered — or type in myself — never gets rejected for exceeding what the wallet can build.
+
+- "Max" and amount validation both ask the wallet directly for its actual sendable ceiling, reserving the relevant operation's fee, instead of estimating from the on-screen balance — the two always agree, including for an amount typed in by hand rather than produced by the Max button.
+- While the check is running, the amount field shows "Checking the available amount…"; if it fails, "The available amount could not be checked." appears with a "Retry available amount check" button.
+- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
+
 ---
 
 ## Asset Locks (ALK)

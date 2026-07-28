@@ -5,6 +5,8 @@ use crate::backend_task::wallet::WalletTask;
 use crate::model::wallet::WalletSeedHash;
 use std::collections::BTreeMap;
 
+/// Preserves result ordering within one generation sequence without making old
+/// high-water marks or unresolved requests permanent dispatch barriers.
 struct FetchState {
     latest_snapshot_generation: u64,
     loaded: Option<(u64, u64)>,
@@ -20,6 +22,9 @@ pub struct AssetLockBalanceCache {
 
 impl AssetLockBalanceCache {
     /// Dispatch at most one live-builder query per wallet snapshot generation.
+    ///
+    /// Equal generations deduplicate, higher generations supersede unresolved
+    /// work, and a lower generation starts a fresh sequence after a counter reset.
     pub fn ensure_requested(
         &mut self,
         seed_hash: WalletSeedHash,
@@ -31,11 +36,16 @@ impl AssetLockBalanceCache {
             in_flight_generation: None,
             failed_generation: None,
         });
-        if snapshot_generation < state.latest_snapshot_generation {
-            return None;
+        if snapshot_generation != state.latest_snapshot_generation {
+            let generation_restarted = snapshot_generation < state.latest_snapshot_generation;
+            state.latest_snapshot_generation = snapshot_generation;
+            state.in_flight_generation = None;
+            state.failed_generation = None;
+            if generation_restarted {
+                state.loaded = None;
+            }
         }
-        state.latest_snapshot_generation = snapshot_generation;
-        if state.in_flight_generation.is_some()
+        if state.in_flight_generation == Some(snapshot_generation)
             || state
                 .loaded
                 .is_some_and(|(generation, _)| generation == snapshot_generation)
@@ -158,6 +168,74 @@ mod tests {
         );
 
         cache.store(seed_hash, 8, 900);
+        assert_eq!(cache.get(&seed_hash), Some(900));
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_recovers_after_snapshot_generation_regression() {
+        let seed_hash = [0x2a; 32];
+        let mut cache = AssetLockBalanceCache::default();
+
+        assert!(cache.ensure_requested(seed_hash, 7).is_some());
+        cache.store(seed_hash, 7, 1_000);
+        assert_eq!(cache.get(&seed_hash), Some(1_000));
+
+        assert!(matches!(
+            cache.ensure_requested(seed_hash, 2),
+            Some(BackendTask::WalletTask(
+                WalletTask::GetAssetLockMaxAmount {
+                    seed_hash: requested_seed,
+                    snapshot_generation: 2,
+                }
+            )) if requested_seed == seed_hash
+        ));
+        assert_eq!(
+            cache.get(&seed_hash),
+            None,
+            "a restarted generation sequence must discard data from the previous sequence"
+        );
+        assert!(
+            cache.ensure_requested(seed_hash, 2).is_none(),
+            "the replacement request must still deduplicate its own generation"
+        );
+
+        cache.store(seed_hash, 7, 2_000);
+        assert_eq!(
+            cache.get(&seed_hash),
+            None,
+            "a late result from before the generation restart must be ignored"
+        );
+        cache.store(seed_hash, 2, 800);
+        assert_eq!(cache.get(&seed_hash), Some(800));
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_supersedes_stuck_in_flight_request_on_newer_snapshot() {
+        let seed_hash = [0x2b; 32];
+        let mut cache = AssetLockBalanceCache::default();
+
+        assert!(cache.ensure_requested(seed_hash, 4).is_some());
+        assert!(matches!(
+            cache.ensure_requested(seed_hash, 5),
+            Some(BackendTask::WalletTask(
+                WalletTask::GetAssetLockMaxAmount {
+                    seed_hash: requested_seed,
+                    snapshot_generation: 5,
+                }
+            )) if requested_seed == seed_hash
+        ));
+        assert!(
+            cache.ensure_requested(seed_hash, 5).is_none(),
+            "the superseding request must deduplicate its own generation"
+        );
+
+        cache.store(seed_hash, 4, 1_000);
+        assert_eq!(
+            cache.get(&seed_hash),
+            None,
+            "the superseded request must not populate the cache"
+        );
+        cache.store(seed_hash, 5, 900);
         assert_eq!(cache.get(&seed_hash), Some(900));
     }
 }

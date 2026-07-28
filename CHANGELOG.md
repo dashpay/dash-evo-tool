@@ -110,6 +110,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reachable way back (the identity's own ID or username) instead of one
   hidden behind an advanced-options toggle.
 
+- **Contest-decision ETA tooltip no longer under-reports the wait**: the
+  pending-username hover tooltip could round a decision estimate down by a
+  whole hour or day (e.g. showing "about 2 hours" for a decision actually
+  about 3 hours away), depending on exactly when it happened to be read. It
+  now rounds to the nearest hour/day instead of always rounding down.
+
 - **"Clear Database" no longer reports a clean wipe it did not finish**:
   the wipe now keeps every identity reserved until the last step is done, so an
   identity being loaded in the background cannot be written back to disk after

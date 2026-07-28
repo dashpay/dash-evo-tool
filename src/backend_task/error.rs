@@ -1067,6 +1067,16 @@ pub enum TaskError {
     )]
     LegacyRecoveryNothingApproved,
 
+    /// The identity gained password protection while the restore was waiting
+    /// for the user's password, so the password that was verified no longer
+    /// covers the record about to be written. The restore stops before its
+    /// single write rather than sealing under a password for a different state.
+    #[error(
+        "This identity changed while the restore was waiting for your password. \
+        Open it again and restore the keys."
+    )]
+    LegacyRecoveryIdentityChanged,
+
     /// Failed to build the identity update state transition.
     #[error("Could not build the key update transaction. Please retry.")]
     IdentityUpdateTransitionError {

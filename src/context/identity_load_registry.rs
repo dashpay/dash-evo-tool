@@ -288,6 +288,22 @@ impl AppContext {
             .filter(|record| record.token == token)
             .map(|record| record.phase)
     }
+
+    /// The phase last recorded for `identity_id`, whichever load left it.
+    /// Test-only: a task that mints its own token internally publishes an
+    /// outcome no caller could otherwise read back.
+    #[cfg(test)]
+    pub(crate) fn last_identity_load_phase(
+        &self,
+        identity_id: &Identifier,
+    ) -> Option<IdentityLoadPhase> {
+        self.identity_loads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .records
+            .get(identity_id)
+            .map(|record| record.phase)
+    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,6 @@
 //! still missing. Nothing here runs at migration time or launch time, and
 //! `data.db` is opened read-only, so recovery is repeatable indefinitely.
 
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 
 use super::BackendTaskSuccessResult;
@@ -51,7 +50,14 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFoundLocally)?;
 
         let plan = match self.legacy_identity_record(identity_id)? {
-            Some(legacy) => compute_recovery_plan(&modern, &legacy),
+            Some(mut legacy) => {
+                let plan = compute_recovery_plan(&modern, &legacy);
+                // This runs every time the user opens a screen showing the
+                // identity, so the stranded plaintext it decoded to count
+                // candidates must not be released to the allocator intact.
+                let _ = legacy.private_keys.take_plaintext_for_vault();
+                plan
+            }
             None => RecoveryPlan::default(),
         };
 
@@ -104,6 +110,87 @@ impl AppContext {
         // interleave writes with this one.
         let claim = self.begin_identity_load(identity_id, None)?;
 
+        // Refuse early while the storage migration is running, so a password
+        // prompt never opens for work that cannot be written. The write section
+        // re-checks under the guard; this is the courtesy check, not the gate.
+        self.require_storage_migration_idle()?;
+
+        let modern = self
+            .get_local_qualified_identity(&identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let Some(legacy) = self.legacy_identity_record(identity_id)? else {
+            claim.loaded();
+            return Ok(nothing_recovered(identity_id));
+        };
+
+        let password = self
+            .verify_recovery_password(&modern, legacy, &approved)
+            .await?;
+        let outcome = self.persist_legacy_recovery(identity_id, &approved, password.as_ref())?;
+        claim.loaded();
+        Ok(outcome)
+    }
+
+    /// The identity password this restore needs, verified against an
+    /// ALREADY-LOADED `modern` record — `None` when the identity is keyless.
+    ///
+    /// Dry-runs the merge to answer two questions before anything is written:
+    /// is there anything left to restore at all (no prompt for work that would
+    /// not happen), and will the record the at-rest encoder sees carry a
+    /// protected key? The second question is asked of the *merged* record, not
+    /// of `modern`, because that is the record the encoder's downgrade guard
+    /// will evaluate.
+    ///
+    /// Holds no lock across the prompt: it is a modal with no timeout, and the
+    /// storage-migration mutex it used to sit inside is the same one identity
+    /// removal and the post-migration refresh take.
+    async fn verify_recovery_password(
+        &self,
+        modern: &QualifiedIdentity,
+        legacy: QualifiedIdentity,
+        approved: &[RecoveryItem],
+    ) -> Result<Option<crate::wallet_backend::VerifiedIdentityPassword>, TaskError> {
+        let mut preview = apply_recovery_plan(modern, legacy, approved);
+        if preview.applied.is_empty() {
+            return Ok(None);
+        }
+        let verify_scope = self.protected_identity_verify_scope(&preview.merged)?;
+        // The dry run is discarded; the write section merges again against the
+        // record as it stands then. Wipe its plaintext rather than dropping it.
+        let _ = preview.merged.private_keys.take_plaintext_for_vault();
+
+        let Some(verify_scope) = verify_scope else {
+            return Ok(None);
+        };
+        // A key still resident as plaintext means an earlier vault migration
+        // did not finish. Sealing around it would half-protect the identity and
+        // then trip the guard at persist, so refuse here — before any vault
+        // write — with its established remedy.
+        reject_resident_identity_plaintext(&modern.private_keys)?;
+        Ok(Some(
+            self.wallet_backend()?
+                .secret_access()
+                .verify_identity_object_password(&verify_scope)
+                .await?,
+        ))
+    }
+
+    /// Merge and write, in one fully synchronous critical section.
+    ///
+    /// Everything is read again here, under the storage-migration guard: the
+    /// password prompt may have been open for minutes, and the record can have
+    /// moved on (a refresh, a registered DPNS name) or been deleted outright.
+    /// Re-reading and re-merging makes the write a superset of the record as it
+    /// *is*, so a concurrent update cannot be reverted and a deleted identity
+    /// cannot be resurrected — properties that used to hold only as a side
+    /// effect of how long the guard was held. The re-merge costs nothing the
+    /// allowlist-intersection rule did not already make idempotent.
+    fn persist_legacy_recovery(
+        &self,
+        identity_id: Identifier,
+        approved: &[RecoveryItem],
+        password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // The storage migration owns the identity store while it runs; the
         // delete path takes the same two-part guard for the same reason.
         let _migration_guard = self
@@ -120,34 +207,10 @@ impl AppContext {
         let Some(legacy) = self.legacy_identity_record(identity_id)? else {
             return Ok(nothing_recovered(identity_id));
         };
-
-        let outcome = self
-            .recover_into_loaded_identity(&modern, legacy, &approved)
-            .await?;
-        claim.loaded();
-        Ok(outcome)
-    }
-
-    /// Merge into an ALREADY-LOADED `modern` record and persist the result.
-    ///
-    /// Split from [`Self::recover_legacy_identity_data`] — which supplies the
-    /// claim, the migration guard, and the two record reads — so the
-    /// resident-plaintext preflight, the password branch, the seal and the
-    /// single write are exercised on a real `modern` exactly as the task runs
-    /// them. That makes "the guard is wired into this path" testable on a
-    /// record shape no production write path can produce.
-    async fn recover_into_loaded_identity(
-        &self,
-        modern: &QualifiedIdentity,
-        legacy: QualifiedIdentity,
-        approved: &[RecoveryItem],
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let identity_id = modern.identity.id();
-        let mut applied = apply_recovery_plan(modern, legacy, approved);
+        let mut applied = apply_recovery_plan(&modern, legacy, approved);
         let excluded = std::mem::take(&mut applied.excluded);
 
-        // Nothing left to restore: no write, and — on a protected identity —
-        // no password prompt for work that would not happen.
+        // Nothing left to restore, so no write at all.
         if applied.applied.is_empty() {
             tracing::debug!(
                 target = LOG_TARGET,
@@ -163,28 +226,16 @@ impl AppContext {
             });
         }
 
-        // Branch on the same predicate the at-rest downgrade guard evaluates,
-        // so the guard's trigger is false on both sides of this match: Tier-2
+        // Branch on the same predicate over the same record the at-rest
+        // downgrade guard evaluates, so its trigger is false either way: Tier-2
         // seals every merged key before the write, and Tier-1 has no protected
         // key for the guard to protect.
-        let password = match self.protected_identity_verify_scope(modern)? {
-            Some(verify_scope) => {
-                // A key still resident as plaintext means an earlier vault
-                // migration did not finish. Sealing around it would half-protect
-                // the identity and then trip the guard at persist, so refuse
-                // here — before any vault write — with its established remedy.
-                reject_resident_identity_plaintext(&modern.private_keys)?;
-                Some(
-                    self.wallet_backend()?
-                        .secret_access()
-                        .verify_identity_object_password(&verify_scope)
-                        .await?,
-                )
-            }
-            None => None,
-        };
-
-        if let Some(password) = &password {
+        if self
+            .protected_identity_verify_scope(&applied.merged)?
+            .is_some()
+        {
+            let password = password.ok_or(TaskError::LegacyRecoveryIdentityChanged)?;
+            reject_resident_identity_plaintext(&modern.private_keys)?;
             self.seal_merged_plaintext_keys(&mut applied.merged, password)?;
         }
 
@@ -203,6 +254,20 @@ impl AppContext {
             skipped_stale: applied.skipped_stale,
             excluded,
         })
+    }
+
+    /// Refuse while the storage migration owns the identity store, without
+    /// holding its mutex afterwards. The delete path takes the same two-part
+    /// check.
+    fn require_storage_migration_idle(&self) -> Result<(), TaskError> {
+        let _probe = self
+            .migration_run
+            .try_lock()
+            .map_err(|_| TaskError::WalletStorageNotReady)?;
+        if self.migration_status().state().is_in_progress() {
+            return Err(TaskError::WalletStorageNotReady);
+        }
+        Ok(())
     }
 
     /// The identity `identity_id` names in the preserved legacy `data.db`, or
@@ -269,6 +334,7 @@ mod tests {
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
+    use crate::context::identity_load_registry::IdentityLoadPhase;
     use crate::database::test_helpers::{LegacyIdentityFixture, create_database_at_path};
     use crate::model::legacy_recovery::ExclusionReason;
     use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
@@ -283,7 +349,7 @@ mod tests {
     use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
     use crate::wallet_backend::secret_seam::SecretScheme;
     use dash_sdk::dpp::dashcore::Network;
-    use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+    use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
@@ -295,6 +361,59 @@ mod tests {
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
     const PW: &str = "one-identity-password";
+
+    /// A prompt that parks the way a real modal parks on the user: it signals
+    /// that it is open, then waits to be released before answering. The only
+    /// way to observe what a task holds *while* a password dialog sits there.
+    struct BlockingPrompt {
+        passphrase: String,
+        asked: tokio::sync::Notify,
+        released: tokio::sync::Notify,
+    }
+
+    impl BlockingPrompt {
+        fn new(passphrase: &str) -> Self {
+            Self {
+                passphrase: passphrase.to_string(),
+                asked: tokio::sync::Notify::new(),
+                released: tokio::sync::Notify::new(),
+            }
+        }
+
+        /// Resolve once the prompt has been opened.
+        async fn wait_until_asked(&self) {
+            self.asked.notified().await;
+        }
+
+        /// Let the parked prompt answer.
+        fn release(&self) {
+            self.released.notify_one();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SecretPrompt for BlockingPrompt {
+        async fn request(
+            &self,
+            _request: crate::wallet_backend::secret_prompt::SecretPromptRequest,
+        ) -> Result<
+            crate::wallet_backend::secret_prompt::SecretPromptReply,
+            crate::wallet_backend::secret_prompt::SecretPromptCancelled,
+        > {
+            self.asked.notify_one();
+            self.released.notified().await;
+            Ok(
+                crate::wallet_backend::secret_prompt::SecretPromptReply::new(
+                    SecretString::new(&self.passphrase),
+                    crate::wallet_backend::secret_prompt::RememberPolicy::None,
+                ),
+            )
+        }
+
+        fn is_interactive(&self) -> bool {
+            true
+        }
+    }
 
     /// An offline, wired `AppContext` on a throwaway data dir whose file-backed
     /// `data.db` carries the legacy `identity` table, ready for staged rows.
@@ -766,8 +885,8 @@ mod tests {
     /// touching the vault, with the error whose remedy actually fixes that
     /// state — not seal around it and trip the downgrade guard at persist.
     ///
-    /// Drives `recover_into_loaded_identity`, the post-read core the task runs,
-    /// because no production write path can persist this record shape.
+    /// Drives `verify_recovery_password`, the preflight the task runs before it
+    /// prompts, because no production write path can persist this record shape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn b5_resident_plaintext_on_a_protected_identity_fails_before_any_vault_write() {
         let offline = Offline::new(Some(Arc::new(TestPrompt::never()))).await;
@@ -811,7 +930,7 @@ mod tests {
         );
 
         let error = ctx
-            .recover_into_loaded_identity(
+            .verify_recovery_password(
                 &modern,
                 legacy,
                 &[RecoveryItem::Key {
@@ -1263,6 +1382,152 @@ mod tests {
                 .masternode_key_presence()
                 .payout,
             "the node must still report its payout role as missing",
+        );
+
+        offline.shutdown().await;
+    }
+
+    /// The password prompt is a modal with no timeout, so nothing global may be
+    /// held while it is open. The storage-migration mutex it used to sit inside
+    /// is the same one identity removal and the post-migration DAPI refresh
+    /// take: holding it made deleting an *unrelated* identity fail with
+    /// "storage is still being updated" for as long as the dialog sat there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_open_password_prompt_blocks_no_unrelated_work() {
+        let prompt = Arc::new(BlockingPrompt::new(PW));
+        let offline = Offline::new(Some(prompt.clone())).await;
+        let (identity_id, _) = seed_tier2_with_a_stranded_key(&offline).await;
+
+        // An identity the restore never touches.
+        let unrelated = identity_with_keys(0xAB, IdentityType::User, &[], vec![]);
+        let unrelated_id = unrelated.identity.id();
+        offline
+            .ctx
+            .insert_local_qualified_identity(&unrelated, &None)
+            .expect("insert the unrelated identity");
+
+        let ctx = offline.ctx.clone();
+        let restore = tokio::spawn(async move {
+            ctx.recover_legacy_identity_data(
+                identity_id,
+                vec![RecoveryItem::Key {
+                    target: M,
+                    key_id: 2,
+                }],
+            )
+            .await
+        });
+        prompt.wait_until_asked().await;
+
+        offline
+            .ctx
+            .delete_local_qualified_identity(&unrelated_id)
+            .expect("removing an unrelated identity must not wait on an open password prompt");
+        assert!(
+            offline.ctx.migration_run.try_lock().is_ok(),
+            "the storage-migration mutex must stay free while a prompt is open",
+        );
+
+        prompt.release();
+        let (applied, _) = completion_of(
+            restore
+                .await
+                .expect("the restore task must not panic")
+                .expect("the restore must complete once the password arrives"),
+        );
+        assert_eq!(applied.len(), 1, "the answered restore still lands");
+
+        offline.shutdown().await;
+    }
+
+    /// Another writer can persist the same identity while the prompt is open —
+    /// nothing else takes the load claim. The restore must merge into the record
+    /// as it stands at write time, not into the snapshot it read before
+    /// prompting, or it would silently revert that update.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_update_landing_during_the_prompt_is_not_reverted() {
+        let prompt = Arc::new(BlockingPrompt::new(PW));
+        let offline = Offline::new(Some(prompt.clone())).await;
+        let (identity_id, _) = seed_tier2_with_a_stranded_key(&offline).await;
+
+        let ctx = offline.ctx.clone();
+        let restore = tokio::spawn(async move {
+            ctx.recover_legacy_identity_data(
+                identity_id,
+                vec![RecoveryItem::Key {
+                    target: M,
+                    key_id: 2,
+                }],
+            )
+            .await
+        });
+        prompt.wait_until_asked().await;
+
+        // The shape a refresh or a DPNS registration writes: read, change, save.
+        let mut concurrent = offline
+            .ctx
+            .get_local_qualified_identity(&identity_id)
+            .expect("read the record")
+            .expect("record stored");
+        concurrent.alias = Some("renamed while the prompt was open".to_string());
+        offline
+            .ctx
+            .update_local_qualified_identity(&concurrent)
+            .expect("a concurrent writer takes no claim, so this lands");
+
+        prompt.release();
+        restore
+            .await
+            .expect("the restore task must not panic")
+            .expect("the restore must complete");
+
+        let stored = offline
+            .ctx
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert_eq!(
+            stored.alias.as_deref(),
+            Some("renamed while the prompt was open"),
+            "the update that landed during the prompt must survive the restore",
+        );
+        assert!(
+            stored.private_keys.private_keys.contains_key(&(M, 2)),
+            "and the restored key must still be there",
+        );
+
+        offline.shutdown().await;
+    }
+
+    /// A restore that finds nothing staged in the previous version's data did
+    /// not fail — it succeeded with nothing to do. The load registry has to say
+    /// so, or every ordinary identity leaves a `Failed` record behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_with_nothing_staged_is_recorded_as_loaded() {
+        let offline = Offline::new(None).await;
+        let ctx = &offline.ctx;
+
+        let modern = identity_with_keys(0xAC, IdentityType::User, &[], vec![]);
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert modern record");
+
+        let (applied, _) = completion_of(
+            ctx.recover_legacy_identity_data(
+                identity_id,
+                vec![RecoveryItem::Key {
+                    target: M,
+                    key_id: 1,
+                }],
+            )
+            .await
+            .expect("a run with nothing staged is a success"),
+        );
+        assert!(applied.is_empty());
+        assert_eq!(
+            ctx.last_identity_load_phase(&identity_id),
+            Some(IdentityLoadPhase::Loaded),
+            "a benign no-op must not be recorded as a failed load",
         );
 
         offline.shutdown().await;

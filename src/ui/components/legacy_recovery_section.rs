@@ -36,10 +36,11 @@ const EXCLUDED_INTRO: &str = "These keys cannot be brought back automatically:";
 /// Confirms a restore that actually put keys back.
 const RESTORED_MESSAGE: &str =
     "Your keys from the previous Dash Evo Tool version have been restored to this identity.";
-/// Confirms a restore that found everything already in place — the outcome of
-/// repeating a restore, which is safe and changes nothing.
-const NOTHING_RESTORED_MESSAGE: &str =
-    "These keys were already saved for this identity, so nothing needed restoring.";
+/// Confirms a restore that put nothing back, whether because the keys were
+/// already in place (repeating a restore is safe and changes nothing) or
+/// because the previous version's saved data no longer holds them. Worded to
+/// be true of both, since the outcome the user sees is the same.
+const NOTHING_RESTORED_MESSAGE: &str = "There was nothing left to restore for this identity.";
 
 /// The banner text for a finished restore, shared by every screen that offers
 /// one so the wording is a single translation unit. `restored` is whether

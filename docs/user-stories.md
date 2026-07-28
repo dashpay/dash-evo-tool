@@ -665,6 +665,19 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 - When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
 - An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
 
+### IDN-020: Restore keys an upgrade left behind, without re-entering them [Implemented]
+**Persona:** Alex, Priya
+
+As a user whose identity was already in the app before the upgrade — a masternode loaded from its ProTxHash, or an identity holding only some of its keys — I want to bring across the keys that stayed behind in the previous version's data, so that I do not have to re-enter private keys I no longer have on hand.
+
+- The offer appears on the identity's own page — the node detail page and the Key Info screen — only when the previous version's data actually holds keys this identity does not, and it disappears once there is nothing left to restore.
+- The list names each key by its role (owner, voting, payout) and is exactly what gets restored. Nothing is restored without pressing Restore, and nothing happens automatically at launch or during the upgrade.
+- Keys already saved for the identity are never replaced or removed — only missing ones are added. An identity the user deleted is never brought back.
+- On a password-protected identity the identity password is asked for first; cancelling, or getting it wrong, leaves everything exactly as it was.
+- For a node with no voting key, restoring is offered as the first remedy and entering the key by hand remains available for anyone who still has it.
+- A key saved in a format this version cannot read is listed with its own explanation rather than dropped silently.
+- The previous version's data is never modified, so restoring can be repeated safely; repeating it reports that everything was already in place and changes nothing.
+
 ---
 
 ## DPNS (DPN)

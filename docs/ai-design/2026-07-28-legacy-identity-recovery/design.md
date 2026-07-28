@@ -1,0 +1,544 @@
+# Legacy identity recovery flow (issue #889)
+
+**Status:** implemented — see the task decomposition in §8.
+**Scope:** exactly GitHub issue #889: an explicit, opt-in, per-identity recovery
+action that reads the preserved legacy `data.db` and restores private keys and
+role associations stranded by the migration's skip-if-present rule.
+**Base:** `v1.0-dev` @ `3e05d5f30`.
+**Prior art consumed:** `docs/ai-design/2026-07-13-legacy-identity-migration/design.md`
+(§7 known limitation), `src/backend_task/migration/finish_unwire.rs` (the shipped
+importer), commit `08242ecd` (the reverted reconcile — read in full, diff and
+tests), and the shipped `IdentityLoadMode::MergeIntoExisting` /
+`ProtectIdentityKeys` machinery on `v1.0-dev`.
+
+**Explicit non-goals:** identity unload/removal work; re-import of identities
+that are *absent* from the modern store (unreadable-blob rows counted by
+`UnreadableIdentitiesWarning` — a different case, noted in §9 as a natural
+extension); wallet-link restoration; any migration-time or launch-time
+automation.
+
+---
+
+## 1. Problem restatement
+
+The v0.9.3 → v1.0 cold-start migration (`migrate_identities`, PR #885) imports
+legacy `identity` rows skip-if-present: an identity id already in the modern
+`det:identity:v1` store is never re-persisted, wholesale. That rule is correct —
+three reconcile heuristics (unconditional merge, empty-key-map gate, the
+bare-only reconcile reverted in `08242ecd`) each failed review because they
+tried to infer *user intent* from *state shape*:
+
+- Field absence is not evidence of anything. "Remove private key from DET"
+  leaves no tombstone; a cleared alias persists as `None`; a record with an
+  empty key map may be a ProTxHash-only bare load **or** an identity whose only
+  key the user deliberately removed. The model carries no provenance to tell
+  these apart, and no gate on record shape ever will.
+- A plaintext legacy key merged into a password-protected (Tier-2) identity
+  trips `encode_identity_blob_vault_first`'s fail-closed
+  `IdentityKeyProtectionDowngrade` guard and fails the whole pass.
+- Withholding the migration sentinel to "retry later" re-fires an unactionable
+  warning every launch and, worse, resurrects identities the user has since
+  deleted.
+
+The consequence (design doc §7, the tracked limitation): a v0.9.3 identity that
+was already **partially** loaded into the modern store before the upgrade — a
+masternode brought in bare from its ProTxHash, or holding one of its
+voting/owner/payout keys while the legacy blob holds the others — keeps its
+remaining keys stranded in `data.db`. Nothing is destroyed (migration never
+deletes source rows), but no current flow can reach them: the load form rejects
+the duplicate ProTxHash (`RejectIfExists` → `DuplicateProTxHash`), the per-key
+screen requires re-typing a WIF the user may no longer hold, and adding a
+plaintext key to a protected identity trips the downgrade guard.
+
+### What "genuinely missing" must mean operationally
+
+Not "the field is `None`" — that is precisely the ambiguity that sank three
+heuristics. This design decomposes it into two predicates, **neither of which
+requires provenance**, plus one decision that only the user can make:
+
+1. **Candidate** (computable): a legacy item not currently present in the
+   modern record.
+   - A key is identified by `(PrivateKeyTarget, KeyID)` — the exact map key of
+     `KeyStorage::private_keys`. Candidate ⇔ the modern map has no entry at
+     that key **and** the legacy entry carries recoverable material (§3.2).
+   - A role association (`associated_voter_identity`,
+     `associated_operator_identity`, `associated_owner_key_id`) is a candidate
+     ⇔ modern is `None` and legacy is `Some`.
+2. **Eligible to write** (structural): the merge is *additive-only*. Output is
+   constructed by starting from the freshly re-read modern record and
+   inserting candidate entries; nothing is ever removed or replaced; modern
+   wins every collision by construction (§3.3).
+3. **Wanted** (the user's call): whether a candidate should actually be
+   restored. The absence-vs-removal ambiguity is not solved — it is
+   **transferred to the only party who holds the provenance**. The UI shows
+   exactly which items would be restored, per identity, and the approved set
+   travels in the task payload as an item-level allowlist. A user who
+   deliberately removed a key declines; one who approves has made a decision
+   equivalent to re-typing the WIF, which was always legitimate.
+
+"Genuinely missing" = candidate ∧ user-approved, applied additively. No shape
+heuristic, no automation, no silent path.
+
+One further distinction the detection must preserve (a known trap): a **bare
+but valid** modern record (no keys — the expected partial-load shape this issue
+exists for) is an eligible recovery target; a record or legacy row that fails
+to **decode** is corrupt and takes a typed-error path (§3.5), never a "treat as
+empty and merge anyway" path.
+
+---
+
+## 2. Entry point & UX flow
+
+### 2.1 Where recovery is surfaced
+
+Passive, contextual, per-identity — never a launch-time banner, never a nag.
+Two surfaces, one shared component:
+
+- **Masternode / evonode detail screen** (`ui/masternodes/detail_screen.rs`) —
+  the canonical case. The screen already renders a `render_missing_voter`
+  warning with an "Add voting key" WIF prompt; the recovery section renders in
+  the same key-management area. When the candidate set includes the voting
+  key, restore-from-backup becomes the primary remedy and re-typing the WIF the
+  fallback — which is the user story verbatim ("without having to re-enter
+  WIFs I no longer have on hand").
+- **Key Info screen** (`ui/identities/keys/key_info_screen.rs`), reached from
+  the Identities screen for `User` identities and via "Manage keys" for nodes —
+  the issue's suggested location, covering the non-masternode partial-load
+  variant.
+
+Gating, cheap to strict:
+
+1. `app_context.db.db_file_path()` exists — fresh installs never see any of
+   this (frame-loop-safe check, no I/O beyond a cached path).
+2. On screen arrival (`refresh_on_arrival`), the screen dispatches
+   `IdentityTask::CheckLegacyRecovery { identity_id }` — a backend task, since
+   detection reads `data.db`. Result cached in screen state; no per-frame I/O.
+3. The section renders only when the returned candidate set is non-empty.
+
+Because detection is a pure function of (modern record, legacy row), the
+section **self-extinguishes**: after a successful merge the candidate set is
+empty and the affordance disappears. No dismissal state is required for v1; a
+per-identity `det:legacy_recovery_dismissed:v1` key (own key per identity,
+`DetScope::Identity` — never a shared collection) is a compatible follow-up if
+users ask for "don't offer again".
+
+### 2.2 What the user sees and confirms
+
+The section copy is written for the Everyday User persona (no "migration",
+"blob", "vault"):
+
+> *Some keys for this identity from your previous Dash Evo Tool version
+> haven't been brought across.*
+
+followed by the item list in user terms — "Owner key", "Voting key", "Payout
+key", "Voting identity link" (labels derived from `Purpose` / association kind;
+key bytes and WIFs are never displayed, and never logged) — and a **Restore
+keys…** button. The list *is* the preview; pressing Restore is the explicit
+per-identity decision, and the listed items travel with the task as the
+approved allowlist (§3.4). Items that cannot be restored by this flow (§3.2's
+legacy `Encrypted` keys) are listed separately with an explanation and are
+never part of the allowlist.
+
+### 2.3 Protected-identity password flow
+
+Reuses the shipped verify-then-seal machinery end to end — no new prompt UI,
+no new crypto:
+
+1. The backend task detects Tier-2 via
+   `protected_identity_verify_scope(&modern)` — `Some(scope)` ⇔ the identity
+   has at least one vault key with `SecretScheme::Protected`. (A bare identity
+   has no keys, hence no protected keys, hence is never gated — the gate
+   applies exactly when it must.)
+2. `secret_access.verify_identity_object_password(&scope).await` fires the
+   standard secret-prompt modal, verifies the typed password by unsealing an
+   existing protected key of the same identity (one-password invariant
+   preserved), re-asks on wrong password, and returns a
+   `VerifiedIdentityPassword`.
+   - **Cancel** → the prompt's cancel error propagates; the task aborts with
+     **zero writes** (the prompt runs before any mutation).
+   - **Wrong password** → the prompt re-asks (standard behaviour); the task
+     never proceeds on an unverified password.
+   - **Headless/MCP** → `SecretPromptUnavailable`, fail closed, zero writes.
+3. Before any vault write, the Tier-2 branch also runs the existing
+   `reject_resident_identity_plaintext` guard (from
+   `protect_identity_keys.rs`, widened to `pub(super)`): a modern record still
+   carrying resident plaintext from an incomplete load-path vault migration
+   fails fast with the existing typed errors and their established remedies,
+   rather than half-sealing and then tripping the downgrade guard at persist.
+4. Approved plaintext legacy keys are sealed Tier-2 under the verified
+   password via the existing `seal_merged_plaintext_keys` (which flips each to
+   `InVault` and writes through `SecretAccess::seal_new_identity_key_with_password`
+   → `SecretSeam::put_secret_protected`) **before** the record is persisted —
+   so `encode_identity_blob_vault_first` never sees plaintext on a protected
+   identity.
+
+### 2.4 Partial success
+
+**All-or-nothing at the persistence level, by construction.** The flow performs
+exactly one record write (`update_local_qualified_identity`); either the merged
+record lands or the modern record is unchanged. There is no per-key password
+dimension (one password per identity — the shipped invariant), so "some keys
+succeed, one is blocked by the password" cannot arise. Two nuances, both
+already the codebase's accepted semantics:
+
+- A crash between Tier-2 vault seals and the record write leaves sealed vault
+  entries at their correct labels with the record not yet referencing them —
+  the same recoverable intermediate as the shipped merge-load path. A re-run
+  is idempotent (same-label upsert) and completes the job. No partially-merged
+  *record* is ever observable.
+- Items excluded up front (legacy `Encrypted` keys, stale approvals per §3.4)
+  are **reported outcomes, not failures**: the success result enumerates
+  merged, skipped-stale, and unrecoverable items, and the UI says so plainly.
+
+---
+
+## 3. Merge algorithm
+
+### 3.1 Inputs
+
+Computed twice — once for the preview (`CheckLegacyRecovery`), once inside the
+executing task — from the same pure function, so preview and execution cannot
+drift:
+
+- `modern: QualifiedIdentity` — fresh `get_local_qualified_identity(&id)?`;
+  `None` ⇒ `IdentityNotFoundLocally` (a deleted identity is simply not
+  eligible; recovery never resurrects a deleted record).
+- `legacy: LegacyIdentityRow` — a **single-row** read of `data.db` (§4.2),
+  through the same per-row decode, id-consistency, and network-filter rules as
+  the shipped `read_identities` (including the row-id-vs-blob-id divergence
+  check and the `dash`/`mainnet` alias filter). Missing table, missing row,
+  `is_local = 0`, or `data IS NULL` ⇒ "nothing to recover"; a decode failure ⇒
+  typed error (§3.5), never treated as empty.
+
+### 3.2 Candidate computation — `compute_recovery_plan(modern, legacy) -> RecoveryPlan`
+
+Pure, in `model/legacy_recovery.rs`. For keys, per legacy entry
+`((target, key_id), (public_key, key_data))`:
+
+| Legacy `PrivateKeyData` | Modern has `(target, key_id)`? | Verdict |
+|---|---|---|
+| `Clear` / `AlwaysClear` | no | **candidate** (raw material present) |
+| `AtWalletDerivationPath` | no | **candidate** (re-derivable reference; carries no plaintext, lands verbatim) |
+| `Encrypted` (legacy per-key envelope, decode-only) | no | **excluded**, reason `LegacyEncryptedFormat` — merging ciphertext would poison every re-save and the protect opt-in (`IdentityKeyProtectionLegacyFormat`). Listed for the user with the existing remedy (re-load the identity with the key). **Confirmed unreachable in practice** (coordinator follow-up, 2026-07-28): full git history from this variant's introduction (`a5db23e6c8`, Nov 2024) through the real `v0.9.3` release tag shows no encrypt function ever constructing one — every consumer, then and now, treats it as a stub ("please enter password" / today's `LegacyEncryptedFormat` rejection). Distinct from the wallet's imported-single-key legacy password encryption (`single_key_wallet` table), which is real AES-GCM+Argon2id and already has a full decrypt→re-encrypt path (`backend_task/migration/single_key_restore.rs`, T-SK-03) — unrelated to this issue. User confirmed (2026-07-28): no known real-world instances; exclusion stands as designed, no decrypt path to build. |
+| `InVault` | no | **excluded**, reason `NoMaterial` — impossible in a genuine v0.9.3 blob (the variant postdates it); tolerated defensively, never merged. |
+| any | yes | **not a candidate** — modern wins, unconditionally. |
+
+For associations: `associated_voter_identity`, `associated_operator_identity`,
+`associated_owner_key_id` are each a candidate ⇔ modern `None` ∧ legacy
+`Some`.
+
+**Plan invariant (enforced in model code, unit-tested):** any candidate key
+with `target == PrivateKeyOnVoterIdentity` groups the `VoterAssociation`
+candidate with it — a voting key without its voter identity link is
+unpresentable (`masternode_key_presence` and the signing paths key off the
+association). The preview shows them as one item; approval of one is approval
+of both.
+
+**Never candidates, ever:** `alias` (user-editable; the exact resurrection
+hazard from `08242ecd`), `identity` (the dpp identity — modern is the newer
+on-chain revision), `dpns_names`, `status`, wallet link
+(`wallet_hash`/`wallet_index` — preserved from the modern record by the
+`update_local_qualified_identity` writer's existing contract), and all runtime
+wiring (`associated_wallets`, `secret_access`, `top_ups`).
+
+### 3.3 Application — `apply_recovery_plan(modern, legacy, approved) -> AppliedRecovery`
+
+Pure, same module. Starting from a clone of the **fresh modern record**:
+
+```
+for each approved item, in plan order:
+    Key(target, key_id):
+        merged.private_keys.private_keys
+              .entry((target, key_id))
+              .or_insert(legacy entry)          // modern wins even intra-task
+    VoterAssociation / OperatorAssociation:
+        if merged.<assoc>.is_none() { merged.<assoc> = legacy.<assoc> }
+    OwnerKeyAssociation:
+        if merged.associated_owner_key_id.is_none() { … = legacy value }
+```
+
+Properties that hold **by construction**, not by discipline:
+
+- The output key map is a superset of the input modern key map, and every
+  modern entry survives byte-identical (`or_insert` cannot replace).
+- Nothing outside `private_keys` and the three association fields is touched —
+  the function has no code path that writes any other field.
+- An approved item that is no longer a candidate at execution time is a
+  no-op, counted `skipped_stale` (§3.4).
+- The write path can never receive a *partial inventory as if it were
+  complete* (the general provenance trap): the persisted argument is always
+  `modern ∪ approved-candidates`, a superset of the current record — a partial
+  legacy blob structurally cannot express a removal.
+
+### 3.4 The approved-allowlist rule (TOCTOU containment)
+
+The executing task merges exactly **recomputed-candidates ∩ approved**:
+
+- Approved at preview, still missing → merged (the normal case).
+- Approved at preview, no longer missing (user re-added it via the load form
+  meanwhile, or a prior recovery run already landed it) → skipped, reported
+  `skipped_stale`. Idempotent re-runs are this rule.
+- Missing at execution but **not** approved (user removed a key between
+  preview and execution) → **never merged** — the user never approved it. The
+  outcome reports it so the UI re-offers a fresh preview.
+
+"Nothing merges without an explicit user decision" is thereby literal at the
+item level, not just the identity level.
+
+### 3.5 Failure handling (typed, per repo rules)
+
+New `TaskError` variants (no `String` payloads; `Display` written for the
+Everyday User — what happened + what to do, details via `with_details`):
+
+| Variant | When | User-facing direction |
+|---|---|---|
+| `LegacyIdentityUnreadable { identity_id }` | legacy row present but blob/columns fail decode | "The saved copy of this identity from the previous version could not be read. You can still add the key by entering it on the identity's key screen." |
+| `LegacyRecoveryNothingApproved` | empty allowlist reaches the backend (UI bug / MCP misuse) | re-run the check and select items |
+| existing `IdentityNotFoundLocally`, `IdentityLoadInProgress`, `SecretPromptUnavailable`, prompt-cancel, `IdentityKeyProtectionIncomplete` / `IdentityKeyProtectionLegacyFormat` | as today | existing copy |
+
+A failure anywhere before the single record write leaves the modern record
+untouched. `IdentityKeyProtectionDowngrade` is **unreachable** from this flow
+(§3.6) — reaching it would be an implementation bug, and a test asserts the
+branches that make it unreachable.
+
+### 3.6 Why this cannot reproduce the three reverted failure modes
+
+| Failure mode (from `08242ecd` and issue text) | Structural counter — not "more care" |
+|---|---|
+| **Unconditional merge** resurrects removals/renames | Apply is additive from the fresh modern base with `or_insert`; alias/status/identity/wallet-link have no write path in the apply function; and nothing executes without a per-item user allowlist in the task payload. Migration code is untouched — there is no automatic caller. |
+| **Shape heuristics** (empty-key-map / bare-only gates) misread deliberate removals | There is no gate on record shape anywhere. Detection only *lists*; it never writes. The bare-vs-removed question is answered by the user, the sole holder of that provenance; declining is a first-class outcome. |
+| **Protection-downgrade trip** fails the pass on Tier-2 identities | The flow branches on the *same predicate the guard evaluates* (`find_protected_identity_key_scope`, via `protected_identity_verify_scope`). Tier-2 branch: password verified up front, resident-plaintext preflight, then `seal_merged_plaintext_keys` marks every merged plaintext key `InVault` **before** persist — the guard's `has_plaintext_for_vault()` input is false. Tier-1 branch: no protected key exists by that same predicate, so the guard's other input is false. On both branches the guard's trigger condition is false by the branch condition itself. |
+| *(fourth hazard from §7)* pending-sentinel re-fire nags every launch | No sentinel, no launch-time hook, no durable pending state at all. A passive on-screen section that recomputes from source data and disappears when empty. |
+
+---
+
+## 4. Data flow & module placement
+
+Per the DET module placement policy; **no new secret-handling code is written
+anywhere** — the flow composes existing chokepoint paths, the same argument
+that carried the migration design's §8.
+
+### 4.1 `model/legacy_recovery.rs` — new, pure
+
+- `enum RecoveryItem { Key { target: PrivateKeyTarget, key_id: KeyID }, VoterAssociation, OperatorAssociation, OwnerKeyAssociation }`
+  (+ a display descriptor carrying `Purpose` for UI labels — public data only).
+- `enum ExclusionReason { LegacyEncryptedFormat, NoMaterial }`
+- `struct RecoveryPlan { items: Vec<RecoveryItem>, excluded: Vec<(RecoveryItem, ExclusionReason)> }`
+- `fn compute_recovery_plan(modern: &QualifiedIdentity, legacy: &QualifiedIdentity) -> RecoveryPlan`
+- `fn apply_recovery_plan(modern: &QualifiedIdentity, legacy: QualifiedIdentity, approved: &[RecoveryItem]) -> AppliedRecovery`
+  where `AppliedRecovery { merged: QualifiedIdentity, applied: Vec<RecoveryItem>, skipped_stale: Vec<RecoveryItem> }`.
+
+No `AppContext`, no `Sdk`, no DB, no vault — the single source of truth for
+"what counts as genuinely missing", unit-testable in isolation. UI and backend
+both consume it; neither reimplements any part of it.
+
+### 4.2 `database/legacy_import.rs` — one new reader
+
+`pub(crate) fn read_identity_row(conn: &Connection, network: Network, id: &[u8; 32]) -> rusqlite::Result<LegacyIdentityLookup>`
+with `enum LegacyIdentityLookup { Found(LegacyIdentityRow), Absent, Unreadable }`
+— a single-row (`WHERE id = ?`) variant of `read_identities`, refactoring the
+existing per-row decode (column classes, 32-byte checks, blob decode, row-id ≡
+blob-id, status/alias column restoration) into a shared helper so the two
+readers cannot diverge. Read-only by construction: the connection comes from
+the existing `open_legacy_read_only` (`SQLITE_OPEN_READ_ONLY`; the private
+copy in `finish_unwire.rs` is hoisted next to `database/mod.rs`'s existing
+one). **No write to `data.db` exists anywhere in this design, and no new
+DetKv key either** — the frozen-legacy-store constraint is satisfied by having
+nothing to violate it with.
+
+### 4.3 `backend_task/identity/recover_legacy_keys.rs` — new; the enforcement layer
+
+Two `IdentityTask` variants:
+
+- `CheckLegacyRecovery { identity_id }` → reads modern + legacy, returns
+  `BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan }`
+  (descriptors only — no key bytes, nothing logged beyond the hex id).
+- `RecoverLegacyIdentityData { identity_id, approved: Vec<RecoveryItem> }`:
+
+```
+claim   = begin_identity_load(identity_id, None)?          // excludes concurrent loads/merges
+guard: migration_status().state().is_in_progress() ⇒ WalletStorageNotReady   // same rule as delete
+modern  = get_local_qualified_identity(&id)?  else IdentityNotFoundLocally
+legacy  = read_identity_row(open_legacy_read_only(db_file_path)?, network, id)
+plan    = compute_recovery_plan(&modern, &legacy.qi)        // recomputed, never trusted from UI
+password= match protected_identity_verify_scope(&modern)? {
+              Some(scope) => { reject_resident_identity_plaintext(&modern.private_keys)?;
+                               Some(verify_identity_object_password(&scope).await?) }
+              None => None }
+applied = apply_recovery_plan(&modern, legacy.qi, approved ∩ plan.items)
+if applied.applied.is_empty() ⇒ Ok(LegacyRecoveryCompleted { nothing_to_recover })
+if let Some(pw) = &password { seal_merged_plaintext_keys(&mut applied.merged, pw)? }  // Tier-2: InVault before persist
+update_local_qualified_identity(&applied.merged)?           // ONE write; preserves wallet link
+claim.loaded()
+Ok(LegacyRecoveryCompleted { identity_id, applied, skipped_stale, excluded })
+```
+
+Entirely local — **no network fetch** (unlike `MergeIntoExisting`, which
+re-fetches because the user is re-loading; here the modern record already
+holds the newer on-chain identity, and legacy's older copy is never used).
+Recovery therefore works offline and the claim is held for milliseconds.
+
+### 4.4 Secret chokepoint accounting
+
+Every secret byte moves through existing seams only:
+
+| Path | Route |
+|---|---|
+| Tier-1 plaintext legacy key | `update_local_qualified_identity` → `encode_identity_blob_vault_first` → `IdentityKeyView::store_all` → `SecretSeam` (keyless vault; blob persists `InVault` placeholders only) |
+| Tier-2 plaintext legacy key | `seal_merged_plaintext_keys` → `SecretAccess::seal_new_identity_key_with_password` → `SecretSeam::put_secret_protected` (Argon2id + XChaCha20-Poly1305, AAD-bound) |
+| `AtWalletDerivationPath` | no secret bytes exist; the reference lands in the blob verbatim |
+
+No logging of blobs, decoded identities, or `PrivateKeyData` at any level —
+same rule as the migration (`Debug` is already redacting; log hex ids only).
+
+### 4.5 UI
+
+- `ui/components/legacy_recovery_section.rs` — new render-only component
+  (component pattern: builder config, `show(ui) -> ComponentResponse`); takes
+  the plan summary, emits the approved-items dispatch intent. It renders egui,
+  so it is a component, not `ui/state/`.
+- `ui/masternodes/detail_screen.rs` + `ui/identities/keys/key_info_screen.rs`
+  — hold `Option<plan>` screen state, dispatch `CheckLegacyRecovery` on
+  arrival (behind the `db_file_path()` gate), render the section, handle both
+  results in `display_task_result`, refresh on completion. Progress/success
+  banners via the standard `BannerHandle` lifecycle; failure banners carry
+  details via `with_details`.
+
+### 4.6 Deployment
+
+No new crate dependencies (verified: everything reuses shipped machinery — no
+registry lookups needed), no schema change, no new DetKv key, no migration
+ordering constraint. The feature is dormant on any install without a legacy
+`data.db`. Ships in the normal binary for all platform targets; standard CI
+gates apply. `docs/kv-keys.md` needs no change (nothing durable is added);
+`docs/user-stories.md` gains one `[Implemented]` story on landing.
+
+---
+
+## 5. Idempotency & concurrency
+
+**No persisted recovery state — that is the design, not an omission.**
+Detection is a pure function of two existing stores; eligibility recomputes on
+every screen arrival. Consequences:
+
+- **Idempotent by recomputation:** after a successful merge the candidate set
+  is empty; a re-run returns `NothingToRecover` and writes nothing; the UI
+  affordance disappears on its own. Repeating recovery after a *partial*
+  approval merges only the still-missing remainder. `data.db` is never
+  modified, so recovery is repeatable indefinitely (AC-5).
+- **Nothing to race:** the shared-collection DetKv hazard (get-then-put on a
+  set key is not compare-and-swap) is avoided by having no such key. The only
+  writes are the identity's own `det:identity:v1` under its own scope, plus
+  the pre-existing idempotent `index_add_identity` no-op (the id is already
+  indexed — recovery requires presence).
+- **Per-identity exclusion:** the task holds the identity-load registry claim
+  (`begin_identity_load`), the same mutex the load/merge paths use — a
+  concurrent load, merge-load, or second recovery of the same identity gets
+  `IdentityLoadInProgress`. The claim spans read → compute → seal → write.
+- **TOCTOU across the preview gap** is contained by the allowlist-intersection
+  rule (§3.4): re-additions become stale-skips, removals-after-preview are
+  never merged (not approved), and the additive `or_insert` apply makes even a
+  same-instant collision resolve modern-wins.
+- **Migration interplay:** recovery refuses to run while a migration pass is
+  in progress (same `is_in_progress` check the delete path uses). A deleted
+  identity is ineligible (modern-absent), and the migration's own
+  deletion-progress record is untouched — recovery neither reads nor writes
+  migration state.
+
+---
+
+## 6. Test plan
+
+TDD order: model tests first (several must go RED against a deliberately naive
+merge before the real one lands), then backend integration on the offline
+wired `AppContext` harness the protect tests already use, seeding legacy rows
+with the existing `LegacyIdentityFixture` / `basic_legacy_identity_blob`
+helpers. All tests isolated to temp dirs; no real user data.
+
+### Model (`model/legacy_recovery.rs`)
+
+| # | Scenario | Asserts |
+|---|---|---|
+| M1 | legacy-only `Clear` key | is a candidate |
+| M2 | key present in both at same `(target, key_id)` | not a candidate; apply keeps the modern bytes (RED vs legacy-wins) |
+| M3 | modern-only key | never in plan; survives apply byte-identical |
+| M4 | each association, all four presence combinations | candidate only on modern-`None` ∧ legacy-`Some` |
+| M5 | legacy `Encrypted` key | excluded, `LegacyEncryptedFormat`, never applied even if "approved" |
+| M6 | voting key candidate | `VoterAssociation` grouped; applying the key applies the link |
+| M7 | identical records | empty plan |
+| M8 | bare modern record | full legacy key set + associations as candidates (the §1 bare-but-valid case) |
+| M9 | apply superset property | for every fixture: output key map ⊇ modern's; alias/status/identity/wallet fields untouched (structural additive-only proof) |
+| M10 | approved ∩ candidates rule | approved-but-present → `skipped_stale`; missing-but-unapproved → untouched (the removal-mid-flight case) |
+
+### Backend (`recover_legacy_keys.rs`, offline `AppContext`)
+
+| # | Scenario | Asserts |
+|---|---|---|
+| B1 | Tier-1 end-to-end: bare modern masternode + legacy owner/voting `Clear` keys | check reports candidates; recover merges; `masternode_key_presence` shows owner+voting; **stored `det:identity:v1` bytes contain no `Clear`/`AlwaysClear`** (asserted from stored bytes, §8-style); vault holds the keys; legacy rows still in `data.db` |
+| B2 | Tier-2 with correct password | merged key `SecretScheme::Protected`, opens under the *same* identity password |
+| B3 | Tier-2 wrong password (headless `NullSecretPrompt` variant too) | `SecretPromptUnavailable` / re-ask path; stored record byte-identical, zero vault writes |
+| B4 | Tier-2 prompt cancel | typed cancel error, zero writes |
+| B5 | Tier-2 with resident-plaintext modern key | fails fast with `IdentityKeyProtectionIncomplete` before any vault write |
+| B6 | run recovery twice | second run `NothingToRecover`, store unchanged (byte compare) |
+| B7 | modern record deleted first | `IdentityNotFoundLocally`; nothing recreated |
+| B8 | undecodable legacy blob | `LegacyIdentityUnreadable`, zero writes |
+| B9 | legacy row absent / `is_local=0` / NULL blob | check reports nothing-to-recover, not an error |
+| B10 | concurrent load claim held | `IdentityLoadInProgress` |
+| B11 | `User`-identity variant with one missing main-identity key | same flow, no masternode-specific assumptions |
+| B12 | wallet link `Some` on modern, `None`-wallet legacy row | link preserved verbatim after recovery (writer contract) |
+
+### UI (`tests/kittest`, light)
+
+| # | Scenario |
+|---|---|
+| U1 | section absent when no `data.db` / empty plan; present with items labelled by purpose; disappears after a success result |
+
+### AC traceability
+
+M/B/U rows ↔ acceptance criteria: AC-1 → U1, B1(check); AC-2 → M2/M3/M9, B1;
+AC-3 → B2–B5; AC-4 → M10, B-series (no test contains any automatic trigger —
+and `finish_unwire` is untouched, its existing suite is the regression net);
+AC-5 → B1 (legacy rows intact), B6.
+
+---
+
+## 7. Acceptance-criteria checklist
+
+| Issue criterion | How the design satisfies it |
+|---|---|
+| Discoverable, opt-in recovery entry point on the Key Info / identity screen for a present-but-partial identity | §2.1: passive section on the masternode detail and Key Info screens, gated by an on-arrival backend detection task; renders only when recoverable candidates exist; self-extinguishes when none remain. |
+| Reads the preserved legacy blob and merges only genuinely-missing keys and role associations, never overwriting anything currently held | §3: candidates are absence-keyed on `(PrivateKeyTarget, KeyID)` / `None` associations; apply is additive-only from the fresh modern base (`or_insert`), modern wins every collision by construction; alias/identity/status/wallet-link have no write path. |
+| Protected identity: recovery gated behind the identity password; no plaintext write that trips `IdentityKeyProtectionDowngrade` | §2.3/§3.6: branch on the guard's own predicate; verify password up front via the shipped prompt (cancel/wrong/headless all fail closed with zero writes); seal merged keys Tier-2 (`InVault`) before the single persist — the guard's trigger is false on both branches. |
+| Explicit per-identity decision; nothing reconciled silently at migration time | §2.2/§3.4: the previewed item list is the approved allowlist carried in the task payload; execution merges recomputed-candidates ∩ approved. `finish_unwire.rs` is not modified; skip-if-present stands. |
+| No legacy source data deleted; recovery idempotent and safely repeatable | §4.2/§5: `data.db` opened `SQLITE_OPEN_READ_ONLY`, no write path exists; no durable recovery state; re-runs recompute to `NothingToRecover`; stale approvals skip. |
+
+---
+
+## 8. Implementation task decomposition
+
+Ordered; each independently implementable and reviewable by a single developer.
+
+| Task | Contents | Depends on |
+|---|---|---|
+| **T-889-01** | `model/legacy_recovery.rs`: `RecoveryItem`, `RecoveryPlan`, `compute_recovery_plan`, `apply_recovery_plan` + tests M1–M10 (M2/M9/M10 RED-first against a naive merge) | — |
+| **T-889-02** | `database/legacy_import.rs`: `read_identity_row` + shared row-decode refactor with `read_identities`; hoist `open_legacy_read_only` | — |
+| **T-889-03** | `backend_task/identity/recover_legacy_keys.rs`: both task variants, claim/guards/password flow, `TaskError` + `BackendTaskSuccessResult` variants; widen `reject_resident_identity_plaintext` to `pub(super)`; tests B1–B12 | 01, 02 |
+| **T-889-04** | `ui/components/legacy_recovery_section.rs` + masternode `detail_screen.rs` wiring (detection dispatch, result handling, banners; restore-from-backup as the primary missing-voter remedy) | 03 |
+| **T-889-05** | `ui/identities/keys/key_info_screen.rs` wiring for `User` identities (same component) | 03, 04 |
+| **T-889-06** | kittest U1; `docs/user-stories.md` story; CHANGELOG; update design-record cross-reference in the migration doc §7 | 03–05 |
+
+---
+
+## 9. Future extensions (explicitly out of scope now)
+
+- **Unreadable-row re-import**: `finish_unwire` comments already defer
+  "recover undecodable rows after a decoder fix" to an explicit user gesture
+  under this issue's umbrella. The `read_identity_row` + backend-task
+  architecture is the natural host; it is a different eligibility class
+  (modern-absent) and a different writer (`insert`, not `update`), so it is a
+  separate design.
+- **Per-identity dismissal** of the recovery call-out
+  (`det:legacy_recovery_dismissed:v1`, own key per identity).
+- **Wallet-link restoration** for identities whose modern record lost the
+  link — interacts with funds flows and wallet presence; deliberately not
+  bundled with key recovery.

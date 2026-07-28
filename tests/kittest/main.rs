@@ -17,6 +17,7 @@ mod import_single_key;
 mod info_popup;
 mod keys_screen;
 mod left_panel;
+mod legacy_recovery_section;
 mod masternode_tab;
 mod message_banner;
 mod migration_banner;

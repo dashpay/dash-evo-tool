@@ -25,6 +25,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Restore keys an upgrade left behind**: an identity that was already in the
+  app before the update — a masternode loaded from its ProTxHash, or one that
+  held only some of its keys — kept its remaining keys in the previous
+  version's data with no way to reach them. Its page now offers to bring them
+  across: the node detail page and the Key Info screen list what can be
+  restored, named by role (owner, voting, payout), and restore only what you
+  press Restore on. Nothing happens at launch or during the update, keys
+  already saved are never replaced or removed, and on a password-protected
+  identity the identity password is asked for first — cancelling or mistyping
+  it leaves everything as it was. For a node with no voting key this is offered
+  as the first remedy, with entering the key by hand still available for anyone
+  who still has it. The previous version's data is only ever read, so this is
+  safe to repeat.
+
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.
   Failed attempts retry on later launches until fresh addresses are saved and

@@ -87,10 +87,6 @@ pub(crate) struct LegacyIdentityRow {
 /// recover; the second is corruption a caller must surface as a typed error
 /// rather than silently treat as an empty record.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the recovery backend task is the only caller")
-)]
 pub(crate) enum LegacyIdentityLookup {
     /// A local identity row that decoded cleanly. Boxed because a decoded row
     /// dwarfs the two "nothing here" answers, which are the common ones.
@@ -360,10 +356,6 @@ pub(crate) fn read_identities(
 /// [`LegacyIdentityLookup::Absent`] — "nothing to recover", not a failure. Only
 /// a row that will not decode is [`LegacyIdentityLookup::Unreadable`], which
 /// the caller must never treat as an empty record.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the recovery backend task is the only caller")
-)]
 pub(crate) fn read_identity_row(
     conn: &Connection,
     network: Network,

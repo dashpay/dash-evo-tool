@@ -717,6 +717,38 @@ impl AppContext {
         Ok(Some(qi))
     }
 
+    /// The encoded identity blob stored under `id`, exactly as it sits at
+    /// rest. Test-only: it is how an assertion proves what a write actually
+    /// landed on disk (that no plaintext key survived, or that a re-run changed
+    /// nothing), which the hydrated [`QualifiedIdentity`] cannot show.
+    #[cfg(test)]
+    pub(crate) fn stored_identity_blob(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<Vec<u8>>, TaskError> {
+        Ok(self
+            .det_kv()?
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id.to_buffer()), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .map(|stored| stored.qi_bytes))
+    }
+
+    /// The wallet link recorded for `id`, or `None` when the identity is not
+    /// stored or was never linked to a wallet. Test-only: the link lives beside
+    /// the blob rather than inside it, so only a direct read can prove an
+    /// update preserved it.
+    #[cfg(test)]
+    pub(crate) fn stored_identity_wallet_link(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<(WalletSeedHash, u32)>, TaskError> {
+        Ok(self
+            .det_kv()?
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id.to_buffer()), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .and_then(|stored| Some((stored.wallet_hash?, stored.wallet_index?))))
+    }
+
     /// Returns whether an identity blob is stored under `id` without decoding it.
     pub(crate) fn has_local_qualified_identity(
         &self,

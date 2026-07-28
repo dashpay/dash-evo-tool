@@ -148,7 +148,8 @@ impl AppContext {
     }
 }
 
-/// Fail-closed guard for the protect boundary: reject an identity that
+/// Fail-closed guard for every boundary that seals an identity's keys — the
+/// protect opt-in and the legacy-recovery merge: reject an identity that
 /// still carries resident plaintext (`Clear`/`AlwaysClear`) keys on disk. Such a
 /// key means the eager load-path vault migration did not complete — its vault
 /// write failed, or it was skipped on an already-protected identity — so the key
@@ -169,7 +170,9 @@ impl AppContext {
 /// ([`TaskError::IdentityKeyProtectionLegacyFormat`] → "load the identity again").
 /// Legacy keys are checked first: re-loading the identity also clears any
 /// resident plaintext, so it is the single action that resolves both.
-fn reject_resident_identity_plaintext(private_keys: &KeyStorage) -> Result<(), TaskError> {
+pub(super) fn reject_resident_identity_plaintext(
+    private_keys: &KeyStorage,
+) -> Result<(), TaskError> {
     if private_keys.has_encrypted_legacy_keys() {
         return Err(TaskError::IdentityKeyProtectionLegacyFormat);
     }

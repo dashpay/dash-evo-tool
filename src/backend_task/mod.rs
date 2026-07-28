@@ -736,6 +736,30 @@ pub enum BackendTaskSuccessResult {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
     },
+    /// What the preserved legacy database could restore for this identity.
+    /// Descriptors only — public key metadata, never key bytes. An empty plan
+    /// means there is nothing to offer and the recovery affordance stays hidden.
+    LegacyRecoveryCandidates {
+        /// The identity the plan was computed for.
+        identity_id: Identifier,
+        /// Restorable candidates plus the items this flow cannot restore.
+        plan: crate::model::legacy_recovery::RecoveryPlan,
+    },
+    /// A legacy-recovery run finished. `applied` empty means the approved items
+    /// were all already back in place, so nothing was written.
+    LegacyRecoveryCompleted {
+        /// The identity that was recovered into.
+        identity_id: Identifier,
+        /// Items restored into the stored record.
+        applied: Vec<crate::model::legacy_recovery::RecoveryItemDescriptor>,
+        /// Approved items that were no longer missing when the run executed.
+        skipped_stale: Vec<crate::model::legacy_recovery::RecoveryItemDescriptor>,
+        /// Legacy items this flow cannot restore, each with its reason.
+        excluded: Vec<(
+            crate::model::legacy_recovery::RecoveryItemDescriptor,
+            crate::model::legacy_recovery::ExclusionReason,
+        )>,
+    },
 
     // Document operation results (replacing string messages)
     DeletedDocument(Identifier, FeeResult),

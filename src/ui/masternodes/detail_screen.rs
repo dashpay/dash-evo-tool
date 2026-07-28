@@ -253,6 +253,16 @@ impl MasternodeDetailView {
     pub(crate) fn has_voter_key_prompt_for_test(&self) -> bool {
         self.voter_key_prompt.is_some()
     }
+
+    /// Whether a recovery offer is currently on screen for this node.
+    pub(crate) fn has_recovery_offer_for_test(&self) -> bool {
+        self.recovery.plan().is_some_and(|plan| !plan.is_empty())
+    }
+
+    /// The key roles this view believes the node holds.
+    pub(crate) fn key_presence_for_test(&self) -> MasternodeKeyPresence {
+        self.key_presence
+    }
 }
 
 impl MasternodeDetailView {
@@ -293,9 +303,26 @@ impl MasternodeDetailView {
         self.recovery.offered(identity_id, plan);
     }
 
-    /// Re-arm detection after a finished restore, so the offer recomputes and
-    /// disappears once nothing is left stranded.
-    pub(crate) fn recovery_completed(&mut self) {
+    /// Re-read this node from the store and re-arm its recovery check.
+    ///
+    /// The view holds the identity it was opened with, and its key-presence
+    /// line and recovery offer are both derived from it. A restore run from a
+    /// pushed Key Info screen never reaches this view — that screen is on top,
+    /// so it receives the result — which leaves the node page still offering
+    /// keys that are already back, and still warning about a voting key it now
+    /// holds. Called on arrival, so returning from a pushed screen recomputes
+    /// both. Vote selections and any open prompt survive: they belong to the
+    /// user's session, not to the record.
+    pub(crate) fn refresh_from_store(&mut self) {
+        let node_id = self.identity.identity.id();
+        if let Ok(identities) = self.app_context.load_local_masternode_identities()
+            && let Some(identity) = identities
+                .into_iter()
+                .find(|qi| qi.identity.id() == node_id)
+        {
+            self.key_presence = identity.masternode_key_presence();
+            self.identity = identity;
+        }
         self.recovery.completed();
     }
 

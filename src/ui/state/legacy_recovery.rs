@@ -110,27 +110,209 @@ impl LegacyRecoveryState {
         }
     }
 
-    /// Record that a restore finished. Re-arms detection so the offer
-    /// recomputes from the store and disappears once nothing is left stranded.
+    /// Re-arm detection, so the offer recomputes from the store and disappears
+    /// once nothing is left stranded. Called when a restore finishes and
+    /// whenever a screen is arrived at again, since another screen's restore
+    /// may have landed meanwhile.
+    ///
+    /// An install with no previous-version database stays unarmed: there is
+    /// nothing to detect there, ever.
     pub fn completed(&mut self) {
-        self.state = FetchState::NotRequested;
+        if !matches!(self.state, FetchState::Unavailable) {
+            self.state = FetchState::NotRequested;
+        }
     }
 
     /// Record that an in-flight operation failed.
     ///
-    /// A failed restore returns to its offer, so the user can fix what went
-    /// wrong — a mistyped identity password is the common case — and press
-    /// Restore again. A failed detection is terminal for this screen: retrying
-    /// it automatically would re-read the same unreadable row every frame.
-    ///
-    /// Attribution is coarse: an error from an unrelated task that arrives
-    /// while a check is outstanding also lands here. That only hides an offer
-    /// until the identity is opened again, and never re-dispatches anything.
+    /// A failed restore returns to its offer, so a mistyped identity password
+    /// can be corrected and Restore pressed again. A failed detection is
+    /// terminal: retrying it would re-read the same unreadable row every frame.
+    /// Attribution is coarse — an unrelated task's error arriving while a check
+    /// is outstanding lands here too, which only hides an offer until the
+    /// identity is opened again.
     pub fn failed(&mut self) {
         self.state = match std::mem::replace(&mut self.state, FetchState::Failed) {
             FetchState::Restoring(plan) => FetchState::Offered(plan),
             FetchState::Checking => FetchState::Failed,
             other => other,
         };
+    }
+}
+
+#[cfg(test)]
+impl LegacyRecoveryState {
+    /// A state as it stands on an install that does have a previous-version
+    /// database, without needing an `AppContext` to probe for one.
+    fn armed(identity_id: Identifier) -> Self {
+        Self {
+            identity_id,
+            state: FetchState::NotRequested,
+        }
+    }
+
+    /// A state on an install with nothing to read.
+    fn unavailable(identity_id: Identifier) -> Self {
+        Self {
+            identity_id,
+            state: FetchState::Unavailable,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor};
+    use crate::model::qualified_identity::PrivateKeyTarget;
+
+    fn identity(id: u8) -> Identifier {
+        Identifier::from([id; 32])
+    }
+
+    /// A plan with one restorable key, so `Offered` carries something.
+    fn plan() -> RecoveryPlan {
+        RecoveryPlan {
+            items: vec![RecoveryItemDescriptor {
+                item: RecoveryItem::Key {
+                    target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                    key_id: 1,
+                },
+                purpose: None,
+            }],
+            excluded: vec![],
+        }
+    }
+
+    fn is_check(task: &BackendTask) -> bool {
+        matches!(
+            task,
+            BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { .. })
+        )
+    }
+
+    /// Detection is dispatched from the render loop, so the latch is the only
+    /// thing standing between one check and one per frame.
+    #[test]
+    fn detection_is_dispatched_once_while_it_is_outstanding() {
+        let mut state = LegacyRecoveryState::armed(identity(0x01));
+
+        let first = state.ensure_checked().expect("the first frame dispatches");
+        assert!(is_check(&first));
+        assert!(
+            state.ensure_checked().is_none(),
+            "a check already in flight must not be dispatched again",
+        );
+
+        state.offered(identity(0x01), plan());
+        assert!(
+            state.ensure_checked().is_none(),
+            "an answered check must not be re-dispatched either",
+        );
+    }
+
+    /// An install with no previous-version database never asks at all.
+    #[test]
+    fn nothing_is_dispatched_without_previous_version_data() {
+        let mut state = LegacyRecoveryState::unavailable(identity(0x02));
+
+        assert!(state.ensure_checked().is_none());
+        assert!(state.plan().is_none());
+        state.completed();
+        assert!(
+            state.ensure_checked().is_none(),
+            "there is nothing to re-arm on an install with nothing to read",
+        );
+    }
+
+    /// A screen can show one identity while another's check is still in flight,
+    /// so a result must only be adopted by the state that asked for it.
+    #[test]
+    fn a_result_for_another_identity_is_ignored() {
+        let mut state = LegacyRecoveryState::armed(identity(0x03));
+        state.ensure_checked().expect("dispatch");
+
+        state.offered(identity(0x04), plan());
+        assert!(
+            state.plan().is_none(),
+            "that plan belongs to another screen"
+        );
+
+        state.offered(identity(0x03), plan());
+        assert!(state.plan().is_some());
+    }
+
+    /// Restore is only ever the answer to an offer on screen, and it cannot be
+    /// dispatched twice for the same offer.
+    #[test]
+    fn a_restore_needs_an_offer_and_dispatches_once() {
+        let mut state = LegacyRecoveryState::armed(identity(0x05));
+        assert!(
+            state.restore(vec![]).is_none(),
+            "there is no offer to restore yet",
+        );
+
+        state.ensure_checked().expect("dispatch");
+        state.offered(identity(0x05), plan());
+        let task = state.restore(vec![]).expect("an offer can be restored");
+        assert!(matches!(
+            task,
+            BackendTask::IdentityTask(IdentityTask::RecoverLegacyIdentityData { .. })
+        ));
+        assert!(state.is_restoring());
+        assert!(
+            state.restore(vec![]).is_none(),
+            "a restore in flight must not be dispatched again",
+        );
+    }
+
+    /// The offer's whole promise is that it retires itself: a finished restore
+    /// re-arms detection, which recomputes from the store and comes back empty
+    /// once nothing is left stranded.
+    #[test]
+    fn a_finished_restore_re_arms_detection() {
+        let mut state = LegacyRecoveryState::armed(identity(0x06));
+        state.ensure_checked().expect("dispatch");
+        state.offered(identity(0x06), plan());
+        state.restore(vec![]).expect("restore");
+
+        state.completed();
+
+        assert!(state.plan().is_none(), "the finished offer is gone");
+        assert!(!state.is_restoring());
+        assert!(
+            state.ensure_checked().is_some_and(|task| is_check(&task)),
+            "the next frame re-checks, so the offer disappears on its own",
+        );
+    }
+
+    /// A failed restore keeps its offer so the user can correct a mistyped
+    /// password and press Restore again; a failed check gives up instead of
+    /// re-reading an unreadable row every frame.
+    #[test]
+    fn a_failure_returns_a_restore_to_its_offer_but_ends_a_check() {
+        let mut restoring = LegacyRecoveryState::armed(identity(0x07));
+        restoring.ensure_checked().expect("dispatch");
+        restoring.offered(identity(0x07), plan());
+        restoring.restore(vec![]).expect("restore");
+
+        restoring.failed();
+
+        assert!(!restoring.is_restoring());
+        assert!(
+            restoring.plan().is_some(),
+            "the offer survives so the restore can be retried",
+        );
+
+        let mut checking = LegacyRecoveryState::armed(identity(0x08));
+        checking.ensure_checked().expect("dispatch");
+
+        checking.failed();
+
+        assert!(checking.plan().is_none());
+        assert!(
+            checking.ensure_checked().is_none(),
+            "a failed check must not re-read the same row every frame",
+        );
     }
 }

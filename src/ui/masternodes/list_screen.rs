@@ -526,6 +526,15 @@ impl ScreenLike for MasternodesScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload();
         self.reconcile_pending_load();
+        // An open detail view was built from a record another screen may have
+        // written meanwhile — a restore run from the Key Info screen this view
+        // pushed is exactly that case, since the pushed screen receives the
+        // result and this one never hears about it. Re-read the node and re-arm
+        // its recovery check, so the page never keeps offering keys that are
+        // already back.
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.refresh_from_store();
+        }
     }
 
     fn reset_to_root_view(&mut self) {
@@ -566,17 +575,15 @@ impl ScreenLike for MasternodesScreen {
                 return;
             }
             // A restore did change the store. Confirm it, then fall through to
-            // the reload that re-reads this node and re-arms its check, which
-            // now finds nothing stranded and retires the offer.
+            // the reload, whose tail re-opens the detail view for this node —
+            // rebuilding it re-arms the check, which now finds nothing stranded
+            // and retires the offer.
             BackendTaskSuccessResult::LegacyRecoveryCompleted { ref applied, .. } => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     completion_message(!applied.is_empty()),
                     MessageType::Success,
                 );
-                if let MasternodesView::Detail(detail) = &mut self.view {
-                    detail.recovery_completed();
-                }
             }
             _ => {}
         }
@@ -821,6 +828,87 @@ mod tests {
         // Leaving the detail view clears the pill's selection.
         screen.view = MasternodesView::List;
         assert_eq!(screen.selected_node_id(), None);
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A restore run from the pushed Key Info screen never reaches this screen —
+    /// the pushed screen is on top, so it takes the result. Coming back must
+    /// therefore re-read the node and re-arm its check, or the page keeps
+    /// offering keys that are already back and keeps warning about a voting key
+    /// it now holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_re_reads_the_open_node_and_re_arms_its_recovery_offer() {
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+        use dash_sdk::platform::IdentityPublicKey;
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+
+        // The offer the node page was showing before the user opened a key.
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_recovery_plan(
+            node,
+            RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::VoterAssociation,
+                    purpose: None,
+                }],
+                excluded: vec![],
+            },
+        );
+        assert!(detail.has_recovery_offer_for_test());
+        assert!(
+            !detail.key_presence_for_test().voting,
+            "the node starts with no voting key",
+        );
+
+        // What the pushed Key Info screen's restore wrote while this screen was
+        // not the one receiving results.
+        let mut restored = ctx
+            .get_local_qualified_identity(&node)
+            .expect("read the node")
+            .expect("node stored");
+        restored.associated_voter_identity = Some((
+            Identity::create_basic_identity(
+                Identifier::from([0x44; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("voter identity"),
+            IdentityPublicKey::V0(
+                dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+                    id: 0,
+                    purpose: dash_sdk::dpp::identity::Purpose::VOTING,
+                    security_level: dash_sdk::dpp::identity::SecurityLevel::HIGH,
+                    contract_bounds: None,
+                    key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+                    read_only: false,
+                    data: dash_sdk::dpp::platform_value::BinaryData::new(vec![7u8; 20]),
+                    disabled_at: None,
+                },
+            ),
+        ));
+        ctx.update_local_qualified_identity(&restored)
+            .expect("the restore's write");
+
+        screen.refresh_on_arrival();
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must still be open");
+        };
+        assert!(
+            !detail.has_recovery_offer_for_test(),
+            "the stale offer must be retired on arrival, not re-shown",
+        );
+        assert!(
+            detail.key_presence_for_test().voting,
+            "the node page must show the voting key it now holds",
+        );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

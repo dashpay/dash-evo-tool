@@ -211,9 +211,13 @@ impl ScreenLike for KeyInfoScreen {
                 self.recovery.offered(identity_id, plan);
             }
             BackendTaskSuccessResult::LegacyRecoveryCompleted { ref applied, .. } => {
-                // Restored keys land in the vault, so the protection line has to
-                // re-read it; re-arming the check retires the offer once nothing
-                // is left stranded.
+                // The restore wrote this identity's record, so the clone this
+                // screen persists on every key edit is now stale — writing it
+                // back would erase the keys just restored. Restored keys also
+                // land in the vault, so the protection line has to re-read it,
+                // and re-arming the check retires the offer once nothing is
+                // left stranded.
+                self.reload_identity();
                 self.protection_status = None;
                 self.recovery.completed();
                 MessageBanner::set_global(
@@ -838,6 +842,39 @@ impl KeyInfoScreen {
             pending_unprotect: None,
             recovery,
             pending_recovery_restore: None,
+        }
+    }
+
+    /// Re-read this screen's identity from the store, after a backend task
+    /// wrote it.
+    ///
+    /// The screen keeps a clone taken when it opened, and its own key add /
+    /// remove paths persist that whole clone. Any change another writer makes
+    /// while the screen is open therefore has to be picked up here, or the next
+    /// key edit writes it away. The key on screen is refreshed from the same
+    /// record. A read failure leaves the clone alone and says so — the change
+    /// landed, this screen just cannot show it.
+    fn reload_identity(&mut self) {
+        let identity_id = self.identity.identity.id();
+        match self.app_context.get_local_qualified_identity(&identity_id) {
+            Ok(Some(fresh)) => {
+                self.private_key_data = fresh
+                    .private_keys
+                    .get_cloned_private_key_data_and_wallet_info(&(
+                        self.key.purpose().into(),
+                        self.key.id(),
+                    ));
+                self.identity = fresh;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This identity's keys could not be reloaded. Close this key and open it again to see them.",
+                    MessageType::Error,
+                )
+                .with_details(error);
+            }
         }
     }
 
@@ -1474,4 +1511,158 @@ fn render_password_strength(ui: &mut egui::Ui, password: &str) {
                 .fill(fill),
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    use std::collections::BTreeMap;
+
+    const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+    /// An offline, wired context on a throwaway data dir — the identity store
+    /// refuses writes until the wallet backend is up.
+    async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        (ctx, temp_dir)
+    }
+
+    fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: BinaryData::new(vec![id as u8; 20]),
+            disabled_at: None,
+        })
+    }
+
+    fn identity_with(keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
+        let mut private_keys = KeyStorage::default();
+        for (key, secret) in keys {
+            private_keys.private_keys.insert(
+                (MAIN, key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(key.clone()),
+                    PrivateKeyData::Clear(*secret),
+                ),
+            );
+        }
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([0x4E; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    /// This screen persists the identity clone it was opened with on every key
+    /// add or remove. A restore writes that same record behind its back, so the
+    /// completion has to refresh the clone — otherwise the next ordinary key
+    /// edit writes the pre-restore copy back and the restored keys vanish,
+    /// right after a banner said they were back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_restore_refreshes_the_identity_this_screen_writes_back() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let stored = identity_with(&[(on_screen_key.clone(), [0x11; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let mut screen = KeyInfoScreen::new(stored.clone(), on_screen_key, None, &app_context);
+
+        // What the restore writes: the record gains the stranded key.
+        let restored_key = public_key(2, Purpose::TRANSFER);
+        let mut after_restore = stored;
+        after_restore.private_keys.private_keys.insert(
+            (MAIN, restored_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(restored_key.clone()),
+                PrivateKeyData::Clear([0x22; 32]),
+            ),
+        );
+        app_context
+            .update_local_qualified_identity(&after_restore)
+            .expect("the restore's write");
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id,
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .private_keys
+                .contains_key(&(MAIN, restored_key.id())),
+            "the screen must hold the restored record, not the clone it opened with",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
 }

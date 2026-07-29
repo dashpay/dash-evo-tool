@@ -699,6 +699,34 @@ voting *role* (`is_voting_role`) rather than on the voter-identity target — th
 predicate that already decides whether the link is worth offering — so the two
 cannot disagree about which candidate the link belongs to.
 
+**§2.1's "restore first, type the WIF as fallback" did not ship, and cannot.**
+The node page carried a second missing-voter message for the case where the plan
+holds a voting-role candidate. That case requires the modern record to name the
+voter identity, and the only production write that names it
+(`load_identity.rs`) is the same branch that writes the voting key — so a record
+that could show the message is never in the missing-voter state. The message,
+its companion tooltip and the predicate behind them were removed as unreachable;
+`render_missing_voter` shows one honest message and its in-place prompt.
+Restoring such a key safely needs an on-chain check this design rejects offline
+(above), tracked as issue #942.
+
+### 10.12 The operator link is unverifiable in the same way its keys are
+
+§10.10 stopped the legacy file vouching for a key held on a voter or operator
+identity, but left `associated_operator_identity` itself offered with no gate.
+Nothing in production writes that field fresh — `load_identity.rs` only carries
+an existing value over — so an offered operator link was always the legacy
+file's uncorroborated claim.
+
+Restoring it is the same circularity one step further out: the claim lands in
+the modern record, and the next preview reads it back as the outside witness
+`reference_identity` demands, making every operator key in the same file a
+candidate. Shipped: an operator link the modern record does not already carry is
+excluded as `LinkedIdentityUnverified`, like the keys held on that identity. The
+voter link keeps its own `VoterLinkWithoutVotingKey` gate, which answers a
+different question (a link with no key behind it reports a node as able to vote
+when it cannot).
+
 ### 10.11 The fresh-install gate is on rows, not on the file
 
 §2.1 step 1 gated detection on `data.db` existing. Every install passes that

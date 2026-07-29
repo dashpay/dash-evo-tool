@@ -648,10 +648,10 @@ impl WalletSendScreen {
             return None;
         }
         let seed_hash = self.selected_wallet_seed_hash?;
-        let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
-        let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
+        let (snapshot_generation, final_funds_duffs) =
+            self.app_context.asset_lock_probe_snapshot(&seed_hash);
         self.asset_lock_balance
-            .ensure_requested(seed_hash, snapshot_generation, spendable_duffs)
+            .ensure_requested(seed_hash, snapshot_generation, final_funds_duffs)
     }
 
     fn render_asset_lock_balance_status(&mut self, ui: &mut Ui) {
@@ -3316,12 +3316,12 @@ impl WalletSendScreen {
         seed_hash: WalletSeedHash,
         amount_duffs: u64,
     ) {
-        let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
-        let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
+        let (snapshot_generation, final_funds_duffs) =
+            self.app_context.asset_lock_probe_snapshot(&seed_hash);
         let _ = self.asset_lock_balance.ensure_requested(
             seed_hash,
             snapshot_generation,
-            spendable_duffs,
+            final_funds_duffs,
         );
         self.asset_lock_balance
             .store(seed_hash, snapshot_generation, amount_duffs);
@@ -4603,12 +4603,12 @@ mod tests {
             .estimate_shield_from_core_fees_duffs();
         assert!(BUILDER_MAX_DUFFS > platform_fee_duffs);
 
-        let snapshot_generation = screen.app_context.snapshot_generation(&seed_hash);
-        let spendable_duffs = screen.app_context.snapshot_balance(&seed_hash).spendable();
+        let (snapshot_generation, final_funds_duffs) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
         assert!(
             screen
                 .asset_lock_balance
-                .ensure_requested(seed_hash, snapshot_generation, spendable_duffs)
+                .ensure_requested(seed_hash, snapshot_generation, final_funds_duffs)
                 .is_some()
         );
         screen

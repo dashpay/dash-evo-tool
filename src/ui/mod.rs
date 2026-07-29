@@ -637,6 +637,16 @@ impl Screen {
                 screen.app_context = app_context;
                 return;
             }
+            Screen::AddNewIdentityScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_for_network_switch();
+                return;
+            }
+            Screen::TopUpIdentityScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_for_network_switch();
+                return;
+            }
             Screen::WalletSendScreen(screen) => {
                 screen.app_context = app_context;
                 // Drop all state bound to the old network's wallet (wallet, seed
@@ -704,13 +714,11 @@ impl Screen {
             ContractVisualizerScreen,
             AddKeyScreen,
             DocumentQueryScreen,
-            AddNewIdentityScreen,
             RegisterDpnsNameScreen,
             RegisterDataContractScreen,
             UpdateDataContractScreen,
             DocumentActionScreen,
             GroupActionsScreen,
-            TopUpIdentityScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
@@ -746,6 +754,8 @@ impl Screen {
             TransferScreen,
             WalletsBalancesScreen,
             ImportMnemonicScreen,
+            AddNewIdentityScreen,
+            TopUpIdentityScreen,
             WalletSendScreen,
             SingleKeyWalletSendScreen,
             CreateAssetLockScreen,

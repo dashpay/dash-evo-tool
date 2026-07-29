@@ -1468,6 +1468,13 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Snapshot generation and final-funds asset-lock signal from one read.
+    pub fn asset_lock_probe_snapshot(&self, seed_hash: &WalletSeedHash) -> (u64, u64) {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.asset_lock_probe_snapshot(seed_hash))
+            .unwrap_or_default()
+    }
+
     /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
     /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
     ///

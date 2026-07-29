@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 /// high-water marks or unresolved requests permanent dispatch barriers.
 struct FetchState {
     request_generation: u64,
-    request_spendable_duffs: u64,
-    loaded: Option<(u64, u64)>,
-    in_flight_generation: Option<u64>,
-    failed_generation: Option<u64>,
+    request_final_funds_duffs: u64,
+    loaded: Option<(u64, u64, u64)>,
+    in_flight: Option<(u64, u64)>,
+    failed: Option<(u64, u64)>,
 }
 
 /// Async fetch state for asset-lock maximum amounts, keyed by wallet.
@@ -24,45 +24,46 @@ pub struct AssetLockBalanceCache {
 impl AssetLockBalanceCache {
     /// Dispatch at most one live-builder query per relevant wallet snapshot.
     ///
-    /// A spendable-balance change supersedes unresolved work, while generation
-    /// changes with the same spendable balance keep the existing request. A
-    /// lower generation always starts a fresh sequence after a counter reset.
+    /// A final-funds change supersedes unresolved work, while generation
+    /// changes with the same final-funds subtotal keep the existing request.
+    /// A lower generation always starts a fresh sequence after a counter reset.
     pub fn ensure_requested(
         &mut self,
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
-        spendable_duffs: u64,
+        final_funds_duffs: u64,
     ) -> Option<BackendTask> {
         let state = self.states.entry(seed_hash).or_insert(FetchState {
             request_generation: snapshot_generation,
-            request_spendable_duffs: spendable_duffs,
+            request_final_funds_duffs: final_funds_duffs,
             loaded: None,
-            in_flight_generation: None,
-            failed_generation: None,
+            in_flight: None,
+            failed: None,
         });
         let generation_restarted = snapshot_generation < state.request_generation;
-        let spendable_changed = spendable_duffs != state.request_spendable_duffs;
-        if generation_restarted || spendable_changed {
+        let final_funds_changed = final_funds_duffs != state.request_final_funds_duffs;
+        if generation_restarted || final_funds_changed {
             state.request_generation = snapshot_generation;
-            state.request_spendable_duffs = spendable_duffs;
-            state.in_flight_generation = None;
-            state.failed_generation = None;
+            state.request_final_funds_duffs = final_funds_duffs;
+            state.in_flight = None;
+            state.failed = None;
             if generation_restarted {
                 state.loaded = None;
             }
         } else if snapshot_generation != state.request_generation {
             return None;
         }
-        if state.in_flight_generation == Some(snapshot_generation)
-            || state
-                .loaded
-                .is_some_and(|(generation, _)| generation == snapshot_generation)
-            || state.failed_generation == Some(snapshot_generation)
+        let request_key = (snapshot_generation, final_funds_duffs);
+        if state.in_flight == Some(request_key)
+            || state.loaded.is_some_and(|(generation, final_funds, _)| {
+                (generation, final_funds) == request_key
+            })
+            || state.failed == Some(request_key)
         {
             return None;
         }
-        state.in_flight_generation = Some(snapshot_generation);
-        state.failed_generation = None;
+        state.in_flight = Some(request_key);
+        state.failed = None;
         Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
             seed_hash,
             snapshot_generation,
@@ -79,11 +80,15 @@ impl AssetLockBalanceCache {
         let Some(state) = self.states.get_mut(&seed_hash) else {
             return;
         };
-        if state.in_flight_generation == Some(snapshot_generation) {
-            state.in_flight_generation = None;
-            if state.request_generation == snapshot_generation {
-                state.loaded = Some((snapshot_generation, amount_duffs));
-                state.failed_generation = None;
+        if let Some((in_flight_generation, in_flight_final_funds)) = state.in_flight
+            && in_flight_generation == snapshot_generation
+        {
+            state.in_flight = None;
+            if (state.request_generation, state.request_final_funds_duffs)
+                == (in_flight_generation, in_flight_final_funds)
+            {
+                state.loaded = Some((in_flight_generation, in_flight_final_funds, amount_duffs));
+                state.failed = None;
             }
         }
     }
@@ -93,10 +98,14 @@ impl AssetLockBalanceCache {
         let Some(state) = self.states.get_mut(seed_hash) else {
             return;
         };
-        if state.in_flight_generation == Some(snapshot_generation) {
-            state.in_flight_generation = None;
-            if state.request_generation == snapshot_generation {
-                state.failed_generation = Some(snapshot_generation);
+        if let Some((in_flight_generation, in_flight_final_funds)) = state.in_flight
+            && in_flight_generation == snapshot_generation
+        {
+            state.in_flight = None;
+            if (state.request_generation, state.request_final_funds_duffs)
+                == (in_flight_generation, in_flight_final_funds)
+            {
+                state.failed = Some((in_flight_generation, in_flight_final_funds));
             }
         }
     }
@@ -105,14 +114,14 @@ impl AssetLockBalanceCache {
     pub fn get(&self, seed_hash: &WalletSeedHash) -> Option<u64> {
         self.states
             .get(seed_hash)
-            .and_then(|state| state.loaded.map(|(_, amount_duffs)| amount_duffs))
+            .and_then(|state| state.loaded.map(|(_, _, amount_duffs)| amount_duffs))
     }
 
     /// Whether the query failed and needs an explicit retry.
     pub fn is_failed(&self, seed_hash: &WalletSeedHash) -> bool {
-        self.states
-            .get(seed_hash)
-            .is_some_and(|state| state.failed_generation == Some(state.request_generation))
+        self.states.get(seed_hash).is_some_and(|state| {
+            state.failed == Some((state.request_generation, state.request_final_funds_duffs))
+        })
     }
 
     /// Re-arm one wallet's query.
@@ -131,6 +140,7 @@ mod tests {
     use super::AssetLockBalanceCache;
     use crate::backend_task::BackendTask;
     use crate::backend_task::wallet::WalletTask;
+    use crate::wallet_backend::DetWalletBalance;
 
     #[test]
     fn asset_lock_balance_cache_requeries_and_rejects_stale_results_after_snapshot_change() {
@@ -281,5 +291,57 @@ mod tests {
                 }
             )) if requested_seed == seed_hash
         ));
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_requeries_when_unconfirmed_funds_become_final() {
+        let seed_hash = [0x2e; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let unconfirmed = DetWalletBalance {
+            confirmed: 0,
+            unconfirmed: 1_000,
+            total: 1_000,
+        };
+        let confirmed = DetWalletBalance {
+            confirmed: 1_000,
+            unconfirmed: 0,
+            total: 1_000,
+        };
+
+        assert_eq!(unconfirmed.spendable(), confirmed.spendable());
+        assert!(
+            cache
+                .ensure_requested(seed_hash, 7, unconfirmed.confirmed)
+                .is_some()
+        );
+        cache.store(seed_hash, 7, 0);
+
+        assert!(
+            cache
+                .ensure_requested(seed_hash, 8, confirmed.confirmed)
+                .is_some(),
+            "confirmation must re-arm the builder probe even when spendable() is unchanged"
+        );
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_requeries_same_generation_after_loaded_signal_changes() {
+        let seed_hash = [0x2f; 32];
+        let mut cache = AssetLockBalanceCache::default();
+
+        assert!(cache.ensure_requested(seed_hash, 7, 1_000).is_some());
+        cache.store(seed_hash, 7, 900);
+        assert_eq!(cache.get(&seed_hash), Some(900));
+
+        assert!(
+            cache.ensure_requested(seed_hash, 7, 1_500).is_some(),
+            "a changed debounce signal must supersede a loaded result even at the same generation"
+        );
+        cache.store(seed_hash, 7, 1_400);
+        assert_eq!(cache.get(&seed_hash), Some(1_400));
+        assert!(
+            cache.ensure_requested(seed_hash, 7, 1_500).is_none(),
+            "the replacement result must deduplicate its own generation and signal"
+        );
     }
 }

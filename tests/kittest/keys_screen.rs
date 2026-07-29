@@ -14,8 +14,11 @@ use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
+use dash_evo_tool::ui::components::MessageBanner;
+use dash_evo_tool::ui::components::legacy_recovery_section::recovery_item_labels;
 use dash_evo_tool::ui::identities::keys::keys_screen::KeysScreen;
-use dash_evo_tool::ui::{Screen, ScreenLike};
+use dash_evo_tool::ui::masternodes::manage_keys_labels;
+use dash_evo_tool::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
 use dash_sdk::dpp::version::PlatformVersion;
@@ -33,6 +36,12 @@ const AUTH_ROW: &str = "Authentication key ›";
 const PAYOUT_ROW: &str = "Payout address key ›";
 /// The restore control of the recovery offer.
 const RESTORE: &str = "Restore keys";
+/// The banner text a restore that put keys back reports, from
+/// `completion_message(true)`.
+const RESTORED: &str =
+    "Your keys from the previous Dash Evo Tool version have been restored to this identity.";
+/// Stands in for the typed error text `AppState` banners when a restore fails.
+const RESTORE_FAILED: &str = "Those keys could not be restored. Check the password and try again.";
 
 /// A key with a chosen id and purpose. Deterministic data, because the row
 /// labels under test are derived from purpose and id.
@@ -110,6 +119,193 @@ fn harness_for(mut screen: KeysScreen) -> (Harness<'static>, Rc<RefCell<AppActio
         });
     harness.run_steps(3);
     (harness, action)
+}
+
+/// Drive `screen` while keeping a handle on it, so a test can deliver the
+/// results and messages `AppState` would between frames.
+fn harness_keeping_screen(screen: KeysScreen) -> (Harness<'static>, Rc<RefCell<KeysScreen>>) {
+    let screen = Rc::new(RefCell::new(screen));
+    let rendered = screen.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .build_ui(move |ui| {
+            rendered.borrow_mut().ui(ui);
+        });
+    harness.run_steps(3);
+    (harness, screen)
+}
+
+/// Drive `screen` with `banner` already set on the harness's own context, the
+/// way `AppState` sets one before a screen renders.
+fn harness_showing_banner(
+    mut screen: KeysScreen,
+    banner: &'static str,
+    kind: MessageType,
+) -> Harness<'static> {
+    let mut set = false;
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1100.0, 800.0))
+        .build_ui(move |ui| {
+            if !set {
+                MessageBanner::set_global(ui.ctx(), banner, kind);
+                set = true;
+            }
+            screen.ui(ui);
+        });
+    harness.run_steps(3);
+    harness
+}
+
+/// The screen must actually render global banners. It is built on
+/// `island_central_panel` for this reason: that is the only caller of
+/// `MessageBanner::show_global`, so on a bare `CentralPanel` every restore
+/// outcome would be invisible and a failed restore would look exactly like a
+/// successful one — the offer self-extinguishes on the next check either way.
+#[test]
+fn the_keys_list_renders_global_banners() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let identity = stranded_identity(0x39, &[Purpose::AUTHENTICATION], "banner-channel");
+
+        let success = harness_showing_banner(
+            KeysScreen::new(identity.clone(), &app_context),
+            RESTORED,
+            MessageType::Success,
+        );
+        assert!(
+            success.query_by_label(RESTORED).is_some(),
+            "a success banner must be visible on the keys list"
+        );
+
+        let failure = harness_showing_banner(
+            KeysScreen::new(identity, &app_context),
+            RESTORE_FAILED,
+            MessageType::Error,
+        );
+        assert!(
+            failure.query_by_label(RESTORE_FAILED).is_some(),
+            "an error banner must be visible on the keys list too — a restore that \
+             failed must not read as one that worked"
+        );
+    });
+}
+
+/// A finished restore announces itself. The offer disappearing proves nothing
+/// on its own: it self-extinguishes on the next check whatever the outcome, so
+/// without this banner a user cannot tell a restore that landed from one that
+/// did not.
+#[test]
+fn a_finished_restore_reports_its_outcome() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let identity = stranded_identity(0x3a, &[Purpose::AUTHENTICATION], "restore-outcome");
+        let identity_id = identity.identity.id();
+        let mut screen = KeysScreen::new(identity, &app_context);
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id,
+            applied: vec![RecoveryItemDescriptor {
+                item: RecoveryItem::Key {
+                    target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                    key_id: 0,
+                },
+                purpose: Some(Purpose::AUTHENTICATION),
+            }],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+
+        assert!(
+            MessageBanner::has_global(app_context.egui_ctx()),
+            "a completed restore must raise a banner saying so"
+        );
+    });
+}
+
+/// A restore that failed keeps its offer, so a mistyped identity password can
+/// be corrected and Restore pressed again rather than the remedy vanishing.
+#[test]
+fn a_failed_restore_leaves_the_offer_in_place_to_retry() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let identity = stranded_identity(0x3b, &[Purpose::AUTHENTICATION], "restore-retry");
+        let identity_id = identity.identity.id();
+        let mut screen = KeysScreen::new(identity, &app_context);
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCandidates {
+            identity_id,
+            plan: plan(),
+        });
+
+        let (mut harness, screen) = harness_keeping_screen(screen);
+        harness.get_by_label(RESTORE).click();
+        harness.run_steps(2);
+
+        // How a failed restore reaches the screen: `AppState` banners the typed
+        // error centrally and tells the screen a message was displayed.
+        screen
+            .borrow_mut()
+            .display_message(RESTORE_FAILED, MessageType::Error);
+        harness.run_steps(2);
+
+        assert!(
+            harness.query_by_label(RESTORE).is_some(),
+            "a failed restore must leave its offer on screen so it can be retried"
+        );
+    });
+}
+
+/// AC-6: the offer and the key list must name the same key identically. They
+/// are rendered by different modules from different types, so the only thing
+/// keeping them in step is that both derive their wording from the shared
+/// vocabulary — this pins that, since a private re-implementation on either
+/// side would read plausibly and drift silently.
+#[test]
+fn the_offer_and_the_key_list_name_a_key_identically() {
+    let voting = key(0, Purpose::VOTING);
+    let owner = key(1, Purpose::OWNER);
+    let payout = key(2, Purpose::TRANSFER);
+
+    let list_labels: Vec<String> = manage_keys_labels(&[
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, voting.clone()),
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.clone()),
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, payout.clone()),
+    ])
+    .into_iter()
+    .map(|(label, _)| label)
+    .collect();
+
+    let descriptors: Vec<RecoveryItemDescriptor> = [
+        (0, Purpose::VOTING),
+        (1, Purpose::OWNER),
+        (2, Purpose::TRANSFER),
+    ]
+    .into_iter()
+    .map(|(key_id, purpose)| RecoveryItemDescriptor {
+        item: RecoveryItem::Key {
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id,
+        },
+        purpose: Some(purpose),
+    })
+    .collect();
+    let offer_labels: Vec<String> = recovery_item_labels(&descriptors.iter().collect::<Vec<_>>())
+        .into_iter()
+        .map(|(label, _)| label)
+        .collect();
+
+    assert_eq!(
+        list_labels, offer_labels,
+        "the keys list and the restore offer must name the same key the same way"
+    );
+    assert_eq!(
+        list_labels,
+        vec![
+            "Voting key".to_string(),
+            "Owner key".to_string(),
+            "Payout address key".to_string()
+        ],
+        "and both must use the DIP-3 role words, not raw Platform purposes"
+    );
 }
 
 /// Clicking Back on the keys list pops it off the screen stack, closing the

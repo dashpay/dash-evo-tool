@@ -512,3 +512,80 @@ fn key_info_is_reachable_from_the_identity_hub_in_default_view() {
         );
     });
 }
+
+/// Both restore outcomes, reported on the real keys list inside the running
+/// app — not a component harness with its own context.
+///
+/// The component tests above prove the screen sets a banner and that it renders
+/// whatever banner its context carries. Only this one closes the seam between
+/// those two facts: that the context the screen writes its outcome into is the
+/// context it renders from. It is worth its own test because the keys list only
+/// gained `island_central_panel` in this change, and a restore that reported
+/// nothing would be indistinguishable from one that worked — the offer retires
+/// itself either way.
+#[test]
+fn a_restore_reports_success_and_failure_on_the_keys_list_in_the_running_app() {
+    use dash_evo_tool::ui::RootScreenType;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        harness.set_size(egui::vec2(1280.0, 1800.0));
+        let app_context = harness.state().current_app_context().clone();
+        let identity = stranded_identity(0x3c, &[Purpose::AUTHENTICATION], "restore-report");
+        let identity_id = identity.identity.id();
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("seed the stranded identity");
+        harness.run_steps(5);
+
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Settings")
+            .find(|node| node.accesskit_node().toggled().is_none())
+            .expect("the hub must render a Settings tab")
+            .click();
+        harness.run_steps(3);
+        harness.get_by_label("Advanced").click();
+        harness.run_steps(3);
+        harness.get_by_label("Manage keys").click();
+        harness.run_steps(3);
+
+        // A restore that put a key back, delivered the way the app delivers one.
+        match harness.state_mut().visible_screen_mut() {
+            Screen::KeysScreen(screen) => {
+                screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                    identity_id,
+                    applied: vec![RecoveryItemDescriptor {
+                        item: RecoveryItem::Key {
+                            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                            key_id: 0,
+                        },
+                        purpose: Some(Purpose::AUTHENTICATION),
+                    }],
+                    skipped_stale: vec![],
+                    excluded: vec![],
+                });
+            }
+            _ => panic!("the keys list must be the visible screen"),
+        }
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label(RESTORED).is_some(),
+            "a restore that landed must say so on the keys list itself"
+        );
+
+        // The failing case: `AppState` banners a task error centrally, on this
+        // same context. The keys list has to surface that too, or a restore
+        // that failed reads exactly like one that worked.
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        harness.run_steps(2);
+        MessageBanner::set_global(app_context.egui_ctx(), RESTORE_FAILED, MessageType::Error);
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label(RESTORE_FAILED).is_some(),
+            "a restore that failed must say so on the keys list too"
+        );
+    });
+}

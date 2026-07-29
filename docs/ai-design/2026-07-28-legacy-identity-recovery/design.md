@@ -104,9 +104,12 @@ Two surfaces, one shared component:
   fallback — which is the user story verbatim ("without having to re-enter
   WIFs I no longer have on hand").
 - **Key Info screen** (`ui/identities/keys/key_info_screen.rs`), reached from
-  the Identities screen for `User` identities and via "Manage keys" for nodes —
+  the identity keys list for `User` identities and via "Manage keys" for nodes —
   the issue's suggested location, covering the non-masternode partial-load
-  variant.
+  variant. The `User` route did not exist when this was written; see §10.13.
+- **Identity keys list** (`ui/identities/keys/keys_screen.rs`), the
+  identity-scoped surface reached from Settings → Advanced → "Manage keys". The
+  offer renders above the key rows, so it is found without opening a key.
 
 Gating, cheap to strict:
 
@@ -748,3 +751,27 @@ The kittest was replaced by lib tests over a real file-backed `data.db`
 (`only_a_legacy_identity_row_for_this_network_arms_the_check`), which assert the
 premise directly — the file exists and the gate still says no — and cover the
 network scoping a file check could never have.
+
+### 10.13 The Key Info offer needed a route before it was reachable at all
+
+§2.1 named the Key Info screen as reachable "from the Identities screen for
+`User` identities and via 'Manage keys' for nodes", and §7 row 1 called the
+entry point discoverable. Both were false for `User` identities as shipped.
+
+The legacy `IdentitiesScreen` per-key popup is the route §2.1 means, and
+`ui/components/left_panel.rs` deliberately drops `RootScreenIdentities` from the
+nav, so nothing navigates to it. The identity hub's replacement surface —
+Settings → Advanced → "Manage keys" — opened a read-only key table with no way
+into `KeyInfoScreen`. Every remaining route (transfer, withdraw, the token
+screens) is gated on the identity already holding a key of the kind that action
+needs, which is exactly false for the identities this flow exists to help. A
+`User` identity with stranded keys could therefore reach the offer only in
+Developer view, through a send-money screen.
+
+Shipped: `KeysScreen` carries the `QualifiedIdentity`, renders one row per key
+in the §10.8 vocabulary with its held state in words, and opens
+`KeyInfoScreen` for any key regardless of what the device holds. The offer
+itself renders on that list, above the rows, because it is identity-scoped —
+requiring a user to pick an arbitrary key to discover an identity-level offer
+repeats the defect one level up. The offer stays on `KeyInfoScreen` too: it
+self-extinguishes, and the masternode path lands there.

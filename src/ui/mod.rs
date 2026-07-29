@@ -47,7 +47,6 @@ use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
-use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
@@ -154,7 +153,10 @@ pub enum ScreenType {
         IdentityPublicKey,
         Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
     ),
-    Keys(Identity),
+    /// The identity keys list. Carries the qualified record, not the bare
+    /// `Identity`: the screen has to say which keys this device actually holds
+    /// and open `KeyInfo` with that key's private material.
+    Keys(QualifiedIdentity),
     DocumentQuery,
     NetworkChooser,
     RegisterDpnsName(RegisterDpnsNameSource),

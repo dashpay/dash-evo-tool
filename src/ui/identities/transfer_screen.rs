@@ -16,6 +16,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identities::keys::keys_screen::KeysScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -647,12 +648,28 @@ impl ScreenLike for TransferScreen {
                 );
                 ui.add_space(10.0);
 
-                if ui.button("Add key").clicked() {
-                    inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
-                        &self.app_context,
-                    )));
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Add key").clicked() {
+                        inner_action |= AppAction::AddScreen(Screen::AddKeyScreen(
+                            AddKeyScreen::new(self.identity.clone(), &self.app_context),
+                        ));
+                    }
+                    // Entering a key by hand is not the only remedy: a key this
+                    // identity left behind in the previous version's data can be
+                    // brought across from the keys list. The gate above is
+                    // untouched — it still correctly says this identity cannot
+                    // send; the branch just stops being a dead end.
+                    if ui
+                        .button("Manage keys")
+                        .clickable_tooltip("See every key of this identity and what it is for.")
+                        .clicked()
+                    {
+                        inner_action |= AppAction::AddScreen(Screen::KeysScreen(KeysScreen::new(
+                            self.identity.clone(),
+                            &self.app_context,
+                        )));
+                    }
+                });
             } else {
                 if let Some(key) = key_for_info {
                     if ui.button("Manage Transfer Key").clicked() {

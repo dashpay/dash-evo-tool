@@ -670,7 +670,10 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 
 As a user whose identity was already in the app before the upgrade — a masternode loaded from its ProTxHash, or an identity holding only some of its keys — I want to bring across the keys that stayed behind in the previous version's data, so that I do not have to re-enter private keys I no longer have on hand.
 
-- The offer appears on the identity's own page — the node detail page and the Key Info screen — only when the previous version's data actually holds keys this identity does not, and it disappears once there is nothing left to restore.
+- The offer appears on the identity's own page — the node detail page, the identity's keys list, and the Key Info screen — only when the previous version's data actually holds keys this identity does not, and it disappears once there is nothing left to restore.
+- The keys list is reachable without changing the interface mode and without starting a payment: an identity's keys are listed under Settings, and every key opens its own page whether or not this device holds that key. Keys that are missing are exactly the ones a user comes here about, so a key the device does not hold is never hidden or unopenable.
+- The offer sits above the key list, so a user whose keys are missing finds it without opening a key first.
+- Each key is named by its role and says whether it is saved on this device, in words rather than by colour alone.
 - The list names each key by its role and is exactly what gets restored. Nothing is restored without pressing Restore, and nothing happens automatically at launch or during the upgrade.
 - Keys already saved for the identity are never replaced or removed — only missing ones are added. An identity the user deleted is never brought back.
 - On a password-protected identity the identity password is asked for first; cancelling, or getting it wrong, leaves everything exactly as it was.

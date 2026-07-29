@@ -13,7 +13,11 @@ pub mod testnet_fixture;
 
 pub use list_screen::MasternodesScreen;
 
-use crate::model::qualified_identity::MasternodeKeyPresence;
+use crate::model::qualified_identity::{
+    MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
+};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 
 /// Tooltip copy for the Dash Core DIP-3 ProRegTx key roles, shared by the detail
 /// view's "Manage keys" list and the load form's key fields so both surfaces use
@@ -94,6 +98,75 @@ pub fn role_label_and_tip(
     }
 }
 
+/// A short role name for one key and its tooltip, from the shared
+/// [`role_label_and_tip`] vocabulary.
+pub fn key_role_label(
+    target: &PrivateKeyTarget,
+    key: &dash_sdk::platform::IdentityPublicKey,
+) -> (String, Option<&'static str>) {
+    role_label_and_tip(
+        *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+        key.purpose(),
+    )
+}
+
+/// Every key of `identity` a "Manage keys" list shows: main-identity keys
+/// first, then voter-identity keys, each paired with the [`PrivateKeyTarget`]
+/// that scopes it.
+///
+/// Shared so the masternode detail view and the identity keys list enumerate
+/// keys identically. The target is what pairs a public key with the private
+/// material the device may hold for it, so deriving it in one place is what
+/// keeps the two surfaces agreeing on which keys are held.
+pub fn identity_keys(
+    identity: &QualifiedIdentity,
+) -> Vec<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
+    let mut keys: Vec<_> = identity
+        .identity
+        .public_keys()
+        .values()
+        .map(|key| (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.clone()))
+        .collect();
+    if let Some((voter, _)) = identity.associated_voter_identity.as_ref() {
+        keys.extend(
+            voter
+                .public_keys()
+                .values()
+                .map(|key| (PrivateKeyTarget::PrivateKeyOnVoterIdentity, key.clone())),
+        );
+    }
+    keys
+}
+
+/// Button labels (and DIP-3-aligned tooltips) for a "Manage keys" list, one
+/// per entry of `keys`, in order.
+///
+/// Each label is the key's role word (`Owner`/`Payout address`/`Voting`/…)
+/// plus a `(disabled)` marker for keys platform has retired: a node that
+/// rotates its payout address keeps the old, disabled Payout key on-chain
+/// next to the new active one, so a role word alone is not unique. Keys that
+/// would still collide are told apart by their key id.
+pub fn manage_keys_labels(
+    keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
+) -> Vec<(String, Option<&'static str>)> {
+    let mut labels: Vec<(String, Option<&'static str>)> = keys
+        .iter()
+        .map(|(target, key)| {
+            let (role, tip) = key_role_label(target, key);
+            let label = if key.is_disabled() {
+                format!("{role} key (disabled)")
+            } else {
+                format!("{role} key")
+            };
+            (label, tip)
+        })
+        .collect();
+
+    let key_ids: Vec<_> = keys.iter().map(|(_, key)| Some(key.id())).collect();
+    disambiguate_role_labels(&mut labels, &key_ids);
+    labels
+}
+
 /// Make every label in `labelled` unique by appending `#{key id}` to the ones
 /// that would otherwise appear more than once.
 ///
@@ -121,6 +194,111 @@ pub fn disambiguate_role_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a masternode key with a chosen id / purpose / disabled state.
+    fn mn_key(
+        id: dash_sdk::dpp::identity::KeyID,
+        purpose: dash_sdk::dpp::identity::Purpose,
+        disabled: bool,
+    ) -> dash_sdk::platform::IdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+        use dash_sdk::dpp::platform_value::BinaryData;
+        IdentityPublicKeyV0 {
+            id,
+            key_type: KeyType::ECDSA_HASH160,
+            purpose,
+            security_level: SecurityLevel::CRITICAL,
+            read_only: true,
+            data: BinaryData::new(vec![id as u8; 20]),
+            disabled_at: disabled.then_some(1),
+            contract_bounds: None,
+        }
+        .into()
+    }
+
+    /// An evonode that has rotated its payout address holds two `TRANSFER`
+    /// (Payout) keys on its main identity — the active new one and the disabled
+    /// old one — plus the owner key and a voter-identity voting key. Every
+    /// "Manage keys" button must get a distinct, correct label: the disabled
+    /// payout key is marked `(disabled)` instead of colliding with the active
+    /// one under a bare "Payout key".
+    #[test]
+    fn manage_keys_labels_disambiguate_rotated_evonode_payout_keys() {
+        use dash_sdk::dpp::identity::Purpose;
+        let keys = vec![
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(0, Purpose::TRANSFER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(1, Purpose::OWNER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(2, Purpose::TRANSFER, true),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+                mn_key(0, Purpose::VOTING, false),
+            ),
+        ];
+
+        let labels: Vec<String> = manage_keys_labels(&keys)
+            .into_iter()
+            .map(|(label, _tip)| label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Payout address key".to_string(),
+                "Owner key".to_string(),
+                "Payout address key (disabled)".to_string(),
+                "Voting key".to_string(),
+            ]
+        );
+        // No two buttons ever share a label.
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "labels must be unique");
+    }
+
+    /// When even the role + `(disabled)` marker still collides — a payout
+    /// address rotated twice leaves two disabled Payout keys — the key id
+    /// breaks the tie so every button stays unique.
+    #[test]
+    fn manage_keys_labels_fall_back_to_key_id_on_residual_collision() {
+        use dash_sdk::dpp::identity::Purpose;
+        let keys = vec![
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(0, Purpose::TRANSFER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(2, Purpose::TRANSFER, true),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(3, Purpose::TRANSFER, true),
+            ),
+        ];
+
+        let labels: Vec<String> = manage_keys_labels(&keys)
+            .into_iter()
+            .map(|(label, _tip)| label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Payout address key".to_string(),
+                "Payout address key (disabled) #2".to_string(),
+                "Payout address key (disabled) #3".to_string(),
+            ]
+        );
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "labels must be unique");
+    }
 
     #[test]
     fn role_labels_follow_dip3_protx_terms() {

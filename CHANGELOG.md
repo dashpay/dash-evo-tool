@@ -84,6 +84,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An identity's keys are reachable again**: the keys list under an identity's
+  Settings → Advanced now opens each key's own page, so keys can be inspected,
+  signed with, password-protected, or restored without changing the interface
+  mode and without starting a payment. Previously that list was a read-only
+  table with no way onward, and the only route to a key's page ran through the
+  "Send to another identity" screen, which offers it only when the identity
+  already holds a transfer key — so an identity missing its keys, the one case
+  where this matters most, could not get to them at all. The offer to restore
+  keys left behind by an earlier version now also appears on the keys list
+  itself, above the keys, rather than only inside a key's page. Each key is
+  named by its role and states whether it is saved on this device.
+
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and
   wallet removals also keep displayed aliases and deleted-wallet metadata

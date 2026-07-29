@@ -76,7 +76,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the check is running, the amount field shows "Checking the available
   amount…"; if it fails, "The available amount could not be checked."
   appears with a "Retry available amount check" button, and you can still
-  switch to a different funding method at any point.
+  switch to a different funding method at any point. For a very large
+  wallet, this check is capped at a few seconds; if it can't finish in
+  time, the amount field explains that and suggests sending a smaller
+  amount or trying again shortly.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

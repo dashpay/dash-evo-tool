@@ -1285,6 +1285,77 @@ mod tests {
         offline.shutdown().await;
     }
 
+    /// B13 — an identity that gains password protection mid-flight fails
+    /// closed. The dry run on a keyless identity decides no password is needed;
+    /// a concurrent `ProtectIdentityKeys` makes the record Tier-2 before the
+    /// write section re-reads it, and the write must refuse rather than seal
+    /// the merged keys under a password state nothing ever verified.
+    ///
+    /// Drives `persist_legacy_recovery` directly with the `None` the dry run
+    /// produced, the way B5 drives `verify_recovery_password`: a Tier-1 restore
+    /// never prompts, so there is no await point between the two for a
+    /// concurrent task to land in deterministically. The dry run is exercised
+    /// first, so the `None` under test is the one production would carry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b13_an_identity_protected_during_the_flow_fails_closed() {
+        let offline = Offline::new(Some(Arc::new(TestPrompt::never()))).await;
+        let ctx = &offline.ctx;
+
+        let owner = test_key(1, Purpose::OWNER, 0x1A);
+        let stranded = test_key(2, Purpose::TRANSFER, 0x2B);
+        let modern = identity_with_keys(
+            0xB1,
+            IdentityType::Masternode,
+            &[&stranded],
+            vec![(M, &owner, owner.clear())],
+        );
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert the keyless modern record");
+        let legacy = identity_with_keys(
+            0xB1,
+            IdentityType::Masternode,
+            &[],
+            vec![(M, &stranded, stranded.clear())],
+        );
+        offline.stage_legacy(&legacy);
+
+        let approved = vec![RecoveryItem::Key {
+            target: M,
+            key_id: 2,
+        }];
+        let stored = ctx
+            .get_local_qualified_identity(&identity_id)
+            .expect("read the record")
+            .expect("record stored");
+        assert!(
+            ctx.verify_recovery_password(&stored, legacy, &approved)
+                .await
+                .expect("the dry run must succeed")
+                .is_none(),
+            "a keyless identity needs no password, which is what makes this guard reachable",
+        );
+
+        // The transition the guard exists for, landing before the write.
+        ctx.protect_identity_keys(identity_id, Secret::new(PW), None)
+            .expect("seal the identity Tier-2");
+        let before = ctx
+            .stored_identity_blob(&identity_id)
+            .expect("read stored blob")
+            .expect("record stored");
+
+        let error = ctx
+            .persist_legacy_recovery(identity_id, &approved, None)
+            .expect_err("the write must refuse a password state nothing verified");
+        assert!(
+            matches!(error, TaskError::LegacyRecoveryIdentityChanged),
+            "expected LegacyRecoveryIdentityChanged, got {error:?}",
+        );
+        assert_unchanged(&offline, identity_id, &before);
+
+        offline.shutdown().await;
+    }
+
     /// A legacy key excluded as unreadable is reported to the user with its
     /// reason rather than silently dropped, and never restored.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -139,15 +139,6 @@ impl TopUpIdentityScreen {
             .wallet
             .as_ref()
             .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
-        if let Some(seed_hash) = seed_hash {
-            let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
-            if let Some(task) = self
-                .asset_lock_balance
-                .ensure_requested(seed_hash, snapshot_generation)
-            {
-                action |= AppAction::BackendTask(task);
-            }
-        }
 
         if step == WalletFundedScreenStep::WaitingOnFunds {
             ui.heading(format!(

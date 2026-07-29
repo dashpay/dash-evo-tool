@@ -98,13 +98,6 @@ impl TopUpIdentityScreen {
         let Some(seed_hash) = seed_hash else {
             return action;
         };
-        let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
-        if let Some(task) = self
-            .asset_lock_balance
-            .ensure_requested(seed_hash, snapshot_generation)
-        {
-            action |= AppAction::BackendTask(task);
-        }
         if self.asset_lock_balance.is_failed(&seed_hash) {
             ui.label("The available amount could not be checked.");
             if ui.button("Retry available amount check").clicked() {

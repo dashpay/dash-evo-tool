@@ -4,7 +4,7 @@ mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod success_screen;
 
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
@@ -27,7 +27,8 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::{
-    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
+    FundingMethod, WalletFundedScreenStep, append_concurrent_backend_tasks,
+    can_append_concurrent_backend_tasks, default_funding_state, deposit_event_outcome,
     max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, spendable_covers_minimum,
     step_after_task_failure, wallet_selection_combo,
 };
@@ -46,23 +47,6 @@ use std::sync::{Arc, RwLock};
 
 const WALLET_SELECTION_TOOLTIP: &str =
     "Choose the wallet that will supply or receive the Dash used to add funds to this identity.";
-
-fn pending_backend_tasks_action(
-    mut lock_fetches: Vec<BackendTask>,
-    funding_address_request: Option<BackendTask>,
-) -> AppAction {
-    if let Some(task) = funding_address_request {
-        lock_fetches.push(task);
-    }
-    match lock_fetches.pop() {
-        None => AppAction::None,
-        Some(task) if lock_fetches.is_empty() => AppAction::BackendTask(task),
-        Some(task) => {
-            lock_fetches.push(task);
-            AppAction::BackendTasks(lock_fetches, BackendTasksExecutionMode::Concurrent)
-        }
-    }
-}
 
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
@@ -797,6 +781,7 @@ impl ScreenLike for TopUpIdentityScreen {
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
+        let mut request_asset_lock_balance = false;
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
@@ -926,12 +911,14 @@ impl ScreenLike for TopUpIdentityScreen {
                         inner_action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
                     }
                     FundingMethod::UseWalletBalance => {
+                        request_asset_lock_balance = true;
                         inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
                     }
                     FundingMethod::UsePlatformAddress => {
                         inner_action |= self.render_ui_by_platform_address(ui, step_number);
                     }
                     FundingMethod::ReceiveDeposit => {
+                        request_asset_lock_balance = true;
                         inner_action |= self.render_ui_by_receive_deposit(ui, step_number);
                     }
                 }
@@ -968,34 +955,51 @@ impl ScreenLike for TopUpIdentityScreen {
                 });
         }
 
-        // Fetch tracked asset locks once per wallet (off the UI thread). The
-        // funding-method gate and wallet selector check every wallet, so all
-        // are requested together as one concurrent batch.
-        let seed_hashes: Vec<_> = self
-            .app_context
-            .wallets
-            .read()
-            .map(|wallets| {
-                wallets
-                    .values()
-                    .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let lock_fetches = self.asset_lock_cache.ensure_requested_many(seed_hashes);
+        if can_append_concurrent_backend_tasks(&action) {
+            // Fetch tracked asset locks once per wallet (off the UI thread). The
+            // funding-method gate and wallet selector check every wallet, so all
+            // are requested together as one concurrent batch.
+            let seed_hashes: Vec<_> = self
+                .app_context
+                .wallets
+                .read()
+                .map(|wallets| {
+                    wallets
+                        .values()
+                        .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut pending_tasks = self.asset_lock_cache.ensure_requested_many(seed_hashes);
 
-        // Derive the "Receive a new deposit" address off the UI thread; the QR
-        // view queues this when it has no address yet.
-        let funding_address_request =
-            self.pending_funding_address_request
-                .take()
-                .map(|seed_hash| {
-                    BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash })
-                });
-        if funding_address_request.is_some() {
-            self.funding_address_request_in_flight = true;
+            if request_asset_lock_balance
+                && let Some(seed_hash) = self
+                    .wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            {
+                let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
+                let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
+                if let Some(task) = self.asset_lock_balance.ensure_requested(
+                    seed_hash,
+                    snapshot_generation,
+                    spendable_duffs,
+                ) {
+                    pending_tasks.push(task);
+                }
+            }
+
+            // Derive the "Receive a new deposit" address off the UI thread; the QR
+            // view queues this when it has no address yet.
+            if let Some(seed_hash) = self.pending_funding_address_request.take() {
+                self.funding_address_request_in_flight = true;
+                pending_tasks.push(BackendTask::WalletTask(
+                    WalletTask::GenerateReceiveAddress { seed_hash },
+                ));
+            }
+
+            action = append_concurrent_backend_tasks(action, pending_tasks);
         }
-        action |= pending_backend_tasks_action(lock_fetches, funding_address_request);
 
         action
     }
@@ -1004,26 +1008,26 @@ impl ScreenLike for TopUpIdentityScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::BackendTasksExecutionMode;
 
     #[test]
-    fn same_frame_dispatch_keeps_lock_fetches_and_receive_address_request() {
+    fn same_frame_dispatch_keeps_probe_and_other_backend_tasks() {
         let lock_seed_a = [1u8; 32];
-        let lock_seed_b = [2u8; 32];
+        let probe_seed = [2u8; 32];
         let receive_seed = [3u8; 32];
-        let action = pending_backend_tasks_action(
+        let action = append_concurrent_backend_tasks(
+            AppAction::BackendTask(BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
+                seed_hash: lock_seed_a,
+            })),
             vec![
-                BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
-                    seed_hash: lock_seed_a,
+                BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                    seed_hash: probe_seed,
+                    snapshot_generation: 9,
                 }),
-                BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
-                    seed_hash: lock_seed_b,
+                BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+                    seed_hash: receive_seed,
                 }),
             ],
-            Some(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress {
-                    seed_hash: receive_seed,
-                },
-            )),
         );
 
         let AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) = action else {
@@ -1037,8 +1041,10 @@ mod tests {
         )));
         assert!(tasks.iter().any(|task| matches!(
             task,
-            BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash })
-                if *seed_hash == lock_seed_b
+            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation: 9,
+            }) if *seed_hash == probe_seed
         )));
         assert!(tasks.iter().any(|task| matches!(
             task,

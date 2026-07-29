@@ -4,7 +4,7 @@ mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod success_screen;
 
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{
@@ -27,7 +27,8 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::{
-    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
+    FundingMethod, WalletFundedScreenStep, append_concurrent_backend_tasks,
+    can_append_concurrent_backend_tasks, default_funding_state, deposit_event_outcome,
     funding_method_after_switch, max_amount_after_fee_reserve, receive_deposit_ceiling_duffs,
     spendable_covers_minimum, step_after_task_failure, wallet_selection_combo,
 };
@@ -1542,6 +1543,7 @@ impl ScreenLike for AddNewIdentityScreen {
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
+        let mut request_asset_lock_balance = false;
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
@@ -1714,12 +1716,14 @@ impl ScreenLike for AddNewIdentityScreen {
                         inner_action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
                     },
                     FundingMethod::UseWalletBalance => {
+                        request_asset_lock_balance = true;
                         inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
                     },
                     FundingMethod::UsePlatformAddress => {
                         inner_action |= self.render_ui_by_platform_address(ui, step_number);
                     },
                     FundingMethod::ReceiveDeposit => {
+                        request_asset_lock_balance = true;
                         inner_action |= self.render_ui_by_receive_deposit(ui, step_number);
                     },
                 }
@@ -1756,66 +1760,76 @@ impl ScreenLike for AddNewIdentityScreen {
             }
         }
 
-        // Drain the queued end-of-frame backend reads into one concurrent batch
-        // so none clobbers another (`AppAction`'s `|=` keeps only the last
-        // value).
-        let mut pending_tasks: Vec<BackendTask> = Vec::new();
+        if can_append_concurrent_backend_tasks(&action) {
+            // Drain the queued end-of-frame backend reads into one concurrent
+            // batch so none clobbers another.
+            let mut pending_tasks: Vec<BackendTask> = Vec::new();
 
-        // Auth-pubkey cache warm (cold-cache cover for the chooser, RK-2). One
-        // in-flight at a time via `warming_identity_keys`.
-        if let Some((seed_hash, identity_index)) = self.pending_warm_request.take() {
-            // Warm at least the default range, plus a margin for any
-            // advanced-mode keys already added beyond it.
-            let key_count = self
-                .default_key_count()
-                .max(self.identity_keys.others.len() as u32 + 2);
-            pending_tasks.push(BackendTask::WalletTask(
-                WalletTask::WarmIdentityAuthPubkeys {
+            // Auth-pubkey cache warm (cold-cache cover for the chooser, RK-2). One
+            // in-flight at a time via `warming_identity_keys`.
+            if let Some((seed_hash, identity_index)) = self.pending_warm_request.take() {
+                // Warm at least the default range, plus a margin for any
+                // advanced-mode keys already added beyond it.
+                let key_count = self
+                    .default_key_count()
+                    .max(self.identity_keys.others.len() as u32 + 2);
+                pending_tasks.push(BackendTask::WalletTask(
+                    WalletTask::WarmIdentityAuthPubkeys {
+                        seed_hash,
+                        identity_index,
+                        key_count,
+                    },
+                ));
+            }
+
+            // "Show WIF" derivation (advanced mode); the seed is fetched
+            // just-in-time in the backend and only the WIF returns.
+            if let Some((_key_id, derivation_path)) = self.pending_wif_request.take()
+                && let Some(wallet) = &self.selected_wallet
+            {
+                let seed_hash = wallet.read_recover().seed_hash();
+                pending_tasks.push(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
                     seed_hash,
-                    identity_index,
-                    key_count,
-                },
-            ));
-        }
-
-        // "Show WIF" derivation (advanced mode); the seed is fetched
-        // just-in-time in the backend and only the WIF returns.
-        if let Some((_key_id, derivation_path)) = self.pending_wif_request.take()
-            && let Some(wallet) = &self.selected_wallet
-        {
-            let seed_hash = wallet.read_recover().seed_hash();
-            pending_tasks.push(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
-                seed_hash,
-                derivation_path,
-            }));
-        }
-
-        // Fetch the selected wallet's tracked asset locks once (off the UI
-        // thread) so the funding-method gate and the picker can read them.
-        if let Some(wallet) = &self.selected_wallet {
-            let seed_hash = wallet.read_recover().seed_hash();
-            if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
-                pending_tasks.push(task);
+                    derivation_path,
+                }));
             }
-        }
 
-        // Derive the "Receive a new deposit" address off the UI thread; the QR
-        // view queues this when it has no address yet.
-        if let Some(seed_hash) = self.pending_funding_address_request.take() {
-            self.funding_address_request_in_flight = true;
-            pending_tasks.push(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress { seed_hash },
-            ));
-        }
-
-        match pending_tasks.pop() {
-            None => {}
-            Some(task) if pending_tasks.is_empty() => action |= AppAction::BackendTask(task),
-            Some(task) => {
-                pending_tasks.push(task);
-                action |=
-                    AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+            // Fetch the selected wallet's tracked asset locks once (off the UI
+            // thread) so the funding-method gate and the picker can read them.
+            if let Some(wallet) = &self.selected_wallet {
+                let seed_hash = wallet.read_recover().seed_hash();
+                if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
+                    pending_tasks.push(task);
+                }
             }
+
+            if request_asset_lock_balance
+                && let Some(seed_hash) = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            {
+                let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
+                let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
+                if let Some(task) = self.asset_lock_balance.ensure_requested(
+                    seed_hash,
+                    snapshot_generation,
+                    spendable_duffs,
+                ) {
+                    pending_tasks.push(task);
+                }
+            }
+
+            // Derive the "Receive a new deposit" address off the UI thread; the QR
+            // view queues this when it has no address yet.
+            if let Some(seed_hash) = self.pending_funding_address_request.take() {
+                self.funding_address_request_in_flight = true;
+                pending_tasks.push(BackendTask::WalletTask(
+                    WalletTask::GenerateReceiveAddress { seed_hash },
+                ));
+            }
+
+            action = append_concurrent_backend_tasks(action, pending_tasks);
         }
 
         action

@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 /// Preserves result ordering within one generation sequence without making old
 /// high-water marks or unresolved requests permanent dispatch barriers.
 struct FetchState {
-    latest_snapshot_generation: u64,
+    request_generation: u64,
+    request_spendable_duffs: u64,
     loaded: Option<(u64, u64)>,
     in_flight_generation: Option<u64>,
     failed_generation: Option<u64>,
@@ -21,29 +22,36 @@ pub struct AssetLockBalanceCache {
 }
 
 impl AssetLockBalanceCache {
-    /// Dispatch at most one live-builder query per wallet snapshot generation.
+    /// Dispatch at most one live-builder query per relevant wallet snapshot.
     ///
-    /// Equal generations deduplicate, higher generations supersede unresolved
-    /// work, and a lower generation starts a fresh sequence after a counter reset.
+    /// A spendable-balance change supersedes unresolved work, while generation
+    /// changes with the same spendable balance keep the existing request. A
+    /// lower generation always starts a fresh sequence after a counter reset.
     pub fn ensure_requested(
         &mut self,
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
+        spendable_duffs: u64,
     ) -> Option<BackendTask> {
         let state = self.states.entry(seed_hash).or_insert(FetchState {
-            latest_snapshot_generation: snapshot_generation,
+            request_generation: snapshot_generation,
+            request_spendable_duffs: spendable_duffs,
             loaded: None,
             in_flight_generation: None,
             failed_generation: None,
         });
-        if snapshot_generation != state.latest_snapshot_generation {
-            let generation_restarted = snapshot_generation < state.latest_snapshot_generation;
-            state.latest_snapshot_generation = snapshot_generation;
+        let generation_restarted = snapshot_generation < state.request_generation;
+        let spendable_changed = spendable_duffs != state.request_spendable_duffs;
+        if generation_restarted || spendable_changed {
+            state.request_generation = snapshot_generation;
+            state.request_spendable_duffs = spendable_duffs;
             state.in_flight_generation = None;
             state.failed_generation = None;
             if generation_restarted {
                 state.loaded = None;
             }
+        } else if snapshot_generation != state.request_generation {
+            return None;
         }
         if state.in_flight_generation == Some(snapshot_generation)
             || state
@@ -73,7 +81,7 @@ impl AssetLockBalanceCache {
         };
         if state.in_flight_generation == Some(snapshot_generation) {
             state.in_flight_generation = None;
-            if state.latest_snapshot_generation == snapshot_generation {
+            if state.request_generation == snapshot_generation {
                 state.loaded = Some((snapshot_generation, amount_duffs));
                 state.failed_generation = None;
             }
@@ -87,7 +95,7 @@ impl AssetLockBalanceCache {
         };
         if state.in_flight_generation == Some(snapshot_generation) {
             state.in_flight_generation = None;
-            if state.latest_snapshot_generation == snapshot_generation {
+            if state.request_generation == snapshot_generation {
                 state.failed_generation = Some(snapshot_generation);
             }
         }
@@ -104,7 +112,7 @@ impl AssetLockBalanceCache {
     pub fn is_failed(&self, seed_hash: &WalletSeedHash) -> bool {
         self.states
             .get(seed_hash)
-            .is_some_and(|state| state.failed_generation == Some(state.latest_snapshot_generation))
+            .is_some_and(|state| state.failed_generation == Some(state.request_generation))
     }
 
     /// Re-arm one wallet's query.
@@ -130,7 +138,7 @@ mod tests {
         let mut cache = AssetLockBalanceCache::default();
 
         assert!(matches!(
-            cache.ensure_requested(seed_hash, 7),
+            cache.ensure_requested(seed_hash, 7, 1_000),
             Some(BackendTask::WalletTask(
                 WalletTask::GetAssetLockMaxAmount {
                     seed_hash: requested_seed,
@@ -142,7 +150,7 @@ mod tests {
         assert_eq!(cache.get(&seed_hash), Some(1_000));
 
         assert!(matches!(
-            cache.ensure_requested(seed_hash, 8),
+            cache.ensure_requested(seed_hash, 8, 900),
             Some(BackendTask::WalletTask(
                 WalletTask::GetAssetLockMaxAmount {
                     seed_hash: requested_seed,
@@ -156,7 +164,7 @@ mod tests {
             "the last loaded value must remain displayable while generation 8 refreshes"
         );
         assert!(
-            cache.ensure_requested(seed_hash, 8).is_none(),
+            cache.ensure_requested(seed_hash, 8, 900).is_none(),
             "an in-flight refresh for the current generation must not dispatch twice"
         );
 
@@ -176,12 +184,12 @@ mod tests {
         let seed_hash = [0x2a; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 7).is_some());
+        assert!(cache.ensure_requested(seed_hash, 7, 1_000).is_some());
         cache.store(seed_hash, 7, 1_000);
         assert_eq!(cache.get(&seed_hash), Some(1_000));
 
         assert!(matches!(
-            cache.ensure_requested(seed_hash, 2),
+            cache.ensure_requested(seed_hash, 2, 1_000),
             Some(BackendTask::WalletTask(
                 WalletTask::GetAssetLockMaxAmount {
                     seed_hash: requested_seed,
@@ -195,7 +203,7 @@ mod tests {
             "a restarted generation sequence must discard data from the previous sequence"
         );
         assert!(
-            cache.ensure_requested(seed_hash, 2).is_none(),
+            cache.ensure_requested(seed_hash, 2, 1_000).is_none(),
             "the replacement request must still deduplicate its own generation"
         );
 
@@ -214,9 +222,9 @@ mod tests {
         let seed_hash = [0x2b; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 4).is_some());
+        assert!(cache.ensure_requested(seed_hash, 4, 1_000).is_some());
         assert!(matches!(
-            cache.ensure_requested(seed_hash, 5),
+            cache.ensure_requested(seed_hash, 5, 900),
             Some(BackendTask::WalletTask(
                 WalletTask::GetAssetLockMaxAmount {
                     seed_hash: requested_seed,
@@ -225,7 +233,7 @@ mod tests {
             )) if requested_seed == seed_hash
         ));
         assert!(
-            cache.ensure_requested(seed_hash, 5).is_none(),
+            cache.ensure_requested(seed_hash, 5, 900).is_none(),
             "the superseding request must deduplicate its own generation"
         );
 
@@ -237,5 +245,41 @@ mod tests {
         );
         cache.store(seed_hash, 5, 900);
         assert_eq!(cache.get(&seed_hash), Some(900));
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_ignores_generation_change_when_spendable_is_unchanged() {
+        let seed_hash = [0x2c; 32];
+        let mut cache = AssetLockBalanceCache::default();
+
+        assert!(cache.ensure_requested(seed_hash, 7, 1_000).is_some());
+        assert!(
+            cache.ensure_requested(seed_hash, 8, 1_000).is_none(),
+            "a generation-only change must not restart the live-builder probe"
+        );
+
+        cache.store(seed_hash, 7, 900);
+        assert_eq!(
+            cache.get(&seed_hash),
+            Some(900),
+            "the original request must remain current after a generation-only change"
+        );
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_requeries_when_spendable_changes() {
+        let seed_hash = [0x2d; 32];
+        let mut cache = AssetLockBalanceCache::default();
+
+        assert!(cache.ensure_requested(seed_hash, 7, 1_000).is_some());
+        assert!(matches!(
+            cache.ensure_requested(seed_hash, 8, 1_500),
+            Some(BackendTask::WalletTask(
+                WalletTask::GetAssetLockMaxAmount {
+                    seed_hash: requested_seed,
+                    snapshot_generation: 8,
+                }
+            )) if requested_seed == seed_hash
+        ));
     }
 }

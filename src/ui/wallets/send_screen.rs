@@ -649,8 +649,9 @@ impl WalletSendScreen {
         }
         let seed_hash = self.selected_wallet_seed_hash?;
         let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
+        let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
         self.asset_lock_balance
-            .ensure_requested(seed_hash, snapshot_generation)
+            .ensure_requested(seed_hash, snapshot_generation, spendable_duffs)
     }
 
     fn render_asset_lock_balance_status(&mut self, ui: &mut Ui) {
@@ -3316,9 +3317,12 @@ impl WalletSendScreen {
         amount_duffs: u64,
     ) {
         let snapshot_generation = self.app_context.snapshot_generation(&seed_hash);
-        let _ = self
-            .asset_lock_balance
-            .ensure_requested(seed_hash, snapshot_generation);
+        let spendable_duffs = self.app_context.snapshot_balance(&seed_hash).spendable();
+        let _ = self.asset_lock_balance.ensure_requested(
+            seed_hash,
+            snapshot_generation,
+            spendable_duffs,
+        );
         self.asset_lock_balance
             .store(seed_hash, snapshot_generation, amount_duffs);
     }
@@ -4600,10 +4604,11 @@ mod tests {
         assert!(BUILDER_MAX_DUFFS > platform_fee_duffs);
 
         let snapshot_generation = screen.app_context.snapshot_generation(&seed_hash);
+        let spendable_duffs = screen.app_context.snapshot_balance(&seed_hash).spendable();
         assert!(
             screen
                 .asset_lock_balance
-                .ensure_requested(seed_hash, snapshot_generation)
+                .ensure_requested(seed_hash, snapshot_generation, spendable_duffs)
                 .is_some()
         );
         screen

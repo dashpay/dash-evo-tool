@@ -36,7 +36,7 @@ use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::balances::credits::{Credits, Duffs};
+use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits, Duffs};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -498,7 +498,14 @@ impl TopUpIdentityScreen {
                     );
                     return AppAction::None;
                 };
-                if let Err(error) = validate_asset_lock_amount(amount, 0, max_amount) {
+                let identity_fee_duffs = self
+                    .app_context
+                    .fee_estimator()
+                    .estimate_identity_topup()
+                    .div_ceil(CREDITS_PER_DUFF);
+                if let Err(error) =
+                    validate_asset_lock_amount(amount, identity_fee_duffs, max_amount)
+                {
                     let maximum_amount_duffs = match error {
                         AssetLockAmountError::Overflow => max_amount,
                         AssetLockAmountError::ExceedsMaximum {

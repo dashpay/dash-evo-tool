@@ -37,6 +37,7 @@ use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -1074,7 +1075,15 @@ impl AddNewIdentityScreen {
                     );
                     return AppAction::None;
                 };
-                if let Err(error) = validate_asset_lock_amount(amount, 0, max_amount) {
+                let key_count = self.identity_keys.others.len() + 1;
+                let identity_fee_duffs = self
+                    .app_context
+                    .fee_estimator()
+                    .estimate_identity_create(key_count)
+                    .div_ceil(CREDITS_PER_DUFF);
+                if let Err(error) =
+                    validate_asset_lock_amount(amount, identity_fee_duffs, max_amount)
+                {
                     let maximum_amount_duffs = match error {
                         AssetLockAmountError::Overflow => max_amount,
                         AssetLockAmountError::ExceedsMaximum {

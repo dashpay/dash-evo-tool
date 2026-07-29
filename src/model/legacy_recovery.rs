@@ -114,9 +114,10 @@ pub enum ExclusionReason {
     /// public half is not on the identity, has been retired, does not match the
     /// saved private half, or names a wallet this install does not hold.
     KeyNoLongerOnIdentity,
-    /// The key sits on a voter or operator identity that only the legacy file
-    /// names. Nothing outside that file says the key is still that identity's,
-    /// and the file is exactly what cannot be taken at its word.
+    /// The item rests on a voter or operator identity that only the legacy file
+    /// names — a key held there, or the operator link itself. Nothing outside
+    /// that file vouches for it, and the file is exactly what cannot be taken
+    /// at its word.
     LinkedIdentityUnverified,
     /// The voter-identity link would be restored with no voting key behind it,
     /// which would report the node as able to vote when it still cannot.
@@ -217,8 +218,9 @@ pub struct AppliedRecovery {
 /// `(target, key_id)` **and** the legacy entry carries material this flow can
 /// carry forward — plaintext (`Clear`/`AlwaysClear`) or a wallet derivation
 /// reference. A legacy per-key password envelope and a bare vault placeholder
-/// are listed as [`RecoveryPlan::excluded`] instead. An association is a
-/// candidate when modern is `None` and legacy is `Some`.
+/// are listed as [`RecoveryPlan::excluded`] instead. The voter and owner-key
+/// associations are candidates when modern is `None` and legacy is `Some`; the
+/// operator link never is (see below).
 ///
 /// Anything present in the modern record wins unconditionally and never
 /// appears. `alias`, `status`, the dpp identity, DPNS names, and the wallet
@@ -233,7 +235,11 @@ pub struct AppliedRecovery {
 /// remedy the operator needs, and the failure would surface as a rejected
 /// transaction instead. A key on a voter or operator identity the modern record
 /// does not link to therefore has no admissible witness at all and is excluded
-/// as [`ExclusionReason::LinkedIdentityUnverified`].
+/// as [`ExclusionReason::LinkedIdentityUnverified`]. The operator link itself
+/// carries the same exclusion whenever the modern record has none: restoring it
+/// would write the legacy file's own claim into the record, and a later pass
+/// would read that claim back as the outside witness for the same file's
+/// operator keys.
 pub fn compute_recovery_plan(
     modern: &QualifiedIdentity,
     legacy: &QualifiedIdentity,
@@ -292,11 +298,15 @@ pub fn compute_recovery_plan(
                 .push((descriptor, ExclusionReason::VoterLinkWithoutVotingKey));
         }
     }
+    // Only the legacy file names this operator identity. Writing that claim
+    // into the modern record would give the next pass an "outside" witness for
+    // the same file's operator keys, which is the check itself run backwards.
     if modern.associated_operator_identity.is_none()
         && legacy.associated_operator_identity.is_some()
     {
-        plan.items.push(RecoveryItemDescriptor::association(
-            RecoveryItem::OperatorAssociation,
+        plan.excluded.push((
+            RecoveryItemDescriptor::association(RecoveryItem::OperatorAssociation),
+            ExclusionReason::LinkedIdentityUnverified,
         ));
     }
     if modern.associated_owner_key_id.is_none() && legacy.associated_owner_key_id.is_some() {
@@ -533,6 +543,7 @@ mod tests {
 
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+    const O: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnOperatorIdentity;
 
     /// A fixture key pair: a private half plus the public half genuinely
     /// derived from it. Real material, because the correspondence check the
@@ -764,8 +775,10 @@ mod tests {
         assert_eq!(key_data(&applied.merged, M, 8), stranded.clear());
     }
 
-    /// M4 — each association is a candidate exactly when the modern record
-    /// lacks it and the legacy record has it, across all four combinations.
+    /// M4 — the voter and owner-key links are candidates exactly when the modern
+    /// record lacks them and the legacy record has them, across all four
+    /// combinations. The operator link never is: only the legacy file names that
+    /// identity, whatever the combination.
     #[test]
     fn m4_associations_are_candidates_only_when_modern_is_none() {
         for (modern_has, legacy_has, expected) in [
@@ -796,7 +809,6 @@ mod tests {
             let items = plan_items(&plan);
             for item in [
                 RecoveryItem::VoterAssociation,
-                RecoveryItem::OperatorAssociation,
                 RecoveryItem::OwnerKeyAssociation,
             ] {
                 assert_eq!(
@@ -805,6 +817,10 @@ mod tests {
                     "{item:?}: modern_has={modern_has}, legacy_has={legacy_has}",
                 );
             }
+            assert!(
+                !items.contains(&RecoveryItem::OperatorAssociation),
+                "the operator link is never offered: modern_has={modern_has}, legacy_has={legacy_has}",
+            );
         }
     }
 
@@ -891,13 +907,14 @@ mod tests {
     }
 
     /// M8 — the case this flow exists for: a bare modern record (a ProTxHash-only
-    /// load) offers the legacy record's whole key set and its associations.
+    /// load) offers the owner and payout keys it can vouch for, and reports the
+    /// voter-identity key and link it cannot.
     ///
     /// Everything the modern record can vouch for, and nothing else: a bare
     /// record names no voter identity, so the key held on one is reported
     /// unverifiable and takes the link down with it.
     #[test]
-    fn m8_bare_modern_record_offers_every_legacy_key() {
+    fn m8_bare_modern_record_offers_owner_and_payout_but_not_an_unlinked_voter_key() {
         let owner = test_key(1, Purpose::OWNER, 0xA0);
         let payout = test_key(2, Purpose::TRANSFER, 0xA1);
         let voting = test_key(3, Purpose::VOTING, 0xA2);
@@ -1152,6 +1169,45 @@ mod tests {
         assert_eq!(
             plan_items(&compute_recovery_plan(&linked, &legacy)),
             vec![key_item(V, 1)],
+        );
+    }
+
+    /// An operator-identity link the modern record does not carry rests on the
+    /// legacy file alone, exactly like a key held on that identity. Restoring it
+    /// would write the file's own claim into the modern record, where the next
+    /// pass would read it as the outside witness that vouches for the same
+    /// file's operator keys — self-vouching in two steps instead of one.
+    #[test]
+    fn an_operator_link_only_the_legacy_blob_vouches_for_is_excluded() {
+        let operator_key = test_key(1, Purpose::AUTHENTICATION, 0xB9);
+        let modern = bare_identity(0x27);
+        let mut legacy = bare_identity(0x27);
+        hold(&mut legacy, O, &operator_key, operator_key.clear());
+        legacy.associated_operator_identity = Some(voter_identity(0xD2, &[&operator_key.public]));
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert!(
+            plan.items.is_empty(),
+            "nothing outside the legacy file names this operator identity",
+        );
+        assert_eq!(
+            excluded_items(&plan),
+            vec![
+                (key_item(O, 1), ExclusionReason::LinkedIdentityUnverified),
+                (
+                    RecoveryItem::OperatorAssociation,
+                    ExclusionReason::LinkedIdentityUnverified,
+                ),
+            ],
+        );
+
+        // The laundering step itself: approving the link must not put it in the
+        // record, or the key above becomes a candidate on the next pass.
+        let applied = apply_recovery_plan(&modern, legacy, &[RecoveryItem::OperatorAssociation]);
+        assert!(
+            applied.merged.associated_operator_identity.is_none(),
+            "an unverifiable link must never reach the modern record",
         );
     }
 

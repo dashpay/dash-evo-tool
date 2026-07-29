@@ -1393,7 +1393,11 @@ impl ScreenLike for AddNewIdentityScreen {
         }
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        if matches!(error, TaskError::AssetLockMaxAmountTimedOut { .. }) {
+            MessageBanner::set_global(self.app_context.egui_ctx(), error, MessageType::Error)
+                .with_details(error);
+        }
         if let Some((seed_hash, snapshot_generation)) = context.asset_lock_max_amount_request() {
             self.asset_lock_balance
                 .mark_loading_failed(&seed_hash, snapshot_generation);

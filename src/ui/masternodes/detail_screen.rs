@@ -50,18 +50,12 @@ use crate::ui::{MessageType, Screen, ScreenType};
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
-/// §7 copy: shown when the node has no voting key loaded.
+/// §7 copy: shown when the node has no voting key loaded. Entering the key is
+/// the only remedy on offer — a voting key held on a separate voter identity
+/// that the node's own record does not link to cannot be restored from the
+/// previous version's saved data (see issue #942).
 const MISSING_VOTER_MESSAGE: &str =
     "This node has no voting key loaded. Add its voting private key to cast votes.";
-/// Replaces [`MISSING_VOTER_MESSAGE`] when the previous version's saved data
-/// still holds this node's voting key: restoring it needs nothing the operator
-/// has to still have on hand, so typing the key in becomes the fallback.
-const MISSING_VOTER_RECOVERABLE_MESSAGE: &str = "This node has no voting key loaded. Its voting key was saved by your previous Dash Evo Tool \
-     version and can be restored from the Keys section.";
-/// Tooltip on the manual prompt once restoring is on offer, naming when typing
-/// the key in is still the right choice.
-const ADD_VOTING_KEY_FALLBACK_TOOLTIP: &str =
-    "Use this if you have the voting private key on hand and would rather enter it yourself.";
 /// §7 copy: shown when the node has a voter identity but no open contests.
 const NO_OPEN_CONTESTS_MESSAGE: &str =
     "There are no open name contests for this node to vote on right now.";
@@ -329,15 +323,6 @@ impl MasternodeDetailView {
     /// End whatever recovery operation was in flight when a task failed.
     pub(crate) fn recovery_failed(&mut self) {
         self.recovery.failed();
-    }
-
-    /// Whether the previous version's saved data still holds this node's voting
-    /// key, which makes restoring it the primary remedy for a missing voter and
-    /// typing the key in the fallback.
-    fn voting_key_is_recoverable(&self) -> bool {
-        self.recovery
-            .plan()
-            .is_some_and(|plan| plan.contains_voting_key())
     }
 
     /// Load the contests this node can still vote on. Empty when the node has no
@@ -848,26 +833,11 @@ impl MasternodeDetailView {
     /// FR-4's load form.
     fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
         let mut action = None;
-        // When the key is sitting in the previous version's saved data,
-        // restoring it is the remedy that asks nothing of the operator, so the
-        // message points there and the manual prompt becomes the fallback.
-        let recoverable = self.voting_key_is_recoverable();
-        let message = if recoverable {
-            MISSING_VOTER_RECOVERABLE_MESSAGE
-        } else {
-            MISSING_VOTER_MESSAGE
-        };
-        ui.label(RichText::new(message).color(DashColors::warning_color(dark_mode)));
+        ui.label(RichText::new(MISSING_VOTER_MESSAGE).color(DashColors::warning_color(dark_mode)));
 
         match self.voter_key_prompt.as_mut() {
             None => {
-                let button = ui.button("Add voting key");
-                let button = if recoverable {
-                    button.on_hover_text(ADD_VOTING_KEY_FALLBACK_TOOLTIP)
-                } else {
-                    button
-                };
-                if button.clicked() {
+                if ui.button("Add voting key").clicked() {
                     // Node context is already bound (`self.identity`) — the
                     // prompt only asks for the voting key, no ProTxHash re-entry.
                     self.voter_key_prompt = Some(

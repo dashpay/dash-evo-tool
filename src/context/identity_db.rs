@@ -498,6 +498,41 @@ fn delete_scheduled_votes_for_voter(
 }
 
 impl AppContext {
+    /// Whether the previous version's preserved `data.db` holds any identity of
+    /// this network.
+    ///
+    /// The gate on the stranded-key recovery offer, and the only condition
+    /// under which that offer can ever find something. A fresh install answers
+    /// `false` — its `data.db` either does not exist or was created without the
+    /// legacy `identity` table — while an upgraded one answers `true` for as
+    /// long as the rows are there, which is forever: recovery never deletes
+    /// them.
+    ///
+    /// Probed at most once per context: the file is a read-only artifact, so
+    /// the answer cannot change under the session. A probe that fails arms the
+    /// offer rather than retiring it — the detection task reports its own typed
+    /// error, whereas a silent `false` would withdraw a recovery the user's
+    /// data still supports.
+    pub(crate) fn has_legacy_identities(&self) -> bool {
+        *self.legacy_identities_present.get_or_init(|| {
+            match crate::database::legacy_import::local_identities_exist(
+                &self.db.locked_conn(),
+                self.network,
+            ) {
+                Ok(found) => found,
+                Err(error) => {
+                    tracing::warn!(
+                        target = "context::identity_db",
+                        network = %self.network,
+                        error = ?error,
+                        "Could not tell whether the previous version's data holds identities; offering key recovery anyway",
+                    );
+                    true
+                }
+            }
+        })
+    }
+
     /// Insert (or replace) a local qualified identity in the per-network
     /// wallet k/v store under [`DetScope::Identity`]. Mirrors pre-C7
     /// `INSERT OR REPLACE` semantics — wallet association is overwritten

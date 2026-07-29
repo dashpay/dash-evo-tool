@@ -260,6 +260,11 @@ pub struct AppContext {
     /// after `AppContext::new` but before the backend reads it; contention is
     /// nil (touched only at install and backend construction).
     secret_prompt: SecretPromptSlot,
+    /// Whether the preserved legacy `data.db` holds any identity of this
+    /// network — the gate on the stranded-key recovery offer, probed at most
+    /// once per context by [`Self::has_legacy_identities`]. The legacy file is
+    /// a read-only artifact, so one answer holds for the session.
+    legacy_identities_present: std::sync::OnceLock<bool>,
 }
 
 /// Mutex-guarded slot for the installable secret-prompt host, with an opaque
@@ -470,6 +475,7 @@ impl AppContext {
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
+            legacy_identities_present: std::sync::OnceLock::new(),
         };
 
         let app_context = Arc::new(app_context);

@@ -110,8 +110,11 @@ Two surfaces, one shared component:
 
 Gating, cheap to strict:
 
-1. `app_context.db.db_file_path()` exists — fresh installs never see any of
-   this (frame-loop-safe check, no I/O beyond a cached path).
+1. The legacy `identity` table holds a row for this network
+   (`AppContext::has_legacy_identities`) — fresh installs never see any of
+   this. One `SELECT EXISTS` per context, cached thereafter. Not a
+   file-existence check: a fresh install creates its own empty `data.db`, so
+   the file is always there (§10.11).
 2. On screen arrival (`refresh_on_arrival`), the screen dispatches
    `IdentityTask::CheckLegacyRecovery { identity_id }` — a backend task, since
    detection reads `data.db`. Result cached in screen state; no per-frame I/O.
@@ -401,7 +404,7 @@ same rule as the migration (`Debug` is already redacting; log hex ids only).
   so it is a component, not `ui/state/`.
 - `ui/masternodes/detail_screen.rs` + `ui/identities/keys/key_info_screen.rs`
   — hold `Option<plan>` screen state, dispatch `CheckLegacyRecovery` on
-  arrival (behind the `db_file_path()` gate), render the section, handle both
+  arrival (behind the legacy-rows gate of §2.1), render the section, handle both
   results in `display_task_result`, refresh on completion. Progress/success
   banners via the standard `BannerHandle` lifecycle; failure banners carry
   details via `with_details`.
@@ -695,3 +698,25 @@ Grouping follows the same rule. `voter_association_is_grouped` now keys on the
 voting *role* (`is_voting_role`) rather than on the voter-identity target — the
 predicate that already decides whether the link is worth offering — so the two
 cannot disagree about which candidate the link belongs to.
+
+### 10.11 The fresh-install gate is on rows, not on the file
+
+§2.1 step 1 gated detection on `data.db` existing. Every install passes that
+gate: `AppState::boot_inputs` opens an existing file read-only *or* creates one
+and runs the fresh-install schema ladder, so `FetchState::Unavailable` was
+unreachable in the shipped binary and every identity or node screen dispatched
+a detection task against a table the ladder had just created empty. The kittest
+that claimed otherwise only passed because the `testing` feature substitutes an
+in-memory database with no path.
+
+Shipped: `AppContext::has_legacy_identities` asks whether the legacy `identity`
+table holds a local row for this network — one `SELECT EXISTS` over the same
+filter `read_identities` uses, answered once per context and cached, `false`
+when the table does not exist at all. A probe that errors arms the offer rather
+than retiring it: the detection task surfaces its own typed error, while a
+silent `false` would withdraw a recovery the user's data still supports.
+
+The kittest was replaced by lib tests over a real file-backed `data.db`
+(`only_a_legacy_identity_row_for_this_network_arms_the_check`), which assert the
+premise directly — the file exists and the gate still says no — and cover the
+network scoping a file check could never have.

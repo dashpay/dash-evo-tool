@@ -13,8 +13,6 @@ use dash_sdk::dpp::identity::Purpose;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-use crate::support;
-
 const INTRO: &str = "Some keys for this identity from your previous Dash Evo Tool version haven't been brought \
      across.";
 const RESTORE: &str = "Restore keys";
@@ -191,23 +189,4 @@ fn unrestorable_keys_are_listed_separately_with_no_restore_offered() {
         harness.query_by_label(RESTORE).is_none(),
         "nothing here is restorable, so there is nothing to press",
     );
-}
-
-/// An install with no previous-version database never even asks: detection is
-/// not dispatched, so the offer can never appear on a fresh install.
-#[test]
-fn an_install_without_previous_version_data_never_checks() {
-    support::with_isolated_data_dir(|| {
-        let (_rt, app_context) = support::fresh_app_context();
-        let mut state = dash_evo_tool::ui::state::legacy_recovery::LegacyRecoveryState::new(
-            &app_context,
-            dash_sdk::platform::Identifier::from([7u8; 32]),
-        );
-
-        assert!(
-            state.ensure_checked().is_none(),
-            "with no previous-version database there is nothing to detect",
-        );
-        assert!(state.plan().is_none());
-    });
 }

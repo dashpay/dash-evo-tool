@@ -20,8 +20,9 @@ use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
 
 /// Where one identity's recovery offer currently stands.
 enum FetchState {
-    /// This install has no previous-version database, so there is nothing to
-    /// detect — ever. A fresh install never leaves this state.
+    /// The previous version's saved data holds no identity of this network, so
+    /// there is nothing to detect — ever. A fresh install never leaves this
+    /// state; an upgraded one never enters it.
     Unavailable,
     /// Nothing dispatched yet. The only state a detection task starts from, so
     /// neither an empty plan nor a failure re-dispatches every frame.
@@ -44,13 +45,17 @@ pub struct LegacyRecoveryState {
 }
 
 impl LegacyRecoveryState {
-    /// The offer for `identity_id`, armed only when this install actually has a
-    /// previous-version database to read. That check is one path probe at
-    /// construction, never per frame.
+    /// The offer for `identity_id`, armed only when the previous version's data
+    /// actually holds identities for this network.
+    ///
+    /// The gate is on rows, not on the file: every install has a `data.db`,
+    /// because a fresh one creates an empty compatibility database at first
+    /// boot. Only rows can tell an upgrade from a first run, and the answer is
+    /// cached on the context, so this costs nothing after the first screen.
     pub fn new(app_context: &AppContext, identity_id: Identifier) -> Self {
-        let state = match app_context.db.db_file_path() {
-            Some(path) if path.exists() => FetchState::NotRequested,
-            _ => FetchState::Unavailable,
+        let state = match app_context.has_legacy_identities() {
+            true => FetchState::NotRequested,
+            false => FetchState::Unavailable,
         };
         Self { identity_id, state }
     }
@@ -163,6 +168,8 @@ impl LegacyRecoveryState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::database::test_helpers::LegacyIdentityFixture;
     use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor};
     use crate::model::qualified_identity::PrivateKeyTarget;
 
@@ -211,7 +218,71 @@ mod tests {
         );
     }
 
-    /// An install with no previous-version database never asks at all.
+    /// A testnet [`AppContext`] on a throwaway data dir whose legacy `identity`
+    /// table already carries `rows` — the shape of an upgraded install, where
+    /// the previous version's rows predate anything this session does. Only row
+    /// existence is the gate's business, so each blob is a placeholder rather
+    /// than an encoded record.
+    fn context_carrying_legacy_rows(
+        dir: &std::path::Path,
+        rows: &[(u8, &str)],
+    ) -> std::sync::Arc<AppContext> {
+        {
+            let db = crate::database::Database::new(dir.join("data.db")).expect("legacy db");
+            db.create_tables(true).expect("legacy schema");
+            db.set_default_version().expect("legacy version");
+            for (id, network) in rows {
+                LegacyIdentityFixture::new([*id; 32], Some(vec![0x01]), *network)
+                    .insert(&db.locked_conn())
+                    .expect("stage a legacy identity row");
+            }
+        }
+        test_app_context(dir)
+    }
+
+    /// The gate is on rows, not on the file: every install has a `data.db`
+    /// (a fresh one creates an empty compatibility database at first boot), so
+    /// a file-existence check would arm detection for every user forever.
+    /// Rows for *this* network are the only thing that tells an upgrade from a
+    /// first run.
+    #[test]
+    fn only_a_legacy_identity_row_for_this_network_arms_the_check() {
+        // One data dir each: the app k/v store takes an exclusive lock, so two
+        // contexts cannot share a directory.
+        let fresh_dir = tempfile::tempdir().expect("tempdir");
+        let mainnet_dir = tempfile::tempdir().expect("tempdir");
+        let upgraded_dir = tempfile::tempdir().expect("tempdir");
+
+        let fresh = context_carrying_legacy_rows(fresh_dir.path(), &[]);
+        assert!(
+            fresh.db.db_file_path().is_some_and(|path| path.exists()),
+            "the premise: the file this gate used to key on is there regardless",
+        );
+        assert!(
+            LegacyRecoveryState::new(&fresh, identity(0x11))
+                .ensure_checked()
+                .is_none(),
+            "an install whose legacy table holds nothing must never ask",
+        );
+
+        let other_network = context_carrying_legacy_rows(mainnet_dir.path(), &[(0x12, "dash")]);
+        assert!(
+            LegacyRecoveryState::new(&other_network, identity(0x12))
+                .ensure_checked()
+                .is_none(),
+            "a mainnet row must not arm a testnet context",
+        );
+
+        let upgraded = context_carrying_legacy_rows(upgraded_dir.path(), &[(0x13, "testnet")]);
+        assert!(
+            LegacyRecoveryState::new(&upgraded, identity(0x13))
+                .ensure_checked()
+                .is_some_and(|task| is_check(&task)),
+            "an install carrying this network's legacy identities must check",
+        );
+    }
+
+    /// An install with no previous-version data never asks at all.
     #[test]
     fn nothing_is_dispatched_without_previous_version_data() {
         let mut state = LegacyRecoveryState::unavailable(identity(0x02));

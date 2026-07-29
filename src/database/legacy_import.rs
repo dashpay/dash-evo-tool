@@ -377,6 +377,28 @@ pub(crate) fn read_identity_row(
     })
 }
 
+/// Whether the legacy `identity` table holds any local identity for `network`.
+///
+/// The cheapest question a caller can ask before offering anything built on
+/// this table: it stops at the first matching row and answers `false` on a
+/// fresh install, whose schema never creates the table at all. Same filter as
+/// [`read_identities`], so "there is something here" and "here it is" cannot
+/// disagree about which rows count.
+pub(crate) fn local_identities_exist(
+    conn: &Connection,
+    network: Network,
+) -> rusqlite::Result<bool> {
+    if !table_exists(conn, "identity")? {
+        return Ok(false);
+    }
+
+    conn.query_row(
+        &format!("SELECT EXISTS({LOCAL_IDENTITY_SELECT})"),
+        rusqlite::params![network.to_string(), mainnet_alias_for(network)],
+        |row| row.get::<_, i64>(0).map(|found| found != 0),
+    )
+}
+
 /// The rows of the legacy `identity` table that hold a user's own identity.
 /// Both readers bind `?1`/`?2` to the two accepted network spellings, so
 /// neither can drift from the other's idea of what belongs to this network.

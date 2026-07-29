@@ -39,8 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   who still has it. A saved key that no longer matches one this identity uses —
   a key rotated or retired since the previous version saved it — is listed with
   an explanation instead of being restored, so a key that could not sign can
-  never make the app report a role as held. The previous version's data is only
-  ever read, so this is safe to repeat.
+  never make the app report a role as held. The same applies to a key held on a
+  separate voting or operator identity that this identity does not currently
+  link to: nothing outside the old data says that key is still in use, so it is
+  listed with its explanation and entering it by hand stays the way to bring it
+  back. The previous version's data is only ever read, so this is safe to
+  repeat.
 
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.

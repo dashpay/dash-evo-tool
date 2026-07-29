@@ -619,13 +619,19 @@ mod tests {
         }
     }
 
-    /// B1 — the canonical case, end to end on a keyless (Tier-1) node: a bare
+    /// B1 — the canonical case, end to end on a keyless (Tier-1) node: a
     /// masternode whose owner and voting keys are still only in the legacy file
     /// gets them back. The keys must land in the vault, the record must show
     /// both roles present, the at-rest blob must carry no plaintext, and the
     /// legacy rows must survive untouched (AC-5).
+    ///
+    /// The modern record carries the voter-identity link a re-load kept while
+    /// rebuilding the key map without a voting key. That link is the witness
+    /// that makes the stranded voting key restorable: a record naming no voter
+    /// identity has none but the legacy file itself, and the file cannot vouch
+    /// for its own contents (`a_voter_key_only_the_legacy_blob_vouches_for_is_excluded`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn b1_tier1_bare_masternode_recovers_owner_and_voting_keys() {
+    async fn b1_tier1_masternode_recovers_owner_and_voting_keys() {
         let owner = test_key(1, Purpose::OWNER, 0xA1);
         let voting = test_key(2, Purpose::VOTING, 0xB2);
         let owner_secret = owner.secret;
@@ -634,12 +640,13 @@ mod tests {
         let offline = Offline::new(None).await;
         let ctx = &offline.ctx;
 
-        // The modern record: loaded from its ProTxHash alone, so the chain's
-        // keys are known but none of their private halves are held.
-        let modern = identity_with_keys(0x11, IdentityType::Masternode, &[&owner], vec![]);
+        // The modern record: the chain's keys are known but none of their
+        // private halves are held.
+        let mut modern = identity_with_keys(0x11, IdentityType::Masternode, &[&owner], vec![]);
+        modern.associated_voter_identity = Some(voter_identity(0x99, &[&voting]));
         let identity_id = modern.identity.id();
         ctx.insert_local_qualified_identity(&modern, &None)
-            .expect("insert the bare modern record");
+            .expect("insert the modern record");
 
         // The legacy record: the same identity, with the keys still attached.
         let mut legacy = identity_with_keys(
@@ -657,13 +664,8 @@ mod tests {
         );
         assert_eq!(
             plan.items.len(),
-            3,
-            "both keys and the voter link are candidates",
-        );
-        assert_eq!(
-            plan.preview_items().len(),
             2,
-            "the voter link is previewed as part of its voting key",
+            "both stranded keys are candidates; the voter link is already held",
         );
 
         let (applied, stale) = completion_of(
@@ -671,7 +673,7 @@ mod tests {
                 .await
                 .expect("recovery must succeed"),
         );
-        assert_eq!(applied.len(), 3, "every approved item was restored");
+        assert_eq!(applied.len(), 2, "every approved item was restored");
         assert!(stale.is_empty());
 
         let restored = ctx

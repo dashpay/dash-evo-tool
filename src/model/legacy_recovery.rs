@@ -114,6 +114,10 @@ pub enum ExclusionReason {
     /// public half is not on the identity, has been retired, does not match the
     /// saved private half, or names a wallet this install does not hold.
     KeyNoLongerOnIdentity,
+    /// The key sits on a voter or operator identity that only the legacy file
+    /// names. Nothing outside that file says the key is still that identity's,
+    /// and the file is exactly what cannot be taken at its word.
+    LinkedIdentityUnverified,
     /// The voter-identity link would be restored with no voting key behind it,
     /// which would report the node as able to vote when it still cannot.
     VoterLinkWithoutVotingKey,
@@ -169,19 +173,15 @@ impl RecoveryPlan {
     }
 
     /// Whether approving a candidate voting key also approves the candidate
-    /// voter-identity link.
+    /// voter-identity link. Keyed on the voting *role*, the same predicate that
+    /// decides the link is worth offering at all, so the two cannot disagree
+    /// about which key the link belongs to.
     pub fn voter_association_is_grouped(&self) -> bool {
-        self.contains(&RecoveryItem::VoterAssociation) && self.has_voter_key()
+        self.contains(&RecoveryItem::VoterAssociation) && self.contains_voting_key()
     }
 
     fn contains(&self, item: &RecoveryItem) -> bool {
         self.items.iter().any(|d| &d.item == item)
-    }
-
-    fn has_voter_key(&self) -> bool {
-        self.items
-            .iter()
-            .any(RecoveryItemDescriptor::is_on_voter_identity)
     }
 
     fn is_excluded(&self, item: &RecoveryItem) -> bool {
@@ -226,11 +226,14 @@ pub struct AppliedRecovery {
 /// refilling them from a stale legacy blob would resurrect a user's edit.
 ///
 /// A candidate must also still *correspond* to the identity (see
-/// [`ExclusionReason::KeyNoLongerOnIdentity`]). The legacy file is an
-/// unauthenticated copy that can predate a key rotation by months, and
-/// `masternode_key_presence` reports a role as held from the record alone: a
-/// restored key that cannot sign would retire the very remedy the operator
-/// needs, and the failure would surface as a rejected transaction instead.
+/// [`ExclusionReason::KeyNoLongerOnIdentity`]), judged against the modern
+/// record alone. The legacy file is an unauthenticated copy that can predate a
+/// key rotation by months, and `masternode_key_presence` reports a role as held
+/// from the record alone: a restored key that cannot sign would retire the very
+/// remedy the operator needs, and the failure would surface as a rejected
+/// transaction instead. A key on a voter or operator identity the modern record
+/// does not link to therefore has no admissible witness at all and is excluded
+/// as [`ExclusionReason::LinkedIdentityUnverified`].
 pub fn compute_recovery_plan(
     modern: &QualifiedIdentity,
     legacy: &QualifiedIdentity,
@@ -267,19 +270,14 @@ pub fn compute_recovery_plan(
                 .contains_key(&path.wallet_seed_hash),
             _ => true,
         };
-        if derivable
-            && key_corresponds_to_identity(
-                modern,
-                legacy,
-                &target,
-                &public_key.identity_public_key,
-                plaintext,
-            )
-        {
-            plan.items.push(descriptor);
+        let exclusion = if derivable {
+            key_exclusion(modern, &target, &public_key.identity_public_key, plaintext)
         } else {
-            plan.excluded
-                .push((descriptor, ExclusionReason::KeyNoLongerOnIdentity));
+            Some(ExclusionReason::KeyNoLongerOnIdentity)
+        };
+        match exclusion {
+            None => plan.items.push(descriptor),
+            Some(reason) => plan.excluded.push((descriptor, reason)),
         }
     }
 
@@ -348,9 +346,7 @@ pub fn apply_recovery_plan(
 
     // A voting key is unusable without its voter-identity link, so approving
     // one approves both even if the caller listed only the key.
-    if to_apply
-        .iter()
-        .any(RecoveryItemDescriptor::is_on_voter_identity)
+    if to_apply.iter().any(RecoveryItemDescriptor::is_voting_role)
         && !to_apply
             .iter()
             .any(|d| d.item == RecoveryItem::VoterAssociation)
@@ -438,7 +434,8 @@ fn stale_descriptor(modern: &QualifiedIdentity, item: &RecoveryItem) -> Recovery
     }
 }
 
-/// Whether a saved key still belongs to the identity it claims.
+/// Why a saved key cannot be treated as one of the identity's current keys, or
+/// `None` when it can.
 ///
 /// Two independent tests, both of which the manual "type the WIF" path this
 /// flow replaces already enforces: the saved private half must derive the
@@ -446,58 +443,58 @@ fn stale_descriptor(modern: &QualifiedIdentity, item: &RecoveryItem) -> Recovery
 /// (not retired) key of the identity the target names. A key type this build
 /// cannot derive skips only the first test — a saved key is never rejected for
 /// being unverifiable in a way the identity itself can settle.
-fn key_corresponds_to_identity(
+///
+/// The second test is only worth anything when the identity it reads comes
+/// from outside the legacy file, which is why [`reference_identity`] takes only
+/// the modern record.
+fn key_exclusion(
     modern: &QualifiedIdentity,
-    legacy: &QualifiedIdentity,
     target: &PrivateKeyTarget,
     public_key: &IdentityPublicKey,
     plaintext: Option<&[u8; 32]>,
-) -> bool {
+) -> Option<ExclusionReason> {
     if let Some(bytes) = plaintext
         && let Ok(derived) = public_key
             .key_type()
             .public_key_data_from_private_key_data(bytes, modern.network)
         && derived.as_slice() != public_key.data().as_slice()
     {
-        return false;
+        return Some(ExclusionReason::KeyNoLongerOnIdentity);
     }
-    let Some(identity) = reference_identity(modern, legacy, target) else {
-        return false;
+    let Some(identity) = reference_identity(modern, target) else {
+        return Some(ExclusionReason::LinkedIdentityUnverified);
     };
-    identity.public_keys().values().any(|on_identity| {
+    let live = identity.public_keys().values().any(|on_identity| {
         on_identity.key_type() == public_key.key_type()
             && on_identity.data() == public_key.data()
             && !on_identity.is_disabled()
-    })
+    });
+    (!live).then_some(ExclusionReason::KeyNoLongerOnIdentity)
 }
 
 /// The identity whose key set decides whether a key at `target` still exists:
-/// the node's own identity, or the voter/operator identity the record links to.
-/// The modern link wins; the legacy one stands in for a link this same plan
-/// would restore. `None` when nothing names that identity, which leaves the key
-/// unverifiable and therefore not restorable.
+/// the node's own identity, or the voter/operator identity the *modern* record
+/// links to.
+///
+/// The legacy file never stands in for a missing modern link. It supplies the
+/// key under test, so letting it also supply the identity that vouches for that
+/// key would validate untrusted data against itself, and pass for any
+/// self-consistent pair — including a key the chain retired months before the
+/// upgrade. `None` therefore means unverifiable
+/// ([`ExclusionReason::LinkedIdentityUnverified`]), not merely unknown.
 fn reference_identity<'a>(
     modern: &'a QualifiedIdentity,
-    legacy: &'a QualifiedIdentity,
     target: &PrivateKeyTarget,
 ) -> Option<&'a Identity> {
-    let linked = |modern_link: &'a Option<(Identity, IdentityPublicKey)>,
-                  legacy_link: &'a Option<(Identity, IdentityPublicKey)>| {
-        modern_link
-            .as_ref()
-            .or(legacy_link.as_ref())
-            .map(|(identity, _)| identity)
+    let linked = |link: &'a Option<(Identity, IdentityPublicKey)>| {
+        link.as_ref().map(|(identity, _)| identity)
     };
     match target {
         PrivateKeyTarget::PrivateKeyOnMainIdentity => Some(&modern.identity),
-        PrivateKeyTarget::PrivateKeyOnVoterIdentity => linked(
-            &modern.associated_voter_identity,
-            &legacy.associated_voter_identity,
-        ),
-        PrivateKeyTarget::PrivateKeyOnOperatorIdentity => linked(
-            &modern.associated_operator_identity,
-            &legacy.associated_operator_identity,
-        ),
+        PrivateKeyTarget::PrivateKeyOnVoterIdentity => linked(&modern.associated_voter_identity),
+        PrivateKeyTarget::PrivateKeyOnOperatorIdentity => {
+            linked(&modern.associated_operator_identity)
+        }
     }
 }
 
@@ -853,9 +850,9 @@ mod tests {
     #[test]
     fn m6_voting_key_groups_its_voter_association() {
         let voting = test_key(2, Purpose::VOTING, 0xB0);
-        let modern = bare_identity(0x06);
+        let mut modern = bare_identity(0x06);
         let mut legacy = bare_identity(0x06);
-        hold(&mut legacy, V, &voting, voting.clear());
+        strand(&mut modern, &mut legacy, M, &voting, voting.clear());
         legacy.associated_voter_identity = Some(voter_identity(0xD0, &[&voting.public]));
 
         let plan = compute_recovery_plan(&modern, &legacy);
@@ -865,11 +862,11 @@ mod tests {
                 .into_iter()
                 .map(|d| d.item.clone())
                 .collect::<Vec<_>>(),
-            vec![key_item(V, 2)],
+            vec![key_item(M, 2)],
             "the voter link is folded into its voting key, not offered separately",
         );
 
-        let applied = apply_recovery_plan(&modern, legacy, &[key_item(V, 2)]);
+        let applied = apply_recovery_plan(&modern, legacy, &[key_item(M, 2)]);
         assert!(
             applied.merged.associated_voter_identity.is_some(),
             "applying the voting key must apply its voter-identity link",
@@ -895,6 +892,10 @@ mod tests {
 
     /// M8 — the case this flow exists for: a bare modern record (a ProTxHash-only
     /// load) offers the legacy record's whole key set and its associations.
+    ///
+    /// Everything the modern record can vouch for, and nothing else: a bare
+    /// record names no voter identity, so the key held on one is reported
+    /// unverifiable and takes the link down with it.
     #[test]
     fn m8_bare_modern_record_offers_every_legacy_key() {
         let owner = test_key(1, Purpose::OWNER, 0xA0);
@@ -922,9 +923,17 @@ mod tests {
             vec![
                 key_item(M, 1),
                 key_item(M, 2),
-                key_item(V, 3),
-                RecoveryItem::VoterAssociation,
                 RecoveryItem::OwnerKeyAssociation,
+            ],
+        );
+        assert_eq!(
+            excluded_items(&plan),
+            vec![
+                (key_item(V, 3), ExclusionReason::LinkedIdentityUnverified),
+                (
+                    RecoveryItem::VoterAssociation,
+                    ExclusionReason::VoterLinkWithoutVotingKey,
+                ),
             ],
         );
     }
@@ -1097,6 +1106,52 @@ mod tests {
         assert_eq!(
             excluded_items(&plan),
             vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
+        );
+    }
+
+    /// A key held on a voter identity is vouched for by the legacy file alone
+    /// when the modern record links to no voter identity: the same
+    /// unauthenticated blob supplies the key *and* the identity that publishes
+    /// it, so a key the chain retired months ago still reads as live there.
+    /// Unverifiable is not the same as valid — it is reported, not offered.
+    ///
+    /// Restoring it would flip the node's voting role to "present" and retire
+    /// the manual remedy that would actually fix the node.
+    #[test]
+    fn a_voter_key_only_the_legacy_blob_vouches_for_is_excluded() {
+        let voting = test_key(1, Purpose::VOTING, 0xB7);
+        let voter = voter_identity(0xD1, &[&voting.public]);
+        let modern = bare_identity(0x26);
+        let mut legacy = bare_identity(0x26);
+        hold(&mut legacy, V, &voting, voting.clear());
+        legacy.associated_voter_identity = Some(voter.clone());
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert!(
+            plan.items.is_empty(),
+            "nothing outside the legacy file says this key is still the node's",
+        );
+        assert_eq!(
+            excluded_items(&plan),
+            vec![
+                (key_item(V, 1), ExclusionReason::LinkedIdentityUnverified),
+                (
+                    RecoveryItem::VoterAssociation,
+                    ExclusionReason::VoterLinkWithoutVotingKey,
+                ),
+            ],
+        );
+
+        // The same key against the same voter identity, once the *modern*
+        // record is the one naming it: a witness this flow did not decode from
+        // the file under test, so the key becomes a candidate.
+        let mut linked = bare_identity(0x26);
+        linked.associated_voter_identity = Some(voter);
+
+        assert_eq!(
+            plan_items(&compute_recovery_plan(&linked, &legacy)),
+            vec![key_item(V, 1)],
         );
     }
 

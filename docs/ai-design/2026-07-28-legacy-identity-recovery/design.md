@@ -657,3 +657,41 @@ swept in items that were never restorable at all. Shipped: `AppliedRecovery`
 reports `excluded` alongside `applied` and `skipped_stale`, and the three are
 disjoint — "cannot be restored" and "already back in place" are opposite
 answers, and a caller reading the outcome has to be able to tell them apart.
+
+### 10.10 Only the modern record may vouch for a key
+
+§10.5's correspondence check resolved the identity a voter/operator-target key
+belongs to as "the modern link, or the legacy one if there is no modern link".
+That fallback made the check circular in exactly the case it exists for: the
+legacy file supplied both the key and the identity snapshot that publishes it,
+so any self-consistent pair passed — including a voting key the chain retired
+months before the upgrade, which that snapshot still shows as live.
+
+Shipped: [`reference_identity`] reads the modern record only. A key on a voter
+or operator identity the modern record does not link to has no admissible
+witness and is excluded as `LinkedIdentityUnverified`, with the same manual
+remedy the other exclusions carry ("load this identity again and enter the
+key").
+
+Fetching the linked identity from Platform instead was rejected on two grounds.
+It would put the network in the middle of an offline, read-only preview that
+every screen arrival dispatches; and it would not establish the property
+anyway, because a voter identity's id is *derived* from its voting key
+(`Identifier::create_voter_identifier`). Rotating the voting key on-chain
+creates a **different** voter identity rather than retiring a key on the
+existing one, so fetching the legacy-named voter identity would confirm the
+stale key against its own orphaned identity — verification theatre.
+
+**Behaviour change worth noticing on its own:** a masternode loaded from its
+ProTxHash alone no longer gets its voter-identity-target voting key back in one
+click. The key is listed as unverifiable and the voter link goes with it
+(`VoterLinkWithoutVotingKey`), so the node keeps reporting its voting role as
+missing and `render_missing_voter`'s "Add voting key" prompt stays the remedy on
+offer — which is the honest outcome, since nothing available offline can tell
+that key from one the chain replaced. A record that *does* carry the voter link
+(a re-load keeps it while rebuilding the key map) restores the key as before.
+
+Grouping follows the same rule. `voter_association_is_grouped` now keys on the
+voting *role* (`is_voting_role`) rather than on the voter-identity target — the
+predicate that already decides whether the link is worth offering — so the two
+cannot disagree about which candidate the link belongs to.

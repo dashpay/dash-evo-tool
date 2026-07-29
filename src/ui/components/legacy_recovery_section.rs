@@ -69,6 +69,11 @@ pub fn exclusion_explanation(reason: ExclusionReason) -> &'static str {
             "This saved key is not one of the keys this identity uses now. \
              Load this identity again and enter the current key to bring it back."
         }
+        ExclusionReason::LinkedIdentityUnverified => {
+            "This key belongs to a separate voting or operator identity, and only the previous \
+             version's saved data says the identity still uses it. \
+             Load this identity again and enter the key to bring it back."
+        }
         ExclusionReason::VoterLinkWithoutVotingKey => {
             "The voting key this link needs was not saved, so restoring the link alone would \
              report this node as able to vote when it cannot. \

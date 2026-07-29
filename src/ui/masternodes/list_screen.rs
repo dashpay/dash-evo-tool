@@ -357,6 +357,20 @@ impl MasternodesScreen {
         }
     }
 
+    /// Whether `node_id` names something this page is currently showing: the
+    /// open detail view's node, or one of the cards in the list.
+    ///
+    /// The attribution rule for a backend result that reaches this screen only
+    /// because it is the visible one. An identity nothing on screen names —
+    /// another node, or a `User` identity from the Identities section — has no
+    /// row here to update and no story to tell here.
+    fn shows_node(&self, node_id: Identifier) -> bool {
+        match &self.view {
+            MasternodesView::Detail(detail) => detail.node_id() == node_id,
+            _ => self.nodes.iter().any(|node| node.node_id == node_id),
+        }
+    }
+
     /// Open the detail view for `node_id`. Loads the node's full
     /// `QualifiedIdentity` from the local store; a lookup miss leaves the list
     /// view unchanged.
@@ -578,7 +592,19 @@ impl ScreenLike for MasternodesScreen {
             // the reload, whose tail re-opens the detail view for this node —
             // rebuilding it re-arms the check, which now finds nothing stranded
             // and retires the offer.
-            BackendTaskSuccessResult::LegacyRecoveryCompleted { ref applied, .. } => {
+            //
+            // A restore for an identity this page is not showing lands here
+            // whenever this screen happens to be the visible one, so it is
+            // dropped rather than reported: it changed nothing on screen, and
+            // its "your keys are back" belongs to whoever asked for it.
+            BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                identity_id,
+                ref applied,
+                ..
+            } => {
+                if !self.shows_node(identity_id) {
+                    return;
+                }
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     completion_message(!applied.is_empty()),
@@ -908,6 +934,56 @@ mod tests {
         assert!(
             detail.key_presence_for_test().voting,
             "the node page must show the voting key it now holds",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A restore for an identity this page is not showing lands here whenever
+    /// this screen happens to be the visible one — the Key Info screen that
+    /// dispatched it may have been dismissed long since. Acting on it would
+    /// confirm someone else's restore over the node in view and rebuild that
+    /// node's detail from a store nothing changed in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_completion_for_a_node_not_on_screen_is_ignored() {
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+
+        // The offer the node in view is showing, which its own re-open would
+        // retire — so a wrongly-attributed reload is observable.
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_recovery_plan(
+            node,
+            RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::VoterAssociation,
+                    purpose: None,
+                }],
+                excluded: vec![],
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id: Identifier::from([0x77; 32]),
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must still be open");
+        };
+        assert_eq!(detail.node_id(), node);
+        assert!(
+            detail.has_recovery_offer_for_test(),
+            "another identity's completion must leave this node's offer alone",
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

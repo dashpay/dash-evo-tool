@@ -115,13 +115,29 @@ impl LegacyRecoveryState {
         }
     }
 
-    /// Re-arm detection, so the offer recomputes from the store and disappears
-    /// once nothing is left stranded. Called when a restore finishes and
-    /// whenever a screen is arrived at again, since another screen's restore
-    /// may have landed meanwhile.
+    /// Re-arm detection for a finished restore of `identity_id`, reporting
+    /// whether that restore was this offer's.
     ///
-    /// An install with no previous-version database stays unarmed: there is
-    /// nothing to detect there, ever.
+    /// The attribution rule for a completion, and the twin of [`Self::offered`]:
+    /// a restore answers on a channel that reaches whichever screen is visible
+    /// when the answer arrives, not the screen that dispatched it. A completion
+    /// for another identity must leave this offer's state — and any banner or
+    /// reload a caller hangs off it — untouched.
+    pub fn completed_for(&mut self, identity_id: Identifier) -> bool {
+        if identity_id != self.identity_id {
+            return false;
+        }
+        self.completed();
+        true
+    }
+
+    /// Re-arm detection, so the offer recomputes from the store and disappears
+    /// once nothing is left stranded. Called whenever a screen is arrived at
+    /// again, since another screen's restore may have landed meanwhile;
+    /// [`Self::completed_for`] is the attributed form for a restore result.
+    ///
+    /// An install with no previous-version data stays unarmed: there is nothing
+    /// to detect there, ever.
     pub fn completed(&mut self) {
         if !matches!(self.state, FetchState::Unavailable) {
             self.state = FetchState::NotRequested;

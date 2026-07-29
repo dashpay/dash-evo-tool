@@ -148,6 +148,21 @@ enum ProtectionStage {
 impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {}
 
+    /// Re-read the record this screen persists, because another writer may have
+    /// changed it while the screen sat in the stack.
+    ///
+    /// A restore run from the node page — or any backend task whose result
+    /// reached whichever screen was visible at the time — writes this identity
+    /// behind this screen's back. Its key add and remove paths persist the whole
+    /// clone taken when it opened, so a clone that missed a write puts the
+    /// pre-write record back on the next key edit. The masternode detail view
+    /// re-reads on arrival for the same reason.
+    fn refresh_on_arrival(&mut self) {
+        self.reload_identity();
+        self.protection_status = None;
+        self.recovery.completed();
+    }
+
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::WalletKeyForDisplay { wif, .. } => {
@@ -210,21 +225,29 @@ impl ScreenLike for KeyInfoScreen {
             BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
                 self.recovery.offered(identity_id, plan);
             }
-            BackendTaskSuccessResult::LegacyRecoveryCompleted { ref applied, .. } => {
-                // The restore wrote this identity's record, so the clone this
-                // screen persists on every key edit is now stale — writing it
-                // back would erase the keys just restored. Restored keys also
-                // land in the vault, so the protection line has to re-read it,
-                // and re-arming the check retires the offer once nothing is
-                // left stranded.
-                self.reload_identity();
-                self.protection_status = None;
-                self.recovery.completed();
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    completion_message(!applied.is_empty()),
-                    MessageType::Success,
-                );
+            BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                identity_id,
+                ref applied,
+                ..
+            } => {
+                // A restore this screen never dispatched can land here, since
+                // results reach whichever screen is visible when they arrive.
+                // Only this identity's own restore wrote the record the clone
+                // below is refreshed from, re-sealed the keys the protection
+                // line reads, or has anything to say to this user.
+                if self.recovery.completed_for(identity_id) {
+                    // The clone this screen persists on every key edit is now
+                    // stale — writing it back would erase the keys just
+                    // restored. Restored keys also land in the vault, so the
+                    // protection line has to re-read it.
+                    self.reload_identity();
+                    self.protection_status = None;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        completion_message(!applied.is_empty()),
+                        MessageType::Success,
+                    );
+                }
             }
             _ => {}
         }
@@ -1520,6 +1543,7 @@ mod tests {
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
+    use crate::model::legacy_recovery::RecoveryPlan;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
@@ -1578,7 +1602,7 @@ mod tests {
         })
     }
 
-    fn identity_with(keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
+    fn identity_with(id: u8, keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
         let mut private_keys = KeyStorage::default();
         for (key, secret) in keys {
             private_keys.private_keys.insert(
@@ -1591,7 +1615,7 @@ mod tests {
         }
         QualifiedIdentity {
             identity: Identity::create_basic_identity(
-                Identifier::from([0x4E; 32]),
+                Identifier::from([id; 32]),
                 PlatformVersion::latest(),
             )
             .expect("basic identity"),
@@ -1611,6 +1635,30 @@ mod tests {
         }
     }
 
+    /// Write `key` into `identity_id`'s stored record, the way a restore or any
+    /// other backend writer does — behind whatever screen holds a clone of it.
+    fn write_key_behind_the_screen(
+        app_context: &Arc<AppContext>,
+        identity_id: Identifier,
+        key: &IdentityPublicKey,
+        secret: [u8; 32],
+    ) {
+        let mut record = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read the record")
+            .expect("record stored");
+        record.private_keys.private_keys.insert(
+            (MAIN, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key.clone()),
+                PrivateKeyData::Clear(secret),
+            ),
+        );
+        app_context
+            .update_local_qualified_identity(&record)
+            .expect("the other writer's write");
+    }
+
     /// This screen persists the identity clone it was opened with on every key
     /// add or remove. A restore writes that same record behind its back, so the
     /// completion has to refresh the clone — otherwise the next ordinary key
@@ -1621,27 +1669,17 @@ mod tests {
         let (app_context, _dir) = offline_ctx().await;
 
         let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
-        let stored = identity_with(&[(on_screen_key.clone(), [0x11; 32])]);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
         let identity_id = stored.identity.id();
         app_context
             .insert_local_qualified_identity(&stored, &None)
             .expect("insert the record");
 
-        let mut screen = KeyInfoScreen::new(stored.clone(), on_screen_key, None, &app_context);
+        let mut screen = KeyInfoScreen::new(stored, on_screen_key, None, &app_context);
 
         // What the restore writes: the record gains the stranded key.
         let restored_key = public_key(2, Purpose::TRANSFER);
-        let mut after_restore = stored;
-        after_restore.private_keys.private_keys.insert(
-            (MAIN, restored_key.id()),
-            (
-                QualifiedIdentityPublicKey::from(restored_key.clone()),
-                PrivateKeyData::Clear([0x22; 32]),
-            ),
-        );
-        app_context
-            .update_local_qualified_identity(&after_restore)
-            .expect("the restore's write");
+        write_key_behind_the_screen(&app_context, identity_id, &restored_key, [0x22; 32]);
 
         screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
             identity_id,
@@ -1657,6 +1695,108 @@ mod tests {
                 .private_keys
                 .contains_key(&(MAIN, restored_key.id())),
             "the screen must hold the restored record, not the clone it opened with",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A restore that lands while this screen is off-screen never reaches its
+    /// `display_task_result` — results go only to the visible screen. Returning
+    /// to it must re-read the record, or the clone it opened with is written
+    /// back over the restored keys by the next ordinary key edit, silently and
+    /// with no error to show for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restore_that_landed_off_screen_survives_the_next_key_edit() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, on_screen_key, None, &app_context);
+
+        // The restore lands while another screen is the visible one, so this
+        // screen is never told about it.
+        let restored_key = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, identity_id, &restored_key, [0x22; 32]);
+
+        screen.refresh_on_arrival();
+
+        // What every key add and remove on this screen does with its clone.
+        app_context
+            .update_local_qualified_identity(&screen.identity)
+            .expect("the next key edit's write");
+
+        assert!(
+            app_context
+                .get_local_qualified_identity(&identity_id)
+                .expect("read back")
+                .expect("still stored")
+                .private_keys
+                .private_keys
+                .contains_key(&(MAIN, restored_key.id())),
+            "a key edit on this screen must not erase keys restored while it was away",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A restore dispatched from one identity's Key Info screen can complete
+    /// after the user has opened another's, and results reach whichever screen
+    /// is visible. The stray completion must touch nothing here: not the clone,
+    /// not this identity's own recovery offer, not the banner — it says
+    /// "restored to this identity" about an identity that is not on screen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_completion_for_another_identity_is_ignored() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen_id = on_screen.identity.id();
+        app_context
+            .insert_local_qualified_identity(&on_screen, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(on_screen, on_screen_key, None, &app_context);
+
+        // This identity has a restore of its own running.
+        screen
+            .recovery
+            .offered(on_screen_id, RecoveryPlan::default());
+        screen.recovery.restore(vec![]).expect("dispatch a restore");
+
+        // A change to this identity's record that only a reload would pick up,
+        // so a wrongly-attributed reload is observable.
+        let other_writer_key = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, on_screen_id, &other_writer_key, [0x22; 32]);
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id: Identifier::from([0xA0; 32]),
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+
+        assert!(
+            screen.recovery.is_restoring(),
+            "another identity's completion must not end this identity's restore",
+        );
+        assert!(
+            !screen
+                .identity
+                .private_keys
+                .private_keys
+                .contains_key(&(MAIN, other_writer_key.id())),
+            "another identity's completion must not be acted on here at all",
         );
 
         app_context

@@ -15,7 +15,14 @@ use egui_kittest::kittest::Queryable;
 
 const INTRO: &str = "Some keys for this identity from your previous Dash Evo Tool version haven't been brought \
      across.";
+const EXCLUSIONS_ONLY_INTRO: &str = "Your previous Dash Evo Tool version saved keys for this identity that cannot be brought back \
+     automatically. Each one is listed below with what you can do instead.";
+const EXCLUDED_INTRO: &str = "These keys cannot be brought back automatically:";
 const RESTORE: &str = "Restore keys";
+/// The reason line for [`ExclusionReason::LegacyEncryptedFormat`], which the
+/// section must show without asking the user to hover anything.
+const LEGACY_FORMAT_REASON: &str = "This key is saved in an older format that cannot be restored automatically. \
+     Load this identity again and enter the key to bring it back.";
 
 const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
 const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
@@ -165,7 +172,8 @@ fn a_restore_in_flight_replaces_the_button_with_progress() {
 
 /// A key this flow cannot restore is listed with its own explanation rather
 /// than dropped from a list the user reads as complete — and it never gets a
-/// Restore button of its own.
+/// Restore button of its own. With nothing restorable the section says so in
+/// its own lead-in, rather than announcing keys it then offers no way to act on.
 #[test]
 fn unrestorable_keys_are_listed_separately_with_no_restore_offered() {
     let plan = RecoveryPlan {
@@ -178,15 +186,49 @@ fn unrestorable_keys_are_listed_separately_with_no_restore_offered() {
 
     let (harness, _) = render(plan, false);
 
-    assert!(harness.query_by_label(INTRO).is_some());
+    assert!(harness.query_by_label(EXCLUSIONS_ONLY_INTRO).is_some());
     assert!(
-        harness
-            .query_by_label("These keys cannot be brought back automatically:")
-            .is_some()
+        harness.query_by_label(INTRO).is_none(),
+        "the lead-in must not promise keys the section can bring across",
+    );
+    assert!(
+        harness.query_by_label(EXCLUDED_INTRO).is_none(),
+        "one list needs one heading, not two that say the same thing",
     );
     assert!(harness.query_by_label("Owner key").is_some());
+    assert!(
+        harness.query_by_label(LEGACY_FORMAT_REASON).is_some(),
+        "the reason a key cannot be restored must be readable without hovering",
+    );
     assert!(
         harness.query_by_label(RESTORE).is_none(),
         "nothing here is restorable, so there is nothing to press",
     );
+}
+
+/// A plan with both kinds keeps them apart: the restorable list under the
+/// section lead-in with its button, the rest under their own heading, each with
+/// its reason on screen.
+#[test]
+fn restorable_and_unrestorable_keys_are_shown_in_separate_lists() {
+    let plan = RecoveryPlan {
+        items: vec![key(MAIN.clone(), 1, Purpose::OWNER)],
+        excluded: vec![(
+            key(MAIN.clone(), 2, Purpose::TRANSFER),
+            ExclusionReason::LegacyEncryptedFormat,
+        )],
+    };
+
+    let (harness, _) = render(plan, false);
+
+    assert!(harness.query_by_label(INTRO).is_some());
+    assert!(harness.query_by_label(EXCLUDED_INTRO).is_some());
+    assert!(
+        harness.query_by_label(EXCLUSIONS_ONLY_INTRO).is_none(),
+        "there is something to restore here, so that lead-in would be wrong",
+    );
+    assert!(harness.query_by_label("Owner key").is_some());
+    assert!(harness.query_by_label("Payout address key").is_some());
+    assert!(harness.query_by_label(LEGACY_FORMAT_REASON).is_some());
+    assert!(harness.query_by_label(RESTORE).is_some());
 }

@@ -21,6 +21,11 @@ use crate::ui::theme::DashColors;
 /// only that they upgraded and that some keys did not come with them.
 const INTRO: &str = "Some keys for this identity from your previous Dash Evo Tool version haven't been brought \
      across.";
+/// Replaces [`INTRO`] when the section has nothing to offer but still has
+/// something to report. Without it the section would announce stranded keys and
+/// then present no way to act on them.
+const EXCLUSIONS_ONLY_INTRO: &str = "Your previous Dash Evo Tool version saved keys for this identity that cannot be brought back \
+     automatically. Each one is listed below with what you can do instead.";
 /// Names what pressing the button does, and — the reassurance that matters
 /// most here — what it cannot do.
 const RESTORE_TOOLTIP: &str = "Bring the keys listed above back into this identity. Keys already saved here are left \
@@ -30,8 +35,9 @@ const RESTORE_TOOLTIP: &str = "Bring the keys listed above back into this identi
 const RESTORE_LABEL: &str = "Restore keys";
 /// Shown in place of the button while the restore runs.
 const RESTORING_LABEL: &str = "Restoring…";
-/// Introduces the items this flow cannot restore, so they are never silently
-/// dropped from a list the user reads as complete.
+/// Heads the items this flow cannot restore when restorable ones are listed
+/// above them, so the two lists are never read as one. On its own,
+/// [`EXCLUSIONS_ONLY_INTRO`] already introduces the list.
 const EXCLUDED_INTRO: &str = "These keys cannot be brought back automatically:";
 /// Confirms a restore that actually put keys back.
 const RESTORED_MESSAGE: &str =
@@ -70,8 +76,8 @@ pub fn exclusion_explanation(reason: ExclusionReason) -> &'static str {
              Load this identity again and enter the current key to bring it back."
         }
         ExclusionReason::LinkedIdentityUnverified => {
-            "This key belongs to a separate voting or operator identity, and only the previous \
-             version's saved data says the identity still uses it. \
+            "Only the previous version's saved data connects this to a separate voting or operator \
+             identity, and that alone is not enough to restore it safely. \
              Load this identity again and enter the key to bring it back."
         }
         ExclusionReason::VoterLinkWithoutVotingKey => {
@@ -181,7 +187,13 @@ impl Component for LegacyRecoverySection<'_> {
                 if self.plan.is_empty() {
                     return;
                 }
-                ui.label(RichText::new(INTRO).color(DashColors::warning_color(dark_mode)));
+                let restorable = !self.plan.items.is_empty();
+                let intro = if restorable {
+                    INTRO
+                } else {
+                    EXCLUSIONS_ONLY_INTRO
+                };
+                ui.label(RichText::new(intro).color(DashColors::warning_color(dark_mode)));
 
                 let previewed = self.plan.preview_items();
                 for (label, tip) in recovery_item_labels(&previewed) {
@@ -195,7 +207,7 @@ impl Component for LegacyRecoverySection<'_> {
                     });
                 }
 
-                if !self.plan.items.is_empty() {
+                if restorable {
                     if self.restoring {
                         ui.horizontal(|ui| {
                             ui.spinner();
@@ -217,9 +229,12 @@ impl Component for LegacyRecoverySection<'_> {
 
                 if !self.plan.excluded.is_empty() {
                     ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(EXCLUDED_INTRO).color(DashColors::text_secondary(dark_mode)),
-                    );
+                    if restorable {
+                        ui.label(
+                            RichText::new(EXCLUDED_INTRO)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    }
                     let excluded: Vec<&RecoveryItemDescriptor> =
                         self.plan.excluded.iter().map(|(item, _)| item).collect();
                     let reasons = self.plan.excluded.iter().map(|(_, reason)| *reason);
@@ -228,10 +243,18 @@ impl Component for LegacyRecoverySection<'_> {
                     {
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);
-                            ui.label(
-                                RichText::new(label).color(DashColors::text_secondary(dark_mode)),
-                            )
-                            .on_hover_text(exclusion_explanation(reason));
+                            // The reason is the one sentence that tells the user
+                            // what to do instead, so it is read, not hovered:
+                            // a tooltip reaches neither touch nor keyboard.
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    RichText::new(label).color(DashColors::text_primary(dark_mode)),
+                                );
+                                ui.label(
+                                    RichText::new(exclusion_explanation(reason))
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            });
                         });
                     }
                 }

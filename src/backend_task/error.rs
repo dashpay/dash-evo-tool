@@ -450,6 +450,23 @@ pub enum TaskError {
     )]
     IdentityKeyMissing,
 
+    /// More than one of an identity's key lists publishes the key a write was
+    /// aimed at, so nothing may guess which list the private half belongs to.
+    /// A stale local record is the usual cause. Fieldless: no upstream error
+    /// and, by design, never any secret.
+    #[error(
+        "This key appears on more than one of this identity's key lists, so where it belongs is unclear. Refresh this identity, then try saving the key again."
+    )]
+    IdentityKeyPlacementAmbiguous,
+
+    /// None of an identity's key lists publishes the key a write was aimed at,
+    /// and nothing is held for it either, so there is no store to file it
+    /// under. Fieldless: no upstream error and, by design, never any secret.
+    #[error(
+        "This key is on none of this identity's key lists, so it cannot be saved here. Refresh this identity, then check you entered the key for this identity."
+    )]
+    IdentityKeyNotOnIdentityRecord,
+
     /// The `(placement, key id)` slot a write would take is already held by a
     /// *different* key. The voter and main id spaces overlap, so two keys can
     /// share an id; the write is refused because the occupant's private half is

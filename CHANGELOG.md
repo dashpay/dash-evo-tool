@@ -84,6 +84,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A key two lists appear to share can be saved again**: when a masternode's
+  own record and its voting identity each carried a key with the same number and
+  the same public key, entering the private key of either was refused with a
+  message saying the key does not belong to this identity — although it plainly
+  does, and what the two keys are for is what tells them apart. Such a key is
+  now saved where it belongs. When a key really is on two lists at once, the
+  message now says so and what to do about it.
+
 - **Entering a key can no longer erase a different one**: keys of a masternode's
   own record and of its voting identity are numbered separately, so two
   different keys can carry the same number. Entering the private key of one of

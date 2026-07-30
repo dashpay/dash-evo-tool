@@ -8,7 +8,9 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::TaskError;
-use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, ResolvedPrivateKey};
+use crate::model::qualified_identity::encrypted_key_storage::{
+    KeyStorage, ResolvedPrivateKey, same_key,
+};
 use crate::model::qualified_identity::key_placement::KeyPlacement;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::user_role::UserRole;
@@ -640,7 +642,11 @@ impl QualifiedIdentity {
             .into_iter()
             .filter_map(|(target, identity)| {
                 let published = identity?.public_keys().get(&key.id())?;
-                (published.data() == key.data()).then_some(target)
+                // The same rule `candidates` files a key by. Material alone
+                // cannot tell a main identity's voting key from a voter
+                // identity's — they can carry identical `data` under one id —
+                // so comparing it would call an unambiguous key ambiguous.
+                same_key(published, key).then_some(target)
             })
             .collect();
 
@@ -1231,6 +1237,7 @@ mod key_placement_tests {
     use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use crate::model::qualified_identity::key_placement::{KeyPlacement, PROBE_ORDER};
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
@@ -1592,6 +1599,51 @@ mod key_placement_tests {
 
         assert_eq!(identity.placement_of(&fresh), KeyPlacement::Unknown);
         assert_eq!(identity.placement_of(&fresh).resolved(), None);
+    }
+
+    /// Two keys can share an id *and* their material and still be two keys —
+    /// `purpose` is what tells a main identity's voting key from a voter
+    /// identity's. Comparing material alone reports both lists as publishing
+    /// one key, so the paste path would refuse to file a key whose placement
+    /// was never in doubt.
+    #[test]
+    fn two_keys_sharing_id_and_material_are_placed_by_purpose() {
+        let on_main = key(0, Purpose::VOTING, 0xAA);
+        let on_voter = key(0, Purpose::AUTHENTICATION, 0xAA);
+        assert_eq!(
+            on_main.data(),
+            on_voter.data(),
+            "the fixture shares material"
+        );
+
+        let identity = qi(
+            std::slice::from_ref(&on_main),
+            Some(std::slice::from_ref(&on_voter)),
+            &[],
+        );
+
+        assert_eq!(
+            identity.placement_of(&on_main),
+            KeyPlacement::Resolved(MAIN),
+            "the main identity's voting key belongs to Main, not to both lists"
+        );
+        assert_eq!(
+            identity.placement_of(&on_voter),
+            KeyPlacement::Resolved(VOTER),
+        );
+    }
+
+    /// A key disabled on chain since its private half was saved is still the
+    /// same key, so its placement is still answerable — `disabled_at` is the
+    /// one field Platform lets move.
+    #[test]
+    fn a_key_disabled_since_it_was_saved_still_has_a_placement() {
+        let saved = key(2, Purpose::AUTHENTICATION, 0xAA);
+        let mut disabled = saved.clone();
+        disabled.set_disabled_at(1_700_000_000);
+        let identity = qi(std::slice::from_ref(&disabled), None, &[]);
+
+        assert_eq!(identity.placement_of(&saved), KeyPlacement::Resolved(MAIN));
     }
 
     /// The same key published on two lists is `Ambiguous` — reported, never

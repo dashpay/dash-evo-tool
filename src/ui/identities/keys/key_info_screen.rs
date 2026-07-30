@@ -8,6 +8,7 @@ use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::qualified_identity::key_placement::KeyPlacement;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
@@ -775,7 +776,7 @@ impl ScreenLike for KeyInfoScreen {
             // The vault stores each key under the store it is filed in, so the
             // request has to name the placement the material is actually at.
             match self.target() {
-                Some(target) => {
+                Ok(target) => {
                     if wants_display {
                         action |= AppAction::BackendTask(BackendTask::WalletTask(
                             WalletTask::DeriveIdentityKeyForDisplay {
@@ -797,12 +798,13 @@ impl ScreenLike for KeyInfoScreen {
                         ));
                     }
                 }
-                None => {
+                Err(error) => {
                     MessageBanner::set_global(
                         ctx,
                         "This key is not saved on this device, so it cannot be shown or used to sign.",
                         MessageType::Error,
-                    );
+                    )
+                    .with_details(error);
                 }
             }
         }
@@ -969,14 +971,21 @@ impl KeyInfoScreen {
     /// naming one store while showing material from another asks the vault for
     /// a key it never stored.
     ///
-    /// `None` when the key is on none of this identity's lists and nothing is
-    /// held for it, which is the one case where no store can be named honestly.
-    fn target(&self) -> Option<PrivateKeyTarget> {
-        self.identity
-            .private_keys
-            .first_live_candidate(&self.key)
-            .map(|(target, _)| target)
-            .or_else(|| self.identity.placement_of(&self.key).resolved())
+    /// # Errors
+    ///
+    /// With nothing held for the key, the identity's own lists decide, and both
+    /// their failure modes are distinct answers the user can act on:
+    /// [`TaskError::IdentityKeyPlacementAmbiguous`] when several lists publish
+    /// it, [`TaskError::IdentityKeyNotOnIdentityRecord`] when none does.
+    fn target(&self) -> Result<PrivateKeyTarget, TaskError> {
+        if let Some((target, _)) = self.identity.private_keys.first_live_candidate(&self.key) {
+            return Ok(target);
+        }
+        match self.identity.placement_of(&self.key) {
+            KeyPlacement::Resolved(target) => Ok(target),
+            KeyPlacement::Ambiguous(_) => Err(TaskError::IdentityKeyPlacementAmbiguous),
+            KeyPlacement::Unknown => Err(TaskError::IdentityKeyNotOnIdentityRecord),
+        }
     }
 
     /// Re-read this screen's identity from the store, after a backend task
@@ -1106,13 +1115,12 @@ impl KeyInfoScreen {
             // itself rather than growing a second copy under another store;
             // otherwise the identity's own lists say where it belongs. Both
             // agree with where the resolver will look for it.
-            let Some(target) = self.target() else {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "This key does not belong to this identity, so it cannot be saved here.",
-                    MessageType::Error,
-                );
-                return;
+            let target = match self.target() {
+                Ok(target) => target,
+                Err(error) => {
+                    MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
+                    return;
+                }
             };
             if let Err(error) = self.identity.private_keys.insert_non_encrypted(
                 (target, self.key.id()),

@@ -5,6 +5,11 @@ use crate::backend_task::wallet::WalletTask;
 use crate::model::wallet::WalletSeedHash;
 use std::collections::BTreeMap;
 
+const LOADING_VALIDATION_MESSAGE: &str =
+    "Your wallet's available amount is still being checked. Wait a moment and try again.";
+const FAILED_VALIDATION_MESSAGE: &str =
+    "The available amount could not be checked. Use Retry and try again.";
+
 /// Preserves result ordering within one generation sequence without making old
 /// high-water marks or unresolved requests permanent dispatch barriers.
 struct FetchState {
@@ -12,14 +17,15 @@ struct FetchState {
     request_final_funds_duffs: u64,
     request_utxo_revision: u64,
     loaded: Option<(u64, u64, u64, u64)>,
-    in_flight: Option<(u64, u64, u64)>,
-    failed: Option<(u64, u64, u64)>,
+    in_flight: Option<(u64, u64, u64, u64)>,
+    failed: Option<(u64, u64, u64, u64)>,
 }
 
 /// Async fetch state for asset-lock maximum amounts, keyed by wallet.
 #[derive(Default)]
 pub struct AssetLockBalanceCache {
     states: BTreeMap<WalletSeedHash, FetchState>,
+    next_request_id: u64,
 }
 
 impl AssetLockBalanceCache {
@@ -59,21 +65,37 @@ impl AssetLockBalanceCache {
             return None;
         }
         let request_key = (snapshot_generation, final_funds_duffs, utxo_revision);
-        if state.in_flight == Some(request_key)
+        if state
+            .in_flight
+            .is_some_and(|(_, generation, funds, revision)| {
+                (generation, funds, revision) == request_key
+            })
             || state
                 .loaded
                 .is_some_and(|(generation, final_funds, revision, _)| {
                     (generation, final_funds, revision) == request_key
                 })
-            || state.failed == Some(request_key)
+            || state
+                .failed
+                .is_some_and(|(_, generation, funds, revision)| {
+                    (generation, funds, revision) == request_key
+                })
         {
             return None;
         }
-        state.in_flight = Some(request_key);
+        let request_id = self.next_request_id.checked_add(1)?;
+        self.next_request_id = request_id;
+        state.in_flight = Some((
+            request_id,
+            snapshot_generation,
+            final_funds_duffs,
+            utxo_revision,
+        ));
         state.failed = None;
         Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
             seed_hash,
             snapshot_generation,
+            request_id,
         }))
     }
 
@@ -82,14 +104,19 @@ impl AssetLockBalanceCache {
         &mut self,
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
+        request_id: u64,
         amount_duffs: u64,
     ) {
         let Some(state) = self.states.get_mut(&seed_hash) else {
             return;
         };
-        if let Some((in_flight_generation, in_flight_final_funds, in_flight_revision)) =
-            state.in_flight
-            && in_flight_generation == snapshot_generation
+        if let Some((
+            in_flight_request_id,
+            in_flight_generation,
+            in_flight_final_funds,
+            in_flight_revision,
+        )) = state.in_flight
+            && (in_flight_request_id, in_flight_generation) == (request_id, snapshot_generation)
         {
             state.in_flight = None;
             if (
@@ -113,13 +140,22 @@ impl AssetLockBalanceCache {
     }
 
     /// Mark one in-flight wallet query retryable after a backend failure.
-    pub fn mark_loading_failed(&mut self, seed_hash: &WalletSeedHash, snapshot_generation: u64) {
+    pub fn mark_loading_failed(
+        &mut self,
+        seed_hash: &WalletSeedHash,
+        snapshot_generation: u64,
+        request_id: u64,
+    ) {
         let Some(state) = self.states.get_mut(seed_hash) else {
             return;
         };
-        if let Some((in_flight_generation, in_flight_final_funds, in_flight_revision)) =
-            state.in_flight
-            && in_flight_generation == snapshot_generation
+        if let Some((
+            in_flight_request_id,
+            in_flight_generation,
+            in_flight_final_funds,
+            in_flight_revision,
+        )) = state.in_flight
+            && (in_flight_request_id, in_flight_generation) == (request_id, snapshot_generation)
         {
             state.in_flight = None;
             if (
@@ -132,6 +168,7 @@ impl AssetLockBalanceCache {
                 in_flight_revision,
             ) {
                 state.failed = Some((
+                    in_flight_request_id,
                     in_flight_generation,
                     in_flight_final_funds,
                     in_flight_revision,
@@ -167,13 +204,26 @@ impl AssetLockBalanceCache {
     /// Whether the query failed and needs an explicit retry.
     pub fn is_failed(&self, seed_hash: &WalletSeedHash) -> bool {
         self.states.get(seed_hash).is_some_and(|state| {
-            state.failed
-                == Some((
-                    state.request_generation,
-                    state.request_final_funds_duffs,
-                    state.request_utxo_revision,
-                ))
+            state.failed.is_some_and(
+                |(_, failed_generation, failed_final_funds, failed_revision)| {
+                    (failed_generation, failed_final_funds, failed_revision)
+                        == (
+                            state.request_generation,
+                            state.request_final_funds_duffs,
+                            state.request_utxo_revision,
+                        )
+                },
+            )
         })
+    }
+
+    /// Explain why validation cannot use a builder quote yet.
+    pub fn validation_unavailable_message(&self, seed_hash: &WalletSeedHash) -> &'static str {
+        if self.is_failed(seed_hash) {
+            FAILED_VALIDATION_MESSAGE
+        } else {
+            LOADING_VALIDATION_MESSAGE
+        }
     }
 
     /// Re-arm one wallet's query.
@@ -194,32 +244,42 @@ mod tests {
     use crate::backend_task::wallet::WalletTask;
     use crate::wallet_backend::DetWalletBalance;
 
+    fn request(
+        cache: &mut AssetLockBalanceCache,
+        seed_hash: [u8; 32],
+        snapshot_generation: u64,
+        final_funds_duffs: u64,
+        utxo_revision: u64,
+    ) -> u64 {
+        match cache.ensure_requested(
+            seed_hash,
+            snapshot_generation,
+            final_funds_duffs,
+            utxo_revision,
+        ) {
+            Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                seed_hash: requested_seed,
+                snapshot_generation: requested_generation,
+                request_id,
+            })) => {
+                assert_eq!(requested_seed, seed_hash);
+                assert_eq!(requested_generation, snapshot_generation);
+                request_id
+            }
+            other => panic!("expected asset-lock maximum request, got {other:?}"),
+        }
+    }
+
     #[test]
     fn asset_lock_balance_cache_requeries_and_rejects_stale_results_after_snapshot_change() {
         let seed_hash = [0x29; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(matches!(
-            cache.ensure_requested(seed_hash, 7, 1_000, 1),
-            Some(BackendTask::WalletTask(
-                WalletTask::GetAssetLockMaxAmount {
-                    seed_hash: requested_seed,
-                    snapshot_generation: 7,
-                }
-            )) if requested_seed == seed_hash
-        ));
-        cache.store(seed_hash, 7, 1_000);
+        let request_7 = request(&mut cache, seed_hash, 7, 1_000, 1);
+        cache.store(seed_hash, 7, request_7, 1_000);
         assert_eq!(cache.get(&seed_hash), Some(1_000));
 
-        assert!(matches!(
-            cache.ensure_requested(seed_hash, 8, 900, 2),
-            Some(BackendTask::WalletTask(
-                WalletTask::GetAssetLockMaxAmount {
-                    seed_hash: requested_seed,
-                    snapshot_generation: 8,
-                }
-            )) if requested_seed == seed_hash
-        ));
+        let request_8 = request(&mut cache, seed_hash, 8, 900, 2);
         assert_eq!(
             cache.get(&seed_hash),
             Some(1_000),
@@ -230,14 +290,14 @@ mod tests {
             "an in-flight refresh for the current generation must not dispatch twice"
         );
 
-        cache.store(seed_hash, 7, 1_000);
+        cache.store(seed_hash, 7, request_7, 1_000);
         assert_eq!(
             cache.get(&seed_hash),
             Some(1_000),
             "a stale response must not overwrite or erase the last displayable value"
         );
 
-        cache.store(seed_hash, 8, 900);
+        cache.store(seed_hash, 8, request_8, 900);
         assert_eq!(cache.get(&seed_hash), Some(900));
     }
 
@@ -246,19 +306,11 @@ mod tests {
         let seed_hash = [0x2a; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 7, 1_000, 1).is_some());
-        cache.store(seed_hash, 7, 1_000);
+        let old_request = request(&mut cache, seed_hash, 7, 1_000, 1);
+        cache.store(seed_hash, 7, old_request, 1_000);
         assert_eq!(cache.get(&seed_hash), Some(1_000));
 
-        assert!(matches!(
-            cache.ensure_requested(seed_hash, 2, 1_000, 1),
-            Some(BackendTask::WalletTask(
-                WalletTask::GetAssetLockMaxAmount {
-                    seed_hash: requested_seed,
-                    snapshot_generation: 2,
-                }
-            )) if requested_seed == seed_hash
-        ));
+        let restarted_request = request(&mut cache, seed_hash, 2, 1_000, 1);
         assert_eq!(
             cache.get(&seed_hash),
             None,
@@ -269,13 +321,13 @@ mod tests {
             "the replacement request must still deduplicate its own generation"
         );
 
-        cache.store(seed_hash, 7, 2_000);
+        cache.store(seed_hash, 7, old_request, 2_000);
         assert_eq!(
             cache.get(&seed_hash),
             None,
             "a late result from before the generation restart must be ignored"
         );
-        cache.store(seed_hash, 2, 800);
+        cache.store(seed_hash, 2, restarted_request, 800);
         assert_eq!(cache.get(&seed_hash), Some(800));
     }
 
@@ -284,28 +336,20 @@ mod tests {
         let seed_hash = [0x2b; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 4, 1_000, 1).is_some());
-        assert!(matches!(
-            cache.ensure_requested(seed_hash, 5, 900, 2),
-            Some(BackendTask::WalletTask(
-                WalletTask::GetAssetLockMaxAmount {
-                    seed_hash: requested_seed,
-                    snapshot_generation: 5,
-                }
-            )) if requested_seed == seed_hash
-        ));
+        let old_request = request(&mut cache, seed_hash, 4, 1_000, 1);
+        let current_request = request(&mut cache, seed_hash, 5, 900, 2);
         assert!(
             cache.ensure_requested(seed_hash, 5, 900, 2).is_none(),
             "the superseding request must deduplicate its own generation"
         );
 
-        cache.store(seed_hash, 4, 1_000);
+        cache.store(seed_hash, 4, old_request, 1_000);
         assert_eq!(
             cache.get(&seed_hash),
             None,
             "the superseded request must not populate the cache"
         );
-        cache.store(seed_hash, 5, 900);
+        cache.store(seed_hash, 5, current_request, 900);
         assert_eq!(cache.get(&seed_hash), Some(900));
     }
 
@@ -314,13 +358,13 @@ mod tests {
         let seed_hash = [0x2c; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 7, 1_000, 1).is_some());
+        let request_id = request(&mut cache, seed_hash, 7, 1_000, 1);
         assert!(
             cache.ensure_requested(seed_hash, 8, 1_000, 1).is_none(),
             "a generation-only change must not restart the live-builder probe"
         );
 
-        cache.store(seed_hash, 7, 900);
+        cache.store(seed_hash, 7, request_id, 900);
         assert_eq!(
             cache.get(&seed_hash),
             Some(900),
@@ -333,16 +377,8 @@ mod tests {
         let seed_hash = [0x2d; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 7, 1_000, 1).is_some());
-        assert!(matches!(
-            cache.ensure_requested(seed_hash, 8, 1_500, 2),
-            Some(BackendTask::WalletTask(
-                WalletTask::GetAssetLockMaxAmount {
-                    seed_hash: requested_seed,
-                    snapshot_generation: 8,
-                }
-            )) if requested_seed == seed_hash
-        ));
+        request(&mut cache, seed_hash, 7, 1_000, 1);
+        request(&mut cache, seed_hash, 8, 1_500, 2);
     }
 
     #[test]
@@ -361,19 +397,10 @@ mod tests {
         };
 
         assert_eq!(unconfirmed.spendable(), confirmed.spendable());
-        assert!(
-            cache
-                .ensure_requested(seed_hash, 7, unconfirmed.confirmed, 1)
-                .is_some()
-        );
-        cache.store(seed_hash, 7, 0);
+        let unconfirmed_request = request(&mut cache, seed_hash, 7, unconfirmed.confirmed, 1);
+        cache.store(seed_hash, 7, unconfirmed_request, 0);
 
-        assert!(
-            cache
-                .ensure_requested(seed_hash, 8, confirmed.confirmed, 2)
-                .is_some(),
-            "confirmation must re-arm the builder probe even when spendable() is unchanged"
-        );
+        request(&mut cache, seed_hash, 8, confirmed.confirmed, 2);
     }
 
     #[test]
@@ -381,15 +408,12 @@ mod tests {
         let seed_hash = [0x2f; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 7, 1_000, 1).is_some());
-        cache.store(seed_hash, 7, 900);
+        let first_request = request(&mut cache, seed_hash, 7, 1_000, 1);
+        cache.store(seed_hash, 7, first_request, 900);
         assert_eq!(cache.get(&seed_hash), Some(900));
 
-        assert!(
-            cache.ensure_requested(seed_hash, 7, 1_500, 2).is_some(),
-            "a changed debounce signal must supersede a loaded result even at the same generation"
-        );
-        cache.store(seed_hash, 7, 1_400);
+        let replacement_request = request(&mut cache, seed_hash, 7, 1_500, 2);
+        cache.store(seed_hash, 7, replacement_request, 1_400);
         assert_eq!(cache.get(&seed_hash), Some(1_400));
         assert!(
             cache.ensure_requested(seed_hash, 7, 1_500, 2).is_none(),
@@ -398,18 +422,42 @@ mod tests {
     }
 
     #[test]
+    fn asset_lock_balance_cache_rejects_superseded_reply_at_same_generation() {
+        let seed_hash = [0x31; 32];
+        let mut cache = AssetLockBalanceCache::default();
+
+        let request_t1 = request(&mut cache, seed_hash, 7, 1_000, 1);
+        let request_t2 = request(&mut cache, seed_hash, 7, 1_500, 2);
+        assert!(
+            request_t2 > request_t1,
+            "every actual dispatch must advance the request ID"
+        );
+
+        cache.store(seed_hash, 7, request_t1, 900);
+        assert_eq!(
+            cache.get_current(&seed_hash, 1_500, 2),
+            None,
+            "T1's stale reply must not be tagged as T2's current quote"
+        );
+        cache.mark_loading_failed(&seed_hash, 7, request_t1);
+        assert!(
+            !cache.is_failed(&seed_hash),
+            "T1's stale failure must not mark T2 as failed"
+        );
+        cache.store(seed_hash, 7, request_t2, 1_400);
+        assert_eq!(cache.get_current(&seed_hash, 1_500, 2), Some(1_400));
+    }
+
+    #[test]
     fn asset_lock_balance_cache_blocks_stale_validation_after_utxo_composition_change() {
         let seed_hash = [0x30; 32];
         let mut cache = AssetLockBalanceCache::default();
 
-        assert!(cache.ensure_requested(seed_hash, 7, 1_000, 1).is_some());
-        cache.store(seed_hash, 7, 900);
+        let stale_request = request(&mut cache, seed_hash, 7, 1_000, 1);
+        cache.store(seed_hash, 7, stale_request, 900);
         assert_eq!(cache.get(&seed_hash), Some(900));
 
-        assert!(
-            cache.ensure_requested(seed_hash, 8, 1_000, 2).is_some(),
-            "a different eligible-UTXO composition must re-arm the builder probe"
-        );
+        let current_request = request(&mut cache, seed_hash, 8, 1_000, 2);
         assert_eq!(
             cache.get(&seed_hash),
             Some(900),
@@ -421,7 +469,7 @@ mod tests {
             "validation must not use the stale higher quote for the new composition"
         );
 
-        cache.store(seed_hash, 8, 700);
+        cache.store(seed_hash, 8, current_request, 700);
         assert_eq!(cache.get_current(&seed_hash, 1_000, 2), Some(700));
     }
 }

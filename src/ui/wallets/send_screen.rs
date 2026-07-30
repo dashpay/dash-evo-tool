@@ -637,7 +637,8 @@ impl WalletSendScreen {
         self.asset_lock_balance
             .get_current(seed_hash, final_funds_duffs, utxo_revision)
             .ok_or_else(|| {
-                "Your wallet's available amount is still being checked. Wait a moment and try again."
+                self.asset_lock_balance
+                    .validation_unavailable_message(seed_hash)
                     .to_string()
             })
     }
@@ -3326,14 +3327,18 @@ impl WalletSendScreen {
     ) {
         let (snapshot_generation, final_funds_duffs, utxo_revision) =
             self.app_context.asset_lock_probe_snapshot(&seed_hash);
-        let _ = self.asset_lock_balance.ensure_requested(
-            seed_hash,
-            snapshot_generation,
-            final_funds_duffs,
-            utxo_revision,
-        );
+        let Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount { request_id, .. })) =
+            self.asset_lock_balance.ensure_requested(
+                seed_hash,
+                snapshot_generation,
+                final_funds_duffs,
+                utxo_revision,
+            )
+        else {
+            return;
+        };
         self.asset_lock_balance
-            .store(seed_hash, snapshot_generation, amount_duffs);
+            .store(seed_hash, snapshot_generation, request_id, amount_duffs);
     }
 
     #[cfg(feature = "testing")]
@@ -4354,11 +4359,16 @@ impl ScreenLike for WalletSendScreen {
         if let crate::backend_task::BackendTaskSuccessResult::AssetLockMaxAmount {
             seed_hash,
             snapshot_generation,
+            request_id,
             amount_duffs,
         } = &backend_task_success_result
         {
-            self.asset_lock_balance
-                .store(*seed_hash, *snapshot_generation, *amount_duffs);
+            self.asset_lock_balance.store(
+                *seed_hash,
+                *snapshot_generation,
+                *request_id,
+                *amount_duffs,
+            );
             return;
         }
         self.send_banner.take_and_clear();
@@ -4489,9 +4499,14 @@ impl ScreenLike for WalletSendScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if let Some((seed_hash, snapshot_generation)) = context.asset_lock_max_amount_request() {
-            self.asset_lock_balance
-                .mark_loading_failed(&seed_hash, snapshot_generation);
+        if let Some((seed_hash, snapshot_generation, request_id)) =
+            context.asset_lock_max_amount_request()
+        {
+            self.asset_lock_balance.mark_loading_failed(
+                &seed_hash,
+                snapshot_generation,
+                request_id,
+            );
         }
     }
 
@@ -4578,6 +4593,15 @@ mod tests {
         )
     }
 
+    fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {
+        match task {
+            Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                request_id, ..
+            })) => request_id,
+            other => panic!("expected asset-lock maximum request, got {other:?}"),
+        }
+    }
+
     fn click_in_one_frame(harness: &mut Harness<'_, WalletSendScreen>, label: &str) {
         let pos = harness.get_by_label(label).rect().center();
         harness.input_mut().events.extend([
@@ -4614,20 +4638,18 @@ mod tests {
 
         let (snapshot_generation, final_funds_duffs, utxo_revision) =
             screen.app_context.asset_lock_probe_snapshot(&seed_hash);
-        assert!(
-            screen
-                .asset_lock_balance
-                .ensure_requested(
-                    seed_hash,
-                    snapshot_generation,
-                    final_funds_duffs,
-                    utxo_revision,
-                )
-                .is_some()
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            snapshot_generation,
+            final_funds_duffs,
+            utxo_revision,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            snapshot_generation,
+            request_id,
+            BUILDER_MAX_DUFFS,
         );
-        screen
-            .asset_lock_balance
-            .store(seed_hash, snapshot_generation, BUILDER_MAX_DUFFS);
         screen.selected_source = Some(SourceSelection::CoreWallet);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
 
@@ -4770,15 +4792,15 @@ mod tests {
             screen.app_context.asset_lock_probe_snapshot(&seed_hash);
         let stale_revision = current_revision.saturating_add(1);
 
-        assert!(
-            screen
-                .asset_lock_balance
-                .ensure_requested(seed_hash, 7, current_final_funds, stale_revision)
-                .is_some()
-        );
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            7,
+            current_final_funds,
+            stale_revision,
+        ));
         screen
             .asset_lock_balance
-            .store(seed_hash, 7, STALE_MAX_DUFFS);
+            .store(seed_hash, 7, request_id, STALE_MAX_DUFFS);
         screen.selected_source = Some(SourceSelection::CoreWallet);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
         screen.amount = Some(Amount::dash_from_duffs(1));
@@ -4789,6 +4811,42 @@ mod tests {
         assert!(
             error.contains("still being checked"),
             "validation must wait for the current composition quote: {error}"
+        );
+    }
+
+    #[test]
+    fn core_asset_lock_dispatch_distinguishes_failed_probe_from_loading() {
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let (snapshot_generation, final_funds_duffs, utxo_revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            snapshot_generation,
+            final_funds_duffs,
+            utxo_revision,
+        ));
+        let loading_message = screen
+            .asset_lock_max_amount(&seed_hash)
+            .expect_err("an in-flight probe must block dispatch");
+        screen
+            .asset_lock_balance
+            .mark_loading_failed(&seed_hash, snapshot_generation, request_id);
+        let failed_message = screen
+            .asset_lock_max_amount(&seed_hash)
+            .expect_err("a failed probe must block dispatch");
+
+        assert!(loading_message.contains("still being checked"));
+        assert!(
+            failed_message.starts_with("The available amount could not be checked."),
+            "failed dispatch must direct the user to the retryable state: {failed_message}"
+        );
+        assert_ne!(
+            failed_message, loading_message,
+            "a permanently failed probe must not be described as still loading"
         );
     }
 

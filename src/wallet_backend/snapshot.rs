@@ -31,6 +31,8 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -96,7 +98,7 @@ pub struct WalletSnapshot {
     pub(super) final_funds_duffs: u64,
     /// Revision of the exact eligible `(outpoint, value)` input composition.
     pub(super) asset_lock_input_revision: u64,
-    asset_lock_input_signature: Vec<(OutPoint, u64)>,
+    asset_lock_input_fingerprint: u64,
     pub balance: DetWalletBalance,
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
@@ -169,7 +171,7 @@ impl TransactionHistoryStatus {
 struct SnapshotState {
     balance: DetWalletBalance,
     final_funds_duffs: u64,
-    asset_lock_input_signature: Vec<(OutPoint, u64)>,
+    asset_lock_input_fingerprint: u64,
     utxos: Vec<DetUtxo>,
     address_balances: BTreeMap<Address, u64>,
     monitored_receive_addresses: Vec<String>,
@@ -179,19 +181,26 @@ struct SnapshotState {
 fn asset_lock_final_inputs<'a>(
     utxos: impl IntoIterator<Item = &'a Utxo>,
     current_height: u32,
-) -> (u64, Vec<(OutPoint, u64)>) {
-    let mut signature: Vec<_> = utxos
+) -> (u64, u64) {
+    let mut inputs: Vec<_> = utxos
         .into_iter()
         .filter_map(|utxo| {
             ((utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height))
                 .then_some((utxo.outpoint, utxo.value()))
         })
         .collect();
-    signature.sort_unstable();
-    let total = signature
+    inputs.sort_unstable();
+    let total = inputs
         .iter()
         .fold(0_u64, |total, (_, value)| total.saturating_add(*value));
-    (total, signature)
+    let fingerprint = if inputs.is_empty() {
+        0
+    } else {
+        let mut hasher = DefaultHasher::new();
+        inputs.hash(&mut hasher);
+        hasher.finish()
+    };
+    (total, fingerprint)
 }
 
 /// Sum inputs eligible for an asset-lock builder requiring final inputs.
@@ -416,7 +425,7 @@ fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
     SnapshotState {
         balance: prior.balance,
         final_funds_duffs: prior.final_funds_duffs,
-        asset_lock_input_signature: prior.asset_lock_input_signature.clone(),
+        asset_lock_input_fingerprint: prior.asset_lock_input_fingerprint,
         utxos: prior.utxos.clone(),
         address_balances: prior.address_balances.clone(),
         monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
@@ -460,7 +469,7 @@ struct RegisteredWallet {
 struct SnapshotRevision {
     generation: u64,
     asset_lock_input_revision: u64,
-    asset_lock_input_signature: Vec<(OutPoint, u64)>,
+    asset_lock_input_fingerprint: u64,
 }
 
 impl std::fmt::Debug for SnapshotStore {
@@ -698,7 +707,7 @@ impl SnapshotStore {
                     unconfirmed: core_balance.unconfirmed(),
                     total: core_balance.total(),
                 };
-                let (final_funds_duffs, asset_lock_input_signature) =
+                let (final_funds_duffs, asset_lock_input_fingerprint) =
                     asset_lock_final_inputs(state.utxos(), current_height);
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
@@ -714,7 +723,7 @@ impl SnapshotStore {
                 SnapshotState {
                     balance,
                     final_funds_duffs,
-                    asset_lock_input_signature,
+                    asset_lock_input_fingerprint,
                     utxos,
                     address_balances,
                     monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
@@ -754,10 +763,10 @@ impl SnapshotStore {
             };
             let revision = generations.entry(*seed_hash).or_default();
             revision.generation = revision.generation.saturating_add(1);
-            if revision.asset_lock_input_signature != state.asset_lock_input_signature {
+            if revision.asset_lock_input_fingerprint != state.asset_lock_input_fingerprint {
                 revision.asset_lock_input_revision =
                     revision.asset_lock_input_revision.saturating_add(1);
-                revision.asset_lock_input_signature = state.asset_lock_input_signature.clone();
+                revision.asset_lock_input_fingerprint = state.asset_lock_input_fingerprint;
             }
             (revision.generation, revision.asset_lock_input_revision)
         };
@@ -765,7 +774,7 @@ impl SnapshotStore {
             generation,
             final_funds_duffs: state.final_funds_duffs,
             asset_lock_input_revision,
-            asset_lock_input_signature: state.asset_lock_input_signature,
+            asset_lock_input_fingerprint: state.asset_lock_input_fingerprint,
             balance: state.balance,
             transactions,
             utxos: state.utxos,
@@ -851,7 +860,7 @@ mod tests {
             SnapshotState {
                 balance: DetWalletBalance::default(),
                 final_funds_duffs: 0,
-                asset_lock_input_signature: Vec::new(),
+                asset_lock_input_fingerprint: 0,
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
@@ -898,7 +907,7 @@ mod tests {
                     total: 1_000,
                 },
                 final_funds_duffs: 0,
-                asset_lock_input_signature: Vec::new(),
+                asset_lock_input_fingerprint: 0,
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
@@ -917,7 +926,7 @@ mod tests {
                     total: 1_000,
                 },
                 final_funds_duffs: 1_000,
-                asset_lock_input_signature: vec![(OutPoint::null(), 1_000)],
+                asset_lock_input_fingerprint: 1,
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
@@ -936,10 +945,7 @@ mod tests {
                     total: 1_000,
                 },
                 final_funds_duffs: 1_000,
-                asset_lock_input_signature: vec![(
-                    OutPoint::new(Txid::from_byte_array([0x33; 32]), 0),
-                    1_000,
-                )],
+                asset_lock_input_fingerprint: 2,
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
@@ -970,7 +976,7 @@ mod tests {
             SnapshotState {
                 balance: DetWalletBalance::default(),
                 final_funds_duffs: 0,
-                asset_lock_input_signature: Vec::new(),
+                asset_lock_input_fingerprint: 0,
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: watched.clone(),
@@ -1102,6 +1108,59 @@ mod tests {
 
         utxo.is_locked = true;
         assert_eq!(asset_lock_final_funds_duffs([&utxo], 200), 0);
+    }
+
+    #[test]
+    fn asset_lock_input_fingerprint_is_independent_of_utxo_order() {
+        let address = addr(14);
+        let mut first = Utxo::new(
+            OutPoint::new(Txid::from_byte_array([0x41; 32]), 0),
+            TxOut {
+                value: 1_000,
+                script_pubkey: address.script_pubkey(),
+            },
+            address.clone(),
+            100,
+            false,
+        );
+        first.is_confirmed = true;
+        let mut second = Utxo::new(
+            OutPoint::new(Txid::from_byte_array([0x42; 32]), 1),
+            TxOut {
+                value: 2_000,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            100,
+            false,
+        );
+        second.is_confirmed = true;
+
+        let forward = asset_lock_final_inputs([&first, &second], 200);
+        let reversed = asset_lock_final_inputs([&second, &first], 200);
+
+        assert_eq!(forward.0, 3_000);
+        assert_eq!(
+            forward, reversed,
+            "the same eligible set must have one fingerprint regardless of input order"
+        );
+
+        let mut third = Utxo::new(
+            OutPoint::new(Txid::from_byte_array([0x43; 32]), 2),
+            TxOut {
+                value: 3_000,
+                script_pubkey: addr(14).script_pubkey(),
+            },
+            addr(14),
+            100,
+            false,
+        );
+        third.is_confirmed = true;
+        let different_set = asset_lock_final_inputs([&first, &third], 200);
+        assert_ne!(
+            forward.1, different_set.1,
+            "a genuinely different eligible set must not collide with the original fingerprint"
+        );
     }
 
     /// Crosses the `send_screen` "Max" seam: the Max a Core send reserves must
@@ -1313,7 +1372,7 @@ mod tests {
             generation: 1,
             final_funds_duffs: 6_000,
             asset_lock_input_revision: 1,
-            asset_lock_input_signature: vec![(OutPoint::null(), 1_000)],
+            asset_lock_input_fingerprint: 1,
             balance: DetWalletBalance {
                 confirmed: 6_000,
                 unconfirmed: 0,
@@ -1638,7 +1697,7 @@ mod tests {
                     total,
                 },
                 final_funds_duffs: total,
-                asset_lock_input_signature: Vec::new(),
+                asset_lock_input_fingerprint: 0,
                 utxos: Vec::new(),
                 address_balances: address_balances.clone(),
                 monitored_receive_addresses: Vec::new(),

@@ -229,6 +229,7 @@ pub enum WalletTask {
     GetAssetLockMaxAmount {
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
+        request_id: u64,
     },
     /// Fund Platform addresses from a tracked asset lock identified by its
     /// credit-output outpoint. The proof and credit-output key are recovered

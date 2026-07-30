@@ -335,6 +335,7 @@ pub enum BackendTaskContext {
     AssetLockMaxAmount {
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
+        request_id: u64,
     },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
@@ -392,12 +393,13 @@ impl BackendTaskContext {
         }
     }
 
-    pub(crate) fn asset_lock_max_amount_request(&self) -> Option<(WalletSeedHash, u64)> {
+    pub(crate) fn asset_lock_max_amount_request(&self) -> Option<(WalletSeedHash, u64, u64)> {
         match self.operation() {
             Self::AssetLockMaxAmount {
                 seed_hash,
                 snapshot_generation,
-            } => Some((*seed_hash, *snapshot_generation)),
+                request_id,
+            } => Some((*seed_hash, *snapshot_generation, *request_id)),
             _ => None,
         }
     }
@@ -452,9 +454,11 @@ impl From<&BackendTask> for BackendTaskContext {
             BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
                 seed_hash,
                 snapshot_generation,
+                request_id,
             }) => Self::AssetLockMaxAmount {
                 seed_hash: *seed_hash,
                 snapshot_generation: *snapshot_generation,
+                request_id: *request_id,
             },
             BackendTask::WalletTask(
                 task @ (WalletTask::RenameHdWallet { .. }
@@ -627,6 +631,7 @@ pub enum BackendTaskSuccessResult {
     AssetLockMaxAmount {
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
+        request_id: u64,
         amount_duffs: u64,
     },
     /// Platform address balances fetched from Platform
@@ -1274,6 +1279,7 @@ impl AppContext {
             WalletTask::GetAssetLockMaxAmount {
                 seed_hash,
                 snapshot_generation,
+                request_id,
             } => backend
                 .asset_lock_max_amount(&seed_hash)
                 .await
@@ -1281,6 +1287,7 @@ impl AppContext {
                     |amount_duffs| BackendTaskSuccessResult::AssetLockMaxAmount {
                         seed_hash,
                         snapshot_generation,
+                        request_id,
                         amount_duffs,
                     },
                 ),
@@ -1706,6 +1713,21 @@ mod tests {
         assert_eq!(
             BackendTaskContext::from(&task),
             BackendTaskContext::TokenRewardEstimate(identity_token_id)
+        );
+    }
+
+    #[test]
+    fn backend_task_context_preserves_asset_lock_request_identity() {
+        let seed_hash = [0x39; 32];
+        let task = BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+            seed_hash,
+            snapshot_generation: 7,
+            request_id: 42,
+        });
+
+        assert_eq!(
+            BackendTaskContext::from(&task).asset_lock_max_amount_request(),
+            Some((seed_hash, 7, 42))
         );
     }
 

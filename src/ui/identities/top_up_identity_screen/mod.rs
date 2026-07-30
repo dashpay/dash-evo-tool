@@ -521,9 +521,13 @@ impl TopUpIdentityScreen {
                     return AppAction::None;
                 }
                 let Some(max_amount) = self.current_validation_ceiling_duffs(funding_method) else {
+                    let Ok(wallet) = selected_wallet.read() else {
+                        return AppAction::None;
+                    };
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        "Your wallet's available amount is still being checked. Wait a moment and try again.",
+                        self.asset_lock_balance
+                            .validation_unavailable_message(&wallet.seed_hash()),
                         MessageType::Warning,
                     );
                     return AppAction::None;
@@ -658,9 +662,14 @@ impl ScreenLike for TopUpIdentityScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
-        if let Some((seed_hash, snapshot_generation)) = context.asset_lock_max_amount_request() {
-            self.asset_lock_balance
-                .mark_loading_failed(&seed_hash, snapshot_generation);
+        if let Some((seed_hash, snapshot_generation, request_id)) =
+            context.asset_lock_max_amount_request()
+        {
+            self.asset_lock_balance.mark_loading_failed(
+                &seed_hash,
+                snapshot_generation,
+                request_id,
+            );
         }
         let selected_seed_hash = self
             .wallet
@@ -686,11 +695,16 @@ impl ScreenLike for TopUpIdentityScreen {
         if let BackendTaskSuccessResult::AssetLockMaxAmount {
             seed_hash,
             snapshot_generation,
+            request_id,
             amount_duffs,
         } = &backend_task_success_result
         {
-            self.asset_lock_balance
-                .store(*seed_hash, *snapshot_generation, *amount_duffs);
+            self.asset_lock_balance.store(
+                *seed_hash,
+                *snapshot_generation,
+                *request_id,
+                *amount_duffs,
+            );
             return;
         }
         if let BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } =
@@ -1059,6 +1073,30 @@ mod tests {
     use dash_sdk::platform::Identifier;
     use std::collections::BTreeMap;
 
+    fn wallet_balance_screen(
+        seed_byte: u8,
+    ) -> (TopUpIdentityScreen, WalletSeedHash, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed([seed_byte; 64], Network::Testnet, None, None).expect("wallet"),
+        ));
+        let seed_hash = wallet.read().expect("wallet lock").seed_hash();
+        let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &app_context);
+        screen.wallet = Some(wallet);
+        screen.funding_amount_exact = Some(1);
+        (screen, seed_hash, temp_dir)
+    }
+
+    fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {
+        match task {
+            Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                request_id, ..
+            })) => request_id,
+            other => panic!("expected asset-lock maximum request, got {other:?}"),
+        }
+    }
+
     fn test_identity(network: Network) -> QualifiedIdentity {
         QualifiedIdentity {
             identity: Identity::new_with_id_and_keys(
@@ -1096,6 +1134,7 @@ mod tests {
                 BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
                     seed_hash: probe_seed,
                     snapshot_generation: 9,
+                    request_id: 17,
                 }),
                 BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
                     seed_hash: receive_seed,
@@ -1117,6 +1156,7 @@ mod tests {
             BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
                 seed_hash,
                 snapshot_generation: 9,
+                request_id: 17,
             }) if *seed_hash == probe_seed
         )));
         assert!(tasks.iter().any(|task| matches!(
@@ -1143,20 +1183,100 @@ mod tests {
         screen.funding_address_balance_duffs = DEPOSIT_ADDRESS_DUFFS;
         screen.funding_amount_exact = Some(REQUESTED_DUFFS);
         let (generation, final_funds, revision) = app_context.asset_lock_probe_snapshot(&seed_hash);
-        assert!(
-            screen
-                .asset_lock_balance
-                .ensure_requested(seed_hash, generation, final_funds, revision)
-                .is_some()
-        );
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            generation,
+            final_funds,
+            revision,
+        ));
         screen
             .asset_lock_balance
-            .store(seed_hash, generation, WALLET_CEILING_DUFFS);
+            .store(seed_hash, generation, request_id, WALLET_CEILING_DUFFS);
 
         assert!(matches!(
             screen.top_up_identity_clicked(FundingMethod::ReceiveDeposit),
             AppAction::None
         ));
+    }
+
+    #[test]
+    fn top_up_dispatch_rejects_quote_for_stale_utxo_composition() {
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x37);
+        let (_, current_final_funds, current_revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let stale_revision = current_revision.saturating_add(1);
+
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            7,
+            current_final_funds,
+            stale_revision,
+        ));
+        screen
+            .asset_lock_balance
+            .store(seed_hash, 7, request_id, 10_000_000);
+
+        assert!(matches!(
+            screen.top_up_identity_clicked(FundingMethod::UseWalletBalance),
+            AppAction::None
+        ));
+        let ctx = screen.app_context.egui_ctx();
+        assert!(MessageBanner::has_global(ctx));
+        MessageBanner::clear_global_message(
+            ctx,
+            "Your wallet's available amount is still being checked. Wait a moment and try again.",
+        );
+        assert!(
+            !MessageBanner::has_global(ctx),
+            "stale composition must surface the loading warning rather than dispatch"
+        );
+    }
+
+    #[test]
+    fn top_up_dispatch_distinguishes_failed_probe_from_loading() {
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x38);
+        let ctx = screen.app_context.egui_ctx().clone();
+        let (generation, final_funds, revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            generation,
+            final_funds,
+            revision,
+        ));
+
+        assert!(matches!(
+            screen.top_up_identity_clicked(FundingMethod::UseWalletBalance),
+            AppAction::None
+        ));
+        assert!(MessageBanner::has_global(&ctx));
+        MessageBanner::clear_global_message(
+            &ctx,
+            "Your wallet's available amount is still being checked. Wait a moment and try again.",
+        );
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "loading dispatch must use the loading-specific warning"
+        );
+
+        screen
+            .asset_lock_balance
+            .mark_loading_failed(&seed_hash, generation, request_id);
+        assert!(screen.asset_lock_balance.is_failed(&seed_hash));
+
+        assert!(matches!(
+            screen.top_up_identity_clicked(FundingMethod::UseWalletBalance),
+            AppAction::None
+        ));
+        assert!(MessageBanner::has_global(&ctx));
+        MessageBanner::clear_global_message(
+            &ctx,
+            "The available amount could not be checked. Use Retry and try again.",
+        );
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "failed dispatch must use the failed-specific retry warning"
+        );
     }
 
     #[test]
@@ -1171,13 +1291,14 @@ mod tests {
         let seed_hash = wallet.read().expect("wallet lock").seed_hash();
         let mut screen = TopUpIdentityScreen::new(test_identity(Network::Testnet), &old_context);
         screen.wallet = Some(wallet);
-        assert!(
+        let request_id = asset_lock_request_id(
             screen
                 .asset_lock_balance
-                .ensure_requested(seed_hash, 7, 1_000, 1)
-                .is_some()
+                .ensure_requested(seed_hash, 7, 1_000, 1),
         );
-        screen.asset_lock_balance.store(seed_hash, 7, 900);
+        screen
+            .asset_lock_balance
+            .store(seed_hash, 7, request_id, 900);
 
         let mut screen = Screen::TopUpIdentityScreen(screen);
         screen.change_context(new_context.clone());
@@ -1189,23 +1310,25 @@ mod tests {
         assert!(screen.wallet.is_none());
         assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
 
-        assert!(
+        let request_id = asset_lock_request_id(
             screen
                 .asset_lock_balance
-                .ensure_requested(seed_hash, 8, 1_000, 1)
-                .is_some()
+                .ensure_requested(seed_hash, 8, 1_000, 1),
         );
-        screen.asset_lock_balance.store(seed_hash, 8, 800);
+        screen
+            .asset_lock_balance
+            .store(seed_hash, 8, request_id, 800);
         screen.refresh_on_arrival();
         assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
 
-        assert!(
+        let request_id = asset_lock_request_id(
             screen
                 .asset_lock_balance
-                .ensure_requested(seed_hash, 9, 1_000, 1)
-                .is_some()
+                .ensure_requested(seed_hash, 9, 1_000, 1),
         );
-        screen.asset_lock_balance.store(seed_hash, 9, 700);
+        screen
+            .asset_lock_balance
+            .store(seed_hash, 9, request_id, 700);
         screen.refresh();
         assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
     }

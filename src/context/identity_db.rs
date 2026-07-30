@@ -2,11 +2,12 @@ use super::AppContext;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+    DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
@@ -1074,6 +1075,26 @@ impl AppContext {
         let qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
         let view = crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id);
         view.delete_all(qi.private_keys.keys_set())
+    }
+
+    /// Delete the vault secrets filed at `placements` for `identity_id`, leaving
+    /// the identity's other keys in place.
+    ///
+    /// The per-key counterpart of the whole-identity sweep
+    /// [`Self::clear_identity_vault_keys`], for a caller dropping this device's
+    /// copy of a single key. Call it *before* the placement leaves the stored
+    /// key map: that map is where the sweep reads its delete set, so a secret
+    /// orphaned by an earlier map eviction is reachable by nothing afterwards.
+    ///
+    /// Idempotent — a placement whose vault label is already absent is not an
+    /// error, so a caller need not know whether the key was vault-backed.
+    pub fn delete_identity_key_secrets(
+        &self,
+        identity_id: &Identifier,
+        placements: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+    ) -> std::result::Result<(), TaskError> {
+        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, identity_id.to_buffer())
+            .delete_all(placements)
     }
 
     /// Devnet-only sweep: drop every locally-stored identity for the
@@ -2283,5 +2304,80 @@ mod tests {
             [0x02; 32],
             "a different identity's vault key must be untouched (isolation)"
         );
+    }
+
+    /// An offline `AppContext` over a throwaway data dir, plus the very vault it
+    /// was built on so a test can probe what the context wrote.
+    async fn ctx_with_vault() -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+    ) {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            Arc::clone(&secret_store),
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, secret_store, temp_dir)
+    }
+
+    /// Per-key vault deletion drops the placements it is given and nothing else.
+    /// That is what separates it from `clear_identity_vault_keys`, which empties
+    /// the identity: dropping one key must leave the identity's remaining keys —
+    /// and every other identity's — exactly where they were. Idempotent, because
+    /// the remove path calls it without first knowing whether the label is there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_identity_key_secrets_drops_only_the_named_placement() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+        let (ctx, store, _dir) = ctx_with_vault().await;
+        let victim = Identifier::from(id(0x61));
+        let bystander = Identifier::from(id(0x62));
+        for owner in [victim, bystander] {
+            let view = IdentityKeyView::new(&store, owner.to_buffer());
+            view.store(&MAIN, 0, &[0x01; 32]).unwrap();
+            view.store(&MAIN, 1, &[0x02; 32]).unwrap();
+        }
+
+        ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
+            .expect("delete the named placement");
+
+        let victim_view = IdentityKeyView::new(&store, victim.to_buffer());
+        assert!(
+            victim_view.get(&MAIN, 0).unwrap().is_none(),
+            "the named placement's secret must be gone",
+        );
+        assert!(
+            victim_view.get(&MAIN, 1).unwrap().is_some(),
+            "the identity's other key must survive a single-key removal",
+        );
+        assert!(
+            IdentityKeyView::new(&store, bystander.to_buffer())
+                .get(&MAIN, 0)
+                .unwrap()
+                .is_some(),
+            "another identity's key at the same placement must be untouched",
+        );
+
+        ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
+            .expect("deleting an already-gone placement is not an error");
     }
 }

@@ -131,10 +131,13 @@ A crash cannot strand a key because nothing is ever in motion.
 
 ## 8. What is not covered
 
-* **A deleted key's vault secret is not removed** (`key_info_screen.rs`, the
-  remove-private-key dialog): the map entry goes, the vault entry stays, so bytes
-  the user believes deleted remain on disk with nothing pointing at them. Its own
-  fix, with its own ordering argument (vault first, then map) and its own review.
+* ~~**A deleted key's vault secret is not removed**~~ — **closed.** The
+  remove-private-key path now deletes the vault secrets of the placements
+  `candidates` resolved, through `AppContext::delete_identity_key_secrets`, and
+  does so *before* the map entries go: the map is what makes a vault label
+  enumerable, so the reverse order strands the bytes beyond every later path,
+  the whole-identity sweep included. A vault failure aborts with map and blob
+  untouched.
 * **Keying by `(Identifier, KeyID)`** — the right end state, since it removes the
   role enum entirely. Mechanical once the store is known-consistent.
 * Validating the signing path's vault-resolved key against the requested public
@@ -158,5 +161,7 @@ A crash cannot strand a key because nothing is ever in motion.
 | `an_entry_whose_material_disagrees_is_not_a_candidate` | the assumption material matching rests on |
 | `an_operator_filed_key_from_a_legacy_blob_stays_reachable` | `PrivateKeyOnOperatorIdentity` has no live writer but is legacy-reachable |
 | `both_keys_of_a_real_v093_blob_resolve_to_their_own_material` | a **real** v0.9.3 blob's keys are reachable, not merely decodable |
+| `removing_a_key_also_removes_its_vault_secret` | §8's first bullet: confirmed RED against the map-only removal, which left the bytes on disk unreachable |
+| `delete_identity_key_secrets_drops_only_the_named_placement` | the per-key delete is not the whole-identity sweep, and repeating it is harmless |
 
 [`PROBE_ORDER`]: ../../../src/model/qualified_identity/key_placement.rs

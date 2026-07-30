@@ -25,12 +25,15 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, Ident
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::secret::Secret;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::legacy_recovery_section::LegacyRecoverySection;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
@@ -38,7 +41,8 @@ use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
-use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY, key_status_tokens};
+use crate::ui::masternodes::{disambiguate_role_labels, key_status_tokens, role_label_and_tip};
+use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
@@ -46,7 +50,10 @@ use crate::ui::{MessageType, Screen, ScreenType};
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
-/// §7 copy: shown when the node has no voting key loaded.
+/// §7 copy: shown when the node has no voting key loaded. Entering the key is
+/// the only remedy on offer — a voting key held on a separate voter identity
+/// that the node's own record does not link to cannot be restored from the
+/// previous version's saved data (see issue #942).
 const MISSING_VOTER_MESSAGE: &str =
     "This node has no voting key loaded. Add its voting private key to cast votes.";
 /// §7 copy: shown when the node has a voter identity but no open contests.
@@ -116,15 +123,8 @@ fn contest_status_line(candidate_count: usize, end_time: Option<TimestampMillis>
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
 
-/// Tooltip for an authentication key — Platform-only, so it has no DIP-3 role
-/// counterpart and lives here rather than in the shared masternode tooltips.
-const TIP_AUTH_KEY: &str = "An authentication key signs this identity's actions on Dash Platform.";
-
-/// A short role name for a masternode key and its tooltip, aligned with the Dash
-/// Core DIP-3 ProRegTx roles. Voter-identity keys are always the voting key; on
-/// the main identity, the Platform Owner and Transfer keys of a masternode
-/// identity mirror the ProTx owner key and payout address respectively. Unknown
-/// purposes fall back to their name with no tooltip.
+/// A short role name for a masternode key and its tooltip, from the shared
+/// [`role_label_and_tip`] vocabulary.
 fn key_role_label(
     target: &PrivateKeyTarget,
     key: &dash_sdk::platform::IdentityPublicKey,
@@ -135,37 +135,18 @@ fn key_role_label(
     )
 }
 
-/// The pure label/tooltip mapping behind [`key_role_label`], split out so it can
-/// be unit-tested without constructing an `IdentityPublicKey`.
-fn role_label_and_tip(
-    is_voter: bool,
-    purpose: dash_sdk::dpp::identity::Purpose,
-) -> (String, Option<&'static str>) {
-    use dash_sdk::dpp::identity::Purpose;
-    if is_voter {
-        return ("Voting".to_string(), Some(TIP_VOTING_KEY));
-    }
-    match purpose {
-        Purpose::OWNER => ("Owner".to_string(), Some(TIP_OWNER_KEY)),
-        Purpose::TRANSFER => ("Payout address".to_string(), Some(TIP_PAYOUT_KEY)),
-        Purpose::AUTHENTICATION => ("Authentication".to_string(), Some(TIP_AUTH_KEY)),
-        other => (format!("{other:?}"), None),
-    }
-}
-
 /// Button labels (and DIP-3-aligned tooltips) for the "Manage keys" list, one
 /// per entry of `keys`, in order.
 ///
 /// Each label is the key's role word (`Owner`/`Payout address`/`Voting`/…)
 /// plus a `(disabled)` marker for keys platform has retired: a node that
 /// rotates its payout address keeps the old, disabled Payout key on-chain
-/// next to the new active one, so a role word alone is not unique. When two
-/// keys would still collide (e.g. two retired Payout keys), the key id
-/// disambiguates them, so every button carries a distinct, correct label.
+/// next to the new active one, so a role word alone is not unique. Keys that
+/// would still collide are told apart by their key id.
 fn manage_keys_labels(
     keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
 ) -> Vec<(String, Option<&'static str>)> {
-    let base: Vec<(String, Option<&'static str>)> = keys
+    let mut labels: Vec<(String, Option<&'static str>)> = keys
         .iter()
         .map(|(target, key)| {
             let (role, tip) = key_role_label(target, key);
@@ -178,21 +159,9 @@ fn manage_keys_labels(
         })
         .collect();
 
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for (label, _) in &base {
-        *counts.entry(label.as_str()).or_default() += 1;
-    }
-
-    base.iter()
-        .zip(keys.iter())
-        .map(|((label, tip), (_, key))| {
-            if counts.get(label.as_str()).copied().unwrap_or(0) > 1 {
-                (format!("{label} #{key_id}", key_id = key.id()), *tip)
-            } else {
-                (label.clone(), *tip)
-            }
-        })
-        .collect()
+    let key_ids: Vec<_> = keys.iter().map(|(_, key)| Some(key.id())).collect();
+    disambiguate_role_labels(&mut labels, &key_ids);
+    labels
 }
 
 /// At-rest protection posture of a node's vault keys, reduced to what the detail
@@ -260,6 +229,9 @@ pub struct MasternodeDetailView {
     /// from FR-4's load form. `Some` while the prompt is open.
     voter_key_prompt: Option<PasswordInput>,
     remove_dialog: Option<ConfirmationDialog>,
+    /// The offer to restore keys this node left behind in the previous
+    /// version's saved data (issue #889).
+    recovery: LegacyRecoveryState,
 }
 
 #[cfg(test)]
@@ -274,6 +246,28 @@ impl MasternodeDetailView {
     /// Whether the `Add voting key` prompt is open — and thus holding a key.
     pub(crate) fn has_voter_key_prompt_for_test(&self) -> bool {
         self.voter_key_prompt.is_some()
+    }
+
+    /// Whether a recovery offer is currently on screen for this node.
+    pub(crate) fn has_recovery_offer_for_test(&self) -> bool {
+        self.recovery.plan().is_some_and(|plan| !plan.is_empty())
+    }
+
+    /// The key roles this view believes the node holds.
+    pub(crate) fn key_presence_for_test(&self) -> MasternodeKeyPresence {
+        self.key_presence
+    }
+
+    /// Dispatch this node's restore, as pressing Restore does, and report
+    /// whether it went out.
+    pub(crate) fn start_recovery_restore_for_test(&mut self) -> bool {
+        self.recovery.restore(vec![]).is_some()
+    }
+
+    /// Whether a restore is still in flight, so the Restore button stays
+    /// disabled.
+    pub(crate) fn is_restoring_for_test(&self) -> bool {
+        self.recovery.is_restoring()
     }
 }
 
@@ -290,6 +284,7 @@ impl MasternodeDetailView {
             .masternode_contest_summary(voter_id)
             .unwrap_or_default();
         let open_contests = Self::load_open_contests(app_context, voter_id);
+        let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());
         Self {
             app_context: app_context.clone(),
             identity,
@@ -301,7 +296,47 @@ impl MasternodeDetailView {
             vote_selections: BTreeMap::new(),
             voter_key_prompt: None,
             remove_dialog: None,
+            recovery,
         }
+    }
+
+    /// Record the plan the on-arrival detection task returned.
+    pub(crate) fn set_recovery_plan(
+        &mut self,
+        identity_id: dash_sdk::platform::Identifier,
+        plan: RecoveryPlan,
+    ) {
+        self.recovery.offered(identity_id, plan);
+    }
+
+    /// Re-read this node from the store and re-arm its recovery check.
+    ///
+    /// The view holds the identity it was opened with, and its key-presence
+    /// line and recovery offer are both derived from it. A restore run from a
+    /// pushed Key Info screen never reaches this view — that screen is on top,
+    /// so it receives the result — which leaves the node page still offering
+    /// keys that are already back, and still warning about a voting key it now
+    /// holds. Called on arrival, so returning from a pushed screen recomputes
+    /// both. Vote selections and any open prompt survive: they belong to the
+    /// user's session, not to the record.
+    pub(crate) fn refresh_from_store(&mut self) {
+        let node_id = self.identity.identity.id();
+        if let Ok(identities) = self.app_context.load_local_masternode_identities()
+            && let Some(identity) = identities
+                .into_iter()
+                .find(|qi| qi.identity.id() == node_id)
+        {
+            self.key_presence = identity.masternode_key_presence();
+            self.identity = identity;
+        }
+        self.recovery.completed();
+    }
+
+    /// End this view's recovery operation when the failure that arrived is that
+    /// operation's own — matched on the identity the failing task names, since
+    /// every error reaches whichever screen is visible.
+    pub(crate) fn recovery_failed_for(&mut self, identity_id: dash_sdk::platform::Identifier) {
+        self.recovery.failed_for(identity_id);
     }
 
     /// Load the contests this node can still vote on. Empty when the node has no
@@ -445,6 +480,15 @@ impl MasternodeDetailView {
                 outcome = DetailOutcome::Removed;
             }
         });
+
+        // Passive detection, dispatched once per opened view. It never competes
+        // with a click made this frame: the click already owns the outcome, and
+        // the check simply goes out on the next frame instead.
+        if matches!(outcome, DetailOutcome::None)
+            && let Some(task) = self.recovery.ensure_checked()
+        {
+            outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTask(task)));
+        }
 
         outcome
     }
@@ -670,7 +714,29 @@ impl MasternodeDetailView {
         {
             action = Some(self.open_key_info_with_protection_prompt(target, &key));
         }
+
+        if let Some(approved) = self.render_recovery_section(ui)
+            && let Some(task) = self.recovery.restore(approved)
+        {
+            action = Some(AppAction::BackendTask(task));
+        }
         action
+    }
+
+    /// Render the offer to restore keys stranded in the previous version's
+    /// saved data, returning the items the user approved this frame. Renders
+    /// nothing at all when detection found nothing, so the section appears only
+    /// where it has something to say and vanishes once a restore lands.
+    fn render_recovery_section(&self, ui: &mut Ui) -> Option<Vec<RecoveryItem>> {
+        let restoring = self.recovery.is_restoring();
+        let plan = self.recovery.plan().filter(|plan| !plan.is_empty())?;
+        ui.add_space(8.0);
+        LegacyRecoverySection::new(plan)
+            .restoring(restoring)
+            .show(ui)
+            .inner
+            .changed_value()
+            .clone()
     }
 
     /// Every key of this node, main-identity keys first then voter-identity
@@ -980,7 +1046,6 @@ impl MasternodeDetailView {
 
         let mut removed = false;
         if let Some(dialog) = self.remove_dialog.as_mut() {
-            use crate::ui::components::component_trait::Component;
             let response = dialog.show(ui);
             if let Some(status) = response.inner.dialog_response {
                 self.remove_dialog = None;
@@ -1144,35 +1209,6 @@ mod tests {
         );
         let unique: std::collections::BTreeSet<_> = labels.iter().collect();
         assert_eq!(unique.len(), labels.len(), "labels must be unique");
-    }
-
-    #[test]
-    fn role_labels_follow_dip3_protx_terms() {
-        use dash_sdk::dpp::identity::Purpose;
-        // A voter-identity key is always the voting key, regardless of purpose.
-        assert_eq!(
-            role_label_and_tip(true, Purpose::AUTHENTICATION),
-            ("Voting".to_string(), Some(TIP_VOTING_KEY))
-        );
-        // Main-identity roles mirror the DIP-3 ProRegTx owner key and payout
-        // address; the Platform Transfer key surfaces as "Payout address".
-        assert_eq!(
-            role_label_and_tip(false, Purpose::OWNER),
-            ("Owner".to_string(), Some(TIP_OWNER_KEY))
-        );
-        assert_eq!(
-            role_label_and_tip(false, Purpose::TRANSFER),
-            ("Payout address".to_string(), Some(TIP_PAYOUT_KEY))
-        );
-        assert_eq!(
-            role_label_and_tip(false, Purpose::AUTHENTICATION),
-            ("Authentication".to_string(), Some(TIP_AUTH_KEY))
-        );
-        // An unmapped purpose keeps its name and carries no tooltip.
-        assert_eq!(
-            role_label_and_tip(false, Purpose::ENCRYPTION),
-            (format!("{purpose:?}", purpose = Purpose::ENCRYPTION), None,)
-        );
     }
 
     #[test]

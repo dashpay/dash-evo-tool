@@ -25,6 +25,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Restore keys an upgrade left behind**: an identity that was already in the
+  app before the update — a masternode loaded from its ProTxHash, or one that
+  held only some of its keys — kept its remaining keys in the previous
+  version's data with no way to reach them. Its page now offers to bring them
+  across: the node detail page and the Key Info screen list what can be
+  restored, named by role, and restore only what you press Restore on. Nothing
+  happens at launch or during the update, keys already saved are never replaced
+  or removed, and on a password-protected identity the identity password is
+  asked for first — cancelling or mistyping it leaves everything as it was. A
+  saved key that no longer matches one this identity uses — a key rotated or
+  retired since the previous version saved it — is listed with an explanation
+  instead of being restored, so a key that could not sign can never make the app
+  report a role as held. The same applies to a key held on a separate voting or
+  operator identity that this identity does not currently link to: nothing
+  outside the old data says that key is still in use, so it is listed with its
+  explanation and entering it by hand stays the way to bring it back. A
+  masternode loaded from its ProTxHash alone is exactly that case — its owner
+  and payout keys come back, its voting key is listed as one that cannot be, and
+  checking that key against the chain instead is tracked as issue #942. The
+  previous version's data is only ever read, so this is safe to repeat.
+
+- **Legacy key recovery: closed edge cases found during review**: a recovered
+  key is now checked against the exact key it's meant to replace, not just
+  matching key data found anywhere else on the identity, so a rotated-away or
+  mismatched key can no longer be reported as restored. Restoring no longer
+  races with other actions on the same identity happening at the same moment
+  (an edit, a refresh, a rename, or turning password protection on or off),
+  and a restore still waiting on your password can no longer be reset —
+  showing the Restore button again as if nothing had started — by an
+  unrelated error appearing on screen.
+
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.
   Failed attempts retry on later launches until fresh addresses are saved and

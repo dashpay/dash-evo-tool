@@ -11,6 +11,7 @@ pub mod avatar_cache;
 pub mod contacts_view;
 pub mod global_nav;
 pub mod hub_selection;
+pub mod legacy_recovery;
 pub mod masternodes_view;
 pub mod tracked_asset_lock_cache;
 

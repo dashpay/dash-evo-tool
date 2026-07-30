@@ -323,14 +323,15 @@ impl MigrationError {
     }
 }
 
-/// Open the pre-update SQLite file with write operations disabled by SQLite.
+/// Open the pre-update SQLite file with write operations disabled by SQLite,
+/// naming the file in a migration-typed error when it will not open.
 fn open_legacy_read_only(path: &std::path::Path) -> Result<Connection, MigrationError> {
-    Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(
-        |source| MigrationError::LegacyDbOpen {
+    crate::database::open_legacy_connection_read_only(path).map_err(|source| {
+        MigrationError::LegacyDbOpen {
             path: path.to_string_lossy().to_string(),
             source,
-        },
-    )
+        }
+    })
 }
 
 /// Coerce any migration failure into the `Arc<MigrationError>` chain the failure

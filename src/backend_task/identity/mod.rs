@@ -5,6 +5,7 @@ mod load_identity;
 mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;
 mod protect_identity_keys;
+mod recover_legacy_keys;
 mod refresh_identity;
 mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
@@ -498,6 +499,27 @@ pub enum IdentityTask {
         /// The current per-identity password, verified before downgrading.
         password: Secret,
     },
+    /// Detect what the preserved legacy `data.db` could restore for this
+    /// identity — keys and role links the modern record does not hold.
+    /// Read-only and offline: it lists candidates and writes nothing, so a
+    /// screen can dispatch it on arrival without side effects.
+    CheckLegacyRecovery {
+        /// The identity to inspect.
+        identity_id: Identifier,
+    },
+    /// Restore `approved` from the preserved legacy `data.db` into this
+    /// identity's stored record.
+    ///
+    /// The merge is additive and the allowlist is authoritative: candidacy is
+    /// recomputed at execution time and only the intersection is written, so
+    /// an item that stopped being missing since the preview is skipped and an
+    /// item the user never approved is never restored.
+    RecoverLegacyIdentityData {
+        /// The identity to restore into.
+        identity_id: Identifier,
+        /// The items the user chose, as listed by [`Self::CheckLegacyRecovery`].
+        approved: Vec<crate::model::legacy_recovery::RecoveryItem>,
+    },
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -908,6 +930,16 @@ impl AppContext {
                 identity_id,
                 password,
             } => self.unprotect_identity_keys(identity_id, password),
+            IdentityTask::CheckLegacyRecovery { identity_id } => {
+                self.check_legacy_recovery(identity_id)
+            }
+            IdentityTask::RecoverLegacyIdentityData {
+                identity_id,
+                approved,
+            } => {
+                self.recover_legacy_identity_data(identity_id, approved)
+                    .await
+            }
         }
     }
 

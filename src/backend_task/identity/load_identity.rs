@@ -497,6 +497,13 @@ impl AppContext {
         // BEFORE the insert, so the fail-closed guard sees no resident plaintext
         // on a protected identity — the same seal-before-persist add_key_to_identity
         // performs. The password was verified up front, before the network fetch.
+        //
+        // TODO(#889 review): this seal has no `reject_resident_identity_plaintext`
+        // preflight, unlike the protect opt-in and the legacy-recovery merge. An
+        // existing record still carrying resident plaintext from an unfinished
+        // vault migration is sealed around here, which half-protects the identity
+        // and then trips the downgrade guard at persist. Out of scope for #889;
+        // needs its own issue.
         if let Some(password) = &merge_seal_password {
             self.seal_merged_plaintext_keys(&mut qualified_identity, password)?;
         }

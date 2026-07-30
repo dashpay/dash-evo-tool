@@ -79,6 +79,24 @@ pub(crate) struct LegacyIdentityRow {
     pub wallet: Option<([u8; 32], u32)>,
 }
 
+/// Outcome of looking one identity up in the legacy `identity` table.
+///
+/// Separates "no such user identity here" — a missing table, a missing row, an
+/// observed-identity cache row, a NULL blob — from "the row is there but will
+/// not decode". The first is the ordinary answer on any install with nothing to
+/// recover; the second is corruption a caller must surface as a typed error
+/// rather than silently treat as an empty record.
+#[derive(Debug)]
+pub(crate) enum LegacyIdentityLookup {
+    /// A local identity row that decoded cleanly. Boxed because a decoded row
+    /// dwarfs the two "nothing here" answers, which are the common ones.
+    Found(Box<LegacyIdentityRow>),
+    /// No local, non-NULL row for this id on this network.
+    Absent,
+    /// The row exists but its columns or blob could not be decoded.
+    Unreadable,
+}
+
 /// Outcome of one legacy identity read.
 ///
 /// `unreadable` counts rows whose blob could not be decoded. The caller records
@@ -311,10 +329,7 @@ pub(crate) fn read_identities(
         return Ok(LegacyIdentities::default());
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT id, data, status, wallet, wallet_index, alias FROM identity \
-         WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)",
-    )?;
+    let mut stmt = conn.prepare(LOCAL_IDENTITY_SELECT)?;
     let mut rows = stmt.query(rusqlite::params![
         network.to_string(),
         mainnet_alias_for(network)
@@ -322,136 +337,198 @@ pub(crate) fn read_identities(
 
     let mut out = LegacyIdentities::default();
     while let Some(row) = rows.next()? {
-        // A wrong SQLite storage class on any column is row-level corruption:
-        // decode through a `Result` so a bad column costs its own row, not the
-        // whole read. A bare `row.get::<_>?` here would escape `read_identities`
-        // and discard every identity already accumulated this pass — every other
-        // corruption case below is counted and skipped, and this must match.
-        let (id, data, status, wallet, wallet_index, alias) = match decode_identity_columns(row) {
-            Ok(columns) => columns,
-            Err(_) => {
-                // Not even the id is logged here: the failing column may be the id
-                // itself, so there is no trustworthy handle to name the row by.
-                tracing::warn!(
-                    target = "database::legacy_import",
-                    "Skipping legacy identity whose column types could not be read",
-                );
-                out.unreadable = out.unreadable.saturating_add(1);
-                continue;
-            }
-        };
-
-        let Ok(id) = <[u8; 32]>::try_from(id.as_slice()) else {
-            tracing::warn!(
-                target = "database::legacy_import",
-                blob_len = id.len(),
-                "Skipping legacy identity with a non-32-byte id",
-            );
-            out.unreadable = out.unreadable.saturating_add(1);
-            continue;
-        };
-
-        let Ok(status) = u8::try_from(status) else {
-            tracing::warn!(
-                target = "database::legacy_import",
-                identity = %hex::encode(id),
-                "Skipping legacy identity with an out-of-range status value",
-            );
-            out.unreadable = out.unreadable.saturating_add(1);
-            continue;
-        };
-
-        let wallet_index = match wallet_index.map(u32::try_from) {
-            None => None,
-            Some(Ok(index)) => Some(index),
-            Some(Err(_)) => {
-                tracing::warn!(
-                    target = "database::legacy_import",
-                    identity = %hex::encode(id),
-                    "Skipping legacy identity with an out-of-range wallet index",
-                );
-                out.unreadable = out.unreadable.saturating_add(1);
-                continue;
-            }
-        };
-
-        // Both-or-neither: the legacy `CHECK` guarantees it, so a half-filled
-        // link is corruption. Dropping just the link would silently orphan the
-        // identity from the wallet that owns its keys, so the row is reported
-        // instead — the sentinel stays open and a later build can retry it.
-        let wallet = match (wallet, wallet_index) {
-            (None, None) => None,
-            (Some(seed_hash), Some(index)) => match <[u8; 32]>::try_from(seed_hash.as_slice()) {
-                Ok(seed_hash) => Some((seed_hash, index)),
-                Err(_) => {
-                    tracing::warn!(
-                        target = "database::legacy_import",
-                        identity = %hex::encode(id),
-                        "Skipping legacy identity whose wallet link is not a 32-byte seed hash",
-                    );
-                    out.unreadable = out.unreadable.saturating_add(1);
-                    continue;
-                }
-            },
-            _ => {
-                tracing::warn!(
-                    target = "database::legacy_import",
-                    identity = %hex::encode(id),
-                    "Skipping legacy identity with a half-filled wallet link",
-                );
-                out.unreadable = out.unreadable.saturating_add(1);
-                continue;
-            }
-        };
-
-        let Ok(mut qi) = QualifiedIdentity::from_bytes(&data) else {
-            tracing::warn!(
-                target = "database::legacy_import",
-                identity = %hex::encode(id),
-                "Skipping legacy identity whose stored data could not be decoded",
-            );
-            out.unreadable = out.unreadable.saturating_add(1);
-            continue;
-        };
-
-        // The vault key derives from the id inside the blob, not this row's `id`
-        // column (see `insert_local_qualified_identity`), while the migration's
-        // skip-if-present precheck keys off the column. A hand-edited row whose
-        // two ids disagree would pass that precheck and then silently overwrite a
-        // different, already-loaded identity. Treat the divergence as row-level
-        // corruption: count it and skip, like every other bad row here.
-        if qi.identity.id().to_buffer() != id {
-            tracing::warn!(
-                target = "database::legacy_import",
-                identity = %hex::encode(id),
-                embedded = %hex::encode(qi.identity.id().to_buffer()),
-                "Skipping legacy identity whose row id and stored id disagree",
-            );
-            out.unreadable = out.unreadable.saturating_add(1);
-            continue;
+        match decode_identity_row(row, network) {
+            Some(decoded) => out.identities.push(decoded),
+            None => out.unreadable = out.unreadable.saturating_add(1),
         }
-
-        // Neither field is in the bincode blob — the legacy encoder skipped both
-        // and kept them in columns. Without this, every imported identity reads
-        // back as `Unknown` status on mainnet.
-        qi.status = IdentityStatus::from(status);
-        qi.network = network;
-
-        // The SQL `alias` column is authoritative — the blob's copy is stale.
-        // In v0.9.3, `set_identity_alias` wrote ONLY the column, while every
-        // identity loader decoded the blob and then unconditionally overwrote
-        // `alias` with the column value (`identity.alias = alias;`). A rename or
-        // an alias removal therefore left the blob holding the old value, and the
-        // column always won at load time. Keeping the blob when populated would
-        // resurrect a renamed-away alias or reverse a removal during upgrade, so
-        // the column wins here exactly as it did in v0.9.3 — including a NULL
-        // column clearing a stale blob alias.
-        qi.alias = alias;
-
-        out.identities.push(LegacyIdentityRow { id, qi, wallet });
     }
 
     Ok(out)
+}
+
+/// Read the one local identity stored under `id` on `network`.
+///
+/// The single-row twin of [`read_identities`], same filter and same decoder.
+/// Every ordinary "not here" answer is [`LegacyIdentityLookup::Absent`]; only a
+/// row that will not decode is [`LegacyIdentityLookup::Unreadable`], which a
+/// caller must never read as an empty record.
+pub(crate) fn read_identity_row(
+    conn: &Connection,
+    network: Network,
+    id: &[u8; 32],
+) -> rusqlite::Result<LegacyIdentityLookup> {
+    if !table_exists(conn, "identity")? {
+        return Ok(LegacyIdentityLookup::Absent);
+    }
+
+    let mut stmt = conn.prepare(&format!("{LOCAL_IDENTITY_SELECT} AND id = ?3"))?;
+    let mut rows = stmt.query(rusqlite::params![
+        network.to_string(),
+        mainnet_alias_for(network),
+        id.as_slice()
+    ])?;
+
+    let Some(row) = rows.next()? else {
+        return Ok(LegacyIdentityLookup::Absent);
+    };
+    Ok(match decode_identity_row(row, network) {
+        Some(decoded) => LegacyIdentityLookup::Found(Box::new(decoded)),
+        None => LegacyIdentityLookup::Unreadable,
+    })
+}
+
+/// Whether the legacy `identity` table holds any local identity for `network`.
+///
+/// The cheapest question a caller can ask before offering anything built on
+/// this table: it stops at the first matching row and answers `false` on a
+/// fresh install, whose schema never creates the table at all. Same filter as
+/// [`read_identities`], so "there is something here" and "here it is" cannot
+/// disagree about which rows count.
+pub(crate) fn local_identities_exist(
+    conn: &Connection,
+    network: Network,
+) -> rusqlite::Result<bool> {
+    if !table_exists(conn, "identity")? {
+        return Ok(false);
+    }
+
+    conn.query_row(
+        &format!("SELECT EXISTS({LOCAL_IDENTITY_SELECT})"),
+        rusqlite::params![network.to_string(), mainnet_alias_for(network)],
+        |row| row.get::<_, i64>(0).map(|found| found != 0),
+    )
+}
+
+/// The rows of the legacy `identity` table that hold a user's own identity.
+/// Both readers bind `?1`/`?2` to the two accepted network spellings, so
+/// neither can drift from the other's idea of what belongs to this network.
+const LOCAL_IDENTITY_SELECT: &str = "SELECT id, data, status, wallet, wallet_index, alias FROM identity \
+     WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)";
+
+/// Decode one legacy `identity` row, or `None` when it is corrupt — the one
+/// decoder behind both readers, so they cannot disagree about which rows are
+/// readable. Each rejection below logs its own reason; a rejected row is named
+/// by its identity id alone, never by anything the blob decodes to.
+fn decode_identity_row(row: &rusqlite::Row<'_>, network: Network) -> Option<LegacyIdentityRow> {
+    // A wrong SQLite storage class on any column is row-level corruption:
+    // decode through a `Result` so a bad column costs its own row, not the
+    // whole read. A bare `row.get::<_>?` here would escape `read_identities`
+    // and discard every identity already accumulated this pass — every other
+    // corruption case below is counted and skipped, and this must match.
+    let (id, data, status, wallet, wallet_index, alias) = match decode_identity_columns(row) {
+        Ok(columns) => columns,
+        Err(_) => {
+            // Not even the id is logged here: the failing column may be the id
+            // itself, so there is no trustworthy handle to name the row by.
+            tracing::warn!(
+                target = "database::legacy_import",
+                "Skipping legacy identity whose column types could not be read",
+            );
+            return None;
+        }
+    };
+
+    let Ok(id) = <[u8; 32]>::try_from(id.as_slice()) else {
+        tracing::warn!(
+            target = "database::legacy_import",
+            blob_len = id.len(),
+            "Skipping legacy identity with a non-32-byte id",
+        );
+        return None;
+    };
+
+    let Ok(status) = u8::try_from(status) else {
+        tracing::warn!(
+            target = "database::legacy_import",
+            identity = %hex::encode(id),
+            "Skipping legacy identity with an out-of-range status value",
+        );
+        return None;
+    };
+
+    let wallet_index = match wallet_index.map(u32::try_from) {
+        None => None,
+        Some(Ok(index)) => Some(index),
+        Some(Err(_)) => {
+            tracing::warn!(
+                target = "database::legacy_import",
+                identity = %hex::encode(id),
+                "Skipping legacy identity with an out-of-range wallet index",
+            );
+            return None;
+        }
+    };
+
+    // Both-or-neither: the legacy `CHECK` guarantees it, so a half-filled
+    // link is corruption. Dropping just the link would silently orphan the
+    // identity from the wallet that owns its keys, so the row is reported
+    // instead — the sentinel stays open and a later build can retry it.
+    let wallet = match (wallet, wallet_index) {
+        (None, None) => None,
+        (Some(seed_hash), Some(index)) => match <[u8; 32]>::try_from(seed_hash.as_slice()) {
+            Ok(seed_hash) => Some((seed_hash, index)),
+            Err(_) => {
+                tracing::warn!(
+                    target = "database::legacy_import",
+                    identity = %hex::encode(id),
+                    "Skipping legacy identity whose wallet link is not a 32-byte seed hash",
+                );
+                return None;
+            }
+        },
+        _ => {
+            tracing::warn!(
+                target = "database::legacy_import",
+                identity = %hex::encode(id),
+                "Skipping legacy identity with a half-filled wallet link",
+            );
+            return None;
+        }
+    };
+
+    let Ok(mut qi) = QualifiedIdentity::from_bytes(&data) else {
+        tracing::warn!(
+            target = "database::legacy_import",
+            identity = %hex::encode(id),
+            "Skipping legacy identity whose stored data could not be decoded",
+        );
+        return None;
+    };
+
+    // The vault key derives from the id inside the blob, not this row's `id`
+    // column (see `insert_local_qualified_identity`), while the migration's
+    // skip-if-present precheck keys off the column. A hand-edited row whose
+    // two ids disagree would pass that precheck and then silently overwrite a
+    // different, already-loaded identity. Treat the divergence as row-level
+    // corruption: count it and skip, like every other bad row here.
+    if qi.identity.id().to_buffer() != id {
+        tracing::warn!(
+            target = "database::legacy_import",
+            identity = %hex::encode(id),
+            embedded = %hex::encode(qi.identity.id().to_buffer()),
+            "Skipping legacy identity whose row id and stored id disagree",
+        );
+        return None;
+    }
+
+    // Neither field is in the bincode blob — the legacy encoder skipped both
+    // and kept them in columns. Without this, every imported identity reads
+    // back as `Unknown` status on mainnet.
+    qi.status = IdentityStatus::from(status);
+    qi.network = network;
+
+    // The SQL `alias` column is authoritative — the blob's copy is stale.
+    // In v0.9.3, `set_identity_alias` wrote ONLY the column, while every
+    // identity loader decoded the blob and then unconditionally overwrote
+    // `alias` with the column value (`identity.alias = alias;`). A rename or
+    // an alias removal therefore left the blob holding the old value, and the
+    // column always won at load time. Keeping the blob when populated would
+    // resurrect a renamed-away alias or reverse a removal during upgrade, so
+    // the column wins here exactly as it did in v0.9.3 — including a NULL
+    // column clearing a stale blob alias.
+    qi.alias = alias;
+
+    Some(LegacyIdentityRow { id, qi, wallet })
 }
 
 /// Decode the six raw columns of one legacy `identity` row. Kept separate so a
@@ -1471,5 +1548,178 @@ mod tests {
         let read = read_identities(&conn, Network::Testnet).unwrap();
         assert!(read.identities.is_empty());
         assert_eq!(read.unreadable, 0);
+    }
+
+    // ── Single-identity lookup ───────────────────────────────────────
+
+    /// The lookup returns the requested identity and nothing else, with the
+    /// same column-restored status, network and alias the bulk read produces.
+    #[test]
+    fn identity_row_lookup_returns_only_the_requested_identity() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let wanted = [0xAA; 32];
+        let other = [0xBB; 32];
+        LegacyIdentityFixture::new(wanted, Some(identity_blob(wanted)), "testnet")
+            .with_alias("my-node")
+            .with_wallet(vec![0x77; 32], 3)
+            .insert(&conn)
+            .expect("insert identity");
+        insert_identity(&conn, other, Some(identity_blob(other)));
+
+        let found = match read_identity_row(&conn, Network::Testnet, &wanted).unwrap() {
+            LegacyIdentityLookup::Found(row) => *row,
+            other => panic!("expected Found, got {other:?}"),
+        };
+
+        assert_eq!(found.id, wanted);
+        assert_eq!(found.qi.alias.as_deref(), Some("my-node"));
+        assert_eq!(found.qi.status, IdentityStatus::Active);
+        assert_eq!(found.qi.network, Network::Testnet);
+        assert_eq!(found.wallet, Some(([0x77; 32], 3)));
+    }
+
+    /// An id no row carries is "nothing to recover", not a failure — the
+    /// ordinary answer for an identity that was never in the legacy file.
+    #[test]
+    fn identity_row_lookup_is_absent_for_an_unknown_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        insert_identity(&conn, [0xAA; 32], Some(identity_blob([0xAA; 32])));
+
+        assert!(matches!(
+            read_identity_row(&conn, Network::Testnet, &[0xEE; 32]).unwrap(),
+            LegacyIdentityLookup::Absent,
+        ));
+    }
+
+    /// A fresh install has no `identity` table at all, and asking about an
+    /// identity there must not be an error.
+    #[test]
+    fn identity_row_lookup_is_absent_when_the_table_is_missing() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(matches!(
+            read_identity_row(&conn, Network::Testnet, &[0xAA; 32]).unwrap(),
+            LegacyIdentityLookup::Absent,
+        ));
+    }
+
+    /// The observed-identity cache (`is_local = 0`) and a NULL blob hold no
+    /// user keys, so neither is a recovery source. Both must read as absent
+    /// rather than unreadable: an unreadable verdict is a typed error the user
+    /// would see for an identity that simply has nothing stored.
+    #[test]
+    fn identity_row_lookup_is_absent_for_cache_and_null_blob_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let observed = [0xBB; 32];
+        let null_blob = [0xCC; 32];
+        LegacyIdentityFixture::new(observed, Some(identity_blob(observed)), "testnet")
+            .with_is_local(false)
+            .insert(&conn)
+            .expect("insert identity");
+        insert_identity(&conn, null_blob, None);
+
+        for id in [observed, null_blob] {
+            assert!(
+                matches!(
+                    read_identity_row(&conn, Network::Testnet, &id).unwrap(),
+                    LegacyIdentityLookup::Absent,
+                ),
+                "{} must read as absent, not unreadable",
+                hex::encode(id),
+            );
+        }
+    }
+
+    /// A blob that will not decode is corruption, and must be reported as such
+    /// — never as an empty record a merge could treat as "nothing was stored".
+    #[test]
+    fn identity_row_lookup_reports_an_undecodable_blob() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let corrupt = [0xBB; 32];
+        insert_identity(&conn, corrupt, Some(vec![0xFF; 8]));
+
+        assert!(matches!(
+            read_identity_row(&conn, Network::Testnet, &corrupt).unwrap(),
+            LegacyIdentityLookup::Unreadable,
+        ));
+    }
+
+    /// A row whose `id` column and embedded blob id disagree names two
+    /// different identities; recovering from it would merge one identity's keys
+    /// into another. It is corruption here exactly as it is for the bulk read.
+    #[test]
+    fn identity_row_lookup_reports_a_row_whose_ids_disagree() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let row_id = [0xBB; 32];
+        insert_identity(&conn, row_id, Some(identity_blob([0xCC; 32])));
+
+        assert!(matches!(
+            read_identity_row(&conn, Network::Testnet, &row_id).unwrap(),
+            LegacyIdentityLookup::Unreadable,
+        ));
+    }
+
+    /// An identity on another network must not be reachable from this one, and
+    /// a pre-v29 mainnet row (spelled `dash`) must still be reachable on
+    /// mainnet.
+    #[test]
+    fn identity_row_lookup_scopes_to_the_network_and_its_legacy_spelling() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let legacy_mainnet = [0xBB; 32];
+        LegacyIdentityFixture::new(
+            legacy_mainnet,
+            Some(identity_blob(legacy_mainnet)),
+            LEGACY_MAINNET_ALIAS,
+        )
+        .insert(&conn)
+        .expect("insert identity");
+
+        assert!(matches!(
+            read_identity_row(&conn, Network::Mainnet, &legacy_mainnet).unwrap(),
+            LegacyIdentityLookup::Found(_),
+        ));
+        assert!(matches!(
+            read_identity_row(&conn, Network::Testnet, &legacy_mainnet).unwrap(),
+            LegacyIdentityLookup::Absent,
+        ));
+    }
+
+    /// The two readers share one decoder, so an identity the bulk import would
+    /// carry across is byte-for-byte the identity the single-row lookup finds.
+    /// A divergence would let recovery merge from a record the migration never
+    /// considered importable, or miss one it did.
+    #[test]
+    fn both_identity_readers_decode_a_row_identically() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let id = [0xAA; 32];
+        LegacyIdentityFixture::new(
+            id,
+            Some(identity_blob_with_alias(id, Some("blob"))),
+            "testnet",
+        )
+        .with_status(IdentityStatus::NotFound)
+        .with_alias("column")
+        .with_wallet(vec![0x77; 32], 9)
+        .insert(&conn)
+        .expect("insert identity");
+
+        let bulk = read_identities(&conn, Network::Testnet).unwrap();
+        let single = match read_identity_row(&conn, Network::Testnet, &id).unwrap() {
+            LegacyIdentityLookup::Found(row) => *row,
+            other => panic!("expected Found, got {other:?}"),
+        };
+
+        assert_eq!(bulk.identities.len(), 1);
+        assert_eq!(bulk.identities[0].id, single.id);
+        assert_eq!(bulk.identities[0].wallet, single.wallet);
+        assert_eq!(bulk.identities[0].qi, single.qi);
+        assert_eq!(bulk.identities[0].qi.status, single.qi.status);
+        assert_eq!(bulk.identities[0].qi.network, single.qi.network);
     }
 }

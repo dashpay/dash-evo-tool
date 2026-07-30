@@ -284,10 +284,20 @@ trip the vault-first downgrade guard. Rather than a heuristic that risks
 resurrecting removed keys or failing the whole pass, the safe behaviour is to
 skip and defer recovery to a dedicated, provenance-aware flow.
 
-The proper recovery flow — an interactive, opt-in re-import that reads the
-preserved legacy blob and merges only genuinely-missing key material under the
-identity password — is tracked as a follow-up in
-[issue #889](https://github.com/dashpay/dash-evo-tool/issues/889).
+**Resolved.** The recovery flow this limitation defers to has since shipped:
+`docs/ai-design/2026-07-28-legacy-identity-recovery/design.md`
+([issue #889](https://github.com/dashpay/dash-evo-tool/issues/889)). It is an
+interactive, opt-in, per-identity action reached from the node detail page and
+the Key Info screen. It answers the provenance question by asking the only
+party who holds it: detection lists what the legacy blob has and the modern
+record does not, and the user's approved list is what the merge writes. The
+merge is additive from the fresh modern record, so nothing present is replaced
+or removed; a protected identity verifies its password first and every restored
+key is sealed before the record is written, so the downgrade guard cannot trip.
+
+The importer itself is unchanged — skip-if-present still stands, `data.db` is
+still opened read-only and never modified, and nothing about the recovery flow
+runs at migration or launch time.
 
 ---
 

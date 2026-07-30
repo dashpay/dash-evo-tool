@@ -63,6 +63,18 @@ pub(crate) fn column_exists(
     )
 }
 
+/// Open a pre-update `data.db` as a bare read-only connection.
+///
+/// The one place any reader opens the legacy file, so "SQLite itself refuses
+/// the write" is a property of the file handle rather than of each caller's
+/// discipline. [`Database::open_legacy_read_only`] wraps the same connection
+/// for callers that want the pooled handle instead.
+pub(crate) fn open_legacy_connection_read_only(
+    path: &std::path::Path,
+) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+}
+
 #[derive(Debug)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
@@ -88,7 +100,7 @@ impl Database {
         path: P,
     ) -> rusqlite::Result<Self> {
         let path_ref = path.as_ref();
-        let conn = Connection::open_with_flags(path_ref, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let conn = open_legacy_connection_read_only(path_ref)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: Some(path_ref.to_path_buf()),

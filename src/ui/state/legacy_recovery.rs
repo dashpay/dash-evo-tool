@@ -144,20 +144,29 @@ impl LegacyRecoveryState {
         }
     }
 
-    /// Record that an in-flight operation failed.
+    /// Record that this offer's own check or restore of `identity_id` failed,
+    /// reporting whether the failure was in fact this offer's.
+    ///
+    /// The attribution rule for a failure, and the twin of [`Self::offered`]:
+    /// errors reach whichever screen is visible when they arrive, so an
+    /// unrelated task's failure must leave this offer alone. Ending a restore
+    /// it never started would re-enable the Restore button while the original
+    /// task still holds the identity, and pressing it again would only report
+    /// that a load is already in progress.
     ///
     /// A failed restore returns to its offer, so a mistyped identity password
     /// can be corrected and Restore pressed again. A failed detection is
     /// terminal: retrying it would re-read the same unreadable row every frame.
-    /// Attribution is coarse — an unrelated task's error arriving while a check
-    /// is outstanding lands here too, which only hides an offer until the
-    /// identity is opened again.
-    pub fn failed(&mut self) {
+    pub fn failed_for(&mut self, identity_id: Identifier) -> bool {
+        if identity_id != self.identity_id {
+            return false;
+        }
         self.state = match std::mem::replace(&mut self.state, FetchState::Failed) {
             FetchState::Restoring(plan) => FetchState::Offered(plan),
             FetchState::Checking => FetchState::Failed,
             other => other,
         };
+        true
     }
 }
 
@@ -383,7 +392,7 @@ mod tests {
         restoring.offered(identity(0x07), plan());
         restoring.restore(vec![]).expect("restore");
 
-        restoring.failed();
+        assert!(restoring.failed_for(identity(0x07)));
 
         assert!(!restoring.is_restoring());
         assert!(
@@ -394,12 +403,37 @@ mod tests {
         let mut checking = LegacyRecoveryState::armed(identity(0x08));
         checking.ensure_checked().expect("dispatch");
 
-        checking.failed();
+        assert!(checking.failed_for(identity(0x08)));
 
         assert!(checking.plan().is_none());
         assert!(
             checking.ensure_checked().is_none(),
             "a failed check must not re-read the same row every frame",
+        );
+    }
+
+    /// Regression: any failing task routed to the visible screen used to end the
+    /// restore. Re-enabling Restore while the original task still holds the
+    /// identity only buys the user an "already in progress" error, so a failure
+    /// that is not this offer's own operation must change nothing.
+    #[test]
+    fn an_unrelated_failure_leaves_a_running_restore_alone() {
+        let mut state = LegacyRecoveryState::armed(identity(0x09));
+        state.ensure_checked().expect("dispatch");
+        state.offered(identity(0x09), plan());
+        state.restore(vec![]).expect("restore");
+
+        assert!(
+            !state.failed_for(identity(0x0A)),
+            "another identity's failure is not this offer's to adopt",
+        );
+        assert!(
+            state.is_restoring(),
+            "the restore is still in flight, so the button must stay disabled",
+        );
+        assert!(
+            state.restore(vec![]).is_none(),
+            "and it must not be dispatchable a second time",
         );
     }
 }

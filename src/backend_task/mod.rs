@@ -333,6 +333,10 @@ pub enum BackendTaskContext {
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
+    /// The detection pass for one identity's legacy-recovery offer.
+    LegacyRecoveryCheck(Identifier),
+    /// The restore of one identity's approved legacy-recovery items.
+    LegacyRecoveryRestore(Identifier),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -393,6 +397,19 @@ impl BackendTaskContext {
             _ => None,
         }
     }
+
+    /// The identity whose legacy-recovery offer this operation belongs to, or
+    /// `None` for anything else. A screen showing the recovery affordance uses
+    /// it to tell its own failed check or restore from any other task's error
+    /// that happened to arrive while the screen was visible.
+    pub(crate) fn legacy_recovery_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::LegacyRecoveryCheck(identity_id) | Self::LegacyRecoveryRestore(identity_id) => {
+                Some(*identity_id)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {
@@ -428,6 +445,13 @@ impl From<&BackendTask> for BackendTaskContext {
                 }
                 _ => Self::Other,
             },
+            BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { identity_id }) => {
+                Self::LegacyRecoveryCheck(*identity_id)
+            }
+            BackendTask::IdentityTask(IdentityTask::RecoverLegacyIdentityData {
+                identity_id,
+                ..
+            }) => Self::LegacyRecoveryRestore(*identity_id),
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {

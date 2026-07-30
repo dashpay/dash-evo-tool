@@ -1,7 +1,8 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -261,11 +262,17 @@ impl ScreenLike for KeyInfoScreen {
             self.protection_in_flight = false;
             self.protection_status = None;
         }
-        // End whatever recovery operation was in flight. A failed restore
-        // returns to its offer, so a mistyped identity password can be
-        // corrected and Restore pressed again.
-        if matches!(message_type, MessageType::Error) {
-            self.recovery.failed();
+    }
+
+    /// End a recovery operation only when the failure is that operation's.
+    ///
+    /// Every failing task routed to the visible screen arrives here, so the
+    /// identity the error's operation names is what tells this screen's own
+    /// check or restore from an unrelated failure that merely landed while the
+    /// screen was open.
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if let Some(identity_id) = context.legacy_recovery_identity() {
+            self.recovery.failed_for(identity_id);
         }
     }
 
@@ -1797,6 +1804,57 @@ mod tests {
                 .private_keys
                 .contains_key(&(MAIN, other_writer_key.id())),
             "another identity's completion must not be acted on here at all",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Regression: every failing backend task routed to the visible screen used
+    /// to end the restore, so an unrelated failure re-enabled the Restore button
+    /// while the original task still held the identity — pressing it again only
+    /// reported that a load was already in progress. Only this restore's own
+    /// failure may return the offer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_this_restores_own_failure_returns_it_to_its_offer() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen_id = on_screen.identity.id();
+        app_context
+            .insert_local_qualified_identity(&on_screen, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(on_screen, on_screen_key, None, &app_context);
+        screen
+            .recovery
+            .offered(on_screen_id, RecoveryPlan::default());
+        screen.recovery.restore(vec![]).expect("dispatch a restore");
+
+        let error = TaskError::IdentityNotFoundLocally;
+        for unrelated in [
+            BackendTaskContext::Other,
+            BackendTaskContext::TokenBalanceRefresh,
+            BackendTaskContext::LegacyRecoveryRestore(Identifier::from([0xA0; 32])),
+        ] {
+            screen.display_backend_task_error(&unrelated, &error);
+            screen.display_message("something else failed", MessageType::Error);
+            assert!(
+                screen.recovery.is_restoring(),
+                "{unrelated:?} is not this restore, so it must stay in flight",
+            );
+        }
+
+        screen.display_backend_task_error(
+            &BackendTaskContext::LegacyRecoveryRestore(on_screen_id),
+            &error,
+        );
+        assert!(
+            !screen.recovery.is_restoring(),
+            "this restore's own failure must return the offer so it can be retried",
         );
 
         app_context

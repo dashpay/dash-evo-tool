@@ -257,6 +257,18 @@ impl MasternodeDetailView {
     pub(crate) fn key_presence_for_test(&self) -> MasternodeKeyPresence {
         self.key_presence
     }
+
+    /// Dispatch this node's restore, as pressing Restore does, and report
+    /// whether it went out.
+    pub(crate) fn start_recovery_restore_for_test(&mut self) -> bool {
+        self.recovery.restore(vec![]).is_some()
+    }
+
+    /// Whether a restore is still in flight, so the Restore button stays
+    /// disabled.
+    pub(crate) fn is_restoring_for_test(&self) -> bool {
+        self.recovery.is_restoring()
+    }
 }
 
 impl MasternodeDetailView {
@@ -320,9 +332,11 @@ impl MasternodeDetailView {
         self.recovery.completed();
     }
 
-    /// End whatever recovery operation was in flight when a task failed.
-    pub(crate) fn recovery_failed(&mut self) {
-        self.recovery.failed();
+    /// End this view's recovery operation when the failure that arrived is that
+    /// operation's own — matched on the identity the failing task names, since
+    /// every error reaches whichever screen is visible.
+    pub(crate) fn recovery_failed_for(&mut self, identity_id: dash_sdk::platform::Identifier) {
+        self.recovery.failed_for(identity_id);
     }
 
     /// Load the contests this node can still vote on. Empty when the node has no

@@ -607,8 +607,10 @@ impl QualifiedIdentity {
     ///
     /// Reads the identity's own on-chain records (main, voter, operator),
     /// matching on key id **and** public-key data, so a key id that appears on
-    /// two lists with different material cannot be confused. Used by the write
-    /// path only; a read asks
+    /// two lists with different material cannot be confused. Asked by the Key
+    /// Info paste path, to choose a store for a private half the user just
+    /// entered, and by role naming, to label a key by the list that publishes
+    /// it. A read asks
     /// [`KeyStorage::candidates`](encrypted_key_storage::KeyStorage::candidates)
     /// where the private half actually is, which is not always the same answer.
     ///

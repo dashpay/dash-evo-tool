@@ -39,7 +39,7 @@ The derivation conflated two questions that have different answers.
 | Question | Answer | Used by |
 |---|---|---|
 | Where **is** this key's private half filed? | `KeyStorage::candidates` — probes each store at the key's id, keeping only entries whose stored public-key data matches | every read and delete |
-| Where **should** a new private half go? | `QualifiedIdentity::placement_of` — reads the identity's own on-chain key lists | the write path only |
+| Where **should** a new private half go, and which list names this key? | `QualifiedIdentity::placement_of` — reads the identity's own on-chain key lists | the Key Info paste path, and role naming |
 
 `candidates` is three `BTreeMap` probes, not a scan, in a fixed
 [`PROBE_ORDER`] — so resolution never depends on map iteration order. It accepts
@@ -54,6 +54,12 @@ would hand out or delete material the requested key does not own.
 `placement_of` returns `Resolved` / `Ambiguous` / `Unknown`. `Unknown` is a real
 state, not a failure: `add_key_to_identity` inserts a key before broadcasting the
 transition that publishes it, so a key on no list is the steady state there.
+
+`add_key_to_identity` is also the reason the backend write path does not consult
+`placement_of` at all: it mints the key at `max_id + 1` on the main identity, so
+`PrivateKeyOnMainIdentity` is fixed by construction — no other list can publish a
+key that did not exist a moment ago. The paste path in Key Info is the one writer
+that has to choose, because the key it is handed already exists somewhere.
 
 ## 3. Resolve to bytes, not to a match
 

@@ -550,9 +550,11 @@ impl KeyStorage {
     ///
     /// For callers that know a placement structurally — a loader walking the
     /// identity list it read a key from, or legacy recovery restoring an entry
-    /// to the placement the old blob recorded. Anything choosing a placement for
-    /// *new* material should take it from
-    /// [`QualifiedIdentity::placement_of`](crate::model::qualified_identity::QualifiedIdentity::placement_of).
+    /// to the placement the old blob recorded. A caller that has to *choose* one
+    /// for new material asks
+    /// [`QualifiedIdentity::placement_of`](crate::model::qualified_identity::QualifiedIdentity::placement_of),
+    /// unless construction already fixes it: `add_key_to_identity` mints its key
+    /// at `max_id + 1` on the main identity, so only the main store can hold it.
     pub fn insert_at(
         &mut self,
         key: (PrivateKeyTarget, KeyID),

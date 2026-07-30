@@ -799,12 +799,11 @@ impl ScreenLike for KeyInfoScreen {
                     }
                 }
                 Err(error) => {
-                    MessageBanner::set_global(
-                        ctx,
-                        "This key is not saved on this device, so it cannot be shown or used to sign. Enter its private key on this page to add it.",
-                        MessageType::Error,
-                    )
-                    .with_details(error);
+                    // The two failure modes carry different remedies, so the
+                    // typed message is the one shown — a shared sentence here
+                    // would tell the ambiguous case to paste the key, which
+                    // the same ambiguity then refuses.
+                    MessageBanner::set_global_with_error(ctx, error);
                 }
             }
         }
@@ -2175,6 +2174,56 @@ mod tests {
         assert!(
             screen.private_key_data.is_some(),
             "and the screen must keep reporting the key as held",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Pressing Show or Sign on a key whose placement cannot be resolved must
+    /// surface the typed error's own message. The two failure modes carry
+    /// different remedies, and for a key on two lists at once "enter its
+    /// private key on this page" is the one instruction guaranteed to be
+    /// refused — by the same ambiguity, one screen interaction later.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_show_request_that_cannot_resolve_speaks_through_the_typed_error() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // The key published on both the main and the voter list — ambiguous —
+        // and held nowhere.
+        let key = public_key(0, Purpose::VOTING);
+        let published = |id_byte: u8| {
+            Identity::new_with_id_and_keys(
+                Identifier::from([id_byte; 32]),
+                BTreeMap::from([(key.id(), key.clone())]),
+                PlatformVersion::latest(),
+            )
+            .expect("identity publishing the key")
+        };
+        let mut identity = identity_with(0x7E, &[]);
+        identity.identity = published(0x7E);
+        identity.associated_voter_identity = Some((published(0x7F), key.clone()));
+        identity.identity_type = IdentityType::Masternode;
+        identity.private_keys = KeyStorage::default();
+
+        let mut screen = KeyInfoScreen::new(identity, key, None, &app_context);
+        screen.pending_identity_key_display = true;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1100.0, 900.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+
+        let banner_texts =
+            crate::ui::components::message_banner::global_banner_texts(&harness.ctx);
+        assert!(
+            banner_texts.contains(&TaskError::IdentityKeyPlacementAmbiguous.to_string()),
+            "the ambiguity's own message and remedy must reach the user, got {banner_texts:?}",
         );
 
         app_context

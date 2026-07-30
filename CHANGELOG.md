@@ -84,6 +84,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A key's wallet is found even when the key is filed twice**: a key that an
+  earlier version had saved in two places, wallet-derived in only one of them,
+  was treated as belonging to no wallet at all — so the wallet was never offered
+  for unlocking and signing with that key could not proceed. The wallet that
+  derives a key is now found wherever the key is filed.
+
 - **A key two lists appear to share can be saved again**: when a masternode's
   own record and its voting identity each carried a key with the same number and
   the same public key, entering the private key of either was refused with a

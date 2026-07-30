@@ -254,10 +254,17 @@ impl fmt::Display for PrivateKeyData {
 /// The map is private on purpose. Which store a key is filed under is not
 /// something a caller should be deriving for itself — that is what produced a
 /// saved key no signing path could find — so reads go through
-/// [`candidates`](Self::candidates), which selects on key material. The
-/// remaining direct accessors exist for callers that legitimately name a
-/// placement: a loader that knows structurally where a key belongs, and legacy
-/// recovery, which is *about* specific stored placements.
+/// [`candidates`](Self::candidates), which selects on key material.
+///
+/// Every accessor that *names* a placement is `pub(crate)`, so the callers that
+/// legitimately know one stay enumerable: the loader folding a previously-loaded
+/// record into a fresh one, and legacy recovery, which is *about* the placements
+/// an old blob recorded. [`insert_at`](Self::insert_at) and
+/// [`entry_at`](Self::entry_at) have no production caller left at all and are
+/// `#[cfg(test)]`. What stays `pub` cannot quietly file a key wrongly: the
+/// target-blind enumerators, [`insert_non_encrypted`](Self::insert_non_encrypted),
+/// which refuses an occupied slot, and the whole-map `From` conversions, where
+/// the map's own keys are the placements.
 #[derive(Debug, Encode, Decode, Clone, PartialEq, Default)]
 pub struct KeyStorage {
     private_keys: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
@@ -468,7 +475,7 @@ impl KeyStorage {
             .map(|(public_key, _)| public_key)
     }
 
-    pub fn has(&self, key: &(PrivateKeyTarget, KeyID)) -> bool {
+    pub(crate) fn has(&self, key: &(PrivateKeyTarget, KeyID)) -> bool {
         self.private_keys.contains_key(key)
     }
 
@@ -593,7 +600,8 @@ impl KeyStorage {
     /// Names a placement directly, so it answers "is *this* slot occupied", not
     /// "where is this key". Prefer [`candidates`](Self::candidates) for the
     /// latter: this cannot tell a key from a different one sharing its id.
-    pub fn entry_at(
+    #[cfg(test)]
+    pub(crate) fn entry_at(
         &self,
         key: &(PrivateKeyTarget, KeyID),
     ) -> Option<&(QualifiedIdentityPublicKey, PrivateKeyData)> {
@@ -609,7 +617,8 @@ impl KeyStorage {
     /// [`QualifiedIdentity::placement_of`](crate::model::qualified_identity::QualifiedIdentity::placement_of),
     /// unless construction already fixes it: `add_key_to_identity` mints its key
     /// at `max_id + 1` on the main identity, so only the main store can hold it.
-    pub fn insert_at(
+    #[cfg(test)]
+    pub(crate) fn insert_at(
         &mut self,
         key: (PrivateKeyTarget, KeyID),
         value: (QualifiedIdentityPublicKey, PrivateKeyData),
@@ -621,7 +630,7 @@ impl KeyStorage {
     /// write. Used when folding a previously-loaded record into a fresh one, so
     /// a key the new load did not resupply is kept rather than dropped, and one
     /// it did resupply is not overwritten with the stale copy.
-    pub fn insert_if_absent(
+    pub(crate) fn insert_if_absent(
         &mut self,
         key: (PrivateKeyTarget, KeyID),
         value: (QualifiedIdentityPublicKey, PrivateKeyData),
@@ -646,7 +655,7 @@ impl KeyStorage {
     /// Removing *a key* rather than a slot means removing every placement that
     /// holds it — see [`candidates`](Self::candidates), which selects on key
     /// material so a removal cannot land on a different key sharing the id.
-    pub fn remove_at(
+    pub(crate) fn remove_at(
         &mut self,
         key: &(PrivateKeyTarget, KeyID),
     ) -> Option<(QualifiedIdentityPublicKey, PrivateKeyData)> {

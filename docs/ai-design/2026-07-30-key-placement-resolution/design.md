@@ -128,12 +128,19 @@ A crash cannot strand a key because nothing is ever in motion.
 * `KeyInfoScreen` no longer carries a `target` field. It resolves on demand, so
   there is no state to thread through constructors and nothing for the
   `ScreenType` round trip to drop.
-* `KeyStorage.private_keys` is **private**. With correctness concentrated in the
-  resolver, a caller reaching past it can silently miss a key that is present.
-  Explicit-placement accessors remain for callers that legitimately know one — a
-  loader walking the list it read a key from, and legacy recovery, which is
+* `KeyStorage.private_keys` is **private**, and every accessor that names a
+  placement (`insert_at`, `entry_at`, `remove_at`, `insert_if_absent`, `has`) is
+  `pub(crate)`. With correctness concentrated in the resolver, a caller reaching
+  past it can silently miss a key that is present; keeping the placement-naming
+  surface inside the crate keeps the set of such callers enumerable. They exist
+  for the two that legitimately know a placement — the loader folding a
+  previously-loaded record into a fresh one, and legacy recovery, which is
   *about* the placements an old blob recorded and must not be routed through a
-  target-blind resolver.
+  target-blind resolver. `insert_at` and `entry_at` turned out to have no
+  production caller left and are `#[cfg(test)]`.
+  What remains `pub` cannot file a key at a placement of the caller's choosing:
+  the target-blind enumerators, `insert_non_encrypted` (which refuses a slot
+  another key occupies), and the whole-map `From` conversions.
 
 ## 8. What is not covered
 

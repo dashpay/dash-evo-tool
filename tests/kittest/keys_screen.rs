@@ -8,8 +8,8 @@
 
 use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
-use dash_evo_tool::backend_task::BackendTaskSuccessResult;
 use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -320,23 +320,29 @@ fn a_failed_restore_leaves_the_offer_in_place_to_retry() {
         );
 
         // An unrelated task failing while the restore runs must not re-arm it.
-        // Results are not screen-affine — any task's error reaches whichever
+        // Errors are not screen-affine — any task's failure reaches whichever
         // screen is visible — and a re-armed Restore can be pressed again,
         // dispatching the same restore twice.
-        screen
-            .borrow_mut()
-            .display_task_error(&TaskError::WalletStateInconsistent);
-        harness.run_steps(2);
-        assert!(
-            harness.query_by_label(RESTORE).is_none(),
-            "an unrelated task's failure must not re-enable Restore mid-restore"
-        );
+        for unrelated in [
+            BackendTaskContext::Other,
+            BackendTaskContext::LegacyRecoveryRestore(Identifier::from([0x7c; 32])),
+        ] {
+            screen
+                .borrow_mut()
+                .display_backend_task_error(&unrelated, &TaskError::LegacyRecoveryIdentityChanged);
+            harness.run_steps(2);
+            assert!(
+                harness.query_by_label(RESTORE).is_none(),
+                "{unrelated:?} is not this restore, so it must not re-enable Restore mid-restore"
+            );
+        }
 
         // The restore's own failure does end it, so a mistyped identity password
         // can be corrected and Restore pressed again.
-        screen
-            .borrow_mut()
-            .display_task_error(&TaskError::LegacyRecoveryIdentityChanged);
+        screen.borrow_mut().display_backend_task_error(
+            &BackendTaskContext::LegacyRecoveryRestore(identity_id),
+            &TaskError::LegacyRecoveryIdentityChanged,
+        );
         harness.run_steps(2);
         assert!(
             harness.query_by_label(RESTORE).is_some(),
@@ -553,7 +559,7 @@ fn key_info_agrees_with_the_list_about_a_voting_key_held_on_the_main_identity() 
         let AppAction::AddScreen(Screen::KeyInfoScreen(mut key_info)) = opened else {
             panic!("the row must open Key Info");
         };
-        key_info.refresh_on_arrival();
+        key_info.refresh();
         assert!(
             key_info.private_key_data.is_some(),
             "Key Info must still hold the key the list handed it — re-deriving the \
@@ -1108,13 +1114,20 @@ fn key_info_names_a_users_transfer_key_as_the_keys_list_does() {
             harness.query_by_label(RESTORE).is_some(),
             "the premise: Key Info is showing the offer"
         );
-        assert!(
-            harness.query_by_label("Transfer key").is_some(),
-            "Key Info's offer must name the key as the keys list does"
+        // Twice over: the page's own Purpose row and the offer below it both
+        // render the one caption the keys list used, so a count of one would
+        // mean a surface had gone off and worded it for itself.
+        assert_eq!(
+            harness.query_all_by_label("Transfer key").count(),
+            2,
+            "Key Info's offer and its Purpose row must both name the key as the \
+             keys list does"
         );
-        assert!(
-            harness.query_by_label("Payout address key").is_none(),
-            "and must not tell a plain user their key is a masternode payout address"
+        assert_eq!(
+            harness.query_all_by_label("Payout address key").count(),
+            0,
+            "and neither may tell a plain user their key is a masternode payout \
+             address"
         );
     });
 }

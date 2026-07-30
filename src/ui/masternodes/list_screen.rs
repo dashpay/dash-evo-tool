@@ -582,9 +582,10 @@ impl ScreenLike for MasternodesScreen {
             // into the open detail view instead of reloading and re-opening it.
             // Re-opening would rebuild the view, re-dispatch its check, and
             // never settle.
-            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
+            BackendTaskSuccessResult::LegacyRecoveryCandidates { .. } => {
+                let ctx = self.app_context.egui_ctx().clone();
                 if let MasternodesView::Detail(detail) = &mut self.view {
-                    detail.set_recovery_plan(identity_id, plan);
+                    detail.absorb_recovery_result(&ctx, &result);
                 }
                 return;
             }
@@ -637,13 +638,22 @@ impl ScreenLike for MasternodesScreen {
         // this load's phase outstanding and the gate held. Let the global banner
         // render the error (return false).
         self.reconcile_pending_load();
-        // End whatever recovery operation the open detail view had in flight. A
-        // failed restore returns to its offer so the user can correct a mistyped
-        // identity password and press Restore again.
-        if let MasternodesView::Detail(detail) = &mut self.view {
-            detail.recovery_failed();
-        }
         false
+    }
+
+    /// End the open detail view's recovery operation only when the failure is
+    /// that operation's own. A failed restore returns to its offer so the user
+    /// can correct a mistyped identity password and press Restore again; any
+    /// other task's error — which reaches this screen simply because it is
+    /// visible — must leave a running restore in flight.
+    fn display_backend_task_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        _error: &crate::backend_task::error::TaskError,
+    ) {
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.absorb_recovery_error(context);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -984,6 +994,73 @@ mod tests {
         assert!(
             detail.has_recovery_offer_for_test(),
             "another identity's completion must leave this node's offer alone",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: this screen used to end the open node's restore on ANY task
+    /// error that reached it — a vote, a refresh, another node's restore. The
+    /// original task still held the identity, so re-enabling Restore only led
+    /// the user to an "already in progress" error. Only this node's own
+    /// recovery failure may return its offer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_this_nodes_own_recovery_failure_ends_its_restore() {
+        use crate::backend_task::BackendTaskContext;
+        use crate::backend_task::error::TaskError;
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_recovery_plan(
+            node,
+            RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::VoterAssociation,
+                    purpose: None,
+                }],
+                excluded: vec![],
+            },
+        );
+        assert!(
+            detail.start_recovery_restore_for_test(),
+            "the offer must be restorable, or this proves nothing",
+        );
+
+        let error = TaskError::IdentityNotFoundLocally;
+        for unrelated in [
+            BackendTaskContext::Other,
+            BackendTaskContext::LegacyRecoveryRestore(Identifier::from([0x77; 32])),
+        ] {
+            screen.display_backend_task_error(&unrelated, &error);
+            screen.display_task_error(&error);
+            let MasternodesView::Detail(detail) = &screen.view else {
+                panic!("the detail view must still be open");
+            };
+            assert!(
+                detail.is_restoring_for_test(),
+                "{unrelated:?} is not this node's restore, so it must stay in flight",
+            );
+        }
+
+        screen.display_backend_task_error(&BackendTaskContext::LegacyRecoveryRestore(node), &error);
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must still be open");
+        };
+        assert!(
+            !detail.is_restoring_for_test(),
+            "this node's own restore failure must return the offer so it can be retried",
+        );
+        assert!(
+            detail.has_recovery_offer_for_test(),
+            "and the offer must survive for the retry",
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

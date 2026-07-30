@@ -113,51 +113,126 @@ impl From<IdentityType> for KeyVocabulary {
     }
 }
 
-/// The role word for a key and its tooltip, aligned with the Dash Core DIP-3
-/// ProRegTx roles.
+/// Every caption a key's role can carry, as whole translation units.
+///
+/// Whole on purpose: a caller handed a bare role word inevitably bolts an
+/// English noun onto it (`"{role} key"`), and a state onto that
+/// (`"{role} key (disabled)"`), which is a sentence no translator can reorder,
+/// re-inflect or re-punctuate. Each caption here is one string a translator
+/// owns end to end. Private for the same reason — the only way to a caption is
+/// [`role_label_and_tip`].
+const LABEL_VOTING_KEY: &str = "Voting key";
+const LABEL_VOTING_KEY_DISABLED: &str = "Voting key (disabled)";
+const LABEL_OWNER_KEY: &str = "Owner key";
+const LABEL_OWNER_KEY_DISABLED: &str = "Owner key (disabled)";
+const LABEL_PAYOUT_KEY: &str = "Payout address key";
+const LABEL_PAYOUT_KEY_DISABLED: &str = "Payout address key (disabled)";
+const LABEL_TRANSFER_KEY: &str = "Transfer key";
+const LABEL_TRANSFER_KEY_DISABLED: &str = "Transfer key (disabled)";
+const LABEL_AUTH_KEY: &str = "Authentication key";
+const LABEL_AUTH_KEY_DISABLED: &str = "Authentication key (disabled)";
+const LABEL_ENCRYPTION_KEY: &str = "Encryption key";
+const LABEL_ENCRYPTION_KEY_DISABLED: &str = "Encryption key (disabled)";
+const LABEL_DECRYPTION_KEY: &str = "Decryption key";
+const LABEL_DECRYPTION_KEY_DISABLED: &str = "Decryption key (disabled)";
+const LABEL_SYSTEM_KEY: &str = "System key";
+const LABEL_SYSTEM_KEY_DISABLED: &str = "System key (disabled)";
+
+/// The complete caption for a key's role, and the tooltip explaining it.
 ///
 /// The single source of truth for what a key is called anywhere in this app:
-/// the detail view's "Manage keys" buttons and the offer to restore keys from
-/// the previous version both label the same key through this function, so the
-/// two surfaces cannot name it differently. Voter-identity keys are always the
-/// voting key; on the main identity, the Platform Owner and Transfer keys of a
-/// masternode identity mirror the ProTx owner key and payout address. Unknown
-/// purposes fall back to their name with no tooltip.
+/// the detail view's "Manage keys" buttons, the identity keys list, the Key Info
+/// page and the offer to restore keys from the previous version all name a key
+/// through this function, so no two surfaces can name it differently.
+///
+/// Returns a whole caption, never a word to decorate — see the label constants
+/// above for why, and note the `&'static str` return makes composing one at a
+/// callsite impossible rather than merely discouraged. `disabled` selects the
+/// caption for a key Platform has retired: a node that rotates its payout
+/// address keeps the old key on chain beside the new one, so a role alone does
+/// not name one key.
+///
+/// Voter-identity keys are always the voting key; on the main identity, the
+/// Platform Owner and Transfer keys of a masternode identity mirror the ProTx
+/// owner key and payout address. Every [`Purpose`](dash_sdk::dpp::identity::Purpose)
+/// is matched by name and none falls through to a `Debug` rendering, so a raw
+/// enum can never reach a user; a variant added upstream breaks this build
+/// instead, which is the point.
 pub fn role_label_and_tip(
     vocabulary: KeyVocabulary,
     is_on_voter_identity: bool,
     purpose: dash_sdk::dpp::identity::Purpose,
-) -> (String, Option<&'static str>) {
+    disabled: bool,
+) -> (&'static str, Option<&'static str>) {
     use dash_sdk::dpp::identity::Purpose;
-    // A key on a voter identity is the voting key whatever its purpose says, and
-    // only a masternode has one.
-    if is_on_voter_identity {
-        return ("Voting".to_string(), Some(TIP_VOTING_KEY));
-    }
     let user = vocabulary == KeyVocabulary::User;
-    match purpose {
-        Purpose::VOTING if user => ("Voting".to_string(), Some(TIP_USER_VOTING_KEY)),
-        Purpose::OWNER if user => ("Owner".to_string(), Some(TIP_USER_OWNER_KEY)),
-        Purpose::TRANSFER if user => ("Transfer".to_string(), Some(TIP_USER_TRANSFER_KEY)),
-        Purpose::VOTING => ("Voting".to_string(), Some(TIP_VOTING_KEY)),
-        Purpose::OWNER => ("Owner".to_string(), Some(TIP_OWNER_KEY)),
-        Purpose::TRANSFER => ("Payout address".to_string(), Some(TIP_PAYOUT_KEY)),
-        Purpose::AUTHENTICATION => ("Authentication".to_string(), Some(TIP_AUTH_KEY)),
-        other => (format!("{other:?}"), None),
-    }
+    // (caption, caption once Platform has retired the key, tooltip)
+    let (active, retired, tip) = if is_on_voter_identity {
+        // A key on a voter identity is the voting key whatever its purpose says,
+        // and only a masternode has one.
+        (
+            LABEL_VOTING_KEY,
+            LABEL_VOTING_KEY_DISABLED,
+            Some(TIP_VOTING_KEY),
+        )
+    } else {
+        match purpose {
+            Purpose::VOTING if user => (
+                LABEL_VOTING_KEY,
+                LABEL_VOTING_KEY_DISABLED,
+                Some(TIP_USER_VOTING_KEY),
+            ),
+            Purpose::OWNER if user => (
+                LABEL_OWNER_KEY,
+                LABEL_OWNER_KEY_DISABLED,
+                Some(TIP_USER_OWNER_KEY),
+            ),
+            Purpose::TRANSFER if user => (
+                LABEL_TRANSFER_KEY,
+                LABEL_TRANSFER_KEY_DISABLED,
+                Some(TIP_USER_TRANSFER_KEY),
+            ),
+            Purpose::VOTING => (
+                LABEL_VOTING_KEY,
+                LABEL_VOTING_KEY_DISABLED,
+                Some(TIP_VOTING_KEY),
+            ),
+            Purpose::OWNER => (
+                LABEL_OWNER_KEY,
+                LABEL_OWNER_KEY_DISABLED,
+                Some(TIP_OWNER_KEY),
+            ),
+            Purpose::TRANSFER => (
+                LABEL_PAYOUT_KEY,
+                LABEL_PAYOUT_KEY_DISABLED,
+                Some(TIP_PAYOUT_KEY),
+            ),
+            Purpose::AUTHENTICATION => {
+                (LABEL_AUTH_KEY, LABEL_AUTH_KEY_DISABLED, Some(TIP_AUTH_KEY))
+            }
+            // No tooltip: these carry no role a user acts on here, but they
+            // still get a name of their own rather than a raw enum.
+            Purpose::ENCRYPTION => (LABEL_ENCRYPTION_KEY, LABEL_ENCRYPTION_KEY_DISABLED, None),
+            Purpose::DECRYPTION => (LABEL_DECRYPTION_KEY, LABEL_DECRYPTION_KEY_DISABLED, None),
+            Purpose::SYSTEM => (LABEL_SYSTEM_KEY, LABEL_SYSTEM_KEY_DISABLED, None),
+        }
+    };
+    (if disabled { retired } else { active }, tip)
 }
 
-/// A short role name for one key and its tooltip, from the shared
-/// [`role_label_and_tip`] vocabulary.
+/// The complete caption for one key and its tooltip, from the shared
+/// [`role_label_and_tip`] vocabulary. Reads the retired state off the key, so
+/// no caller has to remember to mark it.
 pub(crate) fn key_role_label(
     vocabulary: KeyVocabulary,
     target: &PrivateKeyTarget,
     key: &dash_sdk::platform::IdentityPublicKey,
-) -> (String, Option<&'static str>) {
+) -> (&'static str, Option<&'static str>) {
     role_label_and_tip(
         vocabulary,
         *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity,
         key.purpose(),
+        key.is_disabled(),
     )
 }
 
@@ -196,11 +271,9 @@ pub fn identity_keys(
 /// Button labels (and DIP-3-aligned tooltips) for a "Manage keys" list, one
 /// per entry of `keys`, in order.
 ///
-/// Each label is the key's role word (`Owner`/`Payout address`/`Voting`/…)
-/// plus a `(disabled)` marker for keys platform has retired: a node that
-/// rotates its payout address keeps the old, disabled Payout key on-chain
-/// next to the new active one, so a role word alone is not unique. Keys that
-/// would still collide are told apart by their key id.
+/// Each label is the key's complete role caption from [`key_role_label`], which
+/// already distinguishes a key Platform has retired. Keys that would still
+/// collide are told apart by their key id.
 pub fn manage_keys_labels(
     vocabulary: KeyVocabulary,
     keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
@@ -208,13 +281,8 @@ pub fn manage_keys_labels(
     let mut labels: Vec<(String, Option<&'static str>)> = keys
         .iter()
         .map(|(target, key)| {
-            let (role, tip) = key_role_label(vocabulary, target, key);
-            let label = if key.is_disabled() {
-                format!("{role} key (disabled)")
-            } else {
-                format!("{role} key")
-            };
-            (label, tip)
+            let (label, tip) = key_role_label(vocabulary, target, key);
+            (label.to_string(), tip)
         })
         .collect();
 
@@ -223,13 +291,22 @@ pub fn manage_keys_labels(
     labels
 }
 
-/// Make every label in `labelled` unique by appending `#{key id}` to the ones
-/// that would otherwise appear more than once.
+/// The one form in which a role caption is qualified by the key's on-chain id.
 ///
-/// A role word alone is not unique: an evonode that rotates its payout address
-/// holds two Transfer keys. Every list of keys the user is asked to read — and
-/// especially one they are asked to approve — needs each row to name exactly
-/// one key. Rows with no key id (a role link) are left as they are.
+/// A single translation unit with named placeholders, so a translation may
+/// reorder or re-punctuate both parts. `label` is always a complete caption
+/// from [`role_label_and_tip`] — never a fragment this then completes.
+fn label_with_key_id(label: &str, key_id: dash_sdk::dpp::identity::KeyID) -> String {
+    format!("{label} #{key_id}")
+}
+
+/// Make every label in `labelled` unique by qualifying the ones that would
+/// otherwise appear more than once with their key id.
+///
+/// A role caption alone is not unique: an evonode that rotates its payout
+/// address holds two Transfer keys. Every list of keys the user is asked to
+/// read — and especially one they are asked to approve — needs each row to name
+/// exactly one key. Rows with no key id (a role link) are left as they are.
 pub fn disambiguate_role_labels(
     labelled: &mut [(String, Option<&'static str>)],
     key_ids: &[Option<dash_sdk::dpp::identity::KeyID>],
@@ -242,7 +319,8 @@ pub fn disambiguate_role_labels(
         if let Some(key_id) = key_id
             && counts.get(label.as_str()).copied().unwrap_or(0) > 1
         {
-            *label = format!("{label} #{key_id}");
+            let qualified = label_with_key_id(label, *key_id);
+            *label = qualified;
         }
     }
 }
@@ -362,32 +440,97 @@ mod tests {
         let node = KeyVocabulary::Masternode;
         // A voter-identity key is always the voting key, regardless of purpose.
         assert_eq!(
-            role_label_and_tip(node, true, Purpose::AUTHENTICATION),
-            ("Voting".to_string(), Some(TIP_VOTING_KEY))
+            role_label_and_tip(node, true, Purpose::AUTHENTICATION, false),
+            (LABEL_VOTING_KEY, Some(TIP_VOTING_KEY))
         );
         // A voting-purpose key on the main identity is the voting key too.
         assert_eq!(
-            role_label_and_tip(node, false, Purpose::VOTING),
-            ("Voting".to_string(), Some(TIP_VOTING_KEY))
+            role_label_and_tip(node, false, Purpose::VOTING, false),
+            (LABEL_VOTING_KEY, Some(TIP_VOTING_KEY))
         );
         // Main-identity roles mirror the DIP-3 ProRegTx owner key and payout
         // address; the Platform Transfer key surfaces as "Payout address".
         assert_eq!(
-            role_label_and_tip(node, false, Purpose::OWNER),
-            ("Owner".to_string(), Some(TIP_OWNER_KEY))
+            role_label_and_tip(node, false, Purpose::OWNER, false),
+            (LABEL_OWNER_KEY, Some(TIP_OWNER_KEY))
         );
         assert_eq!(
-            role_label_and_tip(node, false, Purpose::TRANSFER),
-            ("Payout address".to_string(), Some(TIP_PAYOUT_KEY))
+            role_label_and_tip(node, false, Purpose::TRANSFER, false),
+            (LABEL_PAYOUT_KEY, Some(TIP_PAYOUT_KEY))
         );
         assert_eq!(
-            role_label_and_tip(node, false, Purpose::AUTHENTICATION),
-            ("Authentication".to_string(), Some(TIP_AUTH_KEY))
+            role_label_and_tip(node, false, Purpose::AUTHENTICATION, false),
+            (LABEL_AUTH_KEY, Some(TIP_AUTH_KEY))
         );
-        // An unmapped purpose keeps its name and carries no tooltip.
+        // A purpose with no role the user acts on here still gets a name of its
+        // own — never the raw enum.
         assert_eq!(
-            role_label_and_tip(node, false, Purpose::ENCRYPTION),
-            (format!("{purpose:?}", purpose = Purpose::ENCRYPTION), None,)
+            role_label_and_tip(node, false, Purpose::ENCRYPTION, false),
+            (LABEL_ENCRYPTION_KEY, None)
+        );
+    }
+
+    /// Every caption the app can show a user is a whole, self-contained phrase:
+    /// one translation unit ending in the noun it names, never a role word the
+    /// caller finishes, and never a raw `Purpose` rendered through `Debug`.
+    ///
+    /// Exhaustive over the whole vocabulary because that is the only way this
+    /// holds for the combinations no screen happens to render today — an
+    /// encryption key on a user identity, a retired system key — which is
+    /// exactly where a `{:?}` fallback used to hide.
+    #[test]
+    fn every_role_caption_is_a_complete_translation_unit() {
+        use dash_sdk::dpp::identity::Purpose;
+
+        let purposes = [
+            Purpose::AUTHENTICATION,
+            Purpose::ENCRYPTION,
+            Purpose::DECRYPTION,
+            Purpose::TRANSFER,
+            Purpose::SYSTEM,
+            Purpose::VOTING,
+            Purpose::OWNER,
+        ];
+        for vocabulary in [KeyVocabulary::Masternode, KeyVocabulary::User] {
+            for purpose in purposes {
+                for voter in [false, true] {
+                    for disabled in [false, true] {
+                        let (label, _) = role_label_and_tip(vocabulary, voter, purpose, disabled);
+                        assert!(
+                            !label.contains(&format!("{purpose:?}")),
+                            "a raw Purpose must never reach a caption: {label}"
+                        );
+                        assert!(
+                            label.starts_with(char::is_uppercase),
+                            "a caption is a phrase of its own, so it opens like one: {label}"
+                        );
+                        let expected_tail = if disabled { "key (disabled)" } else { "key" };
+                        assert!(
+                            label.ends_with(expected_tail),
+                            "a caption names the thing it is, complete: {label}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A retired key's caption is one unit too, not the active caption with an
+    /// English state bolted on — the two are separately translatable strings.
+    #[test]
+    fn a_retired_key_gets_its_own_whole_caption() {
+        use dash_sdk::dpp::identity::Purpose;
+        let node = KeyVocabulary::Masternode;
+
+        assert_eq!(
+            role_label_and_tip(node, false, Purpose::TRANSFER, true),
+            (LABEL_PAYOUT_KEY_DISABLED, Some(TIP_PAYOUT_KEY)),
+            "retiring a key changes its caption, not its role or its tooltip"
+        );
+        // The user vocabulary retires its own wording, not the node's.
+        assert_eq!(
+            role_label_and_tip(KeyVocabulary::User, false, Purpose::TRANSFER, true),
+            (LABEL_TRANSFER_KEY_DISABLED, Some(TIP_USER_TRANSFER_KEY))
         );
     }
 
@@ -402,27 +545,32 @@ mod tests {
         let user = KeyVocabulary::User;
 
         assert_eq!(
-            role_label_and_tip(user, false, Purpose::TRANSFER),
-            ("Transfer".to_string(), Some(TIP_USER_TRANSFER_KEY)),
+            role_label_and_tip(user, false, Purpose::TRANSFER, false),
+            (LABEL_TRANSFER_KEY, Some(TIP_USER_TRANSFER_KEY)),
             "a user's transfer key is not a masternode payout address"
         );
         assert_eq!(
-            role_label_and_tip(user, false, Purpose::OWNER),
-            ("Owner".to_string(), Some(TIP_USER_OWNER_KEY))
+            role_label_and_tip(user, false, Purpose::OWNER, false),
+            (LABEL_OWNER_KEY, Some(TIP_USER_OWNER_KEY))
         );
         assert_eq!(
-            role_label_and_tip(user, false, Purpose::VOTING),
-            ("Voting".to_string(), Some(TIP_USER_VOTING_KEY))
+            role_label_and_tip(user, false, Purpose::VOTING, false),
+            (LABEL_VOTING_KEY, Some(TIP_USER_VOTING_KEY))
         );
         // Already identity-neutral, so it is shared verbatim.
         assert_eq!(
-            role_label_and_tip(user, false, Purpose::AUTHENTICATION),
-            role_label_and_tip(KeyVocabulary::Masternode, false, Purpose::AUTHENTICATION)
+            role_label_and_tip(user, false, Purpose::AUTHENTICATION, false),
+            role_label_and_tip(
+                KeyVocabulary::Masternode,
+                false,
+                Purpose::AUTHENTICATION,
+                false
+            )
         );
 
         // None of the node tooltips may reach a user identity.
         for purpose in [Purpose::TRANSFER, Purpose::OWNER, Purpose::VOTING] {
-            let (_, tip) = role_label_and_tip(user, false, purpose);
+            let (_, tip) = role_label_and_tip(user, false, purpose, false);
             let tip = tip.expect("every mapped role carries a tooltip");
             assert!(
                 ![TIP_OWNER_KEY, TIP_VOTING_KEY, TIP_PAYOUT_KEY].contains(&tip),

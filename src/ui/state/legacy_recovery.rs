@@ -13,11 +13,13 @@
 
 use dash_sdk::platform::Identifier;
 
-use crate::backend_task::BackendTask;
-use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::legacy_recovery_section::completion_message;
 
 /// Where one identity's recovery offer currently stands.
 enum FetchState {
@@ -92,6 +94,13 @@ impl LegacyRecoveryState {
         matches!(self.state, FetchState::Restoring(_))
     }
 
+    /// Whether the offer has anything to show this frame — for a host deciding
+    /// whether to draw the separators and spacing that frame it. The offer
+    /// itself renders nothing when this is `false`.
+    pub fn has_offer(&self) -> bool {
+        self.plan().is_some_and(|plan| !plan.is_empty())
+    }
+
     /// The restore task for `approved`, marking it in flight. Returns `None`
     /// unless there is a plan on offer and no restore already running.
     pub fn restore(&mut self, approved: Vec<RecoveryItem>) -> Option<BackendTask> {
@@ -145,48 +154,90 @@ impl LegacyRecoveryState {
         }
     }
 
-    /// Whether `error` can have come from this identity's own recovery flow.
+    /// Record that this offer's own check or restore of `identity_id` failed,
+    /// reporting whether the failure was in fact this offer's.
     ///
-    /// The variants are those `check_legacy_recovery` and
-    /// `recover_legacy_identity_data` document themselves as returning, scoped
-    /// to this identity wherever the variant names one. Lives here rather than on
-    /// a screen because every screen hosting an offer has to answer it the same
-    /// way — two screens disagreeing about whether a restore ended is worse than
-    /// either answer.
-    ///
-    /// Excluding the shared variants is not an option: a restore genuinely fails
-    /// with them, and ignoring those would strand it mid-flight with no way to
-    /// retry. So attribution is close, not exact — the same variant raised by
-    /// another task while a restore runs still ends it. Closing that needs the
-    /// task's identity to reach the screen, which `ScreenLike` does not carry.
-    pub fn owns_error(&self, error: &TaskError) -> bool {
-        match error {
-            TaskError::LegacyRecoveryNothingApproved
-            | TaskError::LegacyRecoveryIdentityChanged
-            | TaskError::IdentityNotFoundLocally
-            | TaskError::WalletStorageNotReady
-            | TaskError::SecretPromptUnavailable
-            | TaskError::SecretPromptCancelled => true,
-            TaskError::LegacyIdentityUnreadable { identity_id }
-            | TaskError::IdentityLoadInProgress { identity_id } => *identity_id == self.identity_id,
-            _ => false,
-        }
-    }
-
-    /// Record that an in-flight operation failed.
+    /// The attribution rule for a failure, and the twin of [`Self::offered`]:
+    /// errors reach whichever screen is visible when they arrive, so an
+    /// unrelated task's failure must leave this offer alone. Ending a restore
+    /// it never started would re-enable the Restore button while the original
+    /// task still holds the identity, and pressing it again would only report
+    /// that a load is already in progress. Every screen hosting an offer routes
+    /// its failures through here, so no two can disagree about whether a restore
+    /// ended.
     ///
     /// A failed restore returns to its offer, so a mistyped identity password
     /// can be corrected and Restore pressed again. A failed detection is
     /// terminal: retrying it would re-read the same unreadable row every frame.
-    /// Attribution is coarse — an unrelated task's error arriving while a check
-    /// is outstanding lands here too, which only hides an offer until the
-    /// identity is opened again.
-    pub fn failed(&mut self) {
+    pub fn failed_for(&mut self, identity_id: Identifier) -> bool {
+        if identity_id != self.identity_id {
+            return false;
+        }
         self.state = match std::mem::replace(&mut self.state, FetchState::Failed) {
             FetchState::Restoring(plan) => FetchState::Offered(plan),
             FetchState::Checking => FetchState::Failed,
             other => other,
         };
+        true
+    }
+
+    /// Route a finished backend task into this offer, reporting whether it was
+    /// *this* identity's own restore that finished.
+    ///
+    /// The whole of what a hosting screen owes a recovery result, so no host has
+    /// to restate it: adopting a detected plan, attributing a completion through
+    /// [`Self::completed_for`], and telling the user the outcome in the one
+    /// wording every host shares. `true` is the host's cue to re-read whatever
+    /// it derives from the identity record — the clone it persists, a key-role
+    /// presence line, a cached protection status — since only this identity's
+    /// own restore wrote that record.
+    ///
+    /// A result of any other kind, or a completion for another identity, is
+    /// ignored and reported as not this offer's: results reach whichever screen
+    /// is visible when they arrive, and a banner claiming these keys came back
+    /// when they did not is worse than silence.
+    pub fn absorb_result(
+        &mut self,
+        ctx: &egui::Context,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
+        match result {
+            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
+                self.offered(*identity_id, plan.clone());
+                false
+            }
+            BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                identity_id,
+                applied,
+                ..
+            } => {
+                if !self.completed_for(*identity_id) {
+                    return false;
+                }
+                MessageBanner::set_global(
+                    ctx,
+                    completion_message(!applied.is_empty()),
+                    MessageType::Success,
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Route a failing task's context into this offer, ending a recovery
+    /// operation only when the failure is that operation's own, and reporting
+    /// whether it was.
+    ///
+    /// The error itself is never claimed — `AppState`'s generic banner is how
+    /// the user gets to see it. This exists so every host attributes a failure
+    /// through the single rule in [`Self::failed_for`]: a host that ended a
+    /// restore on any error that merely landed while it was visible would
+    /// re-enable Restore while the original task still held the identity.
+    pub fn absorb_error(&mut self, context: &BackendTaskContext) -> bool {
+        context
+            .legacy_recovery_identity()
+            .is_some_and(|identity_id| self.failed_for(identity_id))
     }
 }
 
@@ -402,38 +453,6 @@ mod tests {
         );
     }
 
-    /// Task results are not screen-affine — any task's error reaches whichever
-    /// screen is visible — so an offer must only end on an error its own flow
-    /// could have raised. Otherwise an unrelated failure re-arms Restore while a
-    /// restore is still running, and it can be dispatched twice.
-    #[test]
-    fn only_errors_the_recovery_flow_can_raise_are_its_own() {
-        let state = LegacyRecoveryState::armed(identity(0x09));
-
-        assert!(state.owns_error(&TaskError::LegacyRecoveryNothingApproved));
-        assert!(state.owns_error(&TaskError::LegacyRecoveryIdentityChanged));
-        // Shared with other flows, but a restore genuinely fails with them:
-        // ignoring these would strand a failed restore with no way to retry.
-        assert!(state.owns_error(&TaskError::WalletStorageNotReady));
-        assert!(state.owns_error(&TaskError::SecretPromptCancelled));
-
-        assert!(
-            !state.owns_error(&TaskError::WalletStateInconsistent),
-            "an unrelated task's failure is not this offer's business"
-        );
-
-        // Identity-scoped where the variant names one.
-        assert!(state.owns_error(&TaskError::LegacyIdentityUnreadable {
-            identity_id: identity(0x09)
-        }));
-        assert!(
-            !state.owns_error(&TaskError::LegacyIdentityUnreadable {
-                identity_id: identity(0x0a)
-            }),
-            "another identity's unreadable row must not end this offer"
-        );
-    }
-
     /// A failed restore keeps its offer so the user can correct a mistyped
     /// password and press Restore again; a failed check gives up instead of
     /// re-reading an unreadable row every frame.
@@ -444,7 +463,7 @@ mod tests {
         restoring.offered(identity(0x07), plan());
         restoring.restore(vec![]).expect("restore");
 
-        restoring.failed();
+        assert!(restoring.failed_for(identity(0x07)));
 
         assert!(!restoring.is_restoring());
         assert!(
@@ -455,12 +474,37 @@ mod tests {
         let mut checking = LegacyRecoveryState::armed(identity(0x08));
         checking.ensure_checked().expect("dispatch");
 
-        checking.failed();
+        assert!(checking.failed_for(identity(0x08)));
 
         assert!(checking.plan().is_none());
         assert!(
             checking.ensure_checked().is_none(),
             "a failed check must not re-read the same row every frame",
+        );
+    }
+
+    /// Regression: any failing task routed to the visible screen used to end the
+    /// restore. Re-enabling Restore while the original task still holds the
+    /// identity only buys the user an "already in progress" error, so a failure
+    /// that is not this offer's own operation must change nothing.
+    #[test]
+    fn an_unrelated_failure_leaves_a_running_restore_alone() {
+        let mut state = LegacyRecoveryState::armed(identity(0x09));
+        state.ensure_checked().expect("dispatch");
+        state.offered(identity(0x09), plan());
+        state.restore(vec![]).expect("restore");
+
+        assert!(
+            !state.failed_for(identity(0x0A)),
+            "another identity's failure is not this offer's to adopt",
+        );
+        assert!(
+            state.is_restoring(),
+            "the restore is still in flight, so the button must stay disabled",
+        );
+        assert!(
+            state.restore(vec![]).is_none(),
+            "and it must not be dispatchable a second time",
         );
     }
 }

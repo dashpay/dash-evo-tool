@@ -7,16 +7,15 @@
 //! below exists to help. Keeping this list ungated is the point of it.
 
 use crate::app::AppAction;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::legacy_recovery_section::{LegacyRecoverySection, completion_message};
+use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -69,44 +68,19 @@ impl ScreenLike for KeysScreen {
         self.recovery.completed();
     }
 
+    /// Re-read the list when this identity's own restore lands. The offer
+    /// handles the rest — attribution, re-arming, and telling the user.
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        match backend_task_success_result {
-            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
-                self.recovery.offered(identity_id, plan);
-            }
-            BackendTaskSuccessResult::LegacyRecoveryCompleted {
-                identity_id,
-                ref applied,
-                ..
-            } => {
-                // Results reach whichever screen is visible when they arrive,
-                // so only this identity's own restore has anything to say here
-                // or wrote the record the list is rendered from.
-                if self.recovery.completed_for(identity_id) {
-                    self.reload_identity();
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        completion_message(!applied.is_empty()),
-                        MessageType::Success,
-                    );
-                }
-            }
-            _ => {}
+        if self
+            .recovery
+            .absorb_result(self.app_context.egui_ctx(), &backend_task_success_result)
+        {
+            self.reload_identity();
         }
     }
 
-    /// Return a recovery operation to its offer when the error was its own.
-    ///
-    /// Never claims the error (always `false`): the user has to see it, and
-    /// `AppState`'s generic banner is how it gets to them. This exists for the
-    /// typed error, which `display_message` does not receive — a restore that
-    /// only ends on *any* error would be re-armed mid-flight by an unrelated
-    /// task's failure and could then be dispatched twice.
-    fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if self.recovery.owns_error(error) {
-            self.recovery.failed();
-        }
-        false
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.recovery.absorb_error(context);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -265,27 +239,19 @@ impl KeysScreen {
         );
     }
 
-    /// Render the offer to restore this identity's keys from the previous
-    /// version's saved data, queueing what the user approved. Renders nothing
-    /// when detection found nothing, so it appears only where it has something
-    /// to say and retires itself once a restore lands.
+    /// Render the offer above the key list, queueing what the user approved.
+    /// The separator is this screen's own: only here does the offer sit above
+    /// something it must be told apart from.
     fn render_recovery_section(&mut self, ui: &mut egui::Ui) {
-        let restoring = self.recovery.is_restoring();
-        let Some(plan) = self.recovery.plan().filter(|plan| !plan.is_empty()) else {
+        if !self.recovery.has_offer() {
             return;
-        };
-        ui.add_space(8.0);
-        // `changed_value` hands back a reference into the response, so the
-        // approved set has to be cloned out before the response is dropped.
-        if let Some(approved) =
-            LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
-                .restoring(restoring)
-                .show(ui)
-                .inner
-                .changed_value()
-        {
-            self.pending_recovery_restore = Some(approved.clone());
         }
+        ui.add_space(8.0);
+        self.pending_recovery_restore = host_offer(
+            &self.recovery,
+            KeyVocabulary::from(self.identity.identity_type),
+            ui,
+        );
         ui.add_space(8.0);
         ui.separator();
     }

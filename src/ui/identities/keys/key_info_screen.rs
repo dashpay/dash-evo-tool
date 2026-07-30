@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -13,10 +13,10 @@ use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::legacy_recovery_section::{LegacyRecoverySection, completion_message};
+use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
@@ -150,8 +150,6 @@ enum ProtectionStage {
 }
 
 impl ScreenLike for KeyInfoScreen {
-    fn refresh(&mut self) {}
-
     /// Re-read the record this screen persists, because another writer may have
     /// changed it while the screen sat in the stack.
     ///
@@ -161,7 +159,14 @@ impl ScreenLike for KeyInfoScreen {
     /// clone taken when it opened, so a clone that missed a write puts the
     /// pre-write record back on the next key edit. The masternode detail view
     /// re-reads on arrival for the same reason.
-    fn refresh_on_arrival(&mut self) {
+    ///
+    /// This is the hook that has to carry it: `AppState` dispatches
+    /// `refresh_on_arrival` only to root screens, and this screen is always
+    /// pushed onto the screen stack. What reaches a pushed screen is `refresh` —
+    /// from `TaskResult::Refresh`, from `AppAction::Refresh`, and from the
+    /// `PopScreenAndRefresh` that reveals it. `refresh_on_arrival` defaults to
+    /// delegating here, so both hooks run this.
+    fn refresh(&mut self) {
         self.reload_identity();
         self.protection_status = None;
         self.recovery.completed();
@@ -226,34 +231,20 @@ impl ScreenLike for KeyInfoScreen {
                     MessageType::Success,
                 );
             }
-            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
-                self.recovery.offered(identity_id, plan);
-            }
-            BackendTaskSuccessResult::LegacyRecoveryCompleted {
-                identity_id,
-                ref applied,
-                ..
-            } => {
-                // A restore this screen never dispatched can land here, since
-                // results reach whichever screen is visible when they arrive.
-                // Only this identity's own restore wrote the record the clone
-                // below is refreshed from, re-sealed the keys the protection
-                // line reads, or has anything to say to this user.
-                if self.recovery.completed_for(identity_id) {
-                    // The clone this screen persists on every key edit is now
-                    // stale — writing it back would erase the keys just
-                    // restored. Restored keys also land in the vault, so the
-                    // protection line has to re-read it.
+            ref result => {
+                // The offer attributes the result, re-arms itself and reports
+                // the outcome; what is left is this screen's own. The clone it
+                // persists on every key edit is now stale — writing it back
+                // would erase the keys just restored — and restored keys land
+                // in the vault, so the protection line has to re-read it.
+                if self
+                    .recovery
+                    .absorb_result(self.app_context.egui_ctx(), result)
+                {
                     self.reload_identity();
                     self.protection_status = None;
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        completion_message(!applied.is_empty()),
-                        MessageType::Success,
-                    );
                 }
             }
-            _ => {}
         }
     }
 
@@ -267,21 +258,8 @@ impl ScreenLike for KeyInfoScreen {
         }
     }
 
-    /// End a recovery operation when the error was its own, leaving a failed
-    /// restore back on its offer so a mistyped identity password can be
-    /// corrected and Restore pressed again.
-    ///
-    /// Never claims the error (always `false`): the user has to see it, and
-    /// `AppState`'s generic banner is how it gets to them. Attribution lives on
-    /// [`LegacyRecoveryState::owns_error`] so this screen and the keys list —
-    /// the two hosts of the same offer — cannot disagree about whether a restore
-    /// ended. Ending it on *any* error would let an unrelated task's failure
-    /// re-arm Restore mid-flight.
-    fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if self.recovery.owns_error(error) {
-            self.recovery.failed();
-        }
-        false
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.recovery.absorb_error(context);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -315,28 +293,39 @@ impl ScreenLike for KeyInfoScreen {
 
                         // Purpose, in the same words the keys list and the
                         // restore offer use for this key — one key cannot be
-                        // called three things across three screens. The raw
-                        // purpose is Expert detail, appended there only.
+                        // called three things across three screens.
                         ui.label(RichText::new("Purpose:").strong().color(text_primary));
                         let (role, role_tip) = key_role_label(
                             KeyVocabulary::from(self.identity.identity_type),
                             &self.naming_target(),
                             &self.key,
                         );
-                        let role = if self
-                            .app_context
-                            .user_role()
-                            .at_least(crate::model::user_role::UserRole::Power)
-                        {
-                            format!("{role} key ({purpose:?})", purpose = self.key.purpose())
-                        } else {
-                            format!("{role} key")
-                        };
                         let purpose_label = ui.label(RichText::new(role).color(text_primary));
                         if let Some(tip) = role_tip {
                             purpose_label.on_hover_text(tip);
                         }
                         ui.end_row();
+
+                        // The raw Platform purpose is Expert diagnostics, so it
+                        // gets a labelled field of its own beside Security Level
+                        // and Type rather than being spliced into the caption
+                        // above, which has to stay one translatable phrase.
+                        if self
+                            .app_context
+                            .user_role()
+                            .at_least(crate::model::user_role::UserRole::Power)
+                        {
+                            ui.label(
+                                RichText::new("Platform purpose:")
+                                    .strong()
+                                    .color(text_primary),
+                            );
+                            ui.label(
+                                RichText::new(format!("{:?}", self.key.purpose()))
+                                    .color(text_primary),
+                            );
+                            ui.end_row();
+                        }
 
                         // Security Level
                         ui.label(
@@ -1013,28 +1002,21 @@ impl KeyInfoScreen {
         }
     }
 
-    /// Render the offer to restore this identity's keys from the previous
-    /// version's saved data, queueing the approved items for dispatch. Renders
-    /// nothing when detection found nothing, so the section appears only where
-    /// it has something to say and retires itself once a restore lands.
+    /// Render the offer, queueing the approved items for dispatch. The rule
+    /// above it is this screen's own: the offer arrives after the key's details
+    /// and has to be told apart from them.
     fn render_recovery_section(&mut self, ui: &mut egui::Ui) {
-        let restoring = self.recovery.is_restoring();
-        let Some(plan) = self.recovery.plan().filter(|plan| !plan.is_empty()) else {
+        if !self.recovery.has_offer() {
             return;
-        };
+        }
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
-        let approved =
-            LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
-                .restoring(restoring)
-                .show(ui)
-                .inner
-                .changed_value()
-                .clone();
-        if approved.is_some() {
-            self.pending_recovery_restore = approved;
-        }
+        self.pending_recovery_restore = host_offer(
+            &self.recovery,
+            KeyVocabulary::from(self.identity.identity_type),
+            ui,
+        );
     }
 
     /// Build a key-info screen with the add-protection confirmation already open
@@ -2000,6 +1982,57 @@ mod tests {
                 .private_keys
                 .has(&(MAIN, other_writer_key.id())),
             "another identity's completion must not be acted on here at all",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Regression: every failing backend task routed to the visible screen used
+    /// to end the restore, so an unrelated failure re-enabled the Restore button
+    /// while the original task still held the identity — pressing it again only
+    /// reported that a load was already in progress. Only this restore's own
+    /// failure may return the offer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_this_restores_own_failure_returns_it_to_its_offer() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen_id = on_screen.identity.id();
+        app_context
+            .insert_local_qualified_identity(&on_screen, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(on_screen, on_screen_key, None, &app_context);
+        screen
+            .recovery
+            .offered(on_screen_id, RecoveryPlan::default());
+        screen.recovery.restore(vec![]).expect("dispatch a restore");
+
+        let error = TaskError::IdentityNotFoundLocally;
+        for unrelated in [
+            BackendTaskContext::Other,
+            BackendTaskContext::TokenBalanceRefresh,
+            BackendTaskContext::LegacyRecoveryRestore(Identifier::from([0xA0; 32])),
+        ] {
+            screen.display_backend_task_error(&unrelated, &error);
+            screen.display_message("something else failed", MessageType::Error);
+            assert!(
+                screen.recovery.is_restoring(),
+                "{unrelated:?} is not this restore, so it must stay in flight",
+            );
+        }
+
+        screen.display_backend_task_error(
+            &BackendTaskContext::LegacyRecoveryRestore(on_screen_id),
+            &error,
+        );
+        assert!(
+            !screen.recovery.is_restoring(),
+            "this restore's own failure must return the offer so it can be retried",
         );
 
         app_context

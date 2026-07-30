@@ -592,6 +592,32 @@ impl SecretAccess {
         }
     }
 
+    /// Whether an already-verified identity object password still opens
+    /// `verify`, an existing `Protected` key of the identity as the vault holds
+    /// it NOW. No prompt.
+    ///
+    /// [`VerifiedIdentityPassword`] proves only what was true when the prompt
+    /// closed. A caller that seals under it later — after an await, or after a
+    /// dialog the user left open — must re-prove it against the current vault,
+    /// or an identity unprotected and re-protected under a different password
+    /// in between would end up needing two passwords for one identity.
+    ///
+    /// # Errors
+    ///
+    /// Only genuine vault failures. A password the vault rejects is `Ok(false)`,
+    /// not an error: the caller decides whether that is a retry or a refusal.
+    pub fn identity_object_password_still_opens(
+        &self,
+        verify: &SecretScope,
+        password: &VerifiedIdentityPassword,
+    ) -> Result<bool, TaskError> {
+        match self.decrypt_jit(verify, Some(&password.0)) {
+            Ok(_verified) => Ok(true),
+            Err(e) if is_wrong_passphrase(&e) => Ok(false),
+            Err(other) => Err(other),
+        }
+    }
+
     /// Seal a NEW identity key Tier-2 under an ALREADY-VERIFIED identity object
     /// password — the back half of [`Self::seal_new_identity_key`].
     /// No prompt and no re-verify: `password` came from a successful

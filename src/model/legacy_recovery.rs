@@ -110,9 +110,12 @@ pub enum ExclusionReason {
     LegacyEncryptedFormat,
     /// The legacy entry holds no key material to restore.
     NoMaterial,
-    /// The saved key does not correspond to a key this identity uses now: its
-    /// public half is not on the identity, has been retired, does not match the
-    /// saved private half, or names a wallet this install does not hold.
+    /// The saved key does not correspond to the key this identity uses now at
+    /// the saved slot: the identity publishes no such key there, has retired
+    /// it, the slot and the public half filed in it name different key ids, the
+    /// saved private half does not derive that public half (or cannot be
+    /// checked against it), or the entry names a wallet this install does not
+    /// hold.
     KeyNoLongerOnIdentity,
     /// The item rests on a voter or operator identity that only the legacy file
     /// names — a key held there, or the operator link itself. Nothing outside
@@ -277,7 +280,13 @@ pub fn compute_recovery_plan(
             _ => true,
         };
         let exclusion = if derivable {
-            key_exclusion(modern, &target, &public_key.identity_public_key, plaintext)
+            key_exclusion(
+                modern,
+                &target,
+                key_id,
+                &public_key.identity_public_key,
+                plaintext,
+            )
         } else {
             Some(ExclusionReason::KeyNoLongerOnIdentity)
         };
@@ -440,40 +449,52 @@ fn stale_descriptor(modern: &QualifiedIdentity, item: &RecoveryItem) -> Recovery
     }
 }
 
-/// Why a saved key cannot be treated as one of the identity's current keys, or
-/// `None` when it can.
+/// Why a saved key cannot be treated as the identity's current key at
+/// `key_id`, or `None` when it can.
 ///
-/// Two independent tests, both of which the manual "type the WIF" path this
-/// flow replaces already enforces: the saved private half must derive the
-/// public half it is stored with, and that public half must still be a live
-/// (not retired) key of the identity the target names. A key type this build
-/// cannot derive skips only the first test — a saved key is never rejected for
-/// being unverifiable in a way the identity itself can settle.
+/// Everything is judged against the one slot the entry occupies, because that
+/// is the only slot it can ever answer for: the entry is stored under the
+/// legacy `(target, key_id)` map key, and signing resolves private material by
+/// the on-chain key id it was asked for. Three tests, all of which the manual
+/// "type the WIF" path this flow replaces already enforces:
 ///
-/// The second test is only worth anything when the identity it reads comes
-/// from outside the legacy file, which is why [`reference_identity`] takes only
-/// the modern record.
+/// 1. the saved slot and the public half filed in it name the same key id;
+/// 2. the saved private half derives that public half — a derivation this build
+///    cannot perform is a rejection, not a pass, since nothing else here can
+///    settle the correspondence (a key type with an independent correspondence
+///    validator would be checked with that validator instead);
+/// 3. the identity the target names still publishes exactly that key, at that
+///    id, undisabled.
+///
+/// The third test is only worth anything when the identity it reads comes from
+/// outside the legacy file, which is why [`reference_identity`] takes only the
+/// modern record.
 fn key_exclusion(
     modern: &QualifiedIdentity,
     target: &PrivateKeyTarget,
+    key_id: KeyID,
     public_key: &IdentityPublicKey,
     plaintext: Option<&[u8; 32]>,
 ) -> Option<ExclusionReason> {
-    if let Some(bytes) = plaintext
-        && let Ok(derived) = public_key
-            .key_type()
-            .public_key_data_from_private_key_data(bytes, modern.network)
-        && derived.as_slice() != public_key.data().as_slice()
-    {
+    if public_key.id() != key_id {
         return Some(ExclusionReason::KeyNoLongerOnIdentity);
+    }
+    if let Some(bytes) = plaintext {
+        let derived = public_key
+            .key_type()
+            .public_key_data_from_private_key_data(bytes, modern.network);
+        match derived {
+            Ok(derived) if derived.as_slice() == public_key.data().as_slice() => {}
+            _ => return Some(ExclusionReason::KeyNoLongerOnIdentity),
+        }
     }
     let Some(identity) = reference_identity(modern, target) else {
         return Some(ExclusionReason::LinkedIdentityUnverified);
     };
-    let live = identity.public_keys().values().any(|on_identity| {
-        on_identity.key_type() == public_key.key_type()
-            && on_identity.data() == public_key.data()
-            && !on_identity.is_disabled()
+    let live = identity.public_keys().get(&key_id).is_some_and(|current| {
+        current.key_type() == public_key.key_type()
+            && current.data() == public_key.data()
+            && !current.is_disabled()
     });
     (!live).then_some(ExclusionReason::KeyNoLongerOnIdentity)
 }
@@ -1090,6 +1111,96 @@ mod tests {
         assert_eq!(
             excluded_items(&plan),
             vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
+        );
+    }
+
+    /// The saved slot and the public key filed in it must name the same key id.
+    /// Signing resolves private material by the on-chain key id it was asked
+    /// for, so an entry filed under one id holding another id's public half
+    /// would answer with a key that cannot sign for the slot it was found in.
+    #[test]
+    fn a_key_filed_under_a_slot_its_public_half_does_not_name_is_excluded() {
+        let published = test_key(1, Purpose::OWNER, 0xA3);
+        let mut modern = bare_identity(0x28);
+        publish_on(&mut modern.identity, &published.public);
+
+        // The pair is internally consistent; only the slot it sits in is wrong.
+        let mut legacy = bare_identity(0x28);
+        legacy.private_keys.private_keys.insert(
+            (M, 7),
+            (
+                QualifiedIdentityPublicKey::from(published.public.clone()),
+                published.clear(),
+            ),
+        );
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 7), ExclusionReason::KeyNoLongerOnIdentity)],
+        );
+    }
+
+    /// The identity uses this key material — but at a different key id. The
+    /// entry is stored under the legacy slot, and signing looks the private half
+    /// up by the id it was asked for, so accepting it would report a role as
+    /// held against a slot that resolves to nothing.
+    #[test]
+    fn a_key_live_only_under_a_different_key_id_is_excluded() {
+        let live = test_key(9, Purpose::OWNER, 0xA4);
+        let mut modern = bare_identity(0x29);
+        publish_on(&mut modern.identity, &live.public);
+
+        // The same material, saved as the identity's key 5. Nothing is live at 5.
+        let IdentityPublicKey::V0(mut v0) = live.public.clone();
+        v0.id = 5;
+        let mut legacy = bare_identity(0x29);
+        legacy.private_keys.private_keys.insert(
+            (M, 5),
+            (
+                QualifiedIdentityPublicKey::from(IdentityPublicKey::V0(v0)),
+                live.clear(),
+            ),
+        );
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 5), ExclusionReason::KeyNoLongerOnIdentity)],
+            "the identity's key set vouches for id 9, never for id 5",
+        );
+    }
+
+    /// A saved private half this build cannot turn into a public half is
+    /// unusable, whatever the public metadata filed with it says. An all-zero
+    /// ECDSA secret is the shape a truncated or wiped legacy blob leaves: it
+    /// derives nothing, so it can never sign.
+    #[test]
+    fn a_private_half_that_derives_nothing_is_excluded() {
+        let published = test_key(1, Purpose::OWNER, 0xA5);
+        let malformed = [0u8; 32];
+        assert!(
+            published
+                .public
+                .key_type()
+                .public_key_data_from_private_key_data(&malformed, Network::Testnet)
+                .is_err(),
+            "the premise: this secret genuinely has no public half to derive",
+        );
+
+        let mut modern = bare_identity(0x2A);
+        publish_on(&mut modern.identity, &published.public);
+        let mut legacy = bare_identity(0x2A);
+        hold(&mut legacy, M, &published, PrivateKeyData::Clear(malformed));
+
+        let plan = compute_recovery_plan(&modern, &legacy);
+
+        assert_eq!(
+            excluded_items(&plan),
+            vec![(key_item(M, 1), ExclusionReason::KeyNoLongerOnIdentity)],
+            "a key whose correspondence cannot be checked must not be restored",
         );
     }
 

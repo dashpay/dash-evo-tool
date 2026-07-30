@@ -625,11 +625,11 @@ impl MasternodeDetailView {
         let tier = self.protection_tier();
         ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
 
-        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen` —
-        // the real, interactive per-key screen with view/sign/seal actions —
-        // not the static read-only `KeysScreen` table. This mirrors
-        // `identities_screen.rs`: one button per key, each pushing
-        // `Screen::KeyInfoScreen`.
+        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`,
+        // the interactive per-key screen with view/sign/seal actions. This
+        // mirrors `identities_screen.rs` and the identity keys list: one button
+        // per key, each pushing `Screen::KeyInfoScreen` with the target the row
+        // found the material at.
         ui.add_space(4.0);
         ui.label(
             RichText::new("Manage keys")
@@ -730,7 +730,7 @@ impl MasternodeDetailView {
         let holding = self
             .identity
             .private_keys
-            .get_cloned_private_key_data_and_wallet_info(&(target, key.id()));
+            .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()));
         let identity = self.identity.clone();
         let key = key.clone();
         let screen = match mode {
@@ -741,7 +741,12 @@ impl MasternodeDetailView {
                 KeyInfoScreen::new_with_protection_prompt(identity, key, holding, &self.app_context)
             }
         };
-        AppAction::AddScreen(Screen::KeyInfoScreen(screen))
+        // Hand over where the material actually is. This row found `holding` at
+        // `target`; left to itself the screen re-derives the target from the
+        // key's purpose, which disagrees for a key filed on the voter identity
+        // whose purpose is not `VOTING` — it would name the key differently from
+        // the row just clicked and lose the private half on its own re-read.
+        AppAction::AddScreen(Screen::KeyInfoScreen(screen.with_target(target)))
     }
 
     /// Render the collapsible DPNS voting section (collapsed by default,

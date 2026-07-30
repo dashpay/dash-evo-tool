@@ -103,6 +103,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restore made from a key's page is reflected immediately instead of being
   offered again.
 
+  A key opened from a masternode's page keeps its name too. A voting key is the
+  node's voting key however it is recorded, and its own page now says so instead
+  of describing it as another kind of key, which also means the page no longer
+  reports such a key as missing while the list it was opened from shows it as
+  saved on this device.
+
   One known limitation, for a voting key stored on the identity itself rather
   than on a separate voting identity: the keys list and the key's page now agree
   on whether such a key is saved here, but saving or removing one by hand can

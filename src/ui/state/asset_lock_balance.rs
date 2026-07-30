@@ -12,6 +12,12 @@ const LOADING_VALIDATION_MESSAGE: &str =
 const FAILED_VALIDATION_MESSAGE: &str =
     "The available amount could not be checked. Use Retry and try again.";
 const ASSET_LOCK_REQUEST_DEADLINE: Duration = Duration::from_secs(15);
+/// Consecutive accepted replies whose observed composition failed to match the
+/// dispatched key before automatic re-dispatch stops. The first mismatch gets
+/// one automatic re-probe (it may be transient, e.g. an observation-deadline
+/// expiry under momentary lock contention); a persistent divergence then waits
+/// for a composition change or an explicit Retry.
+const MAX_CONSECUTIVE_MISMATCHED_REPLIES: u8 = 2;
 
 #[derive(Clone)]
 struct RequestKey {
@@ -53,6 +59,9 @@ struct FetchState {
     in_flight: Option<InFlight>,
     failed: Option<FailedRequest>,
     retry_available: bool,
+    /// Consecutive replies for the current composition whose observed inputs
+    /// did not match it — see [`MAX_CONSECUTIVE_MISMATCHED_REPLIES`].
+    mismatched_replies: u8,
 }
 
 /// Async fetch state for asset-lock maximum amounts, keyed by wallet.
@@ -67,7 +76,10 @@ impl AssetLockBalanceCache {
     ///
     /// A final-funds or eligible-UTXO-composition change supersedes unresolved
     /// work. Irrelevant generation churn keeps the existing request, while a
-    /// lower generation starts a fresh sequence after a counter reset.
+    /// lower generation starts a fresh sequence after a counter reset. Replies
+    /// that persistently cannot match the published composition stop automatic
+    /// re-dispatch ([`MAX_CONSECUTIVE_MISMATCHED_REPLIES`]) until the
+    /// composition changes or [`Self::invalidate_one`] re-arms the wallet.
     pub fn ensure_requested(
         &mut self,
         seed_hash: WalletSeedHash,
@@ -102,6 +114,7 @@ impl AssetLockBalanceCache {
             in_flight: None,
             failed: None,
             retry_available: false,
+            mismatched_replies: 0,
         });
         let generation_restarted = snapshot_generation < state.request_key.generation;
         let input_composition_changed =
@@ -115,6 +128,7 @@ impl AssetLockBalanceCache {
             state.in_flight = None;
             state.failed = None;
             state.retry_available = false;
+            state.mismatched_replies = 0;
             if generation_restarted {
                 state.loaded = None;
             }
@@ -149,6 +163,10 @@ impl AssetLockBalanceCache {
                     .key
                     .matches(snapshot_generation, &inputs, utxo_revision)
             })
+            // Composition-keyed (not generation-keyed) on purpose: SPV event
+            // churn republishes the same composition under new generations and
+            // must not re-arm a probe that cannot match it.
+            || state.mismatched_replies >= MAX_CONSECUTIVE_MISMATCHED_REPLIES
         {
             return None;
         }
@@ -199,12 +217,23 @@ impl AssetLockBalanceCache {
                 &in_flight_key.inputs,
                 in_flight_key.revision,
             ) {
+                let mismatched = observed_inputs != in_flight_key.inputs;
                 state.loaded = Some(LoadedQuote {
                     observed_inputs,
                     amount_duffs,
                 });
-                state.failed = None;
-                state.retry_available = is_partial;
+                if mismatched {
+                    state.mismatched_replies = state.mismatched_replies.saturating_add(1);
+                    if state.mismatched_replies >= MAX_CONSECUTIVE_MISMATCHED_REPLIES {
+                        // Surface the dead end as a failed check so the UI
+                        // offers Retry instead of an indefinite loading state.
+                        state.failed = Some(FailedRequest { key: in_flight_key });
+                    }
+                } else {
+                    state.mismatched_replies = 0;
+                    state.failed = None;
+                }
+                state.retry_available = is_partial || mismatched;
             }
         }
     }
@@ -660,6 +689,88 @@ mod tests {
         assert!(
             cache.should_offer_retry(&seed_hash),
             "the loading UI must expose Retry after a reply deadline expires"
+        );
+    }
+
+    /// Dispatch for `published` at generation 7 / revision 1 and reply with the
+    /// fail-closed empty marker, which can never match a non-empty composition.
+    fn mismatched_reply_round(
+        cache: &mut AssetLockBalanceCache,
+        seed_hash: [u8; 32],
+        published: &AssetLockInputState,
+    ) {
+        let request_id = cache
+            .ensure_requested(seed_hash, 7, published.clone(), 1)
+            .map(asset_lock_request_id)
+            .expect("mismatch round must dispatch");
+        cache.store(
+            seed_hash,
+            7,
+            request_id,
+            0,
+            AssetLockInputState::default(),
+            true,
+        );
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_stops_redispatching_after_persistent_composition_mismatch() {
+        let seed_hash = [0x38; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let published = input_state(6, 1_000);
+
+        mismatched_reply_round(&mut cache, seed_hash, &published);
+        // The second round's own dispatch `expect` asserts the first mismatch
+        // still allows one automatic re-probe.
+        mismatched_reply_round(&mut cache, seed_hash, &published);
+
+        assert!(
+            cache
+                .ensure_requested(seed_hash, 7, published.clone(), 1)
+                .is_none(),
+            "a second consecutive mismatched reply must stop the automatic re-dispatch loop"
+        );
+        assert!(
+            cache
+                .ensure_requested(seed_hash, 9, published.clone(), 1)
+                .is_none(),
+            "generation-only churn must not re-arm a suppressed mismatch"
+        );
+        assert!(
+            cache.is_failed(&seed_hash),
+            "a persistent mismatch must surface as a failed check, not eternal loading"
+        );
+        assert!(
+            cache.should_offer_retry(&seed_hash),
+            "the suppressed state must expose an explicit Retry"
+        );
+        assert!(
+            cache
+                .ensure_requested(seed_hash, 10, input_state(7, 900), 2)
+                .is_some(),
+            "a real composition change must re-arm the probe"
+        );
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_retry_rearms_a_mismatch_suppressed_wallet() {
+        let seed_hash = [0x39; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let published = input_state(8, 1_000);
+
+        mismatched_reply_round(&mut cache, seed_hash, &published);
+        mismatched_reply_round(&mut cache, seed_hash, &published);
+        assert!(
+            cache
+                .ensure_requested(seed_hash, 7, published.clone(), 1)
+                .is_none(),
+            "the mismatch loop must be suppressed before Retry"
+        );
+
+        cache.invalidate_one(&seed_hash);
+        assert!(
+            cache.ensure_requested(seed_hash, 7, published, 1).is_some(),
+            "Retry (invalidate_one) must re-arm a mismatch-suppressed wallet"
         );
     }
 

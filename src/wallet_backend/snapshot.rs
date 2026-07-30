@@ -66,6 +66,9 @@ use crate::model::wallet::{TransactionStatus, WalletSeedHash, WalletTransaction}
 /// DET's `WalletSeedHash`. Mirrors the alias in [`super`].
 type WalletId = [u8; 32];
 
+/// Mirrors upstream's private `MAX_STANDARD_TX_INPUTS` (key-wallet
+/// `transaction_builder.rs`). If upstream ever lowers its cap below this, every
+/// full observation batch fails fatally with `TooManyInputs` — re-align then.
 const ASSET_LOCK_INPUT_OBSERVATION_BATCH_SIZE: usize = 500;
 static ASSET_LOCK_INPUT_OBSERVATION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -289,6 +292,13 @@ fn observe_asset_lock_inputs_locked(
                 dry_run_account.release_reservation(&transaction);
             }
             Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {}
+            Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
+            | Err(BuilderError::InsufficientFunds { .. }) => {
+                // A sub-dust batch is an ordinary near-drained state, not a
+                // failure; its eligible candidates still shape the real
+                // builder's cross-batch choices, so they stay in the key.
+                observed.extend(batch.iter().map(|utxo| (utxo.outpoint, utxo.value())));
+            }
             Err(source) => return Err(source),
         }
     }
@@ -1499,6 +1509,67 @@ mod tests {
         .expect("observation")
         .expect("an unbounded observation must complete");
         assert_eq!(complete.final_funds_duffs, 1_000_000);
+    }
+
+    #[test]
+    fn asset_lock_observation_treats_a_sub_dust_balance_as_observed_not_failed() {
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+
+        const CURRENT_HEIGHT: u32 = 200;
+        // At or below the 546-duff network dust threshold the drain selection
+        // reports insufficient funds — an everyday near-drained wallet state.
+        const SUB_DUST_DUFFS: u64 = 300;
+
+        let wallet = UpstreamWallet::from_seed_bytes(
+            [0x55; 64],
+            Network::Testnet,
+            WalletAccountCreationOptions::Default,
+        )
+        .expect("upstream wallet");
+        let account = wallet.get_bip44_account(0).expect("BIP44 account");
+        let mut info = ManagedWalletInfo::from_wallet(&wallet, CURRENT_HEIGHT);
+        let managed_account = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed account");
+        let funding_address = managed_account
+            .next_receive_address(Some(&account.account_xpub), true)
+            .expect("funding address");
+        let outpoint = OutPoint::new(Txid::from_byte_array([0x56; 32]), 0);
+        let mut utxo = Utxo::new(
+            outpoint,
+            TxOut {
+                value: SUB_DUST_DUFFS,
+                script_pubkey: funding_address.script_pubkey(),
+            },
+            funding_address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        managed_account.utxos.insert(outpoint, utxo);
+
+        let observed = asset_lock_final_input_state(
+            managed_account,
+            account,
+            CURRENT_HEIGHT,
+            &ProbeDeadline::unbounded(),
+        )
+        .expect("a sub-dust balance is an ordinary wallet state, not an observation failure")
+        .expect("an unbounded observation must complete");
+
+        assert_eq!(
+            observed.final_funds_duffs, SUB_DUST_DUFFS,
+            "the eligible sub-dust input must stay in the composition key"
+        );
+        assert_ne!(
+            observed,
+            AssetLockInputState::default(),
+            "a sub-dust composition must stay distinct from the fail-closed empty marker"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

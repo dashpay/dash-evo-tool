@@ -23,6 +23,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::masternodes::{KeyVocabulary, key_role_label};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -315,11 +316,29 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(RichText::new(format!("{}", self.key.id())).color(text_primary));
                         ui.end_row();
 
-                        // Purpose
+                        // Purpose, in the same words the keys list and the
+                        // restore offer use for this key — one key cannot be
+                        // called three things across three screens. The raw
+                        // purpose is Expert detail, appended there only.
                         ui.label(RichText::new("Purpose:").strong().color(text_primary));
-                        ui.label(
-                            RichText::new(format!("{:?}", self.key.purpose())).color(text_primary),
+                        let (role, role_tip) = key_role_label(
+                            KeyVocabulary::from(self.identity.identity_type),
+                            &self.target(),
+                            &self.key,
                         );
+                        let role = if self
+                            .app_context
+                            .user_role()
+                            .at_least(crate::model::user_role::UserRole::Power)
+                        {
+                            format!("{role} key ({purpose:?})", purpose = self.key.purpose())
+                        } else {
+                            format!("{role} key")
+                        };
+                        let purpose_label = ui.label(RichText::new(role).color(text_primary));
+                        if let Some(tip) = role_tip {
+                            purpose_label.on_hover_text(tip);
+                        }
                         ui.end_row();
 
                         // Security Level

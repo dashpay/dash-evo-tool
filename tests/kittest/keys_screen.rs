@@ -902,3 +902,76 @@ fn returning_from_key_info_refreshes_both_the_keys_and_the_offer() {
         );
     });
 }
+
+/// The contested case both reviewers found in the two-candidate lookup: a main
+/// identity holding a `Purpose::VOTING` key at id N, and a linked voting
+/// identity holding its own, different key at the same id N.
+///
+/// An occupied slot proves nothing about whose material is in it. Falling back
+/// to the voter slot on key-id alone would report the main identity's key as
+/// held — on the strength of a different key's private half — and hand that
+/// material to Key Info. The row must be about the key the user clicked.
+#[test]
+fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+
+        // Main identity: a voting-purpose key at id 0, private half NOT held.
+        let main_key = key(0, Purpose::VOTING);
+        let identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x41u8; 32]),
+            BTreeMap::from([(main_key.id(), main_key.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("main identity");
+
+        // Voter identity: a *different* key, also at id 0, private half held.
+        let voter_key = key(0, Purpose::AUTHENTICATION);
+        let voter_identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x42u8; 32]),
+            BTreeMap::from([(voter_key.id(), voter_key.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("voter identity");
+
+        let qualified = QualifiedIdentity {
+            identity,
+            associated_voter_identity: Some((voter_identity, voter_key.clone())),
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: Some("id-collision".to_string()),
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::from([(
+                    (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+                    (
+                        QualifiedIdentityPublicKey::from(voter_key),
+                        PrivateKeyData::Clear([0x42; 32]),
+                    ),
+                )]),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+
+        let (harness, _) = harness_for(KeysScreen::new(qualified, &app_context));
+
+        // Two rows: the main identity's voting key (not held) and the voter
+        // identity's own key (held). Exactly one of each disclosure.
+        assert_eq!(
+            harness.query_all_by_label(NOT_HELD).count(),
+            1,
+            "the main identity's voting key holds no private material of its own"
+        );
+        assert_eq!(
+            harness.query_all_by_label(HELD).count(),
+            1,
+            "only the voter identity's own key is actually held"
+        );
+    });
+}

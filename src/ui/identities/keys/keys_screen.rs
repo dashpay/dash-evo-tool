@@ -24,7 +24,6 @@ use crate::ui::masternodes::{KeyVocabulary, identity_keys, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
-use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
@@ -209,7 +208,7 @@ impl KeysScreen {
         let vocabulary = KeyVocabulary::from(self.identity.identity_type);
         let labels = manage_keys_labels(vocabulary, &keys);
         for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
-            let filed_at = self.filed_at(&target, key.id());
+            let filed_at = self.filed_at(&target, &key);
             let held = if filed_at.is_some() { HELD } else { NOT_HELD };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -259,19 +258,27 @@ impl KeysScreen {
     /// without moving anything. Reconciling the two conventions is a migration,
     /// tracked separately.
     ///
-    /// A presence check per candidate, not a fetch: cloning the entry copies the
-    /// raw private key out of the vault unscrubbed, and this runs every frame for
-    /// every key.
-    fn filed_at(&self, structural: &PrivateKeyTarget, key_id: KeyID) -> Option<PrivateKeyTarget> {
-        let derived: PrivateKeyTarget = self
-            .identity
-            .identity
-            .public_keys()
-            .get(&key_id)
-            .map_or_else(|| structural.clone(), |key| key.purpose().into());
-        [structural.clone(), derived]
-            .into_iter()
-            .find(|candidate| self.identity.private_keys.has(&(candidate.clone(), key_id)))
+    /// Each candidate has to hold *this* public key, not merely have its slot
+    /// filled: a voter identity's own key can share a key id with a main-identity
+    /// key, so an occupied slot proves nothing about whose material is in it.
+    /// Comparing the stored public key is what keeps the row — and the private
+    /// material it hands to Key Info — about the key the user clicked.
+    ///
+    /// Reads the stored public half only, never the private one: fetching the
+    /// entry would clone the raw private key out of the vault unscrubbed, and
+    /// this runs every frame for every key.
+    fn filed_at(
+        &self,
+        structural: &PrivateKeyTarget,
+        key: &IdentityPublicKey,
+    ) -> Option<PrivateKeyTarget> {
+        let derived: PrivateKeyTarget = key.purpose().into();
+        [structural.clone(), derived].into_iter().find(|candidate| {
+            self.identity
+                .private_keys
+                .public_key_for(&(candidate.clone(), key.id()))
+                .is_some_and(|stored| stored.identity_public_key == *key)
+        })
     }
 
     /// The on-chain specifics of one key, for the Expert view. Everyday view

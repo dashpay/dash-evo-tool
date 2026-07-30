@@ -76,9 +76,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the check is running, the amount field shows "Checking the available
   amount…"; if it fails, "The available amount could not be checked."
   appears with a "Retry available amount check" button, and you can still
-  switch to a different funding method at any point. The upstream wallet
-  search-complexity risk that previously required a bounded client-side check
-  has been fixed at its source.
+  switch to a different funding method at any point.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

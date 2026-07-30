@@ -440,6 +440,10 @@ every screen arrival. Consequences:
   (`begin_identity_load`), the same mutex the load/merge paths use — a
   concurrent load, merge-load, or second recovery of the same identity gets
   `IdentityLoadInProgress`. The claim spans read → compute → seal → write.
+- **Exclusion against every other writer:** the load claim covers only the
+  paths that take it, which is neither the ordinary writers nor the protection
+  tier migrations. The write section additionally holds
+  `AppContext::identity_record_lock` — see §10.13.
 - **TOCTOU across the preview gap** is contained by the allowlist-intersection
   rule (§3.4): re-additions become stale-skips, removals-after-preview are
   never merged (not approved), and the additive `or_insert` apply makes even a
@@ -748,3 +752,43 @@ The kittest was replaced by lib tests over a real file-backed `data.db`
 (`only_a_legacy_identity_row_for_this_network_arms_the_check`), which assert the
 premise directly — the file exists and the gate still says no — and cover the
 network scoping a file check could never have.
+
+### 10.13 The write section needs a guard the load claim does not provide
+
+§10.6 leans on the load claim plus re-reading to make the write safe. Neither
+covers the writers that actually contend for the record. The claim is taken by
+the load paths and by recovery, and nothing else: a refresh, a top-up, a
+transfer, a DPNS registration and a key edit all persist a whole
+`QualifiedIdentity` snapshot through `update_local_qualified_identity` without
+it. Re-reading closes the *prompt* window, but the merge's own read → seal →
+write is still three steps, and another writer's snapshot landing inside them
+erases the restored keys with no error anywhere. `migration_run` does not help:
+the ordinary writers do not take it either.
+
+Separately, `VerifiedIdentityPassword` proves what the vault held when the
+prompt closed. The tier migrations (`ProtectIdentityKeys` /
+`UnprotectIdentityKeys`) take neither the claim nor `migration_run`, so an
+identity unprotected and re-protected under a *new* password while the prompt
+sat open still reads as protected at write time — and §3.6's branch would seal
+the recovered keys under the old one, leaving one identity needing two
+passwords.
+
+Shipped: `AppContext::identity_record_lock(identity_id)` — a per-identity guard
+taken inside `insert_local_qualified_identity`,
+`update_local_qualified_identity`, `set_identity_alias`,
+`delete_local_qualified_identity` and both tier migrations, so coverage does not
+depend on remembering it at each of ~20 call sites. `persist_legacy_recovery`
+holds it for its whole read → merge → seal → write span and writes through
+`write_local_qualified_identity_locked`. Under that guard it re-proves the
+verified password against the protected scope *as it stands then*
+(`SecretAccess::identity_object_password_still_opens`), refusing with
+`LegacyRecoveryIdentityChanged` when it no longer opens.
+
+Lock order is `migration_run` → record guard, matching the delete path; nothing
+is held across an `.await`, and the password prompt still runs entirely outside
+both, so a UI thread that waits on the guard can never be waiting on itself.
+The one whole-record write that does *not* take it is `persist_identity_blob`,
+the eager vault migration inside the read path — a caller already holding the
+guard reaches it, so taking it there would self-deadlock. That write is
+idempotent (it replaces plaintext with vault placeholders in the blob it just
+read) and carries a TODO to fold it into the guarded path.

@@ -187,7 +187,11 @@ A crash cannot strand a key because nothing is ever in motion.
   with `TaskError::IdentityKeyMismatch`. This was the last place trusting a
   caller-supplied placement; the callers still carry `(target, key_id)` fields,
   but they are now checked rather than believed. A key type this build cannot
-  derive a public half for skips the check, as `key_exclusion` does.
+  derive a public half for skips the check, as `key_exclusion` does. The
+  chokepoint also carries §3's fallthrough: the caller names its placement from
+  the synchronous approximation, which cannot see a dead vault label, so the
+  fetch serves the first placement of the same key whose label is live — a dead
+  placeholder cannot shadow a live sibling on the Show/Sign path.
 * **Proof generation cannot use a locally-added, not-yet-broadcast key**
   (`backend_task/grovestark.rs`, marked `TODO(grovestark-unpublished-key)`): the
   requested key id is resolved against the identity's published keys before the
@@ -247,5 +251,6 @@ and the UI rows the screens that consume them.
 | `a_vault_secret_that_is_not_the_recorded_key_is_refused` | vault | §8's third bullet: RED against the unchecked chokepoint, which signed with the planted key |
 | `a_placement_the_identity_does_not_record_is_refused` | vault | the other half of it — an orphaned label is not a key of this identity |
 | `a_secret_matching_its_recorded_key_still_resolves` | vault | the check costs a healthy install nothing |
+| `a_dead_placeholder_at_the_named_placement_falls_through_to_a_live_sibling` | vault | §3's fallthrough at the named-target chokepoint: Show/Sign reach a live sibling behind a dead placeholder |
 
 [`PROBE_ORDER`]: ../../../src/model/qualified_identity/key_placement.rs

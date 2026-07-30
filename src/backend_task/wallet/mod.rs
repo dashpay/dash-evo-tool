@@ -114,6 +114,14 @@ impl AppContext {
     /// skips the check rather than failing it, as the legacy-recovery key check
     /// does: unverifiable is not wrong.
     ///
+    /// The caller names its placement synchronously, without opening the
+    /// vault, so it cannot see a dead placeholder — an `InVault` entry whose
+    /// vault label holds nothing — sitting beside a sibling placement that
+    /// files the same key with the live secret. The fetch therefore serves the
+    /// first such placement whose label is actually present, starting from the
+    /// named one, and falls back to the named placement when every label is
+    /// absent so an all-dead key still fails with its honest error.
+    ///
     /// # Errors
     ///
     /// [`TaskError::IdentityKeyMissing`] when the identity is not stored on this
@@ -127,22 +135,39 @@ impl AppContext {
         key_id: KeyID,
         f: impl FnOnce(SecretKey) -> Result<T, TaskError>,
     ) -> Result<T, TaskError> {
-        let recorded = self
+        let identity = self
             .get_local_qualified_identity(&identity_id)?
-            .and_then(|identity| {
-                identity
-                    .private_keys
-                    .public_key_for(&(target.clone(), key_id))
-                    .map(|public_key| public_key.identity_public_key.clone())
-            })
             .ok_or(TaskError::IdentityKeyMissing)?;
+        let recorded = identity
+            .private_keys
+            .public_key_for(&(target.clone(), key_id))
+            .map(|public_key| public_key.identity_public_key.clone())
+            .ok_or(TaskError::IdentityKeyMissing)?;
+        let backend = self.wallet_backend()?;
+        // Serve the first placement of this key whose vault label is live,
+        // named placement first. A liveness probe, not a fetch — the same
+        // probe-then-act shape `IdentityKeyView::store` documents, bounded by
+        // the same store-level serialization.
+        let named = (target, key_id);
+        let view =
+            crate::wallet_backend::IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        let (target, key_id) = std::iter::once(named.clone())
+            .chain(identity.private_keys.candidates(&recorded).filter(|placement| {
+                *placement != named && identity.private_keys.is_in_vault(placement)
+            }))
+            .find(|(target, key_id)| {
+                matches!(
+                    view.scheme(target, *key_id),
+                    Ok(scheme) if scheme != crate::wallet_backend::secret_seam::SecretScheme::Absent
+                )
+            })
+            .unwrap_or(named);
         let network = self.network;
         let scope = crate::wallet_backend::SecretScope::IdentityKey {
             identity_id: identity_id.to_buffer(),
             target,
             key_id,
         };
-        let backend = self.wallet_backend()?;
         backend
             .secret_access()
             .with_secret(&scope, |plaintext| {
@@ -631,5 +656,81 @@ mod tests {
             !reached_key.load(Ordering::SeqCst),
             "an orphaned secret must never reach the caller's closure"
         );
+    }
+
+    /// The caller names its placement from the synchronous approximation, which
+    /// cannot see whether a vault label is live. A dead placeholder — an
+    /// `InVault` entry whose label holds nothing — can therefore be named while
+    /// a sibling placement files the same key with the live secret; Show and
+    /// Sign must reach those bytes, not fail on the guess.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_dead_placeholder_at_the_named_placement_falls_through_to_a_live_sibling() {
+        let fixture = wallet_fixture().await;
+        let secret = [0x27; 32];
+        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 7,
+            purpose: Purpose::VOTING,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: BinaryData::new(
+                KeyType::ECDSA_SECP256K1
+                    .public_key_data_from_private_key_data(&secret, Network::Testnet)
+                    .expect("derive the public half"),
+            ),
+            disabled_at: None,
+        });
+        // One key, filed `InVault` under both stores — the dual-filed shape a
+        // blob written under two conventions carries.
+        let mut private_keys = KeyStorage::default();
+        for target in [MAIN, VOTER] {
+            private_keys.insert_at(
+                (target, 7),
+                (
+                    QualifiedIdentityPublicKey::from(public_key.clone()),
+                    PrivateKeyData::InVault,
+                ),
+            );
+        }
+        let qi = QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([0x93; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        fixture
+            .ctx
+            .insert_local_qualified_identity(&qi, &None)
+            .expect("store the identity");
+        let identity_id = qi.identity.id();
+        // The live secret sits only under the Voter label; Main stays a dead
+        // placeholder, the state a blob restored without its vault is in.
+        let backend = fixture.ctx.wallet_backend().expect("backend");
+        IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer())
+            .store(&VOTER, 7, &secret)
+            .expect("file the live secret under the sibling placement");
+
+        let bytes = fixture
+            .ctx
+            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.secret_bytes()))
+            .await
+            .expect("the sibling placement's live bytes must be served");
+
+        assert_eq!(bytes, secret, "the key's own bytes come back");
     }
 }

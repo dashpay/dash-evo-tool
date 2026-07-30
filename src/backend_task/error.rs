@@ -470,10 +470,12 @@ pub enum TaskError {
     /// The `(placement, key id)` slot a write would take is already held by a
     /// *different* key. The voter and main id spaces overlap, so two keys can
     /// share an id; the write is refused because the occupant's private half is
-    /// frequently the only copy in existence. Fieldless: no upstream error and,
-    /// by design, never any secret.
+    /// frequently the only copy in existence. The remedy is removing that
+    /// locally saved half — a refresh updates published keys but evicts no
+    /// local private half. Fieldless: no upstream error and, by design, never
+    /// any secret.
     #[error(
-        "A different key of this identity is already saved under this key's number. Refresh this identity to update its keys, then try adding it again."
+        "A different key of this identity is already saved on this device under the number this key would use. Open that key in this identity's key list, remove its saved private key from this device, then try again."
     )]
     IdentityKeySlotOccupied,
 

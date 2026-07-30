@@ -1036,6 +1036,25 @@ mod tests {
         );
     }
 
+    /// The refusal's remedy must be one the user can actually perform. The
+    /// occupant is a *locally saved* private half, so removing it is the exit;
+    /// a refresh updates published keys but evicts no local private half — and
+    /// the backend add path has refetched the identity moments before this
+    /// refusal fires, so advising a refresh there sends the user around a loop
+    /// that recomputes the identical collision.
+    #[test]
+    fn the_occupied_slot_refusal_names_a_performable_remedy() {
+        let message = TaskError::IdentityKeySlotOccupied.to_string();
+        assert!(
+            message.contains("remove its saved private key"),
+            "the remedy is removing the occupant's local private half, got: {message}"
+        );
+        assert!(
+            !message.contains("Refresh"),
+            "refreshing cannot evict the occupying private half, got: {message}"
+        );
+    }
+
     /// Re-entering the same key at its own slot replaces it. The paste path
     /// relies on this to let a user correct a key already saved, rather than
     /// growing a second copy under another store.

@@ -57,9 +57,11 @@ impl AppContext {
         public_key_to_add
             .identity_public_key
             .set_id(qualified_identity.identity.get_public_key_max_id() + 1);
-        // The key was just minted at `max_id + 1`, so its slot is free by
-        // construction; a refusal here means the identity's own record moved
-        // under us and the write must not proceed.
+        // `max_id` comes from the freshly published record, but the slot is
+        // checked against the LOCAL store: an entry saved here but never
+        // broadcast (e.g. restored from an old blob) can hold `max_id + 1`,
+        // and it may be a misfiled key's only private half — so refuse rather
+        // than overwrite.
         qualified_identity.private_keys.insert_non_encrypted(
             (
                 PrivateKeyOnMainIdentity,

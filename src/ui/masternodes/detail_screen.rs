@@ -27,9 +27,7 @@ use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
-use crate::model::qualified_identity::{
-    IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
-};
+use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -640,7 +638,7 @@ impl MasternodeDetailView {
         let keys = identity_keys(&self.identity);
         // This page only ever shows masternode and evonode identities.
         let labels = manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
-        for ((_target, key), (label, tip)) in keys.into_iter().zip(labels) {
+        for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
             let button = ui.button(format!("{label} ›"));
             let button = match tip {
                 Some(tip) => button.clickable_tooltip(tip),
@@ -656,7 +654,7 @@ impl MasternodeDetailView {
         // lives inside `KeyInfoScreen`. Open the first held key so the user
         // lands directly on the interactive seal flow.
         if tier.offers_add_protection()
-            && let Some((_target, key)) = self.first_protectable_key()
+            && let Some(key) = self.first_protectable_key()
             && ui.button("Add password protection…").clicked()
         {
             action = Some(self.open_key_info_with_protection_prompt(&key));
@@ -699,12 +697,11 @@ impl MasternodeDetailView {
     /// checks presence, so no raw key bytes are cloned out of the vault here —
     /// unlike `open_key_info_with_mode`, which needs the actual secret and thus
     /// pays for the clone.
-    fn first_protectable_key(
-        &self,
-    ) -> Option<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
+    fn first_protectable_key(&self) -> Option<dash_sdk::platform::IdentityPublicKey> {
         identity_keys(&self.identity)
             .into_iter()
             .find(|(_, key)| self.identity.private_keys.candidates(key).next().is_some())
+            .map(|(_, key)| key)
     }
 
     /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,
@@ -1128,6 +1125,7 @@ mod tests {
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
         use crate::model::qualified_identity::IdentityStatus;
+        use crate::model::qualified_identity::PrivateKeyTarget;
         use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
         use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
         use crate::utils::egui_mpsc::SenderAsync;

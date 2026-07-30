@@ -4,7 +4,6 @@
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dapi_client::DapiClientError;
 use dash_sdk::dapi_client::transport::TransportError;
@@ -234,12 +233,6 @@ pub enum TaskError {
             dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError,
         >,
     },
-
-    /// The non-broadcasting asset-lock builder probe exceeded its bounded wait.
-    #[error(
-        "We couldn't work out the maximum amount you can send from this wallet in time. Try sending a smaller amount, or wait a few minutes and try again."
-    )]
-    AssetLockMaxAmountTimedOut { seed_hash: WalletSeedHash },
 
     /// The non-broadcasting asset-lock builder probe could not determine a safe Max.
     #[error(

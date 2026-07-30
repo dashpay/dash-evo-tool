@@ -632,10 +632,14 @@ impl WalletSendScreen {
     }
 
     fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
-        self.asset_lock_balance.get(seed_hash).ok_or_else(|| {
-            "Your wallet's available amount is still being checked. Wait a moment and try again."
-                .to_string()
-        })
+        let (_, final_funds_duffs, utxo_revision) =
+            self.app_context.asset_lock_probe_snapshot(seed_hash);
+        self.asset_lock_balance
+            .get_current(seed_hash, final_funds_duffs, utxo_revision)
+            .ok_or_else(|| {
+                "Your wallet's available amount is still being checked. Wait a moment and try again."
+                    .to_string()
+            })
     }
 
     fn request_asset_lock_max_amount(&mut self) -> Option<BackendTask> {
@@ -648,10 +652,14 @@ impl WalletSendScreen {
             return None;
         }
         let seed_hash = self.selected_wallet_seed_hash?;
-        let (snapshot_generation, final_funds_duffs) =
+        let (snapshot_generation, final_funds_duffs, utxo_revision) =
             self.app_context.asset_lock_probe_snapshot(&seed_hash);
-        self.asset_lock_balance
-            .ensure_requested(seed_hash, snapshot_generation, final_funds_duffs)
+        self.asset_lock_balance.ensure_requested(
+            seed_hash,
+            snapshot_generation,
+            final_funds_duffs,
+            utxo_revision,
+        )
     }
 
     fn render_asset_lock_balance_status(&mut self, ui: &mut Ui) {
@@ -3316,12 +3324,13 @@ impl WalletSendScreen {
         seed_hash: WalletSeedHash,
         amount_duffs: u64,
     ) {
-        let (snapshot_generation, final_funds_duffs) =
+        let (snapshot_generation, final_funds_duffs, utxo_revision) =
             self.app_context.asset_lock_probe_snapshot(&seed_hash);
         let _ = self.asset_lock_balance.ensure_requested(
             seed_hash,
             snapshot_generation,
             final_funds_duffs,
+            utxo_revision,
         );
         self.asset_lock_balance
             .store(seed_hash, snapshot_generation, amount_duffs);
@@ -4479,11 +4488,7 @@ impl ScreenLike for WalletSendScreen {
         self.asset_lock_balance.invalidate();
     }
 
-    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
-        if matches!(error, TaskError::AssetLockMaxAmountTimedOut { .. }) {
-            MessageBanner::set_global(self.app_context.egui_ctx(), error, MessageType::Error)
-                .with_details(error);
-        }
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if let Some((seed_hash, snapshot_generation)) = context.asset_lock_max_amount_request() {
             self.asset_lock_balance
                 .mark_loading_failed(&seed_hash, snapshot_generation);
@@ -4607,12 +4612,17 @@ mod tests {
             .estimate_shield_from_core_fees_duffs();
         assert!(BUILDER_MAX_DUFFS > platform_fee_duffs);
 
-        let (snapshot_generation, final_funds_duffs) =
+        let (snapshot_generation, final_funds_duffs, utxo_revision) =
             screen.app_context.asset_lock_probe_snapshot(&seed_hash);
         assert!(
             screen
                 .asset_lock_balance
-                .ensure_requested(seed_hash, snapshot_generation, final_funds_duffs)
+                .ensure_requested(
+                    seed_hash,
+                    snapshot_generation,
+                    final_funds_duffs,
+                    utxo_revision,
+                )
                 .is_some()
         );
         screen
@@ -4745,6 +4755,40 @@ mod tests {
         assert!(
             error.starts_with("You can transfer up to "),
             "Platform validation should report the builder-derived ceiling: {error}"
+        );
+    }
+
+    #[test]
+    fn core_asset_lock_validation_rejects_quote_for_stale_utxo_composition() {
+        const STALE_MAX_DUFFS: u64 = 10_000_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let (_, current_final_funds, current_revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let stale_revision = current_revision.saturating_add(1);
+
+        assert!(
+            screen
+                .asset_lock_balance
+                .ensure_requested(seed_hash, 7, current_final_funds, stale_revision)
+                .is_some()
+        );
+        screen
+            .asset_lock_balance
+            .store(seed_hash, 7, STALE_MAX_DUFFS);
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+        screen.amount = Some(Amount::dash_from_duffs(1));
+
+        let error = screen
+            .send_core_to_shielded(seed_hash)
+            .expect_err("stale composition quote must not authorize a send");
+        assert!(
+            error.contains("still being checked"),
+            "validation must wait for the current composition quote: {error}"
         );
     }
 

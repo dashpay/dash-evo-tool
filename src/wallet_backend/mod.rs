@@ -2403,8 +2403,8 @@ impl WalletBackend {
         self.inner.snapshots.snapshot(seed_hash).generation
     }
 
-    /// Snapshot generation and final-funds subtotal from one atomic read.
-    pub fn asset_lock_probe_snapshot(&self, seed_hash: &WalletSeedHash) -> (u64, u64) {
+    /// Snapshot generation, final-funds subtotal, and eligible-input revision.
+    pub fn asset_lock_probe_snapshot(&self, seed_hash: &WalletSeedHash) -> (u64, u64, u64) {
         self.inner.snapshots.asset_lock_probe_snapshot(seed_hash)
     }
 

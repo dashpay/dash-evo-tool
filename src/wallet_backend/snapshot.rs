@@ -94,6 +94,9 @@ pub struct WalletSnapshot {
     pub(super) generation: u64,
     /// Spendable subtotal accepted by asset-lock builders requiring final inputs.
     pub(super) final_funds_duffs: u64,
+    /// Revision of the exact eligible `(outpoint, value)` input composition.
+    pub(super) asset_lock_input_revision: u64,
+    asset_lock_input_signature: Vec<(OutPoint, u64)>,
     pub balance: DetWalletBalance,
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
@@ -166,23 +169,38 @@ impl TransactionHistoryStatus {
 struct SnapshotState {
     balance: DetWalletBalance,
     final_funds_duffs: u64,
+    asset_lock_input_signature: Vec<(OutPoint, u64)>,
     utxos: Vec<DetUtxo>,
     address_balances: BTreeMap<Address, u64>,
     monitored_receive_addresses: Vec<String>,
     address_paths: BTreeMap<Address, DerivationPath>,
 }
 
+fn asset_lock_final_inputs<'a>(
+    utxos: impl IntoIterator<Item = &'a Utxo>,
+    current_height: u32,
+) -> (u64, Vec<(OutPoint, u64)>) {
+    let mut signature: Vec<_> = utxos
+        .into_iter()
+        .filter_map(|utxo| {
+            ((utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height))
+                .then_some((utxo.outpoint, utxo.value()))
+        })
+        .collect();
+    signature.sort_unstable();
+    let total = signature
+        .iter()
+        .fold(0_u64, |total, (_, value)| total.saturating_add(*value));
+    (total, signature)
+}
+
 /// Sum inputs eligible for an asset-lock builder requiring final inputs.
+#[cfg(test)]
 fn asset_lock_final_funds_duffs<'a>(
     utxos: impl IntoIterator<Item = &'a Utxo>,
     current_height: u32,
 ) -> u64 {
-    utxos
-        .into_iter()
-        .filter(|utxo| {
-            (utxo.is_confirmed || utxo.is_instantlocked) && utxo.is_spendable(current_height)
-        })
-        .fold(0, |total, utxo| total.saturating_add(utxo.value()))
+    asset_lock_final_inputs(utxos, current_height).0
 }
 
 /// Map a finalized-or-pending upstream `TransactionContext` to DET's richer
@@ -398,6 +416,7 @@ fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
     SnapshotState {
         balance: prior.balance,
         final_funds_duffs: prior.final_funds_duffs,
+        asset_lock_input_signature: prior.asset_lock_input_signature.clone(),
         utxos: prior.utxos.clone(),
         address_balances: prior.address_balances.clone(),
         monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
@@ -417,8 +436,9 @@ fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
 pub(super) struct SnapshotStore {
     /// DET-keyed published snapshots. Lock-free read on the UI hot path.
     snapshots: ArcSwap<HashMap<WalletSeedHash, Arc<WalletSnapshot>>>,
-    /// Per-wallet publish counters, advanced once before each RCU publication.
-    generations: Mutex<HashMap<WalletSeedHash, u64>>,
+    /// Per-wallet publish counters and eligible-input revisions, advanced
+    /// together before each RCU publication.
+    generations: Mutex<HashMap<WalletSeedHash, SnapshotRevision>>,
     /// Event-sourced transaction history, keyed by upstream `WalletId` then
     /// `Txid`. A `BTreeMap` per wallet so re-seen records (mempool → block →
     /// chainlock) upsert in place and iteration is deterministic.
@@ -434,6 +454,13 @@ pub(super) struct SnapshotStore {
 struct RegisteredWallet {
     seed_hash: WalletSeedHash,
     wallet: Arc<PlatformWallet>,
+}
+
+#[derive(Default)]
+struct SnapshotRevision {
+    generation: u64,
+    asset_lock_input_revision: u64,
+    asset_lock_input_signature: Vec<(OutPoint, u64)>,
 }
 
 impl std::fmt::Debug for SnapshotStore {
@@ -513,10 +540,14 @@ impl SnapshotStore {
             .unwrap_or_default()
     }
 
-    /// Atomically read the generation and final-funds probe signal.
-    pub(super) fn asset_lock_probe_snapshot(&self, seed_hash: &WalletSeedHash) -> (u64, u64) {
+    /// Atomically read the generation, final-funds subtotal, and input revision.
+    pub(super) fn asset_lock_probe_snapshot(&self, seed_hash: &WalletSeedHash) -> (u64, u64, u64) {
         let snapshot = self.snapshot(seed_hash);
-        (snapshot.generation, snapshot.final_funds_duffs)
+        (
+            snapshot.generation,
+            snapshot.final_funds_duffs,
+            snapshot.asset_lock_input_revision,
+        )
     }
 
     /// Whether a snapshot has been published for the wallet yet. `false`
@@ -667,7 +698,8 @@ impl SnapshotStore {
                     unconfirmed: core_balance.unconfirmed(),
                     total: core_balance.total(),
                 };
-                let final_funds_duffs = asset_lock_final_funds_duffs(state.utxos(), current_height);
+                let (final_funds_duffs, asset_lock_input_signature) =
+                    asset_lock_final_inputs(state.utxos(), current_height);
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
                 for u in state.utxos() {
@@ -682,6 +714,7 @@ impl SnapshotStore {
                 SnapshotState {
                     balance,
                     final_funds_duffs,
+                    asset_lock_input_signature,
                     utxos,
                     address_balances,
                     monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
@@ -714,18 +747,25 @@ impl SnapshotStore {
             .and_then(|log| log.get(wallet_id).map(|m| m.values().cloned().collect()))
             .unwrap_or_default();
 
-        let generation = {
+        let (generation, asset_lock_input_revision) = {
             let mut generations = match self.generations.lock() {
                 Ok(generations) => generations,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            let generation = generations.entry(*seed_hash).or_default();
-            *generation = generation.saturating_add(1);
-            *generation
+            let revision = generations.entry(*seed_hash).or_default();
+            revision.generation = revision.generation.saturating_add(1);
+            if revision.asset_lock_input_signature != state.asset_lock_input_signature {
+                revision.asset_lock_input_revision =
+                    revision.asset_lock_input_revision.saturating_add(1);
+                revision.asset_lock_input_signature = state.asset_lock_input_signature.clone();
+            }
+            (revision.generation, revision.asset_lock_input_revision)
         };
         let snapshot = Arc::new(WalletSnapshot {
             generation,
             final_funds_duffs: state.final_funds_duffs,
+            asset_lock_input_revision,
+            asset_lock_input_signature: state.asset_lock_input_signature,
             balance: state.balance,
             transactions,
             utxos: state.utxos,
@@ -811,6 +851,7 @@ mod tests {
             SnapshotState {
                 balance: DetWalletBalance::default(),
                 final_funds_duffs: 0,
+                asset_lock_input_signature: Vec::new(),
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
@@ -857,13 +898,14 @@ mod tests {
                     total: 1_000,
                 },
                 final_funds_duffs: 0,
+                asset_lock_input_signature: Vec::new(),
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
             },
         );
-        assert_eq!(store.asset_lock_probe_snapshot(&seed(3)), (1, 0));
+        assert_eq!(store.asset_lock_probe_snapshot(&seed(3)), (1, 0, 0));
 
         store.publish(
             &seed(3),
@@ -875,13 +917,40 @@ mod tests {
                     total: 1_000,
                 },
                 final_funds_duffs: 1_000,
+                asset_lock_input_signature: vec![(OutPoint::null(), 1_000)],
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: Vec::new(),
                 address_paths: BTreeMap::new(),
             },
         );
-        assert_eq!(store.asset_lock_probe_snapshot(&seed(3)), (2, 1_000));
+        assert_eq!(store.asset_lock_probe_snapshot(&seed(3)), (2, 1_000, 1));
+
+        store.publish(
+            &seed(3),
+            &wid(3),
+            SnapshotState {
+                balance: DetWalletBalance {
+                    confirmed: 1_000,
+                    unconfirmed: 0,
+                    total: 1_000,
+                },
+                final_funds_duffs: 1_000,
+                asset_lock_input_signature: vec![(
+                    OutPoint::new(Txid::from_byte_array([0x33; 32]), 0),
+                    1_000,
+                )],
+                utxos: Vec::new(),
+                address_balances: BTreeMap::new(),
+                monitored_receive_addresses: Vec::new(),
+                address_paths: BTreeMap::new(),
+            },
+        );
+        assert_eq!(
+            store.asset_lock_probe_snapshot(&seed(3)),
+            (3, 1_000, 2),
+            "equal final funds with different inputs must advance the input revision"
+        );
     }
 
     /// FUNDS-SAFETY (display list): the Receive list is sourced from the
@@ -901,6 +970,7 @@ mod tests {
             SnapshotState {
                 balance: DetWalletBalance::default(),
                 final_funds_duffs: 0,
+                asset_lock_input_signature: Vec::new(),
                 utxos: Vec::new(),
                 address_balances: BTreeMap::new(),
                 monitored_receive_addresses: watched.clone(),
@@ -1242,6 +1312,8 @@ mod tests {
         WalletSnapshot {
             generation: 1,
             final_funds_duffs: 6_000,
+            asset_lock_input_revision: 1,
+            asset_lock_input_signature: vec![(OutPoint::null(), 1_000)],
             balance: DetWalletBalance {
                 confirmed: 6_000,
                 unconfirmed: 0,
@@ -1566,6 +1638,7 @@ mod tests {
                     total,
                 },
                 final_funds_duffs: total,
+                asset_lock_input_signature: Vec::new(),
                 utxos: Vec::new(),
                 address_balances: address_balances.clone(),
                 monitored_receive_addresses: Vec::new(),

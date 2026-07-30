@@ -41,7 +41,9 @@ use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
-use crate::ui::masternodes::{KeyVocabulary, identity_keys, key_status_tokens, manage_keys_labels};
+use crate::ui::masternodes::{
+    KeyVocabulary, identity_keys, key_filed_at, key_status_tokens, manage_keys_labels,
+};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -727,10 +729,16 @@ impl MasternodeDetailView {
         key: &dash_sdk::platform::IdentityPublicKey,
         mode: KeyInfoOpenMode,
     ) -> AppAction {
+        // Where this key's private half actually is, by the one rule every
+        // "Manage keys" surface uses. The structural target alone would miss
+        // material filed under the purpose-derived convention — a main-identity
+        // voting key entered by hand — and report a key as unheld here while the
+        // identity keys list shows it as saved on this device.
+        let filed_at = key_filed_at(&self.identity, &target, key).unwrap_or(target);
         let holding = self
             .identity
             .private_keys
-            .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()));
+            .get_cloned_private_key_data_and_wallet_info(&(filed_at.clone(), key.id()));
         let identity = self.identity.clone();
         let key = key.clone();
         let screen = match mode {
@@ -741,12 +749,12 @@ impl MasternodeDetailView {
                 KeyInfoScreen::new_with_protection_prompt(identity, key, holding, &self.app_context)
             }
         };
-        // Hand over where the material actually is. This row found `holding` at
-        // `target`; left to itself the screen re-derives the target from the
-        // key's purpose, which disagrees for a key filed on the voter identity
-        // whose purpose is not `VOTING` — it would name the key differently from
-        // the row just clicked and lose the private half on its own re-read.
-        AppAction::AddScreen(Screen::KeyInfoScreen(screen.with_target(target)))
+        // Hand the resolved location over rather than letting the screen guess.
+        // Left to itself it re-derives the target from the key's purpose, which
+        // disagrees for a key filed on the voter identity whose purpose is not
+        // `VOTING` — it would name the key differently from the row just clicked
+        // and lose the private half on its own re-read.
+        AppAction::AddScreen(Screen::KeyInfoScreen(screen.with_target(filed_at)))
     }
 
     /// Render the collapsible DPNS voting section (collapsed by default,

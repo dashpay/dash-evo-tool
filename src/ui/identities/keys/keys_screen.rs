@@ -11,7 +11,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -20,7 +20,7 @@ use crate::ui::components::legacy_recovery_section::{LegacyRecoverySection, comp
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::masternodes::{KeyVocabulary, identity_keys, manage_keys_labels};
+use crate::ui::masternodes::{KeyVocabulary, identity_keys, key_filed_at, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
@@ -39,31 +39,6 @@ const HELD: &str = "This key is saved on this device.";
 /// user with stranded keys came here to find, so it is stated in words rather
 /// than signalled by colour alone.
 const NOT_HELD: &str = "This key is not saved on this device.";
-
-/// Whether a stored public key and a live one are the same key.
-///
-/// Compares every field except `disabled_at`. A Platform identity public key is
-/// immutable once added, with that single exception: disabling one rewrites that
-/// field. The stored copy is a snapshot taken when the private half was saved,
-/// so plain `==` stops matching as soon as a key is disabled or rotated, and the
-/// row reports a key this device demonstrably holds as missing.
-///
-/// Comparing only the id and the key material would fix that and reopen a worse
-/// hole in the other direction. Both are shared by construction here: `id` is
-/// already the lookup key, and a main identity's voting key and a linked voter
-/// identity's key can carry identical `data`, leaving `purpose` as the only thing
-/// telling them apart. Conflating those two hands over private material the
-/// clicked key does not own, which is the defect `filed_at` exists to prevent —
-/// so this excludes the one field that legitimately moves, and nothing else.
-fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
-    stored.id() == live.id()
-        && stored.key_type() == live.key_type()
-        && stored.purpose() == live.purpose()
-        && stored.security_level() == live.security_level()
-        && stored.read_only() == live.read_only()
-        && stored.contract_bounds() == live.contract_bounds()
-        && stored.data() == live.data()
-}
 
 pub struct KeysScreen {
     pub identity: QualifiedIdentity,
@@ -233,7 +208,7 @@ impl KeysScreen {
         let vocabulary = KeyVocabulary::from(self.identity.identity_type);
         let labels = manage_keys_labels(vocabulary, &keys);
         for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
-            let filed_at = self.filed_at(&target, &key);
+            let filed_at = key_filed_at(&self.identity, &target, &key);
             let held = if filed_at.is_some() { HELD } else { NOT_HELD };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -272,38 +247,6 @@ impl KeysScreen {
             }
         }
         action
-    }
-
-    /// Which store this key's private half is actually in, or `None`.
-    ///
-    /// Checks the structural target first, then the purpose-derived one, because
-    /// both conventions are in use and real installs hold material written under
-    /// each. This is a read: looking in the second place can only find material
-    /// that is already there, so it corrects a false "not saved on this device"
-    /// without moving anything. Reconciling the two conventions is a migration,
-    /// tracked separately.
-    ///
-    /// Each candidate has to hold *this* public key, not merely have its slot
-    /// filled: a voter identity's own key can share a key id with a main-identity
-    /// key, so an occupied slot proves nothing about whose material is in it.
-    /// Comparing the stored public key is what keeps the row — and the private
-    /// material it hands to Key Info — about the key the user clicked.
-    ///
-    /// Reads the stored public half only, never the private one: fetching the
-    /// entry would clone the raw private key out of the vault unscrubbed, and
-    /// this runs every frame for every key.
-    fn filed_at(
-        &self,
-        structural: &PrivateKeyTarget,
-        key: &IdentityPublicKey,
-    ) -> Option<PrivateKeyTarget> {
-        let derived: PrivateKeyTarget = key.purpose().into();
-        [structural.clone(), derived].into_iter().find(|candidate| {
-            self.identity
-                .private_keys
-                .public_key_for(&(candidate.clone(), key.id()))
-                .is_some_and(|stored| same_key(&stored.identity_public_key, key))
-        })
     }
 
     /// The on-chain specifics of one key, for the Expert view. Everyday view

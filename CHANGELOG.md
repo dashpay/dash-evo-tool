@@ -157,6 +157,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   key could remove the other's private half, and a key could be reported as
   saved on the strength of an unrelated key being present.
 
+- **Removing a key now removes all of it**: "Remove private key" on a key's page
+  also erases the copy of that key held in this device's secure storage.
+  Previously only the entry naming it was cleared, so the key itself stayed
+  behind with nothing pointing at it — it could not be used or brought back, and
+  deleting the whole identity afterwards did not clear it either. If the secure
+  storage cannot be written to, the removal now stops and says so with the key
+  left exactly as it was, so it can simply be tried again.
+
+- **A key is checked before it is used**: showing a saved key or signing with it
+  now confirms the key held on this device really is the key on screen. Should
+  the two disagree — records an older version left inconsistent — the action
+  stops and says so, rather than signing with a key nobody would recognise as
+  this identity's.
+
 - **An identity's keys are reachable again**: the keys list under an identity's
   Settings → Advanced now opens each key's own page, so keys can be inspected
   and restored — and, once a key is on this device, signed with or

@@ -1317,8 +1317,8 @@ impl KeyInfoScreen {
         }
     }
 
-    /// Drop this device's copy of the on-screen key's private half and persist
-    /// the record.
+    /// Drop this device's copy of the on-screen key's private half — its vault
+    /// secret and its record entry both — and persist the result.
     ///
     /// Removes **every** placement holding *this* key, so a duplicate written
     /// under another convention cannot survive the removal the user asked for.
@@ -1329,17 +1329,26 @@ impl KeyInfoScreen {
     /// the voter and main id spaces overlap, so that can be a different key
     /// entirely.
     ///
-    /// The removal is rolled back when the persist refuses, so the screen
-    /// never reports a key as gone that the record on disk still holds.
+    /// Vault first, then the record: the stored placement is the only thing
+    /// that makes a vault label enumerable, so bytes outliving their entry are
+    /// bytes nothing can reach or delete afterwards. A vault-secret failure
+    /// aborts with the record, the screen, and the vault as they were,
+    /// leaving a removal the user can simply repeat.
+    ///
+    /// The removal is separately rolled back when the final persist refuses,
+    /// so the screen never reports a key as gone that the record on disk
+    /// still holds — the same invariant `validate_and_store_private_key`
+    /// keeps on the paste path. A persist refusal reached *after* the vault
+    /// secrets are already gone leaves this rolled-back map entry as the only
+    /// remaining place tracking the key as held; retrying the removal finds
+    /// an already-empty vault and simply finishes the job.
     fn remove_held_private_key(&mut self) -> Result<(), TaskError> {
+        let placements: Vec<_> = self.identity.private_keys.candidates(&self.key).collect();
+        self.app_context
+            .delete_identity_key_secrets(&self.identity.identity.id(), placements.clone())?;
         let before = self.identity.private_keys.clone();
-        for placement in self
-            .identity
-            .private_keys
-            .candidates(&self.key)
-            .collect::<Vec<_>>()
-        {
-            self.identity.private_keys.remove_at(&placement);
+        for placement in &placements {
+            self.identity.private_keys.remove_at(placement);
         }
         if let Err(error) = self
             .app_context
@@ -1837,6 +1846,51 @@ mod tests {
                 .is_some(),
             "a different key sharing the id must survive the removal",
         );
+    }
+
+    /// The bytes behind a saved key live in the vault, addressed by the same
+    /// placement the stored map files the key under. Removing this device's copy
+    /// has to take those bytes with it: the map entry is what makes the vault
+    /// label enumerable, so a secret left behind once the entry is gone is
+    /// reachable by nothing — not even the whole-identity delete sweep, which
+    /// reads its delete set from that same map.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_a_key_also_removes_its_vault_secret() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen = public_key(3, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x7C, &[(on_screen.clone(), [0x33; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let backend = app_context.wallet_backend().expect("backend");
+        let vault = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert_eq!(
+            vault
+                .get(&MAIN, on_screen.id())
+                .expect("vault read")
+                .as_deref()
+                .copied(),
+            Some([0x33; 32]),
+            "saving the key put its bytes in the vault",
+        );
+
+        let mut screen = KeyInfoScreen::new(stored, on_screen.clone(), None, &app_context);
+        screen
+            .remove_held_private_key()
+            .expect("the removal must persist");
+
+        assert!(
+            vault
+                .get(&MAIN, on_screen.id())
+                .expect("vault read")
+                .is_none(),
+            "the removed key's bytes must not outlive the record that points at them",
+        );
+
+        backend.shutdown().await;
     }
 
     /// Write `key` into `identity_id`'s stored record, the way a restore or any

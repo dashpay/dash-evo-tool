@@ -163,14 +163,24 @@ A crash cannot strand a key because nothing is ever in motion.
 
 ## 8. What is not covered
 
-* **A deleted key's vault secret is not removed** (`key_info_screen.rs`, the
-  remove-private-key dialog): the map entry goes, the vault entry stays, so bytes
-  the user believes deleted remain on disk with nothing pointing at them. Its own
-  fix, with its own ordering argument (vault first, then map) and its own review.
+* ~~**A deleted key's vault secret is not removed**~~ — **closed.** The
+  remove-private-key path now deletes the vault secrets of the placements
+  `candidates` resolved, through `AppContext::delete_identity_key_secrets`, and
+  does so *before* the map entries go: the map is what makes a vault label
+  enumerable, so the reverse order strands the bytes beyond every later path,
+  the whole-identity sweep included. A vault failure aborts with map and blob
+  untouched.
 * **Keying by `(Identifier, KeyID)`** — the right end state, since it removes the
   role enum entirely. Mechanical once the store is known-consistent.
-* Validating the signing path's vault-resolved key against the requested public
-  key, deferred separately.
+* ~~Validating the signing path's vault-resolved key against the requested
+  public key~~ — **closed.** `with_identity_secret_key` — the chokepoint both
+  `SignMessageWithIdentityKey` and `DeriveIdentityKeyForDisplay` read through —
+  matches the vault's bytes against the public key the stored identity records
+  at the requested placement before the closure runs, and refuses a disagreement
+  with `TaskError::IdentityKeyMismatch`. This was the last place trusting a
+  caller-supplied placement; the callers still carry `(target, key_id)` fields,
+  but they are now checked rather than believed. A key type this build cannot
+  derive a public half for skips the check, as `key_exclusion` does.
 * **Proof generation cannot use a locally-added, not-yet-broadcast key**
   (`backend_task/grovestark.rs`, marked `TODO(grovestark-unpublished-key)`): the
   requested key id is resolved against the identity's published keys before the
@@ -182,8 +192,10 @@ A crash cannot strand a key because nothing is ever in motion.
 The layer column tells near-homonyms apart: the *resolver* rows exercise
 `candidates` / `resolve_private_key_bytes` (`model/qualified_identity/mod.rs`),
 the *naming* rows `placement_of` (same file), the *key store* rows `KeyStorage`'s
-own guards and helpers (`encrypted_key_storage.rs`), and the UI rows the screens
-that consume them.
+own guards and helpers (`encrypted_key_storage.rs`), the *vault* rows the
+vault-secret-lifecycle chokepoints (`AppContext::delete_identity_key_secrets` in
+`context/identity_db.rs`, `with_identity_secret_key` in `backend_task/wallet/mod.rs`),
+and the UI rows the screens that consume them.
 
 | Test | Layer | Pins |
 |---|---|---|
@@ -222,5 +234,10 @@ that consume them.
 | `a_show_request_that_cannot_resolve_speaks_through_the_typed_error` | Key Info screen | Show/Sign failures surface each variant's own remedy |
 | `the_keys_popup_finds_a_main_key_an_older_build_filed_under_voter` | identities list | the Keys popup is placement-blind for main-identity keys |
 | `the_keys_popup_finds_a_voter_key_an_older_build_filed_under_main` | identities list | its voter-list mirror |
+| `removing_a_key_also_removes_its_vault_secret` | vault | §8's second bullet: confirmed RED against the map-only removal, which left the bytes on disk unreachable |
+| `delete_identity_key_secrets_drops_only_the_named_placement` | vault | the per-key delete is not the whole-identity sweep, and repeating it is harmless |
+| `a_vault_secret_that_is_not_the_recorded_key_is_refused` | vault | §8's third bullet: RED against the unchecked chokepoint, which signed with the planted key |
+| `a_placement_the_identity_does_not_record_is_refused` | vault | the other half of it — an orphaned label is not a key of this identity |
+| `a_secret_matching_its_recorded_key_still_resolves` | vault | the check costs a healthy install nothing |
 
 [`PROBE_ORDER`]: ../../../src/model/qualified_identity/key_placement.rs

@@ -489,6 +489,19 @@ pub enum TaskError {
     )]
     IdentityKeyMalformed,
 
+    /// The private key stored at a placement does not derive the public key the
+    /// identity records there — the vault and the stored key map disagree about
+    /// which key that slot holds. Distinct from [`Self::IdentityKeyMalformed`]
+    /// (bytes present but unusable) and [`Self::IdentityKeyMissing`] (nothing
+    /// there at all): these bytes are a perfectly usable key, just not this one,
+    /// so signing with them would produce a signature no verifier attributes to
+    /// this identity. Fieldless: the callsite logs the placement; no key
+    /// material or raw error string is stored here.
+    #[error(
+        "This identity's signing key does not match the key it is saved for on this device. Re-import the identity to refresh its keys."
+    )]
+    IdentityKeyMismatch,
+
     /// The password supplied for a password-protected identity key does not
     /// unseal it. The just-in-time chokepoint catches this inside its re-ask
     /// loop and re-prompts; it surfaces to the UI when removing protection with

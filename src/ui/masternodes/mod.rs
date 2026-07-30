@@ -62,9 +62,122 @@ pub fn key_status_tokens(presence: MasternodeKeyPresence) -> [KeyRoleToken; 3] {
     ]
 }
 
+/// Tooltip for an authentication key — Platform-only, so it has no DIP-3 role
+/// counterpart.
+pub const TIP_AUTH_KEY: &str =
+    "An authentication key signs this identity's actions on Dash Platform.";
+
+/// The role word for a key and its tooltip, aligned with the Dash Core DIP-3
+/// ProRegTx roles.
+///
+/// The single source of truth for what a key is called anywhere in this app:
+/// the detail view's "Manage keys" buttons and the offer to restore keys from
+/// the previous version both label the same key through this function, so the
+/// two surfaces cannot name it differently. Voter-identity keys are always the
+/// voting key; on the main identity, the Platform Owner and Transfer keys of a
+/// masternode identity mirror the ProTx owner key and payout address. Unknown
+/// purposes fall back to their name with no tooltip.
+pub fn role_label_and_tip(
+    is_on_voter_identity: bool,
+    purpose: dash_sdk::dpp::identity::Purpose,
+) -> (String, Option<&'static str>) {
+    use dash_sdk::dpp::identity::Purpose;
+    if is_on_voter_identity {
+        return ("Voting".to_string(), Some(TIP_VOTING_KEY));
+    }
+    match purpose {
+        Purpose::VOTING => ("Voting".to_string(), Some(TIP_VOTING_KEY)),
+        Purpose::OWNER => ("Owner".to_string(), Some(TIP_OWNER_KEY)),
+        Purpose::TRANSFER => ("Payout address".to_string(), Some(TIP_PAYOUT_KEY)),
+        Purpose::AUTHENTICATION => ("Authentication".to_string(), Some(TIP_AUTH_KEY)),
+        other => (format!("{other:?}"), None),
+    }
+}
+
+/// Make every label in `labelled` unique by appending `#{key id}` to the ones
+/// that would otherwise appear more than once.
+///
+/// A role word alone is not unique: an evonode that rotates its payout address
+/// holds two Transfer keys. Every list of keys the user is asked to read — and
+/// especially one they are asked to approve — needs each row to name exactly
+/// one key. Rows with no key id (a role link) are left as they are.
+pub fn disambiguate_role_labels(
+    labelled: &mut [(String, Option<&'static str>)],
+    key_ids: &[Option<dash_sdk::dpp::identity::KeyID>],
+) {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (label, _) in labelled.iter() {
+        *counts.entry(label.clone()).or_default() += 1;
+    }
+    for ((label, _), key_id) in labelled.iter_mut().zip(key_ids) {
+        if let Some(key_id) = key_id
+            && counts.get(label.as_str()).copied().unwrap_or(0) > 1
+        {
+            *label = format!("{label} #{key_id}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn role_labels_follow_dip3_protx_terms() {
+        use dash_sdk::dpp::identity::Purpose;
+        // A voter-identity key is always the voting key, regardless of purpose.
+        assert_eq!(
+            role_label_and_tip(true, Purpose::AUTHENTICATION),
+            ("Voting".to_string(), Some(TIP_VOTING_KEY))
+        );
+        // A voting-purpose key on the main identity is the voting key too.
+        assert_eq!(
+            role_label_and_tip(false, Purpose::VOTING),
+            ("Voting".to_string(), Some(TIP_VOTING_KEY))
+        );
+        // Main-identity roles mirror the DIP-3 ProRegTx owner key and payout
+        // address; the Platform Transfer key surfaces as "Payout address".
+        assert_eq!(
+            role_label_and_tip(false, Purpose::OWNER),
+            ("Owner".to_string(), Some(TIP_OWNER_KEY))
+        );
+        assert_eq!(
+            role_label_and_tip(false, Purpose::TRANSFER),
+            ("Payout address".to_string(), Some(TIP_PAYOUT_KEY))
+        );
+        assert_eq!(
+            role_label_and_tip(false, Purpose::AUTHENTICATION),
+            ("Authentication".to_string(), Some(TIP_AUTH_KEY))
+        );
+        // An unmapped purpose keeps its name and carries no tooltip.
+        assert_eq!(
+            role_label_and_tip(false, Purpose::ENCRYPTION),
+            (format!("{purpose:?}", purpose = Purpose::ENCRYPTION), None,)
+        );
+    }
+
+    /// Two rows that would read identically are told apart by their key id;
+    /// rows that are already unique, and rows with no key id, are left alone.
+    #[test]
+    fn colliding_role_labels_are_told_apart_by_key_id() {
+        let mut labels = vec![
+            ("Payout address key".to_string(), None),
+            ("Payout address key".to_string(), None),
+            ("Owner key".to_string(), None),
+            ("Voting identity link".to_string(), None),
+        ];
+        disambiguate_role_labels(&mut labels, &[Some(2), Some(3), Some(1), None]);
+
+        assert_eq!(
+            labels.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(),
+            vec![
+                "Payout address key #2",
+                "Payout address key #3",
+                "Owner key",
+                "Voting identity link",
+            ],
+        );
+    }
 
     #[test]
     fn tc_fr3_08_key_tokens_reflect_presence() {

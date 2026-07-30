@@ -13,6 +13,7 @@ pub mod icons;
 pub mod identity_selector;
 pub mod info_popup;
 pub mod left_panel;
+pub mod legacy_recovery_section;
 pub mod message_banner;
 pub mod modal_chrome;
 pub mod passphrase_modal;

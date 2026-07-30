@@ -1046,6 +1046,37 @@ pub enum TaskError {
     )]
     IdentityNotFoundLocally,
 
+    /// The identity's saved copy in the preserved pre-update database is there
+    /// but will not decode, so there is nothing this flow can restore from it.
+    /// Never treated as an empty record: merging against one would look like
+    /// "the previous version held nothing" and quietly close the recovery
+    /// affordance on data that is actually still there. Carries no `#[source]`
+    /// — the row decoder logs which column or blob failed, and the failure
+    /// carries nothing else a user could act on.
+    #[error(
+        "The saved copy of this identity from the previous version could not be read. \
+        You can still add the key by entering it on the identity's key screen."
+    )]
+    LegacyIdentityUnreadable { identity_id: Identifier },
+
+    /// A restore reached the backend with an empty approval list. Nothing is
+    /// ever restored without an explicit per-item decision, so an empty list is
+    /// refused rather than widened into "restore everything".
+    #[error(
+        "Nothing was selected to restore. Check this identity's keys again, then choose what to restore."
+    )]
+    LegacyRecoveryNothingApproved,
+
+    /// The identity gained password protection while the restore was waiting
+    /// for the user's password, so the password that was verified no longer
+    /// covers the record about to be written. The restore stops before its
+    /// single write rather than sealing under a password for a different state.
+    #[error(
+        "This identity changed while the restore was waiting for your password. \
+        Open it again and restore the keys."
+    )]
+    LegacyRecoveryIdentityChanged,
+
     /// Failed to build the identity update state transition.
     #[error("Could not build the key update transaction. Please retry.")]
     IdentityUpdateTransitionError {

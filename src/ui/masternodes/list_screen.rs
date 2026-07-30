@@ -11,9 +11,9 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
@@ -21,8 +21,10 @@ use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
 use crate::model::wallet_association::WalletAssociation;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::global_nav_switcher::GlobalNavEffect;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::legacy_recovery_section::completion_message;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::identity::identity_pill::shorten_id;
@@ -33,7 +35,7 @@ use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::state::global_nav::PageNavSpec;
 use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
@@ -355,6 +357,20 @@ impl MasternodesScreen {
         }
     }
 
+    /// Whether `node_id` names something this page is currently showing: the
+    /// open detail view's node, or one of the cards in the list.
+    ///
+    /// The attribution rule for a backend result that reaches this screen only
+    /// because it is the visible one. An identity nothing on screen names —
+    /// another node, or a `User` identity from the Identities section — has no
+    /// row here to update and no story to tell here.
+    fn shows_node(&self, node_id: Identifier) -> bool {
+        match &self.view {
+            MasternodesView::Detail(detail) => detail.node_id() == node_id,
+            _ => self.nodes.iter().any(|node| node.node_id == node_id),
+        }
+    }
+
     /// Open the detail view for `node_id`. Loads the node's full
     /// `QualifiedIdentity` from the local store; a lookup miss leaves the list
     /// view unchanged.
@@ -524,6 +540,15 @@ impl ScreenLike for MasternodesScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload();
         self.reconcile_pending_load();
+        // An open detail view was built from a record another screen may have
+        // written meanwhile — a restore run from the Key Info screen this view
+        // pushed is exactly that case, since the pushed screen receives the
+        // result and this one never hears about it. Re-read the node and re-arm
+        // its recovery check, so the page never keeps offering keys that are
+        // already back.
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.refresh_from_store();
+        }
     }
 
     fn reset_to_root_view(&mut self) {
@@ -551,7 +576,43 @@ impl ScreenLike for MasternodesScreen {
         }
     }
 
-    fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
+    fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
+        match result {
+            // A recovery preview changed nothing in the store, so it is routed
+            // into the open detail view instead of reloading and re-opening it.
+            // Re-opening would rebuild the view, re-dispatch its check, and
+            // never settle.
+            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
+                if let MasternodesView::Detail(detail) = &mut self.view {
+                    detail.set_recovery_plan(identity_id, plan);
+                }
+                return;
+            }
+            // A restore did change the store. Confirm it, then fall through to
+            // the reload, whose tail re-opens the detail view for this node —
+            // rebuilding it re-arms the check, which now finds nothing stranded
+            // and retires the offer.
+            //
+            // A restore for an identity this page is not showing lands here
+            // whenever this screen happens to be the visible one, so it is
+            // dropped rather than reported: it changed nothing on screen, and
+            // its "your keys are back" belongs to whoever asked for it.
+            BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                identity_id,
+                ref applied,
+                ..
+            } => {
+                if !self.shows_node(identity_id) {
+                    return;
+                }
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    completion_message(!applied.is_empty()),
+                    MessageType::Success,
+                );
+            }
+            _ => {}
+        }
         self.reload();
         // Settle the submitted load against the phase its task reported. This
         // screen also receives detail-view results (voting, RefreshIdentity) and
@@ -577,6 +638,23 @@ impl ScreenLike for MasternodesScreen {
         // render the error (return false).
         self.reconcile_pending_load();
         false
+    }
+
+    /// End the open detail view's recovery operation only when the failure is
+    /// that operation's own. A failed restore returns to its offer so the user
+    /// can correct a mistyped identity password and press Restore again; any
+    /// other task's error — which reaches this screen simply because it is
+    /// visible — must leave a running restore in flight.
+    fn display_backend_task_error(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        _error: &crate::backend_task::error::TaskError,
+    ) {
+        if let Some(identity_id) = context.legacy_recovery_identity()
+            && let MasternodesView::Detail(detail) = &mut self.view
+        {
+            detail.recovery_failed_for(identity_id);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -787,6 +865,204 @@ mod tests {
         // Leaving the detail view clears the pill's selection.
         screen.view = MasternodesView::List;
         assert_eq!(screen.selected_node_id(), None);
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A restore run from the pushed Key Info screen never reaches this screen —
+    /// the pushed screen is on top, so it takes the result. Coming back must
+    /// therefore re-read the node and re-arm its check, or the page keeps
+    /// offering keys that are already back and keeps warning about a voting key
+    /// it now holds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_re_reads_the_open_node_and_re_arms_its_recovery_offer() {
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+        use dash_sdk::platform::IdentityPublicKey;
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+
+        // The offer the node page was showing before the user opened a key.
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_recovery_plan(
+            node,
+            RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::VoterAssociation,
+                    purpose: None,
+                }],
+                excluded: vec![],
+            },
+        );
+        assert!(detail.has_recovery_offer_for_test());
+        assert!(
+            !detail.key_presence_for_test().voting,
+            "the node starts with no voting key",
+        );
+
+        // What the pushed Key Info screen's restore wrote while this screen was
+        // not the one receiving results.
+        let mut restored = ctx
+            .get_local_qualified_identity(&node)
+            .expect("read the node")
+            .expect("node stored");
+        restored.associated_voter_identity = Some((
+            Identity::create_basic_identity(
+                Identifier::from([0x44; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("voter identity"),
+            IdentityPublicKey::V0(
+                dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+                    id: 0,
+                    purpose: dash_sdk::dpp::identity::Purpose::VOTING,
+                    security_level: dash_sdk::dpp::identity::SecurityLevel::HIGH,
+                    contract_bounds: None,
+                    key_type: dash_sdk::dpp::identity::KeyType::ECDSA_HASH160,
+                    read_only: false,
+                    data: dash_sdk::dpp::platform_value::BinaryData::new(vec![7u8; 20]),
+                    disabled_at: None,
+                },
+            ),
+        ));
+        ctx.update_local_qualified_identity(&restored)
+            .expect("the restore's write");
+
+        screen.refresh_on_arrival();
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must still be open");
+        };
+        assert!(
+            !detail.has_recovery_offer_for_test(),
+            "the stale offer must be retired on arrival, not re-shown",
+        );
+        assert!(
+            detail.key_presence_for_test().voting,
+            "the node page must show the voting key it now holds",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A restore for an identity this page is not showing lands here whenever
+    /// this screen happens to be the visible one — the Key Info screen that
+    /// dispatched it may have been dismissed long since. Acting on it would
+    /// confirm someone else's restore over the node in view and rebuild that
+    /// node's detail from a store nothing changed in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_completion_for_a_node_not_on_screen_is_ignored() {
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+
+        // The offer the node in view is showing, which its own re-open would
+        // retire — so a wrongly-attributed reload is observable.
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_recovery_plan(
+            node,
+            RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::VoterAssociation,
+                    purpose: None,
+                }],
+                excluded: vec![],
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id: Identifier::from([0x77; 32]),
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must still be open");
+        };
+        assert_eq!(detail.node_id(), node);
+        assert!(
+            detail.has_recovery_offer_for_test(),
+            "another identity's completion must leave this node's offer alone",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: this screen used to end the open node's restore on ANY task
+    /// error that reached it — a vote, a refresh, another node's restore. The
+    /// original task still held the identity, so re-enabling Restore only led
+    /// the user to an "already in progress" error. Only this node's own
+    /// recovery failure may return its offer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_this_nodes_own_recovery_failure_ends_its_restore() {
+        use crate::backend_task::BackendTaskContext;
+        use crate::backend_task::error::TaskError;
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_recovery_plan(
+            node,
+            RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::VoterAssociation,
+                    purpose: None,
+                }],
+                excluded: vec![],
+            },
+        );
+        assert!(
+            detail.start_recovery_restore_for_test(),
+            "the offer must be restorable, or this proves nothing",
+        );
+
+        let error = TaskError::IdentityNotFoundLocally;
+        for unrelated in [
+            BackendTaskContext::Other,
+            BackendTaskContext::LegacyRecoveryRestore(Identifier::from([0x77; 32])),
+        ] {
+            screen.display_backend_task_error(&unrelated, &error);
+            screen.display_task_error(&error);
+            let MasternodesView::Detail(detail) = &screen.view else {
+                panic!("the detail view must still be open");
+            };
+            assert!(
+                detail.is_restoring_for_test(),
+                "{unrelated:?} is not this node's restore, so it must stay in flight",
+            );
+        }
+
+        screen.display_backend_task_error(&BackendTaskContext::LegacyRecoveryRestore(node), &error);
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("the detail view must still be open");
+        };
+        assert!(
+            !detail.is_restoring_for_test(),
+            "this node's own restore failure must return the offer so it can be retried",
+        );
+        assert!(
+            detail.has_recovery_offer_for_test(),
+            "and the offer must survive for the retry",
+        );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

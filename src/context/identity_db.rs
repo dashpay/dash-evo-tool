@@ -498,6 +498,41 @@ fn delete_scheduled_votes_for_voter(
 }
 
 impl AppContext {
+    /// Whether the previous version's preserved `data.db` holds any identity of
+    /// this network.
+    ///
+    /// The gate on the stranded-key recovery offer, and the only condition
+    /// under which that offer can ever find something. A fresh install answers
+    /// `false` — its `data.db` either does not exist or was created without the
+    /// legacy `identity` table — while an upgraded one answers `true` for as
+    /// long as the rows are there, which is forever: recovery never deletes
+    /// them.
+    ///
+    /// Probed at most once per context: the file is a read-only artifact, so
+    /// the answer cannot change under the session. A probe that fails arms the
+    /// offer rather than retiring it — the detection task reports its own typed
+    /// error, whereas a silent `false` would withdraw a recovery the user's
+    /// data still supports.
+    pub(crate) fn has_legacy_identities(&self) -> bool {
+        *self.legacy_identities_present.get_or_init(|| {
+            match crate::database::legacy_import::local_identities_exist(
+                &self.db.locked_conn(),
+                self.network,
+            ) {
+                Ok(found) => found,
+                Err(error) => {
+                    tracing::warn!(
+                        target = "context::identity_db",
+                        network = %self.network,
+                        error = ?error,
+                        "Could not tell whether the previous version's data holds identities; offering key recovery anyway",
+                    );
+                    true
+                }
+            }
+        })
+    }
+
     /// Insert (or replace) a local qualified identity in the per-network
     /// wallet k/v store under [`DetScope::Identity`]. Mirrors pre-C7
     /// `INSERT OR REPLACE` semantics — wallet association is overwritten
@@ -512,11 +547,18 @@ impl AppContext {
     /// `continue` on a missing blob), and the next successful insert fills it
     /// in. The reverse order would instead hide a written identity — and its
     /// keys and balances — until an unrelated update happened to re-index it.
+    ///
+    /// Serialized against every other whole-record writer of this identity by
+    /// [`Self::identity_record_lock`].
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
     ) -> std::result::Result<(), TaskError> {
+        let lock = self.identity_record_lock(qualified_identity.identity.id());
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         let (wallet_hash, wallet_index) = match wallet_and_identity_id_info {
             Some((seed, idx)) => (Some(*seed), Some(*idx)),
@@ -563,7 +605,29 @@ impl AppContext {
     /// (`wallet_hash` / `wallet_index`) is preserved from the existing
     /// record — pre-C7 `update_local_qualified_identity` had the same
     /// behaviour by virtue of omitting those columns from its `UPDATE`.
+    ///
+    /// Takes [`Self::identity_record_lock`] for the write, so a caller whose
+    /// snapshot came from an earlier read cannot interleave with another
+    /// writer's read-modify-write. A caller that must keep its own read and
+    /// this write atomic holds that guard itself and calls
+    /// [`Self::write_local_qualified_identity_locked`] instead.
     pub fn update_local_qualified_identity(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> std::result::Result<(), TaskError> {
+        let lock = self.identity_record_lock(qualified_identity.identity.id());
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.write_local_qualified_identity_locked(qualified_identity)
+    }
+
+    /// The write half of [`Self::update_local_qualified_identity`], for a
+    /// caller that already holds this identity's
+    /// [`identity_record_lock`](Self::identity_record_lock) across a wider
+    /// read-modify-write span. Calling it without that guard reopens the
+    /// lost-update race the guard exists to close.
+    pub(crate) fn write_local_qualified_identity_locked(
         &self,
         qualified_identity: &QualifiedIdentity,
     ) -> std::result::Result<(), TaskError> {
@@ -596,11 +660,18 @@ impl AppContext {
     /// Update only the user-facing alias on a stored identity. Returns
     /// `Ok(())` when the identity is unknown — alias is metadata, not a
     /// load-bearing identifier.
+    ///
+    /// Read-modify-writes the whole blob, so it holds
+    /// [`Self::identity_record_lock`] across both halves.
     pub fn set_identity_alias(
         &self,
         identifier: &Identifier,
         new_alias: Option<&str>,
     ) -> std::result::Result<(), TaskError> {
+        let lock = self.identity_record_lock(*identifier);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         let scope = DetScope::Identity(&id);
@@ -715,6 +786,38 @@ impl AppContext {
         qi.top_ups = BTreeMap::new();
         self.migrate_identity_keys_to_vault(&kv, &id_buf, &mut qi);
         Ok(Some(qi))
+    }
+
+    /// The encoded identity blob stored under `id`, exactly as it sits at
+    /// rest. Test-only: it is how an assertion proves what a write actually
+    /// landed on disk (that no plaintext key survived, or that a re-run changed
+    /// nothing), which the hydrated [`QualifiedIdentity`] cannot show.
+    #[cfg(test)]
+    pub(crate) fn stored_identity_blob(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<Vec<u8>>, TaskError> {
+        Ok(self
+            .det_kv()?
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id.to_buffer()), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .map(|stored| stored.qi_bytes))
+    }
+
+    /// The wallet link recorded for `id`, or `None` when the identity is not
+    /// stored or was never linked to a wallet. Test-only: the link lives beside
+    /// the blob rather than inside it, so only a direct read can prove an
+    /// update preserved it.
+    #[cfg(test)]
+    pub(crate) fn stored_identity_wallet_link(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<(WalletSeedHash, u32)>, TaskError> {
+        Ok(self
+            .det_kv()?
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id.to_buffer()), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .and_then(|stored| Some((stored.wallet_hash?, stored.wallet_index?))))
     }
 
     /// Returns whether an identity blob is stored under `id` without decoding it.
@@ -932,6 +1035,12 @@ impl AppContext {
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
         }
+        // Lock order: the storage-migration mutex above, then this identity's
+        // record guard — the same order the legacy-recovery write takes.
+        let lock = self.identity_record_lock(*identifier);
+        let _record_guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(
@@ -968,6 +1077,17 @@ impl AppContext {
 
     /// Re-persist `qi`'s blob in place, preserving the stored wallet
     /// association and status. Used by the eager identity-key migration.
+    ///
+    /// The one whole-record write that does NOT take
+    /// [`Self::identity_record_lock`]: it runs inside the *read* path
+    /// ([`Self::hydrate_stored_identity`]), which a caller already holding that
+    /// guard calls, so taking it here would self-deadlock. The write is
+    /// idempotent — it rewrites the blob this call just read, replacing
+    /// plaintext keys with vault placeholders — so a concurrent whole-record
+    /// writer loses only the placeholder rewrite, and the next read redoes it.
+    // TODO(#889 follow-up): fold this rewrite into the guarded write path (e.g.
+    // by having the read return the migration for the caller to persist) so
+    // every blob write is serialized, not merely every deliberate one.
     fn persist_identity_blob(
         &self,
         kv: &DetKv,

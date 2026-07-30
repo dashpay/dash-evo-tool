@@ -34,6 +34,13 @@ type IdentityKeySet = BTreeSet<(PrivateKeyTarget, KeyID)>;
 impl AppContext {
     /// Opt-in: seal this identity's keyless vault keys Tier-2 under one
     /// per-identity `password`, then record `hint` for the prompt copy.
+    ///
+    /// Holds this identity's
+    /// [`identity_record_lock`](AppContext::identity_record_lock) for the whole
+    /// migration: a tier change decides which password every one of the
+    /// identity's keys opens under, so it must not interleave with another
+    /// writer that seals keys of its own — see
+    /// [`recover_legacy_identity_data`](AppContext::recover_legacy_identity_data).
     pub(super) fn protect_identity_keys(
         &self,
         identity_id: Identifier,
@@ -45,6 +52,10 @@ impl AppContext {
         // seal under a too-short password.
         validate_protection_password(&password)?;
 
+        let lock = self.identity_record_lock(identity_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let qi = self
             .get_identity_by_id(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
@@ -109,11 +120,19 @@ impl AppContext {
 
     /// Opt-out: revert this identity's password-protected vault keys to
     /// keyless (Tier-1) after verifying `password`, then drop the hint sidecar.
+    ///
+    /// Holds this identity's
+    /// [`identity_record_lock`](AppContext::identity_record_lock) for the same
+    /// reason [`Self::protect_identity_keys`] does.
     pub(super) fn unprotect_identity_keys(
         &self,
         identity_id: Identifier,
         password: Secret,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let lock = self.identity_record_lock(identity_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let qi = self
             .get_identity_by_id(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
@@ -148,8 +167,11 @@ impl AppContext {
     }
 }
 
-/// Fail-closed guard for the protect boundary: reject an identity that
-/// still carries resident plaintext (`Clear`/`AlwaysClear`) keys on disk. Such a
+/// Fail-closed guard for two of the three boundaries that seal an identity's
+/// keys — the protect opt-in and the legacy-recovery merge, but *not* the
+/// merge-load path (see the TODO at its seal in `load_identity.rs`): reject an
+/// identity that still carries resident plaintext (`Clear`/`AlwaysClear`) keys
+/// on disk. Such a
 /// key means the eager load-path vault migration did not complete — its vault
 /// write failed, or it was skipped on an already-protected identity — so the key
 /// has no vault label and [`seal_identity_keys`] would silently skip its
@@ -169,7 +191,9 @@ impl AppContext {
 /// ([`TaskError::IdentityKeyProtectionLegacyFormat`] → "load the identity again").
 /// Legacy keys are checked first: re-loading the identity also clears any
 /// resident plaintext, so it is the single action that resolves both.
-fn reject_resident_identity_plaintext(private_keys: &KeyStorage) -> Result<(), TaskError> {
+pub(super) fn reject_resident_identity_plaintext(
+    private_keys: &KeyStorage,
+) -> Result<(), TaskError> {
     if private_keys.has_encrypted_legacy_keys() {
         return Err(TaskError::IdentityKeyProtectionLegacyFormat);
     }

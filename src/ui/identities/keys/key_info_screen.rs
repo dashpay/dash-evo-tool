@@ -1124,6 +1124,9 @@ impl KeyInfoScreen {
                     return;
                 }
             };
+            // Restored if the persist below refuses, so the in-memory record
+            // never holds a key the record on disk does not.
+            let before = self.identity.private_keys.clone();
             if let Err(error) = self.identity.private_keys.insert_non_encrypted(
                 (target, self.key.id()),
                 (self.key.clone().into(), private_key_bytes),
@@ -1131,19 +1134,16 @@ impl KeyInfoScreen {
                 MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
                 return;
             }
-            self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
             if let Err(error) = self
                 .app_context
                 .update_local_qualified_identity(&self.identity)
             {
-                let handle = MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "The private key could not be saved. Check available disk space and try again.",
-                    MessageType::Error,
-                );
-                handle.with_details(error);
-                handle.disable_auto_dismiss();
+                self.identity.private_keys = before;
+                MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error)
+                    .disable_auto_dismiss();
+                return;
             }
+            self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
         } else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -1331,13 +1331,7 @@ impl KeyInfoScreen {
                 if result == ConfirmationStatus::Confirmed
                     && let Err(error) = self.remove_held_private_key()
                 {
-                    let handle = MessageBanner::set_global(
-                        ui.ctx(),
-                        "The private-key change could not be saved. Check available disk space and try again.",
-                        MessageType::Error,
-                    );
-                    handle.with_details(error);
-                    handle.disable_auto_dismiss();
+                    MessageBanner::set_global_with_error(ui.ctx(), error).disable_auto_dismiss();
                 }
             }
         }
@@ -1354,8 +1348,11 @@ impl KeyInfoScreen {
     /// on whichever key happens to occupy the derived slot, and on a masternode
     /// the voter and main id spaces overlap, so that can be a different key
     /// entirely.
+    ///
+    /// The removal is rolled back when the persist refuses, so the screen
+    /// never reports a key as gone that the record on disk still holds.
     fn remove_held_private_key(&mut self) -> Result<(), TaskError> {
-        self.private_key_data = None;
+        let before = self.identity.private_keys.clone();
         for placement in self
             .identity
             .private_keys
@@ -1364,8 +1361,15 @@ impl KeyInfoScreen {
         {
             self.identity.private_keys.remove_at(&placement);
         }
-        self.app_context
+        if let Err(error) = self
+            .app_context
             .update_local_qualified_identity(&self.identity)
+        {
+            self.identity.private_keys = before;
+            return Err(error);
+        }
+        self.private_key_data = None;
+        Ok(())
     }
 
     // --- Identity key password protection (per-identity at-rest key encryption) ---
@@ -2021,6 +2025,156 @@ mod tests {
                 .next()
                 .is_none(),
             "and nothing was filed for it either",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A password-protected identity for `app_context`'s vault: `sealed` is
+    /// published, held as an `InVault` placeholder, and its secret is sealed
+    /// Tier-2 — so any keyless persist of new resident plaintext is refused
+    /// with [`TaskError::IdentityKeyProtectionDowngrade`]. The cheapest real
+    /// persist refusal there is: no I/O fault injection needed.
+    fn protected_identity(
+        app_context: &Arc<AppContext>,
+        id_byte: u8,
+        sealed: &IdentityPublicKey,
+        also_published: &[IdentityPublicKey],
+    ) -> QualifiedIdentity {
+        let identifier = Identifier::from([id_byte; 32]);
+        crate::wallet_backend::SecretSeam::new(&app_context.secret_store())
+            .put_secret_protected(
+                &platform_wallet_storage::secrets::WalletId::from(identifier.to_buffer()),
+                &crate::wallet_backend::SecretScope::identity_key_label(&MAIN, sealed.id()),
+                &platform_wallet_storage::secrets::SecretBytes::from_slice(&[0x31; 32]),
+                &platform_wallet_storage::secrets::SecretString::new("identity-object-password"),
+            )
+            .expect("seal the existing key Tier-2");
+
+        let mut private_keys = KeyStorage::default();
+        private_keys.insert_at(
+            (MAIN, sealed.id()),
+            (
+                QualifiedIdentityPublicKey::from(sealed.clone()),
+                PrivateKeyData::InVault,
+            ),
+        );
+        let mut identity = identity_with(id_byte, &[]);
+        identity.identity = Identity::new_with_id_and_keys(
+            identifier,
+            std::iter::once(sealed)
+                .chain(also_published)
+                .map(|key| (key.id(), key.clone()))
+                .collect(),
+            PlatformVersion::latest(),
+        )
+        .expect("identity publishing its keys");
+        identity.private_keys = private_keys;
+        identity
+    }
+
+    /// A key whose persist is refused must not be reported as held, and the
+    /// refusal must be explained by the refusal itself. On a password-protected
+    /// identity the keyless paste persist is refused every time; leaving the
+    /// key on screen as held offers sign/reveal/remove for material the record
+    /// never accepted, and blaming disk space names a remedy that cannot work
+    /// while the real one — remove the protection first — goes unsaid.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_the_persist_refuses_is_not_reported_as_held() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let sealed = public_key(0, Purpose::AUTHENTICATION);
+        let (pasted, secret) = keypair(1, Purpose::AUTHENTICATION);
+        let stored = protected_identity(&app_context, 0x7C, &sealed, &[pasted.clone()]);
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("a record with no resident plaintext inserts cleanly");
+
+        let mut screen = KeyInfoScreen::new(stored, pasted.clone(), None, &app_context);
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        assert!(
+            screen.private_key_data.is_none(),
+            "a key the persist refused must not be left on screen as held",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&pasted)
+                .next()
+                .is_none(),
+            "the in-memory record must roll back to what is on disk",
+        );
+        let banner_texts =
+            crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());
+        assert!(
+            banner_texts.contains(&TaskError::IdentityKeyProtectionDowngrade.to_string()),
+            "the refusal must speak through its own typed message, got {banner_texts:?}",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// The mirror of the paste rollback: a removal whose persist is refused
+    /// must not leave the screen claiming the key is gone while the record on
+    /// disk still holds it — the next reload would resurrect a key the user
+    /// was told was removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removal_the_persist_refuses_keeps_the_key_held() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // Mixed shape: one key sealed Tier-2, the on-screen key and a second
+        // key resident plaintext. Removing the on-screen key still leaves the
+        // second plaintext key, so the keyless persist is refused.
+        let sealed = public_key(0, Purpose::AUTHENTICATION);
+        let on_screen = public_key(1, Purpose::AUTHENTICATION);
+        let other = public_key(2, Purpose::TRANSFER);
+        let mut identity = protected_identity(&app_context, 0x7D, &sealed, &[on_screen.clone()]);
+        for key in [&on_screen, &other] {
+            identity.private_keys.insert_at(
+                (MAIN, key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(key.clone()),
+                    PrivateKeyData::Clear([0x22; 32]),
+                ),
+            );
+        }
+
+        let mut screen = KeyInfoScreen::new(
+            identity,
+            on_screen.clone(),
+            Some((PrivateKeyData::Clear([0x22; 32]), None)),
+            &app_context,
+        );
+        let error = screen
+            .remove_held_private_key()
+            .expect_err("the keyless persist over a protected identity is refused");
+        assert!(
+            matches!(error, TaskError::IdentityKeyProtectionDowngrade),
+            "expected the protection refusal, got {error:?}",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&on_screen)
+                .next()
+                .is_some(),
+            "a removal that did not persist must roll back in memory too",
+        );
+        assert!(
+            screen.private_key_data.is_some(),
+            "and the screen must keep reporting the key as held",
         );
 
         app_context

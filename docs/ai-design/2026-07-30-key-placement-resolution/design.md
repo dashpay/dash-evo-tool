@@ -154,19 +154,23 @@ A crash cannot strand a key because nothing is ever in motion.
 * `KeyInfoScreen` no longer carries a `target` field. It resolves on demand, so
   there is no state to thread through constructors and nothing for the
   `ScreenType` round trip to drop.
-* `KeyStorage.private_keys` is **private**, and every accessor that names a
-  placement (`insert_at`, `entry_at`, `remove_at`, `insert_if_absent`, `has`) is
-  `pub(crate)`. With correctness concentrated in the resolver, a caller reaching
-  past it can silently miss a key that is present; keeping the placement-naming
-  surface inside the crate keeps the set of such callers enumerable. They exist
-  for the two that legitimately know a placement — the loader folding a
-  previously-loaded record into a fresh one, and legacy recovery, which is
-  *about* the placements an old blob recorded and must not be routed through a
-  target-blind resolver. `insert_at` and `entry_at` turned out to have no
-  production caller left and are `#[cfg(test)]`.
-  What remains `pub` cannot file a key at a placement of the caller's choosing:
-  the target-blind enumerators, `insert_non_encrypted` (which refuses a slot
-  another key occupies), and the whole-map `From` conversions.
+* `KeyStorage.private_keys` is **private**, and the *write-side* accessors that
+  name a placement (`insert_at`, `entry_at`, `remove_at`, `insert_if_absent`,
+  `has`) are `pub(crate)`. With correctness concentrated in the resolver, a
+  caller reaching past it can silently miss a key that is present; keeping the
+  placement-naming surface inside the crate keeps the set of such callers
+  enumerable. They exist for the two that legitimately know a placement — the
+  loader folding a previously-loaded record into a fresh one, and legacy
+  recovery, which is *about* the placements an old blob recorded and must not
+  be routed through a target-blind resolver. `insert_at` and `entry_at` turned
+  out to have no production caller left and are `#[cfg(test)]`.
+  The narrowing is not complete: several `pub` methods still take a
+  caller-named placement (`get_resolve_local`, `get_resolve_with_seed`,
+  `get_cloned_private_key_data_and_wallet_info`, `mark_in_vault`, `is_in_vault`,
+  `public_key_for`, `wallet_seed_hash_for`), and `mark_in_vault` zeroizes the
+  slot's occupant with no `same_key` guard — so `pub` alone does not yet mean a
+  caller cannot file or destroy at a placement of its choosing. The residual is
+  tracked in §8 and marked in the code as `TODO(placement-named-pub-surface)`.
 
 ## 8. What is not covered
 
@@ -192,6 +196,15 @@ A crash cannot strand a key because nothing is ever in motion.
   the synchronous approximation, which cannot see a dead vault label, so the
   fetch serves the first placement of the same key whose label is live — a dead
   placeholder cannot shadow a live sibling on the Show/Sign path.
+* **Several `pub` `KeyStorage` accessors still take a caller-named placement**
+  (marked `TODO(placement-named-pub-surface)` on the struct):
+  `get_resolve_local`, `get_resolve_with_seed`,
+  `get_cloned_private_key_data_and_wallet_info`, `mark_in_vault`, `is_in_vault`,
+  `public_key_for`, `wallet_seed_hash_for`. `mark_in_vault` is the sharp edge —
+  it zeroizes whatever occupies the slot and repoints it at a vault label with
+  no `same_key` guard; its single production caller is safe only because
+  `insert_non_encrypted` refused a foreign occupant earlier in the same flow.
+  Narrow them to `pub(crate)` or guard them, then restore §7's stronger claim.
 * **Proof generation cannot use a locally-added, not-yet-broadcast key**
   (`backend_task/grovestark.rs`, marked `TODO(grovestark-unpublished-key)`): the
   requested key id is resolved against the identity's published keys before the

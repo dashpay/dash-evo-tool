@@ -270,7 +270,8 @@ impl fmt::Display for PrivateKeyData {
 // get_resolve_with_seed, get_cloned_private_key_data_and_wallet_info,
 // mark_in_vault, is_in_vault, public_key_for, wallet_seed_hash_for), and
 // mark_in_vault zeroizes the occupant with no same_key guard. Narrow them to
-// pub(crate) or guard them, then align this rustdoc and design.md §7.
+// pub(crate) or guard them, then align this rustdoc and restore design.md §7's
+// stronger claim (§8 tracks this residual).
 #[derive(Debug, Encode, Decode, Clone, PartialEq, Default)]
 pub struct KeyStorage {
     private_keys: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,

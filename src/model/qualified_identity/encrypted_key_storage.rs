@@ -37,13 +37,36 @@ pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 /// or delete, material the requested key does not own. So this excludes the one
 /// field that legitimately moves and nothing else.
 pub fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
-    stored.id() == live.id()
-        && stored.key_type() == live.key_type()
-        && stored.purpose() == live.purpose()
-        && stored.security_level() == live.security_level()
-        && stored.read_only() == live.read_only()
-        && stored.contract_bounds() == live.contract_bounds()
-        && stored.data() == live.data()
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+
+    let IdentityPublicKey::V0(stored) = stored;
+    let IdentityPublicKey::V0(live) = live;
+    // Destructured exhaustively, and without `..`, on purpose: a field added
+    // upstream must break this build rather than be silently ignored. A new field
+    // that distinguishes two keys would otherwise leave this reporting a match
+    // where there is none — which is how one key's private material ends up
+    // attributed to another. Whoever adds it decides here whether it identifies a
+    // key or, like `disabled_at`, only describes its state.
+    let IdentityPublicKeyV0 {
+        id,
+        purpose,
+        security_level,
+        contract_bounds,
+        key_type,
+        read_only,
+        data,
+        // The one field Platform lets move after a key is added: disabling a key
+        // rewrites it, and the stored snapshot predates that.
+        disabled_at: _,
+    } = stored;
+
+    *id == live.id
+        && *purpose == live.purpose
+        && *security_level == live.security_level
+        && *contract_bounds == live.contract_bounds
+        && *key_type == live.key_type
+        && *read_only == live.read_only
+        && *data == live.data
 }
 
 /// A `(target, key_id)` map key paired with the raw 32-byte private key the

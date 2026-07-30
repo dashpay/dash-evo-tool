@@ -1126,7 +1126,7 @@ mod tests {
 
         // The pair is internally consistent; only the slot it sits in is wrong.
         let mut legacy = bare_identity(0x28);
-        legacy.private_keys.private_keys.insert(
+        legacy.private_keys.insert_at(
             (M, 7),
             (
                 QualifiedIdentityPublicKey::from(published.public.clone()),
@@ -1156,7 +1156,7 @@ mod tests {
         let IdentityPublicKey::V0(mut v0) = live.public.clone();
         v0.id = 5;
         let mut legacy = bare_identity(0x29);
-        legacy.private_keys.private_keys.insert(
+        legacy.private_keys.insert_at(
             (M, 5),
             (
                 QualifiedIdentityPublicKey::from(IdentityPublicKey::V0(v0)),

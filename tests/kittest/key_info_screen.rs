@@ -142,7 +142,7 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
             .expect("read the record")
             .expect("record stored");
         record.identity.add_public_key(restored.clone());
-        record.private_keys.private_keys.insert(
+        record.private_keys.insert_at(
             (MAIN, restored.id()),
             (
                 QualifiedIdentityPublicKey::from(restored.clone()),
@@ -174,8 +174,7 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
                 .expect("read back")
                 .expect("still stored")
                 .private_keys
-                .private_keys
-                .contains_key(&(MAIN, restored.id())),
+                .has(&(MAIN, restored.id())),
             "a key edit on this screen must not erase a key written while it was open",
         );
     });

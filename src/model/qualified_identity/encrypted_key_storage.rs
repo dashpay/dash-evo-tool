@@ -523,12 +523,11 @@ impl KeyStorage {
         &self,
         key: &IdentityPublicKey,
     ) -> Option<(PrivateKeyTarget, KeyID)> {
-        let placements: Vec<_> = self.candidates(key).collect();
-        placements
-            .iter()
+        // Two lazy passes rather than one collected Vec: this runs per key per
+        // frame, and the fallback re-probe costs at most three map reads.
+        self.candidates(key)
             .find(|placement| !self.is_in_vault(placement))
-            .or_else(|| placements.first())
-            .cloned()
+            .or_else(|| self.candidates(key).next())
     }
 
     /// What this identity holds for `key` — its stored [`PrivateKeyData`] and
@@ -552,9 +551,7 @@ impl KeyStorage {
     /// key, and from which wallet", so a key filed under two placements where
     /// the first is not wallet-derived still finds its wallet.
     pub fn wallet_derived_at(&self, key: &IdentityPublicKey) -> Option<&WalletDerivationPath> {
-        let placements: Vec<_> = self.candidates(key).collect();
-        placements
-            .into_iter()
+        self.candidates(key)
             .find_map(|placement| match self.private_keys.get(&placement) {
                 Some((_, PrivateKeyData::AtWalletDerivationPath(path))) => Some(path),
                 _ => None,

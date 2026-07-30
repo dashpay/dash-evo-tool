@@ -112,6 +112,37 @@ mod tests {
         IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
     };
 
+    /// An identity publishing `key`, holding `private_keys`, linked to
+    /// `wallets` — the three things a test here varies; every other field is
+    /// an inert default.
+    fn identity_with(
+        key: &IdentityPublicKey,
+        private_keys: KeyStorage,
+        wallets: BTreeMap<crate::model::wallet::WalletSeedHash, Arc<RwLock<Wallet>>>,
+    ) -> QualifiedIdentity {
+        QualifiedIdentity {
+            identity: Identity::new_with_id_and_keys(
+                Identifier::from([1u8; 32]),
+                BTreeMap::from([(key.id(), key.clone())]),
+                PlatformVersion::latest(),
+            )
+            .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: wallets,
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
     /// A key filed under two placements, wallet-derived only under the second.
     /// Taking whichever placement is probed first answers "no wallet" — the
     /// same answer as an identity with no wallet at all — and the screen then
@@ -121,8 +152,7 @@ mod tests {
         let seed_hash = [0x66; 32];
         let wallet = Wallet::new_from_seed([0x11; 64], Network::Testnet, None, None)
             .expect("build a test wallet");
-        let pv = PlatformVersion::latest();
-        let key = dash_sdk::platform::IdentityPublicKey::random_key(0, Some(1), pv);
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
 
         let mut private_keys = KeyStorage::default();
         private_keys.insert_at(
@@ -143,27 +173,11 @@ mod tests {
             ),
         );
 
-        let qualified_identity = QualifiedIdentity {
-            identity: Identity::new_with_id_and_keys(
-                Identifier::from([1u8; 32]),
-                BTreeMap::from([(key.id(), key.clone())]),
-                pv,
-            )
-            .expect("identity"),
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::Masternode,
-            alias: None,
+        let qualified_identity = identity_with(
+            &key,
             private_keys,
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::from([(seed_hash, Arc::new(RwLock::new(wallet)))]),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        };
+            BTreeMap::from([(seed_hash, Arc::new(RwLock::new(wallet)))]),
+        );
 
         let selected = get_selected_wallet(&qualified_identity, None, Some(&key))
             .expect("a key given directly needs no DPNS contract");

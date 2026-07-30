@@ -10,6 +10,7 @@ use chrono::{LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+#[cfg(test)]
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, RichText, Ui};
@@ -688,17 +689,22 @@ impl MasternodeDetailView {
     /// The first key whose private material this node actually holds — the only
     /// keys that can be sealed. Used to route the Add-protection CTA straight
     /// into an interactive `KeyInfoScreen` seal flow.
+    ///
+    /// Resolves "held" through `candidates()`, the same rule every other
+    /// resolution site on this identity uses — a structural `(target, key_id)`
+    /// probe would miss material filed under a target other than the one
+    /// `identity_keys` structurally pairs the key with (e.g. a main-identity
+    /// voting key filed under the voter placement by an older build), and could
+    /// match a different key that merely shares the id. `candidates()` only
+    /// checks presence, so no raw key bytes are cloned out of the vault here —
+    /// unlike `open_key_info_with_mode`, which needs the actual secret and thus
+    /// pays for the clone.
     fn first_protectable_key(
         &self,
     ) -> Option<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
         identity_keys(&self.identity)
             .into_iter()
-            .find(|(target, key)| {
-                self.identity
-                    .private_keys
-                    .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()))
-                    .is_some()
-            })
+            .find(|(_, key)| self.identity.private_keys.candidates(key).next().is_some())
     }
 
     /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,

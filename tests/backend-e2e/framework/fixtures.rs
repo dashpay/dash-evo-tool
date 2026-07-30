@@ -314,7 +314,7 @@ pub fn find_authentication_public_key(
         SecurityLevel::HIGH,
         SecurityLevel::MASTER,
     ] {
-        for ((target, _key_id), (qualified_key, _)) in qi.private_keys.private_keys.iter() {
+        for ((target, _key_id), (qualified_key, _)) in qi.private_keys.iter() {
             if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
                 continue;
             }

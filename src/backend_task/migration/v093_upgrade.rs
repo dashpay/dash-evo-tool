@@ -758,7 +758,6 @@ fn stored_key_data(stored: &StoredIdentityOnDisk) -> Vec<PrivateKeyData> {
     QualifiedIdentity::from_bytes(&stored.qi_bytes)
         .expect("the stored blob must decode")
         .private_keys
-        .private_keys
         .values()
         .map(|(_, data)| data.clone())
         .collect()
@@ -1131,16 +1130,16 @@ fn a_real_v093_identity_blob_still_decodes() {
     // The keys are the payload. v0.9.3 held them `Clear`, and they must decode
     // to exactly the bytes it wrote — a shifted field or a changed varint would
     // corrupt them silently.
-    let keys = &qi.private_keys.private_keys;
+    let keys = &qi.private_keys;
     assert_eq!(keys.len(), 2, "both private keys must decode");
     assert_eq!(
-        keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0))
+        keys.entry_at(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0))
             .map(|(_, data)| data.clone()),
         Some(PrivateKeyData::Clear(OWNER_PRIVATE_KEY)),
         "the masternode owner key must decode byte-for-byte",
     );
     assert_eq!(
-        keys.get(&(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1))
+        keys.entry_at(&(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1))
             .map(|(_, data)| data.clone()),
         Some(PrivateKeyData::Clear(VOTING_PRIVATE_KEY)),
         "the masternode voting key must decode byte-for-byte",

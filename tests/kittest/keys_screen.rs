@@ -133,15 +133,13 @@ fn identity_holding_key(
         associated_owner_key_id: None,
         identity_type: IdentityType::User,
         alias: Some("held-key".to_string()),
-        private_keys: KeyStorage {
-            private_keys: BTreeMap::from([(
-                (target, public_key.id()),
-                (
-                    QualifiedIdentityPublicKey::from(public_key),
-                    PrivateKeyData::Clear([id_byte; 32]),
-                ),
-            )]),
-        },
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            (target, public_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(public_key),
+                PrivateKeyData::Clear([id_byte; 32]),
+            ),
+        )])),
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,

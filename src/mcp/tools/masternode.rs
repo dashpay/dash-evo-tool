@@ -813,7 +813,7 @@ mod tests {
             let (owner_key, owner_secret) =
                 IdentityPublicKey::random_masternode_owner_key(0, Some(1), pv).expect("owner key");
             public_keys.insert(owner_key.id(), owner_key.clone());
-            key_storage.private_keys.insert(
+            key_storage.insert_at(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner_key.id()),
                 (
                     QualifiedIdentityPublicKey::from(owner_key),
@@ -826,7 +826,7 @@ mod tests {
                 IdentityPublicKey::random_masternode_transfer_key(1, Some(2), pv)
                     .expect("transfer key");
             public_keys.insert(payout_key.id(), payout_key.clone());
-            key_storage.private_keys.insert(
+            key_storage.insert_at(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, payout_key.id()),
                 (
                     QualifiedIdentityPublicKey::from(payout_key),

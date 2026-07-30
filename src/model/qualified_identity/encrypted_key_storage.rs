@@ -199,10 +199,19 @@ impl fmt::Display for PrivateKeyData {
     }
 }
 
+/// Every private half this install holds for one identity, keyed by the store it
+/// is filed under and the key's id.
+///
+/// The map is private on purpose. Which store a key is filed under is not
+/// something a caller should be deriving for itself — that is what produced a
+/// saved key no signing path could find — so reads go through
+/// [`candidates`](Self::candidates), which selects on key material. The
+/// remaining direct accessors exist for callers that legitimately name a
+/// placement: a loader that knows structurally where a key belongs, and legacy
+/// recovery, which is *about* specific stored placements.
 #[derive(Debug, Encode, Decode, Clone, PartialEq, Default)]
 pub struct KeyStorage {
-    pub private_keys:
-        BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
+    private_keys: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
 }
 
 impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>
@@ -447,6 +456,98 @@ impl KeyStorage {
     /// Returns all stored key identifiers.
     pub fn keys_set(&self) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
         self.private_keys.keys().cloned().collect()
+    }
+
+    /// How many private halves are held.
+    pub fn len(&self) -> usize {
+        self.private_keys.len()
+    }
+
+    /// Whether no private half is held at all.
+    pub fn is_empty(&self) -> bool {
+        self.private_keys.is_empty()
+    }
+
+    /// Every entry, keyed by placement. Target-blind, for callers that need to
+    /// walk the whole store rather than find one key.
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &(PrivateKeyTarget, KeyID),
+            &(QualifiedIdentityPublicKey, PrivateKeyData),
+        ),
+    > {
+        self.private_keys.iter()
+    }
+
+    /// Every stored entry, without its placement. Target-blind, for callers
+    /// asking about the keys themselves rather than where they are filed.
+    pub fn values(&self) -> impl Iterator<Item = &(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.values()
+    }
+
+    /// The stored entry at exactly `key`, if any.
+    ///
+    /// Names a placement directly, so it answers "is *this* slot occupied", not
+    /// "where is this key". Prefer [`candidates`](Self::candidates) for the
+    /// latter: this cannot tell a key from a different one sharing its id.
+    pub fn entry_at(
+        &self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<&(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.get(key)
+    }
+
+    /// Store `value` at exactly `key`, replacing whatever was there.
+    ///
+    /// For callers that know a placement structurally — a loader walking the
+    /// identity list it read a key from, or legacy recovery restoring an entry
+    /// to the placement the old blob recorded. Anything choosing a placement for
+    /// *new* material should take it from
+    /// [`QualifiedIdentity::placement_of`](crate::model::qualified_identity::QualifiedIdentity::placement_of).
+    pub fn insert_at(
+        &mut self,
+        key: (PrivateKeyTarget, KeyID),
+        value: (QualifiedIdentityPublicKey, PrivateKeyData),
+    ) -> Option<(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.insert(key, value)
+    }
+
+    /// Store `value` at `key` only if nothing is there — the merge-preserving
+    /// write. Used when folding a previously-loaded record into a fresh one, so
+    /// a key the new load did not resupply is kept rather than dropped, and one
+    /// it did resupply is not overwritten with the stale copy.
+    pub fn insert_if_absent(
+        &mut self,
+        key: (PrivateKeyTarget, KeyID),
+        value: (QualifiedIdentityPublicKey, PrivateKeyData),
+    ) {
+        self.private_keys.entry(key).or_insert(value);
+    }
+
+    /// Consume the store, yielding every entry with its placement.
+    pub fn into_entries(
+        self,
+    ) -> impl Iterator<
+        Item = (
+            (PrivateKeyTarget, KeyID),
+            (QualifiedIdentityPublicKey, PrivateKeyData),
+        ),
+    > {
+        self.private_keys.into_iter()
+    }
+
+    /// Remove the entry at exactly `key`, returning it if it was there.
+    ///
+    /// Removing *a key* rather than a slot means removing every placement that
+    /// holds it — see [`candidates`](Self::candidates), which selects on key
+    /// material so a removal cannot land on a different key sharing the id.
+    pub fn remove_at(
+        &mut self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.remove(key)
     }
 
     pub fn identity_public_keys(&self) -> Vec<(&PrivateKeyTarget, &QualifiedIdentityPublicKey)> {

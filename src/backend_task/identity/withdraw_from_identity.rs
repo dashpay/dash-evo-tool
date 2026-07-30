@@ -84,7 +84,7 @@ impl AppContext {
             .map_err(|_| TaskError::OwnerKeyWithdrawalNotAllowed)?;
 
         tracing::debug!(
-            num_private_keys = qualified_identity.private_keys.private_keys.len(),
+            num_private_keys = qualified_identity.private_keys.len(),
             num_wallets = qualified_identity.associated_wallets.len(),
             "Qualified identity key info"
         );

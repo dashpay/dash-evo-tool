@@ -1294,7 +1294,7 @@ impl KeyInfoScreen {
                         .candidates(&self.key)
                         .collect::<Vec<_>>()
                     {
-                        self.identity.private_keys.private_keys.remove(&placement);
+                        self.identity.private_keys.remove_at(&placement);
                     }
                     if let Err(error) = self
                         .app_context
@@ -1703,7 +1703,7 @@ mod tests {
     fn identity_with(id: u8, keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
         let mut private_keys = KeyStorage::default();
         for (key, secret) in keys {
-            private_keys.private_keys.insert(
+            private_keys.insert_at(
                 (MAIN, key.id()),
                 (
                     QualifiedIdentityPublicKey::from(key.clone()),
@@ -1745,7 +1745,7 @@ mod tests {
             .get_local_qualified_identity(&identity_id)
             .expect("read the record")
             .expect("record stored");
-        record.private_keys.private_keys.insert(
+        record.private_keys.insert_at(
             (MAIN, key.id()),
             (
                 QualifiedIdentityPublicKey::from(key.clone()),
@@ -1787,11 +1787,7 @@ mod tests {
         });
 
         assert!(
-            screen
-                .identity
-                .private_keys
-                .private_keys
-                .contains_key(&(MAIN, restored_key.id())),
+            screen.identity.private_keys.has(&(MAIN, restored_key.id())),
             "the screen must hold the restored record, not the clone it opened with",
         );
 
@@ -1837,8 +1833,7 @@ mod tests {
                 .expect("read back")
                 .expect("still stored")
                 .private_keys
-                .private_keys
-                .contains_key(&(MAIN, restored_key.id())),
+                .has(&(MAIN, restored_key.id())),
             "a key edit on this screen must not erase keys restored while it was away",
         );
 
@@ -1892,8 +1887,7 @@ mod tests {
             !screen
                 .identity
                 .private_keys
-                .private_keys
-                .contains_key(&(MAIN, other_writer_key.id())),
+                .has(&(MAIN, other_writer_key.id())),
             "another identity's completion must not be acted on here at all",
         );
 

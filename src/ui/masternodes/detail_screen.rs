@@ -1152,7 +1152,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let owner = IdentityPublicKey::random_key(1, Some(1), pv);
         let mut ks = KeyStorage::default();
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.id()),
             (
                 QualifiedIdentityPublicKey::from(owner),

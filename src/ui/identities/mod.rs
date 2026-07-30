@@ -1,19 +1,13 @@
 use std::sync::{Arc, RwLock};
 
 use dash_sdk::{
-    dpp::{
-        data_contract::accessors::v0::DataContractV0Getters,
-        identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
-    },
-    platform::IdentityPublicKey,
+    dpp::data_contract::accessors::v0::DataContractV0Getters, platform::IdentityPublicKey,
 };
 
 use crate::{
     context::AppContext,
     model::{
-        qualified_identity::{
-            PrivateKeyTarget, QualifiedIdentity, encrypted_key_storage::PrivateKeyData,
-        },
+        qualified_identity::{QualifiedIdentity, encrypted_key_storage::PrivateKeyData},
         wallet::Wallet,
     },
 };
@@ -87,13 +81,13 @@ pub fn get_selected_wallet(
     };
 
     // Once we have the public key (either from DPNS or directly), look up
-    // the matching private key data in `qualified_identity`.
-    let key_lookup = (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id());
+    // the matching private key data wherever it is filed.
+    let filed_at = qualified_identity
+        .private_keys
+        .candidates(public_key)
+        .next();
     if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
-        qualified_identity
-            .private_keys
-            .private_keys
-            .get(&key_lookup)
+        filed_at.and_then(|placement| qualified_identity.private_keys.entry_at(&placement))
     {
         // If found, return the associated wallet (cloned to preserve Arc).
         Ok(qualified_identity

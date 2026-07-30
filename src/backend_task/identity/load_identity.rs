@@ -52,8 +52,8 @@ type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
 /// but is NOT valid for the background legacy migration, where an absent field
 /// can be a deliberate removal (a cleared alias, a "Remove private key from DET").
 fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIdentity) {
-    for (key, value) in existing.private_keys.private_keys {
-        new.private_keys.private_keys.entry(key).or_insert(value);
+    for (key, value) in existing.private_keys.into_entries() {
+        new.private_keys.insert_if_absent(key, value);
     }
     if new.alias.is_none() {
         new.alias = existing.alias;
@@ -830,21 +830,21 @@ mod tests {
         let voter = IdentityPublicKey::random_key(2, Some(2), pv);
         let id_key = IdentityPublicKey::random_key(3, Some(3), pv);
         let triple = [(M, owner.id()), (V, voter.id()), (M, id_key.id())];
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, owner.id()),
             (
                 QualifiedIdentityPublicKey::from(owner),
                 PrivateKeyData::Clear([0xA0; 32]),
             ),
         );
-        ks.private_keys.insert(
+        ks.insert_at(
             (V, voter.id()),
             (
                 QualifiedIdentityPublicKey::from(voter),
                 PrivateKeyData::Clear([0xB0; 32]),
             ),
         );
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, id_key.id()),
             (
                 QualifiedIdentityPublicKey::from(id_key),
@@ -969,11 +969,10 @@ mod tests {
         // new value wins on collision.
         let (voter_pk, _) = existing
             .private_keys
-            .private_keys
-            .get(&voter_key)
+            .entry_at(&voter_key)
             .expect("existing voter key")
             .clone();
-        new.private_keys.private_keys.insert(
+        new.private_keys.insert_at(
             voter_key.clone(),
             (voter_pk, PrivateKeyData::Clear([0xEE; 32])),
         );
@@ -982,18 +981,17 @@ mod tests {
 
         // Owner and identity-auth keys survive the voter-key-only update.
         assert!(
-            new.private_keys.private_keys.contains_key(&owner_key),
+            new.private_keys.has(&owner_key),
             "owner key must survive a voting-key-only update",
         );
         assert!(
-            new.private_keys.private_keys.contains_key(&idkey_key),
+            new.private_keys.has(&idkey_key),
             "identity-auth key must survive a voting-key-only update",
         );
         // The resupplied voting key wins on collision (0xEE, not the old 0xB0).
         let (_, merged_voter) = new
             .private_keys
-            .private_keys
-            .get(&voter_key)
+            .entry_at(&voter_key)
             .expect("voter key present after merge");
         assert!(
             matches!(merged_voter, PrivateKeyData::Clear(b) if *b == [0xEE; 32]),
@@ -1067,10 +1065,7 @@ mod tests {
             .expect("first node still stored");
         for (t, k) in &triple {
             assert!(
-                still
-                    .private_keys
-                    .private_keys
-                    .contains_key(&(t.clone(), *k)),
+                still.private_keys.has(&(t.clone(), *k)),
                 "key ({t:?}, {k}) of the first node must survive a rejected duplicate load",
             );
         }
@@ -1138,7 +1133,7 @@ mod tests {
         let new_voter = IdentityPublicKey::random_key(9, Some(9), pv);
         let new_voter_id = new_voter.id();
         let new_key = (V, new_voter_id);
-        existing.private_keys.private_keys.insert(
+        existing.private_keys.insert_at(
             new_key.clone(),
             (
                 QualifiedIdentityPublicKey::from(new_voter),
@@ -1165,7 +1160,7 @@ mod tests {
         // The new key flipped to InVault in the in-memory identity...
         assert!(
             matches!(
-                existing.private_keys.private_keys.get(&new_key),
+                existing.private_keys.entry_at(&new_key),
                 Some((_, PrivateKeyData::InVault)),
             ),
             "the merged voting key must be marked InVault after sealing",

@@ -546,7 +546,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let k = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, k.id()),
             (
                 QualifiedIdentityPublicKey::from(k),
@@ -563,7 +563,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let k = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, k.id()),
             (
                 QualifiedIdentityPublicKey::from(k),
@@ -580,7 +580,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let vaulted = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, vaulted.id()),
             (
                 QualifiedIdentityPublicKey::from(vaulted),
@@ -588,7 +588,7 @@ mod tests {
             ),
         );
         let derived = IdentityPublicKey::random_key(2, Some(2), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, derived.id()),
             (
                 QualifiedIdentityPublicKey::from(derived),
@@ -608,7 +608,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let a = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, a.id()),
             (
                 QualifiedIdentityPublicKey::from(a),
@@ -616,7 +616,7 @@ mod tests {
             ),
         );
         let b = IdentityPublicKey::random_key(2, Some(2), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, b.id()),
             (
                 QualifiedIdentityPublicKey::from(b),
@@ -624,7 +624,7 @@ mod tests {
             ),
         );
         let derived = IdentityPublicKey::random_key(3, Some(3), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (M, derived.id()),
             (
                 QualifiedIdentityPublicKey::from(derived),

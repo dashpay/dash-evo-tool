@@ -151,15 +151,13 @@ fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, 
         pv,
     )
     .expect("masternode identity with key");
-    let private_keys = KeyStorage {
-        private_keys: BTreeMap::from([(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
-            (
-                QualifiedIdentityPublicKey::from(key),
-                PrivateKeyData::Clear([byte; 32]),
-            ),
-        )]),
-    };
+    let private_keys = KeyStorage::from(BTreeMap::from([(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear([byte; 32]),
+        ),
+    )]));
     let node_qi = QualifiedIdentity {
         identity,
         associated_voter_identity: None,

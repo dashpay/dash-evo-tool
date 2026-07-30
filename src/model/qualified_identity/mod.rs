@@ -384,7 +384,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
             );
             // Only dump the identity's available keys when resolution failed —
             // this is the diagnostic that actually matters, off the hot path.
-            for ((t, id), (pub_key, _)) in self.private_keys.private_keys.iter() {
+            for ((t, id), (pub_key, _)) in self.private_keys.iter() {
                 tracing::debug!(
                     target = ?t,
                     key_id = id,
@@ -591,7 +591,7 @@ impl QualifiedIdentity {
             owner: false,
             payout: false,
         };
-        for (public_key, _) in self.private_keys.private_keys.values() {
+        for (public_key, _) in self.private_keys.values() {
             match public_key.identity_public_key.purpose() {
                 Purpose::VOTING => presence.voting = true,
                 Purpose::OWNER => presence.owner = true,
@@ -1270,7 +1270,7 @@ mod key_placement_tests {
 
         let mut private_keys = KeyStorage::default();
         for (target, key, data) in held {
-            private_keys.private_keys.insert(
+            private_keys.insert_at(
                 (target.clone(), key.id()),
                 (QualifiedIdentityPublicKey::from(key.clone()), data.clone()),
             );
@@ -1594,7 +1594,7 @@ mod key_resolution_tests {
 
         let mut private_keys = KeyStorage::default();
         for (target, data) in placements {
-            private_keys.private_keys.insert(
+            private_keys.insert_at(
                 (target.clone(), key.id()),
                 (QualifiedIdentityPublicKey::from(key.clone()), data.clone()),
             );
@@ -1756,7 +1756,7 @@ mod masternode_key_presence_tests {
         let mut ks = KeyStorage::default();
         for (i, purpose) in main_key_purposes.iter().enumerate() {
             let key = key_with_purpose(i as KeyID, *purpose);
-            ks.private_keys.insert(
+            ks.insert_at(
                 (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
                 (
                     QualifiedIdentityPublicKey::from(key),
@@ -1887,7 +1887,7 @@ mod withdrawal_key_tests {
             associated_owner_key_id: None,
             identity_type,
             alias: None,
-            private_keys: KeyStorage { private_keys },
+            private_keys: KeyStorage::from(private_keys),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             secret_access: None,

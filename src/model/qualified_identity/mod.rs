@@ -119,21 +119,20 @@ pub struct OwnerKeyWithdrawalNotAllowed;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoUsableWithdrawalKey;
 
+/// Which of an identity's key stores a private half is filed under.
+///
+/// Deliberately has no conversion from [`Purpose`]: a key's purpose does not
+/// determine its store, since a voting-purpose key filed on the main identity is
+/// a supported shape. Ask
+/// [`KeyStorage::candidates`](encrypted_key_storage::KeyStorage::candidates)
+/// where a private half is, or [`QualifiedIdentity::placement_of`] where a new
+/// one belongs.
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
     PrivateKeyOnMainIdentity,
     PrivateKeyOnVoterIdentity,
     PrivateKeyOnOperatorIdentity,
-}
-
-impl From<Purpose> for PrivateKeyTarget {
-    fn from(value: Purpose) -> Self {
-        match value {
-            Purpose::VOTING => PrivateKeyTarget::PrivateKeyOnVoterIdentity,
-            _ => PrivateKeyTarget::PrivateKeyOnMainIdentity,
-        }
-    }
 }
 
 #[derive(Debug, Encode, Decode, Clone, PartialEq)]
@@ -1312,7 +1311,7 @@ mod key_placement_tests {
     fn voting_key_on_the_main_identity_is_found_where_the_loader_files_it() {
         let voting = key(3, Purpose::VOTING, 0xAA);
         let identity = qi(
-            &[voting.clone()],
+            std::slice::from_ref(&voting),
             None,
             &[(MAIN, voting.clone(), clear(0x11))],
         );
@@ -1334,7 +1333,7 @@ mod key_placement_tests {
     fn a_voting_key_an_older_build_filed_under_voter_stays_findable() {
         let voting = key(3, Purpose::VOTING, 0xAA);
         let identity = qi(
-            &[voting.clone()],
+            std::slice::from_ref(&voting),
             None,
             &[(VOTER, voting.clone(), clear(0x11))],
         );
@@ -1356,7 +1355,7 @@ mod key_placement_tests {
         let auth = key(0, Purpose::AUTHENTICATION, 0xBB);
         let identity = qi(
             &[],
-            Some(&[auth.clone()]),
+            Some(std::slice::from_ref(&auth)),
             &[(VOTER, auth.clone(), clear(0x22))],
         );
 
@@ -1375,8 +1374,8 @@ mod key_placement_tests {
         let on_main = key(0, Purpose::AUTHENTICATION, 0xAA);
         let on_voter = key(0, Purpose::VOTING, 0xBB);
         let identity = qi(
-            &[on_main.clone()],
-            Some(&[on_voter.clone()]),
+            std::slice::from_ref(&on_main),
+            Some(std::slice::from_ref(&on_voter)),
             &[
                 (MAIN, on_main.clone(), clear(0x11)),
                 (VOTER, on_voter.clone(), clear(0x22)),
@@ -1407,7 +1406,7 @@ mod key_placement_tests {
     fn duplicate_placements_are_returned_in_probe_order() {
         let voting = key(1, Purpose::VOTING, 0xAA);
         let identity = qi(
-            &[voting.clone()],
+            std::slice::from_ref(&voting),
             None,
             &[
                 (VOTER, voting.clone(), clear(0x11)),
@@ -1440,7 +1439,11 @@ mod key_placement_tests {
     fn an_entry_whose_material_disagrees_is_not_a_candidate() {
         let requested = key(2, Purpose::AUTHENTICATION, 0xAA);
         let impostor = key(2, Purpose::AUTHENTICATION, 0xCC);
-        let identity = qi(&[requested.clone()], None, &[(MAIN, impostor, clear(0x33))]);
+        let identity = qi(
+            std::slice::from_ref(&requested),
+            None,
+            &[(MAIN, impostor, clear(0x33))],
+        );
 
         assert!(
             identity
@@ -1459,7 +1462,7 @@ mod key_placement_tests {
     fn an_operator_filed_key_from_a_legacy_blob_stays_reachable() {
         let owner = key(0, Purpose::OWNER, 0xDD);
         let identity = qi(
-            &[owner.clone()],
+            std::slice::from_ref(&owner),
             None,
             &[(OPERATOR, owner.clone(), clear(0x44))],
         );
@@ -1475,7 +1478,7 @@ mod key_placement_tests {
     #[test]
     fn a_key_whose_private_half_is_not_held_yields_nothing() {
         let published = key(0, Purpose::AUTHENTICATION, 0xAA);
-        let identity = qi(&[published.clone()], None, &[]);
+        let identity = qi(std::slice::from_ref(&published), None, &[]);
 
         assert!(
             identity
@@ -1493,7 +1496,11 @@ mod key_placement_tests {
     fn placement_of_reads_the_identitys_own_lists() {
         let on_main = key(3, Purpose::VOTING, 0xAA);
         let on_voter = key(0, Purpose::VOTING, 0xBB);
-        let identity = qi(&[on_main.clone()], Some(&[on_voter.clone()]), &[]);
+        let identity = qi(
+            std::slice::from_ref(&on_main),
+            Some(std::slice::from_ref(&on_voter)),
+            &[],
+        );
 
         assert_eq!(
             identity.placement_of(&on_main),
@@ -1525,7 +1532,11 @@ mod key_placement_tests {
     #[test]
     fn a_key_published_on_two_lists_is_ambiguous() {
         let shared = key(0, Purpose::VOTING, 0xAA);
-        let identity = qi(&[shared.clone()], Some(&[shared.clone()]), &[]);
+        let identity = qi(
+            std::slice::from_ref(&shared),
+            Some(std::slice::from_ref(&shared)),
+            &[],
+        );
 
         assert_eq!(
             identity.placement_of(&shared),

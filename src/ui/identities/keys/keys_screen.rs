@@ -11,7 +11,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -24,7 +24,6 @@ use crate::ui::masternodes::{KeyVocabulary, identity_keys, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
-use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
@@ -208,8 +207,13 @@ impl KeysScreen {
         let expert = self.app_context.user_role().at_least(UserRole::Power);
         let vocabulary = KeyVocabulary::from(self.identity.identity_type);
         let labels = manage_keys_labels(vocabulary, &keys);
-        for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
-            let filed_at = self.filed_at(&target, key.id());
+        for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
+            // Where this key's private half actually is, whichever store filed
+            // it. Selects on key material, so a voter identity carrying the same
+            // key id cannot make an unheld key read as held. A presence check
+            // rather than a fetch: cloning the entry copies raw key bytes out of
+            // the vault unscrubbed, and this runs every frame for every key.
+            let filed_at = self.identity.private_keys.candidates(&key).next();
             let held = if filed_at.is_some() { HELD } else { NOT_HELD };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -220,14 +224,11 @@ impl KeysScreen {
                     None => button,
                 };
                 if button.clicked() {
-                    let opened_at = filed_at.clone().unwrap_or_else(|| target.clone());
-                    let holding = self
-                        .identity
-                        .private_keys
-                        .get_cloned_private_key_data_and_wallet_info(&(
-                            opened_at.clone(),
-                            key.id(),
-                        ));
+                    let holding = filed_at.as_ref().and_then(|placement| {
+                        self.identity
+                            .private_keys
+                            .get_cloned_private_key_data_and_wallet_info(placement)
+                    });
                     action |= AppAction::AddScreen(Screen::KeyInfoScreen(
                         KeyInfoScreen::new(
                             self.identity.clone(),
@@ -235,9 +236,6 @@ impl KeysScreen {
                             holding,
                             &self.app_context,
                         )
-                        // Where the material actually is, so the screen's own
-                        // re-read finds the same key this row just reported.
-                        .with_target(opened_at)
                         .with_parent(PARENT_CRUMB),
                     ));
                 }
@@ -248,30 +246,6 @@ impl KeysScreen {
             }
         }
         action
-    }
-
-    /// Which store this key's private half is actually in, or `None`.
-    ///
-    /// Checks the structural target first, then the purpose-derived one, because
-    /// both conventions are in use and real installs hold material written under
-    /// each. This is a read: looking in the second place can only find material
-    /// that is already there, so it corrects a false "not saved on this device"
-    /// without moving anything. Reconciling the two conventions is a migration,
-    /// tracked separately.
-    ///
-    /// A presence check per candidate, not a fetch: cloning the entry copies the
-    /// raw private key out of the vault unscrubbed, and this runs every frame for
-    /// every key.
-    fn filed_at(&self, structural: &PrivateKeyTarget, key_id: KeyID) -> Option<PrivateKeyTarget> {
-        let derived: PrivateKeyTarget = self
-            .identity
-            .identity
-            .public_keys()
-            .get(&key_id)
-            .map_or_else(|| structural.clone(), |key| key.purpose().into());
-        [structural.clone(), derived]
-            .into_iter()
-            .find(|candidate| self.identity.private_keys.has(&(candidate.clone(), key_id)))
     }
 
     /// The on-chain specifics of one key, for the Expert view. Everyday view

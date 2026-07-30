@@ -1156,6 +1156,57 @@ fn a_real_v093_identity_blob_still_decodes() {
     );
 }
 
+/// The same real v0.9.3 blob, but asking the question a user asks: are these
+/// keys *usable* after the upgrade?
+///
+/// Decoding proves the bytes survived; it does not prove anything can find them.
+/// Both of this blob's keys are shapes the retired purpose derivation placed
+/// wrongly — an `OWNER` key filed on the main identity derived to `Main` and was
+/// fine, but a `VOTING` key filed on the **voter** identity is only reachable
+/// because that is where v0.9.3 put it, and the structural answer for a key the
+/// voter identity publishes is also `Voter`. Pinning both here means a future
+/// change to placement cannot strand a real install's masternode keys without
+/// failing this test.
+#[test]
+fn both_keys_of_a_real_v093_blob_resolve_to_their_own_material() {
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::signer::Signer;
+
+    let qi = QualifiedIdentity::from_bytes(&v093_masternode_blob())
+        .expect("a genuine v0.9.3 identity blob must decode on the current bincode");
+
+    let owner = qi
+        .identity
+        .get_public_key_by_id(0)
+        .expect("the owner key is published on the main identity");
+    assert_eq!(
+        qi.private_keys.candidates(owner).collect::<Vec<_>>(),
+        vec![(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)],
+        "the owner key resolves to the store v0.9.3 filed it under",
+    );
+    assert!(
+        qi.can_sign_with(owner),
+        "a masternode upgraded from v0.9.3 must still be able to sign with its owner key",
+    );
+
+    let (voter_identity, _) = qi
+        .associated_voter_identity
+        .as_ref()
+        .expect("the blob carries a voter identity");
+    let voting = voter_identity
+        .get_public_key_by_id(1)
+        .expect("the voting key is published on the voter identity");
+    assert_eq!(
+        qi.private_keys.candidates(voting).collect::<Vec<_>>(),
+        vec![(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1)],
+        "the voting key resolves to the store v0.9.3 filed it under",
+    );
+    assert!(
+        qi.can_sign_with(voting),
+        "a masternode upgraded from v0.9.3 must still be able to vote",
+    );
+}
+
 /// The second launch after an upgrade. Every step must short-circuit on its
 /// sentinel: no duplicated votes, no resurrected history, no rewritten sentinel,
 /// no clobbered preferences — and the legacy rows still in `data.db`, because a

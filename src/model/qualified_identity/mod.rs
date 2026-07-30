@@ -695,9 +695,10 @@ impl QualifiedIdentity {
     /// `Ok(None)` when no placement holds this key. When every candidate failed,
     /// the first failure is returned rather than `None`, so a lone dead entry
     /// still surfaces its own typed error instead of a silent miss. A cancelled
-    /// prompt ([`TaskError::SecretPromptCancelled`]) ends the walk immediately —
-    /// it is the user's answer about this key, and asking again for the next
-    /// placement would be one dialog per store.
+    /// prompt ([`TaskError::SecretPromptCancelled`]) ends the walk immediately
+    /// and is itself the error returned, outranking any earlier placement's
+    /// mechanical failure — it is the user's answer about this key, and asking
+    /// again for the next placement would be one dialog per store.
     ///
     /// [`PrivateKeyData::AtWalletDerivationPath`]: encrypted_key_storage::PrivateKeyData::AtWalletDerivationPath
     /// [`PrivateKeyData::InVault`]: encrypted_key_storage::PrivateKeyData::InVault
@@ -717,16 +718,17 @@ impl QualifiedIdentity {
                 Err(failure) => {
                     // A cancellation answers for the key, not for one store of
                     // it: trying the next candidate would re-ask for what the
-                    // user just declined, one dialog per placement.
+                    // user just declined, one dialog per placement — and the
+                    // user's decision outranks an earlier placement's
+                    // mechanical failure, so it is returned as-is.
                     // `SecretPromptUnavailable` is not a decision but a
                     // property of the host (no window to ask in), so a sibling
                     // placement that needs no prompt is still worth trying.
-                    let user_declined = matches!(failure, TaskError::SecretPromptCancelled);
+                    if matches!(failure, TaskError::SecretPromptCancelled) {
+                        return Err(failure);
+                    }
                     if first_failure.is_none() {
                         first_failure = Some(failure);
-                    }
-                    if user_declined {
-                        break;
                     }
                 }
             }
@@ -1893,6 +1895,65 @@ mod key_resolution_tests {
             prompt.ask_count(),
             1,
             "one refusal ends the attempt; it must not open the next placement's prompt",
+        );
+    }
+
+    /// The cancellation is the answer that surfaces even when an earlier
+    /// placement already failed for a mechanical reason. A dead placeholder
+    /// probed ahead of a sealed placement must not have its failure reported
+    /// over the user's own refusal — the user dismissed a password prompt and
+    /// would otherwise be told the key is missing from this device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancellation_outranks_an_earlier_placements_failure() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::SecretSeam;
+        use crate::wallet_backend::single_key::open_secret_store;
+        use crate::wallet_backend::{SecretAccess, SecretScope};
+        use platform_wallet_storage::secrets::{
+            SecretBytes, SecretString, WalletId as SecretWalletId,
+        };
+
+        let key = voting_key(0);
+        // The id `masternode_with` builds its identity under.
+        let identity_id = [1u8; 32];
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
+        // Only the second-probed placement is sealed (Tier-2, so it prompts).
+        // The first-probed placement is a dead placeholder: an `InVault` entry
+        // with no vault secret behind it, which fails without a prompt.
+        SecretSeam::new(&store)
+            .put_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &SecretScope::identity_key_label(&VOTER, key.id()),
+                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretString::new("the-object-password"),
+            )
+            .expect("seal the identity key");
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::Cancel]));
+        let mut identity = masternode_with(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::InVault),
+                (VOTER, PrivateKeyData::InVault),
+            ],
+        );
+        identity.secret_access = Some(SecretAccess::new(store, prompt.clone(), Network::Testnet));
+
+        let error = identity
+            .resolve_private_key_bytes(&key)
+            .await
+            .expect_err("a cancelled prompt resolves nothing");
+        assert!(
+            matches!(error, TaskError::SecretPromptCancelled),
+            "the user's refusal outranks the dead placeholder's failure, got {error:?}",
+        );
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "only the sealed placement prompts; the dead placeholder must not",
         );
     }
 

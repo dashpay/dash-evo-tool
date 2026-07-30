@@ -40,6 +40,31 @@ const HELD: &str = "This key is saved on this device.";
 /// than signalled by colour alone.
 const NOT_HELD: &str = "This key is not saved on this device.";
 
+/// Whether a stored public key and a live one are the same key.
+///
+/// Compares every field except `disabled_at`. A Platform identity public key is
+/// immutable once added, with that single exception: disabling one rewrites that
+/// field. The stored copy is a snapshot taken when the private half was saved,
+/// so plain `==` stops matching as soon as a key is disabled or rotated, and the
+/// row reports a key this device demonstrably holds as missing.
+///
+/// Comparing only the id and the key material would fix that and reopen a worse
+/// hole in the other direction. Both are shared by construction here: `id` is
+/// already the lookup key, and a main identity's voting key and a linked voter
+/// identity's key can carry identical `data`, leaving `purpose` as the only thing
+/// telling them apart. Conflating those two hands over private material the
+/// clicked key does not own, which is the defect `filed_at` exists to prevent —
+/// so this excludes the one field that legitimately moves, and nothing else.
+fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
+    stored.id() == live.id()
+        && stored.key_type() == live.key_type()
+        && stored.purpose() == live.purpose()
+        && stored.security_level() == live.security_level()
+        && stored.read_only() == live.read_only()
+        && stored.contract_bounds() == live.contract_bounds()
+        && stored.data() == live.data()
+}
+
 pub struct KeysScreen {
     pub identity: QualifiedIdentity,
     pub app_context: Arc<AppContext>,
@@ -277,7 +302,7 @@ impl KeysScreen {
             self.identity
                 .private_keys
                 .public_key_for(&(candidate.clone(), key.id()))
-                .is_some_and(|stored| stored.identity_public_key == *key)
+                .is_some_and(|stored| same_key(&stored.identity_public_key, key))
         })
     }
 

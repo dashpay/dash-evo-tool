@@ -976,6 +976,84 @@ fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
     });
 }
 
+/// A key the device holds stays held after it is disabled on chain.
+///
+/// The stored copy of a public key is a snapshot taken when its private half was
+/// saved. Platform keys are immutable once added with exactly one exception —
+/// disabling rewrites `disabled_at` — so full-struct equality between the
+/// snapshot and the live key breaks the moment a key is rotated or disabled, and
+/// the row reports a key whose private half is demonstrably on this device as
+/// missing. Same symptom as SEC-001 from a different trigger.
+///
+/// This fails safe, understating possession rather than over-, and the guard
+/// against the unsafe direction is
+/// `a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one`:
+/// the comparison has to survive `disabled_at` moving while still telling two
+/// same-numbered keys apart.
+#[test]
+fn a_disabled_key_whose_private_half_is_saved_is_still_reported_as_held() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+
+        // The live key, as Platform reports it after the user disabled it.
+        let mut live = key(0, Purpose::AUTHENTICATION);
+        let disabled_at = 1_700_000_000_u64;
+        match &mut live {
+            IdentityPublicKey::V0(v0) => v0.disabled_at = Some(disabled_at),
+        }
+        let identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x43u8; 32]),
+            BTreeMap::from([(live.id(), live.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity with one disabled key");
+
+        // The stored snapshot, written before it was disabled.
+        let snapshot = key(0, Purpose::AUTHENTICATION);
+        assert_eq!(
+            snapshot.disabled_at(),
+            None,
+            "the premise: the saved copy predates the key being disabled"
+        );
+
+        let qualified = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("disabled-but-held".to_string()),
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::from([(
+                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, snapshot.id()),
+                    (
+                        QualifiedIdentityPublicKey::from(snapshot),
+                        PrivateKeyData::Clear([0x43; 32]),
+                    ),
+                )]),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+
+        let (harness, _) = harness_for(KeysScreen::new(qualified, &app_context));
+        assert!(
+            harness.query_by_label(HELD).is_some(),
+            "disabling a key on chain does not remove its private half from this \
+             device, so the row must still report it as saved here"
+        );
+        assert!(
+            harness.query_by_label(NOT_HELD).is_none(),
+            "and must not report it as missing"
+        );
+    });
+}
+
 /// QA-008: every screen hosting the offer must name a key as the identity it is
 /// showing would.
 ///

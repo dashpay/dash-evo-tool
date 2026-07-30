@@ -163,7 +163,8 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
             .expect("queue the refresh the app dispatches");
         harness.run_steps(3);
 
-        // What every key add and remove on this screen does with its clone.
+        // The clone is what the screen displays; writing it out whole proves
+        // the refresh actually made it current.
         let Some(Screen::KeyInfoScreen(screen)) = harness.state().screen_stack.last() else {
             panic!("Key Info must still be the open screen");
         };

@@ -242,7 +242,9 @@ and the UI rows the screens that consume them.
 | `a_wallet_is_found_under_a_later_placement_too` | wallet lookup | `get_selected_wallet` finds a key's wallet under any placement it is filed at |
 | `a_key_that_cannot_be_placed_is_not_reported_as_held` | Key Info screen | a paste with no store to file under is refused and never shown as held |
 | `a_key_the_persist_refuses_is_not_reported_as_held` | Key Info screen | a persist refusal rolls the paste back — on screen and in the in-memory record |
-| `a_removal_the_persist_refuses_keeps_the_key_held` | Key Info screen | a persist refusal rolls the removal back the same way |
+| `a_removal_that_cannot_persist_keeps_the_key_held` | Key Info screen | a removal that could not persist leaves the key held on screen |
+| `a_write_behind_the_screen_survives_a_paste` | Key Info screen | the paste is a locked read-modify-write — no concurrent writer's key is written away |
+| `a_write_behind_the_screen_survives_a_removal` | Key Info screen | the removal edits the record as stored now, same lost-update guard |
 | `a_show_request_that_cannot_resolve_speaks_through_the_typed_error` | Key Info screen | Show/Sign failures surface each variant's own remedy |
 | `the_keys_popup_finds_a_main_key_an_older_build_filed_under_voter` | identities list | the Keys popup is placement-blind for main-identity keys |
 | `the_keys_popup_finds_a_voter_key_an_older_build_filed_under_main` | identities list | its voter-list mirror |

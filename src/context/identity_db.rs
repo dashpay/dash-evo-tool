@@ -623,6 +623,38 @@ impl AppContext {
         self.write_local_qualified_identity_locked(qualified_identity)
     }
 
+    /// Read-modify-write one stored identity under its record guard.
+    ///
+    /// Re-reads the record inside [`Self::identity_record_lock`], hands the
+    /// fresh copy to `edit`, and persists the result through
+    /// [`Self::write_local_qualified_identity_locked`] — so the edit applies
+    /// to what is on disk *now*, never to a caller's earlier snapshot, and a
+    /// concurrent writer's change cannot be silently written away. Returns
+    /// the persisted record for the caller to adopt in place of any clone it
+    /// holds.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::IdentityNotFoundLocally`] when nothing is stored under
+    /// `identity_id`, and whatever `edit` returns — in both cases nothing is
+    /// persisted.
+    pub fn edit_local_qualified_identity(
+        &self,
+        identity_id: &Identifier,
+        edit: impl FnOnce(&mut QualifiedIdentity) -> std::result::Result<(), TaskError>,
+    ) -> std::result::Result<QualifiedIdentity, TaskError> {
+        let lock = self.identity_record_lock(*identity_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut fresh = self
+            .get_local_qualified_identity(identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        edit(&mut fresh)?;
+        self.write_local_qualified_identity_locked(&fresh)?;
+        Ok(fresh)
+    }
+
     /// The write half of [`Self::update_local_qualified_identity`], for a
     /// caller that already holds this identity's
     /// [`identity_record_lock`](Self::identity_record_lock) across a wider

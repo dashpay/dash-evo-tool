@@ -965,10 +965,20 @@ impl KeyInfoScreen {
     /// [`TaskError::IdentityKeyPlacementAmbiguous`] when several lists publish
     /// it, [`TaskError::IdentityKeyNotOnIdentityRecord`] when none does.
     fn filed_at(&self) -> Result<PrivateKeyTarget, TaskError> {
-        if let Some((target, _)) = self.identity.private_keys.first_live_candidate(&self.key) {
+        Self::filed_at_in(&self.identity, &self.key)
+    }
+
+    /// [`Self::filed_at`]'s rule against a caller-supplied record. The paste
+    /// path applies it to the record freshly re-read inside its locked
+    /// read-modify-write, where `self.identity` would be the stale clone.
+    fn filed_at_in(
+        identity: &QualifiedIdentity,
+        key: &IdentityPublicKey,
+    ) -> Result<PrivateKeyTarget, TaskError> {
+        if let Some((target, _)) = identity.private_keys.first_live_candidate(key) {
             return Ok(target);
         }
-        match self.identity.placement_of(&self.key) {
+        match identity.placement_of(key) {
             KeyPlacement::Resolved(target) => Ok(target),
             KeyPlacement::Ambiguous(_) => Err(TaskError::IdentityKeyPlacementAmbiguous),
             KeyPlacement::Unknown => Err(TaskError::IdentityKeyNotOnIdentityRecord),
@@ -978,12 +988,14 @@ impl KeyInfoScreen {
     /// Re-read this screen's identity from the store, after a backend task
     /// wrote it.
     ///
-    /// The screen keeps a clone taken when it opened, and its own key add /
-    /// remove paths persist that whole clone. Any change another writer makes
-    /// while the screen is open therefore has to be picked up here, or the next
-    /// key edit writes it away. The key on screen is refreshed from the same
-    /// record. A read failure leaves the clone alone and says so — the change
-    /// landed, this screen just cannot show it.
+    /// The screen keeps a clone taken when it opened. Its key add / remove
+    /// paths persist through a locked read-modify-write of the record and
+    /// adopt the result, so a stale clone cannot write another writer's change
+    /// away — but everything the screen *shows* between edits comes from the
+    /// clone, so a change another writer makes still has to be picked up here.
+    /// The key on screen is refreshed from the same record. A read failure
+    /// leaves the clone alone and says so — the change landed, this screen
+    /// just cannot show it.
     fn reload_identity(&mut self) {
         let identity_id = self.identity.identity.id();
         match self.app_context.get_local_qualified_identity(&identity_id) {
@@ -1093,37 +1105,47 @@ impl KeyInfoScreen {
             // screen calls it held: a key shown as held offers to sign, to be
             // revealed and to be removed, none of which a refused key can do.
             //
-            // An existing placement is reused so a re-entered key overwrites
-            // itself rather than growing a second copy under another store;
-            // otherwise the identity's own lists say where it belongs. Both
-            // agree with where the resolver will look for it.
-            let target = match self.filed_at() {
-                Ok(target) => target,
-                Err(error) => {
-                    MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
-                    return;
-                }
-            };
-            // Restored if the persist below refuses, so the in-memory record
-            // never holds a key the record on disk does not.
-            let before = self.identity.private_keys.clone();
-            if let Err(error) = self.identity.private_keys.insert_non_encrypted(
-                (target, self.key.id()),
-                (self.key.clone().into(), private_key_bytes),
-            ) {
-                MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
-                return;
-            }
-            if let Err(error) = self
+            // The whole edit is a locked read-modify-write of the record on
+            // disk, so both the placement decision and the occupied-slot check
+            // see what is stored *now* — a key another writer landed while
+            // this screen was open survives the paste instead of being written
+            // away with the screen's stale clone. An existing placement is
+            // reused so a re-entered key overwrites itself rather than growing
+            // a second copy under another store; otherwise the identity's own
+            // lists say where it belongs.
+            let identity_id = self.identity.identity.id();
+            let updated = self
                 .app_context
-                .update_local_qualified_identity(&self.identity)
-            {
-                self.identity.private_keys = before;
-                MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error)
-                    .disable_auto_dismiss();
-                return;
+                .edit_local_qualified_identity(&identity_id, |fresh| {
+                    let target = Self::filed_at_in(fresh, &self.key)?;
+                    fresh.private_keys.insert_non_encrypted(
+                        (target, self.key.id()),
+                        (self.key.clone().into(), private_key_bytes),
+                    )
+                });
+            match updated {
+                Ok(fresh) => {
+                    // Resolved from the record just persisted, so the screen
+                    // shows exactly what was filed.
+                    self.private_key_data = fresh.private_keys.held_private_key_data(&self.key);
+                    self.identity = fresh;
+                }
+                Err(error) => {
+                    // An input refusal dismisses on its own; a record that
+                    // could not be persisted stays up until acknowledged.
+                    let refused_input = matches!(
+                        error,
+                        TaskError::IdentityKeySlotOccupied
+                            | TaskError::IdentityKeyPlacementAmbiguous
+                            | TaskError::IdentityKeyNotOnIdentityRecord
+                    );
+                    let banner =
+                        MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
+                    if !refused_input {
+                        banner.disable_auto_dismiss();
+                    }
+                }
             }
-            self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
         } else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -1335,29 +1357,31 @@ impl KeyInfoScreen {
     /// aborts with the record, the screen, and the vault as they were,
     /// leaving a removal the user can simply repeat.
     ///
-    /// The removal is separately rolled back when the final persist refuses,
-    /// so the screen never reports a key as gone that the record on disk
-    /// still holds — the same invariant `validate_and_store_private_key`
-    /// keeps on the paste path. A persist refusal reached *after* the vault
-    /// secrets are already gone leaves this rolled-back map entry as the only
-    /// remaining place tracking the key as held; retrying the removal finds
-    /// an already-empty vault and simply finishes the job.
+    /// The whole removal is a locked read-modify-write of the record on disk,
+    /// so the placements deleted are the ones stored *now* — a key another
+    /// writer landed while this screen was open survives, instead of being
+    /// written away with the screen's stale clone — and the screen's own
+    /// state changes only after the persist succeeds, so it never reports a
+    /// key as gone that the record on disk still holds. A persist refusal
+    /// reached *after* the vault secrets are already gone leaves the stored
+    /// map entry as the only remaining place tracking the key as held;
+    /// retrying the removal finds an already-empty vault and simply finishes
+    /// the job.
     fn remove_held_private_key(&mut self) -> Result<(), TaskError> {
-        let placements: Vec<_> = self.identity.private_keys.candidates(&self.key).collect();
-        self.app_context
-            .delete_identity_key_secrets(&self.identity.identity.id(), placements.clone())?;
-        let before = self.identity.private_keys.clone();
-        for placement in &placements {
-            self.identity.private_keys.remove_at(placement);
-        }
-        if let Err(error) = self
+        let identity_id = self.identity.identity.id();
+        let updated = self
             .app_context
-            .update_local_qualified_identity(&self.identity)
-        {
-            self.identity.private_keys = before;
-            return Err(error);
-        }
+            .edit_local_qualified_identity(&identity_id, |fresh| {
+                let placements: Vec<_> = fresh.private_keys.candidates(&self.key).collect();
+                self.app_context
+                    .delete_identity_key_secrets(&identity_id, placements.clone())?;
+                for placement in &placements {
+                    fresh.private_keys.remove_at(placement);
+                }
+                Ok(())
+            })?;
         self.private_key_data = None;
+        self.identity = updated;
         Ok(())
     }
 
@@ -2004,6 +2028,102 @@ mod tests {
             .await;
     }
 
+    /// The paste persists through a locked read-modify-write of the record on
+    /// disk — never by writing out the clone this screen opened with. A key
+    /// another writer lands while the screen is open must survive the next
+    /// paste, with no refresh delivered in between; nothing at runtime
+    /// guarantees one arrives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_behind_the_screen_survives_a_paste() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let mut stored = identity_with(0x51, &[]);
+        stored.identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x51; 32]),
+            BTreeMap::from([(pasted.id(), pasted.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity publishing the pasted key");
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, pasted.clone(), None, &app_context);
+
+        // Another writer lands a key after the screen took its clone.
+        let concurrent = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, identity_id, &concurrent, [0x22; 32]);
+
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        let on_disk = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert!(
+            on_disk.private_keys.has(&(MAIN, concurrent.id())),
+            "the concurrent writer's key must survive the paste",
+        );
+        assert!(
+            on_disk.private_keys.candidates(&pasted).next().is_some(),
+            "and the pasted key was saved alongside it",
+        );
+        assert!(
+            screen.identity.private_keys.has(&(MAIN, concurrent.id())),
+            "the screen must adopt the record it persisted, not keep its stale clone",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// The removal's mirror of `a_write_behind_the_screen_survives_a_paste`:
+    /// removing one key must not write away a key another writer landed while
+    /// the screen was open — for a private key, silently and irreversibly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_behind_the_screen_survives_a_removal() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen = public_key(1, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x52, &[(on_screen.clone(), [0x11; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, on_screen.clone(), None, &app_context);
+
+        let concurrent = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, identity_id, &concurrent, [0x22; 32]);
+
+        screen
+            .remove_held_private_key()
+            .expect("the removal must persist");
+
+        let on_disk = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert!(
+            on_disk.private_keys.has(&(MAIN, concurrent.id())),
+            "the concurrent writer's key must survive the removal",
+        );
+        assert!(
+            on_disk.private_keys.candidates(&on_screen).next().is_none(),
+            "while the key the user asked to remove is gone",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
     /// A key and the private key that opens it, so the paste path's validation
     /// passes and the placement check is what decides the outcome.
     fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
@@ -2159,35 +2279,20 @@ mod tests {
             .await;
     }
 
-    /// The mirror of the paste rollback: a removal whose persist is refused
-    /// must not leave the screen claiming the key is gone while the record on
-    /// disk still holds it — the next reload would resurrect a key the user
-    /// was told was removed.
+    /// The mirror of the paste refusal: a removal that cannot persist must not
+    /// leave the screen claiming the key is gone. The locked read-modify-write
+    /// edits the record as stored, so a record that vanished while this screen
+    /// was open — the identity removed from another screen — refuses the
+    /// removal with its own typed error, and the screen keeps reporting what
+    /// it still holds rather than declaring anything removed.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_removal_the_persist_refuses_keeps_the_key_held() {
+    async fn a_removal_that_cannot_persist_keeps_the_key_held() {
         let (app_context, _dir) = offline_ctx().await;
 
-        // Mixed shape: one key sealed Tier-2, the on-screen key and a second
-        // key resident plaintext. Removing the on-screen key still leaves the
-        // second plaintext key, so the keyless persist is refused.
-        let sealed = public_key(0, Purpose::AUTHENTICATION);
+        // Deliberately never inserted: the record is gone by the time the
+        // removal runs, the way another screen's identity removal leaves it.
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
-        let other = public_key(2, Purpose::TRANSFER);
-        let mut identity = protected_identity(
-            &app_context,
-            0x7D,
-            &sealed,
-            std::slice::from_ref(&on_screen),
-        );
-        for key in [&on_screen, &other] {
-            identity.private_keys.insert_at(
-                (MAIN, key.id()),
-                (
-                    QualifiedIdentityPublicKey::from(key.clone()),
-                    PrivateKeyData::Clear([0x22; 32]),
-                ),
-            );
-        }
+        let identity = identity_with(0x7D, &[(on_screen.clone(), [0x22; 32])]);
 
         let mut screen = KeyInfoScreen::new(
             identity,
@@ -2197,10 +2302,10 @@ mod tests {
         );
         let error = screen
             .remove_held_private_key()
-            .expect_err("the keyless persist over a protected identity is refused");
+            .expect_err("with no stored record there is nothing to remove from");
         assert!(
-            matches!(error, TaskError::IdentityKeyProtectionDowngrade),
-            "expected the protection refusal, got {error:?}",
+            matches!(error, TaskError::IdentityNotFoundLocally),
+            "expected the missing-record refusal, got {error:?}",
         );
         assert!(
             screen
@@ -2209,7 +2314,7 @@ mod tests {
                 .candidates(&on_screen)
                 .next()
                 .is_some(),
-            "a removal that did not persist must roll back in memory too",
+            "a removal that did not persist must leave the in-memory record alone",
         );
         assert!(
             screen.private_key_data.is_some(),

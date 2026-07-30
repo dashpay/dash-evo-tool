@@ -966,7 +966,7 @@ impl SettingsTab {
 }
 
 fn keys_screen_type(identity: &QualifiedIdentity) -> ScreenType {
-    ScreenType::Keys(identity.identity.clone())
+    ScreenType::Keys(identity.clone())
 }
 
 fn usernames_screen_action() -> AppAction {
@@ -1093,14 +1093,17 @@ mod tests {
         assert!(tab.selected_identity.is_none());
     }
 
+    /// The keys screen has to receive the qualified record: without the private
+    /// key storage it cannot say which keys this device holds, and it would open
+    /// Key Info reporting every key as missing.
     #[test]
-    fn advanced_keys_action_opens_the_keys_screen() {
+    fn advanced_keys_action_opens_the_keys_screen_with_the_qualified_record() {
         let identity = qualified_identity();
 
         assert!(matches!(
             keys_screen_type(&identity),
             ScreenType::Keys(screen_identity)
-                if screen_identity.id() == identity.identity.id()
+                if screen_identity.identity.id() == identity.identity.id()
         ));
     }
 

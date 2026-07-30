@@ -249,8 +249,8 @@ pub fn compute_recovery_plan(
 ) -> RecoveryPlan {
     let mut plan = RecoveryPlan::default();
 
-    for (map_key, (public_key, data)) in &legacy.private_keys.private_keys {
-        if modern.private_keys.private_keys.contains_key(map_key) {
+    for (map_key, (public_key, data)) in legacy.private_keys.iter() {
+        if modern.private_keys.has(map_key) {
             continue;
         }
         let (target, key_id) = map_key.clone();
@@ -393,16 +393,12 @@ pub fn apply_recovery_plan(
         match &descriptor.item {
             RecoveryItem::Key { target, key_id } => {
                 let map_key = (target.clone(), *key_id);
-                let Some(entry) = legacy.private_keys.private_keys.remove(&map_key) else {
+                let Some(entry) = legacy.private_keys.remove_at(&map_key) else {
                     continue;
                 };
                 // `or_insert`, never `insert`: the modern record wins every
                 // collision by construction, not by the caller being careful.
-                merged
-                    .private_keys
-                    .private_keys
-                    .entry(map_key)
-                    .or_insert(entry);
+                merged.private_keys.insert_if_absent(map_key, entry);
             }
             RecoveryItem::VoterAssociation => {
                 if merged.associated_voter_identity.is_none() {
@@ -534,7 +530,6 @@ fn reference_identity<'a>(
 fn holds_a_voting_key(record: &QualifiedIdentity) -> bool {
     record
         .private_keys
-        .private_keys
         .iter()
         .any(|((target, _), (public_key, _))| {
             *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity
@@ -656,7 +651,7 @@ mod tests {
         key: &TestKey,
         data: PrivateKeyData,
     ) {
-        qi.private_keys.private_keys.insert(
+        qi.private_keys.insert_at(
             (target, key.id()),
             (QualifiedIdentityPublicKey::from(key.public.clone()), data),
         );
@@ -721,8 +716,7 @@ mod tests {
 
     fn key_data(qi: &QualifiedIdentity, target: PrivateKeyTarget, key_id: KeyID) -> PrivateKeyData {
         qi.private_keys
-            .private_keys
-            .get(&(target, key_id))
+            .entry_at(&(target, key_id))
             .expect("key present")
             .1
             .clone()
@@ -872,12 +866,7 @@ mod tests {
 
         let applied = apply_recovery_plan(&modern, legacy, &[key_item(M, 1)]);
         assert!(
-            applied.applied.is_empty()
-                && !applied
-                    .merged
-                    .private_keys
-                    .private_keys
-                    .contains_key(&(M, 1)),
+            applied.applied.is_empty() && !applied.merged.private_keys.has(&(M, 1)),
             "an excluded key must never be merged, even if approved",
         );
     }
@@ -1013,15 +1002,15 @@ mod tests {
                 let applied = apply_recovery_plan(&base, legacy, &plan.approved_items());
                 let merged = &applied.merged;
 
-                for (map_key, entry) in &base.private_keys.private_keys {
+                for (map_key, entry) in base.private_keys.iter() {
                     assert_eq!(
-                        merged.private_keys.private_keys.get(map_key),
+                        merged.private_keys.entry_at(map_key),
                         Some(entry),
                         "every modern key must survive byte-identical",
                     );
                 }
                 assert!(
-                    merged.private_keys.private_keys.len() >= base.private_keys.private_keys.len(),
+                    merged.private_keys.len() >= base.private_keys.len(),
                     "the merged key map must be a superset of the modern one",
                 );
                 assert_eq!(merged.alias, base.alias, "alias has no write path here");
@@ -1076,11 +1065,7 @@ mod tests {
         assert!(applied.applied.is_empty());
         assert_eq!(key_data(&applied.merged, M, 1), held.clear());
         assert!(
-            !applied
-                .merged
-                .private_keys
-                .private_keys
-                .contains_key(&(M, 2)),
+            !applied.merged.private_keys.has(&(M, 2)),
             "a candidate the user did not approve must never be merged",
         );
     }
@@ -1141,7 +1126,7 @@ mod tests {
 
         // The pair is internally consistent; only the slot it sits in is wrong.
         let mut legacy = bare_identity(0x28);
-        legacy.private_keys.private_keys.insert(
+        legacy.private_keys.insert_at(
             (M, 7),
             (
                 QualifiedIdentityPublicKey::from(published.public.clone()),
@@ -1171,7 +1156,7 @@ mod tests {
         let IdentityPublicKey::V0(mut v0) = live.public.clone();
         v0.id = 5;
         let mut legacy = bare_identity(0x29);
-        legacy.private_keys.private_keys.insert(
+        legacy.private_keys.insert_at(
             (M, 5),
             (
                 QualifiedIdentityPublicKey::from(IdentityPublicKey::V0(v0)),

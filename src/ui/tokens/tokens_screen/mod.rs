@@ -3293,9 +3293,7 @@ mod tests {
             associated_owner_key_id: None,
             identity_type: crate::model::qualified_identity::IdentityType::User,
             alias: None,
-            private_keys: KeyStorage {
-                private_keys: BTreeMap::new(),
-            },
+            private_keys: KeyStorage::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             secret_access: None,
@@ -3595,9 +3593,7 @@ mod tests {
             associated_owner_key_id: None,
             identity_type: crate::model::qualified_identity::IdentityType::User,
             alias: None,
-            private_keys: KeyStorage {
-                private_keys: BTreeMap::new(),
-            },
+            private_keys: KeyStorage::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             secret_access: None,
@@ -3711,9 +3707,7 @@ mod tests {
             associated_owner_key_id: None,
             identity_type: crate::model::qualified_identity::IdentityType::User,
             alias: None,
-            private_keys: KeyStorage {
-                private_keys: BTreeMap::new(),
-            },
+            private_keys: KeyStorage::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             secret_access: None,

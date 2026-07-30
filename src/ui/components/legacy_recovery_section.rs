@@ -14,7 +14,8 @@ use crate::model::legacy_recovery::{
     ExclusionReason, RecoveryItem, RecoveryItemDescriptor, RecoveryPlan,
 };
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::masternodes::{disambiguate_role_labels, role_label_and_tip};
+use crate::ui::masternodes::{KeyVocabulary, disambiguate_role_labels, role_label_and_tip};
+use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 
 /// Section lead-in. Avoids "migration", "blob" and "vault" — the user knows
@@ -95,17 +96,22 @@ pub fn exclusion_explanation(reason: ExclusionReason) -> &'static str {
 /// item is named here exactly as the "Manage keys" list names the same key, and
 /// two rows that would otherwise read alike are told apart by their key id.
 pub fn recovery_item_labels(
+    vocabulary: KeyVocabulary,
     items: &[&RecoveryItemDescriptor],
 ) -> Vec<(String, Option<&'static str>)> {
     let mut labels: Vec<(String, Option<&'static str>)> = items
         .iter()
         .map(|item| match &item.item {
             RecoveryItem::Key { .. } => {
-                let (role, tip) = role_label_and_tip(
+                let (label, tip) = role_label_and_tip(
+                    vocabulary,
                     item.is_on_voter_identity(),
                     item.purpose.unwrap_or(Purpose::AUTHENTICATION),
+                    // The previous version's data records no retired state, and
+                    // a key still restorable is one the identity still uses.
+                    false,
                 );
-                (format!("{role} key"), tip)
+                (label.to_string(), tip)
             }
             RecoveryItem::VoterAssociation => ("Voting identity link".to_string(), None),
             RecoveryItem::OperatorAssociation => ("Operator identity link".to_string(), None),
@@ -155,14 +161,23 @@ impl ComponentResponse for LegacyRecoverySectionResponse {
 pub struct LegacyRecoverySection<'a> {
     plan: &'a RecoveryPlan,
     restoring: bool,
+    vocabulary: KeyVocabulary,
 }
 
 impl<'a> LegacyRecoverySection<'a> {
-    /// The offer for `plan`.
-    pub fn new(plan: &'a RecoveryPlan) -> Self {
+    /// The offer for `plan`, naming its keys in `vocabulary`.
+    ///
+    /// `vocabulary` is an argument rather than a builder option on purpose. This
+    /// offer is hosted by three separate screens, and a default would let a
+    /// fourth inherit the wrong wording silently: naming a user identity's
+    /// transfer key a "payout address key" asserts it owns a masternode, and
+    /// disagrees with the keys list rendered right below the offer. Required
+    /// here, every host has to answer for the identity it is showing.
+    pub fn new(plan: &'a RecoveryPlan, vocabulary: KeyVocabulary) -> Self {
         Self {
             plan,
             restoring: false,
+            vocabulary,
         }
     }
 
@@ -172,6 +187,39 @@ impl<'a> LegacyRecoverySection<'a> {
         self.restoring = restoring;
         self
     }
+}
+
+/// Render `state`'s offer for a hosting screen, returning the items the user
+/// approved this frame. Renders nothing at all when detection found nothing, so
+/// the offer appears only where it has something to say and retires itself once
+/// a restore lands.
+///
+/// The whole of what a host owes the offer's *rendering*, so no host has to
+/// restate it. Three screens host this one offer, and each restatement is a
+/// place the next one can drift: naming a key differently, forgetting the
+/// in-flight guard that stops a restore being dispatched twice, or showing an
+/// empty section. A host supplies only the identity's `vocabulary` and whatever
+/// separators frame it — see [`LegacyRecoveryState::has_offer`] for deciding
+/// whether to draw those.
+///
+/// `vocabulary` stays an argument for the reason [`LegacyRecoverySection::new`]
+/// gives: naming a user identity's transfer key a "payout address key" asserts
+/// it owns a masternode.
+pub fn host_offer(
+    state: &LegacyRecoveryState,
+    vocabulary: KeyVocabulary,
+    ui: &mut Ui,
+) -> Option<Vec<RecoveryItem>> {
+    let restoring = state.is_restoring();
+    let plan = state.plan().filter(|plan| !plan.is_empty())?;
+    // `changed_value` hands back a reference into the response, so the approved
+    // set has to be cloned out before the response is dropped.
+    LegacyRecoverySection::new(plan, vocabulary)
+        .restoring(restoring)
+        .show(ui)
+        .inner
+        .changed_value()
+        .clone()
 }
 
 impl Component for LegacyRecoverySection<'_> {
@@ -196,7 +244,7 @@ impl Component for LegacyRecoverySection<'_> {
                 ui.label(RichText::new(intro).color(DashColors::warning_color(dark_mode)));
 
                 let previewed = self.plan.preview_items();
-                for (label, tip) in recovery_item_labels(&previewed) {
+                for (label, tip) in recovery_item_labels(self.vocabulary, &previewed) {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         let row = ui
@@ -238,8 +286,9 @@ impl Component for LegacyRecoverySection<'_> {
                     let excluded: Vec<&RecoveryItemDescriptor> =
                         self.plan.excluded.iter().map(|(item, _)| item).collect();
                     let reasons = self.plan.excluded.iter().map(|(_, reason)| *reason);
-                    for ((label, _), reason) in
-                        recovery_item_labels(&excluded).into_iter().zip(reasons)
+                    for ((label, _), reason) in recovery_item_labels(self.vocabulary, &excluded)
+                        .into_iter()
+                        .zip(reasons)
                     {
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);

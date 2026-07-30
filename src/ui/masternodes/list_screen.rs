@@ -582,9 +582,10 @@ impl ScreenLike for MasternodesScreen {
             // into the open detail view instead of reloading and re-opening it.
             // Re-opening would rebuild the view, re-dispatch its check, and
             // never settle.
-            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
+            BackendTaskSuccessResult::LegacyRecoveryCandidates { .. } => {
+                let ctx = self.app_context.egui_ctx().clone();
                 if let MasternodesView::Detail(detail) = &mut self.view {
-                    detail.set_recovery_plan(identity_id, plan);
+                    detail.absorb_recovery_result(&ctx, &result);
                 }
                 return;
             }
@@ -650,10 +651,8 @@ impl ScreenLike for MasternodesScreen {
         context: &crate::backend_task::BackendTaskContext,
         _error: &crate::backend_task::error::TaskError,
     ) {
-        if let Some(identity_id) = context.legacy_recovery_identity()
-            && let MasternodesView::Detail(detail) = &mut self.view
-        {
-            detail.recovery_failed_for(identity_id);
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.absorb_recovery_error(context);
         }
     }
 

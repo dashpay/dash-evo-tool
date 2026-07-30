@@ -792,3 +792,33 @@ the eager vault migration inside the read path — a caller already holding the
 guard reaches it, so taking it there would self-deadlock. That write is
 idempotent (it replaces plaintext with vault placeholders in the blob it just
 read) and carries a TODO to fold it into the guarded path.
+
+### 10.14 The Key Info offer needed a route before it was reachable at all
+
+§2.1 named the Key Info screen as reachable "from the Identities screen for
+`User` identities and via 'Manage keys' for nodes", and §7 row 1 called the
+entry point discoverable. Both were false for `User` identities as shipped.
+
+The legacy `IdentitiesScreen` per-key popup is the route §2.1 means, and
+`ui/components/left_panel.rs` deliberately drops `RootScreenIdentities` from the
+nav, so nothing navigates to it. The identity hub's replacement surface —
+Settings → Advanced → "Manage keys" — opened a read-only key table with no way
+into `KeyInfoScreen`. Every remaining route (transfer, withdraw, the token
+screens) is gated on the identity already holding a key of the kind that action
+needs, which is exactly false for the identities this flow exists to help. A
+`User` identity with stranded keys could therefore reach the offer only in
+Developer view, through a send-money screen.
+
+§2.1 and §7 row 1 are both left as written, per this document's model — the
+proposal stands as proposed and this section is the correction. A third surface
+now carries the offer that §2.1 names two for, and the mechanism §7 row 1 calls
+an "on-arrival" detection task is the `ensure_checked()` render-loop latch of
+§10.1.
+
+Shipped: `KeysScreen` carries the `QualifiedIdentity`, renders one row per key
+in the §10.8 vocabulary with its held state in words, and opens
+`KeyInfoScreen` for any key regardless of what the device holds. The offer
+itself renders on that list, above the rows, because it is identity-scoped —
+requiring a user to pick an arbitrary key to discover an identity-level offer
+repeats the defect one level up. The offer stays on `KeyInfoScreen` too: it
+self-extinguishes, and the masternode path lands there.

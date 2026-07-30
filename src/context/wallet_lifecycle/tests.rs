@@ -2231,7 +2231,7 @@ async fn clear_network_database_wipes_local_identity_private_keys() {
     let key = IdentityPublicKey::random_key(1, Some(1), pv);
     let key_id = key.id();
     let mut private_keys = KeyStorage::default();
-    private_keys.private_keys.insert(
+    private_keys.insert_at(
         (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
         (
             QualifiedIdentityPublicKey::from(key),
@@ -2348,7 +2348,7 @@ async fn clear_network_database_reports_incomplete_when_masternode_key_delete_fa
     for (key_id, purpose, target) in key_specs {
         let mut key = IdentityPublicKey::random_key(key_id, Some(1), pv);
         key.set_purpose(purpose);
-        private_keys.private_keys.insert(
+        private_keys.insert_at(
             (target, key.id()),
             (
                 QualifiedIdentityPublicKey::from(key),
@@ -3610,9 +3610,7 @@ async fn rediscovery_update_preserves_user_alias_and_wallet_binding() {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: alias.map(str::to_string),
-            private_keys: KeyStorage {
-                private_keys: BTreeMap::new(),
-            },
+            private_keys: KeyStorage::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             secret_access: None,

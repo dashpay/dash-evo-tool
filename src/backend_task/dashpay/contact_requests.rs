@@ -346,10 +346,7 @@ pub async fn send_contact_request_with_proof(
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
     // parked-seed read.
     let sender_private_key = identity
-        .resolve_private_key_bytes(
-            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-            sender_encryption_key.id(),
-        )
+        .resolve_private_key_bytes(sender_encryption_key)
         .await?
         .map(|(_, private_key)| private_key)
         .ok_or_else(|| {

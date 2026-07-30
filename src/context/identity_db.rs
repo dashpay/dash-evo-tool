@@ -1815,7 +1815,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let high = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
             (
                 QualifiedIdentityPublicKey::from(high),
@@ -1823,7 +1823,7 @@ mod tests {
             ),
         );
         let medium = IdentityPublicKey::random_key(2, Some(2), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, medium.id()),
             (
                 QualifiedIdentityPublicKey::from(medium),
@@ -1831,7 +1831,7 @@ mod tests {
             ),
         );
         let derived = IdentityPublicKey::random_key(3, Some(3), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived.id()),
             (
                 QualifiedIdentityPublicKey::from(derived),
@@ -1887,14 +1887,10 @@ mod tests {
             );
             // And the in-memory blob being persisted is already InVault-only.
             assert!(
-                migrated
-                    .private_keys
-                    .private_keys
-                    .values()
-                    .all(|(_, d)| !matches!(
-                        d,
-                        PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)
-                    )),
+                migrated.private_keys.values().all(|(_, d)| !matches!(
+                    d,
+                    PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)
+                )),
                 "persisted blob must carry no plaintext"
             );
             persisted = true;
@@ -1927,7 +1923,7 @@ mod tests {
         );
         // KeyStorage now has zero Clear/AlwaysClear; the derived key remains.
         let mut derived = 0;
-        for (_, d) in qi.private_keys.private_keys.values() {
+        for (_, d) in qi.private_keys.values() {
             match d {
                 PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_) => {
                     panic!("plaintext survived migration")
@@ -2068,7 +2064,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let existing = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, existing.id()),
             (
                 QualifiedIdentityPublicKey::from(existing),
@@ -2077,7 +2073,7 @@ mod tests {
         );
         let added = IdentityPublicKey::random_key(2, Some(2), pv);
         let added_id = added.id();
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, added_id),
             (
                 QualifiedIdentityPublicKey::from(added),
@@ -2211,7 +2207,7 @@ mod tests {
 
         // Decoding the stored blob yields no plaintext key variant at all.
         let decoded = QualifiedIdentity::from_bytes(&blob).expect("decode");
-        for (_, d) in decoded.private_keys.private_keys.values() {
+        for (_, d) in decoded.private_keys.values() {
             assert!(
                 !matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)),
                 "persisted write-path blob must carry no plaintext key",
@@ -2238,7 +2234,6 @@ mod tests {
         // The caller's in-memory identity keeps its resident keys (signing still
         // works this session) — the encoder operates on a clone.
         let clear_in_caller = qi
-            .private_keys
             .private_keys
             .values()
             .filter(|(_, d)| matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)))
@@ -2315,7 +2310,7 @@ mod tests {
         let mut ks = KeyStorage::default();
         let pv = PlatformVersion::latest();
         let pk = IdentityPublicKey::random_key(0, Some(0), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
             (
                 QualifiedIdentityPublicKey::from(pk),

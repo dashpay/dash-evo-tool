@@ -84,14 +84,12 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
     // migrated keys — no resident plaintext.
     assert!(
         qi.private_keys
-            .private_keys
             .values()
             .all(|(_, d)| !matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_))),
         "no plaintext identity key may remain resident after migration"
     );
     assert!(
         qi.private_keys
-            .private_keys
             .values()
             .any(|(_, d)| matches!(d, PrivateKeyData::InVault)),
         "migrated keys must be InVault placeholders"
@@ -233,7 +231,6 @@ async fn materialize_master_key_as_clear(
     let network = ctx.app_context.network();
 
     let (map_key, master_pub) = qi
-        .private_keys
         .private_keys
         .iter()
         .find_map(|(map_key, (pub_key, _))| {

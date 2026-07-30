@@ -25,6 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Keys saved on this device but not on the identity's key lists are now
+  listed**: a key can be saved here while appearing on none of the identity's
+  key lists — for example when adding it to the network did not finish. The
+  identity's key list now shows such keys in their own section, so they can be
+  opened and their saved private key removed. Previously nothing could reach
+  them, even when a message asked exactly that.
+
 - **Restore keys an upgrade left behind**: an identity that was already in the
   app before the update — a masternode loaded from its ProTxHash, or one that
   held only some of its keys — kept its remaining keys in the previous

@@ -57,9 +57,21 @@ transition that publishes it, so a key on no list is the steady state there.
 
 `add_key_to_identity` is also the reason the backend write path does not consult
 `placement_of` at all: it mints the key at `max_id + 1` on the main identity, so
-`PrivateKeyOnMainIdentity` is fixed by construction — no other list can publish a
-key that did not exist a moment ago. The paste path in Key Info is the one writer
-that has to choose, because the key it is handed already exists somewhere.
+`PrivateKeyOnMainIdentity` is the only list that can publish it. The slot is
+still guarded: `max_id` comes from the freshly published record while the store
+is local, so an entry saved here but never broadcast can occupy `max_id + 1`
+with a different key, and the write refuses rather than overwrites. The paste
+path in Key Info is the one writer that has to choose, because the key it is
+handed already exists somewhere.
+
+Synchronous callers get one shared approximation of §3's rule:
+`KeyStorage::first_live_candidate` — the first candidate whose bytes are
+resident, else the first candidate at all. A UI frame cannot await the honest
+bytes-yielding resolution, so every screen that names a placement or shows held
+material routes through it (or `held_private_key_data`, built on it). One rule
+means the placement a screen names and the material it displays can never come
+from two different stores; it approximates liveness without opening the vault by
+trusting an `InVault` placeholder only when no resident sibling exists.
 
 ## 3. Resolve to bytes, not to a match
 
@@ -75,6 +87,13 @@ entry self-healing at read time, with nothing deleted.
 With nothing to fall through to, the first failure is returned rather than
 `Ok(None)`, so "the vault is not open" never degrades into "you never had that
 key".
+
+One exception ends the walk early: a cancelled password prompt
+(`TaskError::SecretPromptCancelled`) is returned as-is, outranking any earlier
+placement's mechanical failure. It is the user's answer about the key — falling
+through to a sibling placement would re-ask for what was just declined, one
+dialog per store, and reporting a prior placement's failure instead would deny
+that anything was asked.
 
 ## 4. The map key and the vault label are one address
 
@@ -152,24 +171,56 @@ A crash cannot strand a key because nothing is ever in motion.
   role enum entirely. Mechanical once the store is known-consistent.
 * Validating the signing path's vault-resolved key against the requested public
   key, deferred separately.
+* **Proof generation cannot use a locally-added, not-yet-broadcast key**
+  (`backend_task/grovestark.rs`, marked `TODO(grovestark-unpublished-key)`): the
+  requested key id is resolved against the identity's published keys before the
+  resolver runs, so a key in the normal unpublished state (§2) fails
+  indistinguishably from "no such key".
 
 ## 9. Test coverage
 
-| Test | Pins |
-|---|---|
-| `a_held_voting_key_on_the_main_identity_is_signable_under_either_placement` | the regression lock — a saved key must be usable under **both** placements, so writer and reader can never drift apart again |
-| `voting_key_on_the_main_identity_is_found_where_the_loader_files_it` | the defect: the shape the authoritative loader writes |
-| `a_voting_key_an_older_build_filed_under_voter_stays_findable` | the no-migration constraint |
-| `an_authentication_key_on_the_voter_identity_is_found` | the mirror defect |
-| `two_different_keys_sharing_an_id_are_never_confused` | the id collision |
-| `two_keys_sharing_id_and_material_are_told_apart_by_purpose` | the collision `data` alone cannot resolve |
-| `a_key_disabled_since_it_was_saved_is_still_found` | `disabled_at` is the one field that legitimately moves |
-| `removing_one_key_leaves_a_different_key_sharing_its_id_alone` | the delete path: confirmed RED against the purpose-derived removal, which left the key the user asked to delete in place and removed another |
-| `a_dead_vault_placeholder_falls_through_to_a_live_placement` | the fallthrough rule (§3) |
-| `a_lone_dead_placement_surfaces_its_error_rather_than_absence` | the other half of it |
-| `duplicate_placements_are_returned_in_probe_order` | determinism, not iteration order |
-| `an_entry_whose_material_disagrees_is_not_a_candidate` | the assumption material matching rests on |
-| `an_operator_filed_key_from_a_legacy_blob_stays_reachable` | `PrivateKeyOnOperatorIdentity` has no live writer but is legacy-reachable |
-| `both_keys_of_a_real_v093_blob_resolve_to_their_own_material` | a **real** v0.9.3 blob's keys are reachable, not merely decodable |
+The layer column tells near-homonyms apart: the *resolver* rows exercise
+`candidates` / `resolve_private_key_bytes` (`model/qualified_identity/mod.rs`),
+the *naming* rows `placement_of` (same file), the *key store* rows `KeyStorage`'s
+own guards and helpers (`encrypted_key_storage.rs`), and the UI rows the screens
+that consume them.
+
+| Test | Layer | Pins |
+|---|---|---|
+| `a_held_voting_key_on_the_main_identity_is_signable_under_either_placement` | resolver | the regression lock — a saved key must be usable under **both** placements, so writer and reader can never drift apart again |
+| `voting_key_on_the_main_identity_is_found_where_the_loader_files_it` | resolver | the defect: the shape the authoritative loader writes |
+| `a_voting_key_an_older_build_filed_under_voter_stays_findable` | resolver | the no-migration constraint |
+| `an_authentication_key_on_the_voter_identity_is_found` | resolver | the mirror defect |
+| `two_different_keys_sharing_an_id_are_never_confused` | resolver | the id collision |
+| `two_keys_sharing_id_and_material_are_told_apart_by_purpose` | resolver | the collision `data` alone cannot resolve |
+| `two_keys_sharing_id_and_material_are_placed_by_purpose` | naming | the same collision on the *naming* question — `placement_of` tells the twins apart too |
+| `a_key_disabled_since_it_was_saved_is_still_found` | resolver | `disabled_at` is the one field that legitimately moves |
+| `a_key_disabled_since_it_was_saved_still_has_a_placement` | naming | naming survives on-chain disabling as reading does |
+| `removing_one_key_leaves_a_different_key_sharing_its_id_alone` | Key Info screen | the delete path: confirmed RED against the purpose-derived removal, which left the key the user asked to delete in place and removed another |
+| `a_dead_vault_placeholder_falls_through_to_a_live_placement` | resolver | the fallthrough rule (§3) |
+| `a_lone_dead_placement_surfaces_its_error_rather_than_absence` | resolver | the other half of it |
+| `a_key_with_no_placement_resolves_to_absence` | resolver | absence is `Ok(None)` — never an error, never another key's material |
+| `cancelling_the_prompt_stops_asking_for_the_same_key` | resolver | §3's cancellation carve-out: one refusal, one dialog |
+| `a_cancellation_outranks_an_earlier_placements_failure` | resolver | the cancellation is what surfaces, not a prior placement's mechanical failure |
+| `duplicate_placements_are_returned_in_probe_order` | resolver | determinism, not iteration order |
+| `an_entry_whose_material_disagrees_is_not_a_candidate` | resolver | the assumption material matching rests on |
+| `an_operator_filed_key_from_a_legacy_blob_stays_reachable` | resolver | `PrivateKeyOnOperatorIdentity` has no live writer but is legacy-reachable |
+| `both_keys_of_a_real_v093_blob_resolve_to_their_own_material` | migration | a **real** v0.9.3 blob's keys are reachable, not merely decodable |
+| `a_different_key_cannot_take_an_occupied_slot` | key store | the write guard: a foreign occupant refuses the write and survives it unchanged |
+| `the_same_key_still_overwrites_itself` | key store | re-entering a saved key corrects it rather than duplicating it |
+| `the_occupied_slot_refusal_names_a_performable_remedy` | key store | the refusal's message names removal — the remedy that exists — not a refresh |
+| `same_key_ignores_a_key_being_disabled` | key store | the `same_key` carve-out: `disabled_at` may move after a key is saved |
+| `same_key_rejects_a_disagreement_anywhere_else` | key store | any other field disagreeing means a different key |
+| `a_resident_placement_wins_over_a_vault_placeholder` | key store | `first_live_candidate` prefers resident bytes (§2's synchronous approximation) |
+| `a_lone_placement_is_named_whatever_it_holds` | key store | with a single candidate there is nothing to prefer |
+| `an_unheld_key_has_no_placement_and_no_material` | key store | an unheld key answers `None` to both placement questions |
+| `wallet_derived_at_looks_past_a_placement_that_is_not_derived` | key store | the wallet probe is typed, not liveness-based — a duplicate's first placement need not be the derived one |
+| `a_wallet_is_found_under_a_later_placement_too` | wallet lookup | `get_selected_wallet` finds a key's wallet under any placement it is filed at |
+| `a_key_that_cannot_be_placed_is_not_reported_as_held` | Key Info screen | a paste with no store to file under is refused and never shown as held |
+| `a_key_the_persist_refuses_is_not_reported_as_held` | Key Info screen | a persist refusal rolls the paste back — on screen and in the in-memory record |
+| `a_removal_the_persist_refuses_keeps_the_key_held` | Key Info screen | a persist refusal rolls the removal back the same way |
+| `a_show_request_that_cannot_resolve_speaks_through_the_typed_error` | Key Info screen | Show/Sign failures surface each variant's own remedy |
+| `the_keys_popup_finds_a_main_key_an_older_build_filed_under_voter` | identities list | the Keys popup is placement-blind for main-identity keys |
+| `the_keys_popup_finds_a_voter_key_an_older_build_filed_under_main` | identities list | its voter-list mirror |
 
 [`PROBE_ORDER`]: ../../../src/model/qualified_identity/key_placement.rs

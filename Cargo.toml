@@ -46,8 +46,9 @@ serde = "1.0.219"
 serde_json = "1.0.140"
 serde_yaml_ng = { version = "0.10.0" }
 tokio = { version = "1.46.1", features = ["full"] }
-# Pin is deliberate; do not "fix" the audit warning by bumping. bincode is flagged
-# unmaintained (RUSTSEC-2025-0141, INFO-level — no known vulnerability). The advisory
+# INTENTIONAL(bincode-unmaintained-pin): the pin is deliberate; do not "fix" the audit
+# warning by bumping. bincode is flagged unmaintained (RUSTSEC-2025-0141, INFO-level —
+# no known vulnerability). The advisory
 # covers *all* versions, so no bump can clear it: 2.0.1 is the last functional release
 # and 3.0.0 is a tombstone whose lib.rs is a bare `compile_error!`. This crate encodes
 # the on-disk wallet-secret envelopes and QualifiedIdentity blobs, so switching encoders

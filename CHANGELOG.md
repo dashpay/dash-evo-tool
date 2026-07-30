@@ -87,18 +87,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Cancelling a password request is taken as an answer**: for a key an earlier
   version had saved in more than one place, dismissing the password prompt
   brought up the same prompt again for the same key. Cancelling now ends the
-  attempt.
+  attempt, and the message reflects the cancellation rather than an unrelated
+  earlier problem with another copy of the key.
 
 - **Messages about a key that cannot be used now say what to do**: being told a
   key is not saved on this device, or cannot be saved here, left nowhere to go
-  next. Each of these messages now names the step that resolves it — entering
-  the key on the page, or refreshing the identity first.
+  next — or worse, named a step that could not work, such as freeing disk space
+  when the identity's keys are password-protected, or entering a key the same
+  screen would then refuse. Each of these messages now names the step that
+  actually resolves its situation.
 
 - **A key that could not be saved no longer looks saved**: when entering a
-  private key was refused, the key's page still showed it as saved on this
-  device until the page was left and reopened — offering to reveal it, to sign
-  with it, and to remove it, none of which could work. The page now reports a
-  refused key as not saved, which is what it is.
+  private key was refused — including when saving it to this device failed —
+  the key's page still showed it as saved until the page was left and reopened,
+  offering to reveal it, to sign with it, and to remove it, none of which could
+  work. The page now reports a refused key as not saved, which is what it is;
+  likewise, a removal that could not be saved no longer shows the key as
+  already gone.
+
+- **The identities list sees a key saved by an earlier version**: the Keys
+  popup on the identities list showed such a key as not saved on this device —
+  even though it is — and opened the key's page in the same wrong state. The
+  popup now finds a saved key wherever the version that saved it filed it, as
+  the rest of the app already does.
 
 - **A key's wallet is found even when the key is filed twice**: a key that an
   earlier version had saved in two places, wallet-derived in only one of them,

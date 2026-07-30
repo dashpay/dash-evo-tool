@@ -265,6 +265,12 @@ impl fmt::Display for PrivateKeyData {
 /// target-blind enumerators, [`insert_non_encrypted`](Self::insert_non_encrypted),
 /// which refuses an occupied slot, and the whole-map `From` conversions, where
 /// the map's own keys are the placements.
+// TODO(placement-named-pub-surface): the narrowing above is overstated — several
+// pub methods still take a caller-named placement (get_resolve_local,
+// get_resolve_with_seed, get_cloned_private_key_data_and_wallet_info,
+// mark_in_vault, is_in_vault, public_key_for, wallet_seed_hash_for), and
+// mark_in_vault zeroizes the occupant with no same_key guard. Narrow them to
+// pub(crate) or guard them, then align this rustdoc and design.md §7.
 #[derive(Debug, Encode, Decode, Clone, PartialEq, Default)]
 pub struct KeyStorage {
     private_keys: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,

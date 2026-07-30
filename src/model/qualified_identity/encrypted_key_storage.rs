@@ -37,7 +37,7 @@ pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 /// only thing telling them apart — and a lookup that conflates them can hand out,
 /// or delete, material the requested key does not own. So this excludes the one
 /// field that legitimately moves and nothing else.
-pub fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
+pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 
     let IdentityPublicKey::V0(stored) = stored;
@@ -1066,6 +1066,43 @@ mod tests {
     }
 
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    /// `disabled_at` is the one field Platform lets move after a key is added,
+    /// so a key disabled on chain since its private half was saved must still
+    /// match the stored snapshot — otherwise a key the device demonstrably
+    /// holds is reported missing the moment it is retired.
+    #[test]
+    fn same_key_ignores_a_key_being_disabled() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let stored = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let mut disabled_since = stored.clone();
+        disabled_since.set_disabled_at(1_700_000_000);
+
+        assert!(
+            same_key(&stored, &disabled_since),
+            "a snapshot taken before the key was disabled still names that key"
+        );
+        assert!(
+            same_key(&disabled_since, &stored),
+            "and the comparison does not depend on which side moved"
+        );
+    }
+
+    /// Every other field identifies the key. `read_only` stands for the six:
+    /// disagreeing on any of them makes this a different key, and treating it
+    /// as the same one hands out or deletes material it does not own.
+    #[test]
+    fn same_key_rejects_a_disagreement_anywhere_else() {
+        let stored = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let IdentityPublicKey::V0(mut altered) = stored.clone();
+        altered.read_only = !altered.read_only;
+
+        assert!(
+            !same_key(&stored, &IdentityPublicKey::V0(altered)),
+            "a key differing outside disabled_at is not this key"
+        );
+    }
 
     /// A storage filing one key under several placements, each with the given
     /// stored data.

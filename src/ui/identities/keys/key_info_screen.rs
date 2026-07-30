@@ -801,7 +801,7 @@ impl ScreenLike for KeyInfoScreen {
                 Err(error) => {
                     MessageBanner::set_global(
                         ctx,
-                        "This key is not saved on this device, so it cannot be shown or used to sign.",
+                        "This key is not saved on this device, so it cannot be shown or used to sign. Enter its private key on this page to add it.",
                         MessageType::Error,
                     )
                     .with_details(error);

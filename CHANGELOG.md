@@ -84,6 +84,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Messages about a key that cannot be used now say what to do**: being told a
+  key is not saved on this device, or cannot be saved here, left nowhere to go
+  next. Each of these messages now names the step that resolves it — entering
+  the key on the page, or refreshing the identity first.
+
 - **A key that could not be saved no longer looks saved**: when entering a
   private key was refused, the key's page still showed it as saved on this
   device until the page was left and reopened — offering to reveal it, to sign

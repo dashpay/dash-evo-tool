@@ -4,9 +4,6 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::PendingUsername;
-use crate::model::qualified_identity::PrivateKeyTarget::{
-    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
-};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
@@ -809,9 +806,11 @@ impl IdentitiesScreen {
 
                                                             // Main Identity Keys
                                                             if !public_keys.is_empty() {
-                                                                for (key_id, key) in public_keys.iter() {
+                                                                for key in public_keys.values() {
+                                                                    // Placement-blind: the private half may be filed
+                                                                    // under a store an older build chose.
                                                                     let holding_private_key = qualified_identity.private_keys
-                                                                        .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, *key_id));
+                                                                        .held_private_key_data(key);
 
                                                                     let key_label = self.format_key_name(key);
                                                                     let button = if holding_private_key.is_some() {
@@ -840,9 +839,9 @@ impl IdentitiesScreen {
                                                                         ui.add_space(5.0);
                                                                     }
 
-                                                                    for (key_id, key) in voter_public_keys.iter() {
+                                                                    for key in voter_public_keys.values() {
                                                                         let holding_private_key = qualified_identity.private_keys
-                                                                            .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, *key_id));
+                                                                            .held_private_key_data(key);
 
                                                                         let key_label = self.format_key_name(key);
                                                                         let button = if holding_private_key.is_some() {

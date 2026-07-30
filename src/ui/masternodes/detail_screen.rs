@@ -19,21 +19,21 @@ use std::collections::BTreeMap;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
+use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::secret::Secret;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
-use crate::ui::components::legacy_recovery_section::LegacyRecoverySection;
+use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
@@ -211,7 +211,17 @@ impl MasternodeDetailView {
 
     /// Whether a recovery offer is currently on screen for this node.
     pub(crate) fn has_recovery_offer_for_test(&self) -> bool {
-        self.recovery.plan().is_some_and(|plan| !plan.is_empty())
+        self.recovery.has_offer()
+    }
+
+    /// Put a detected plan on offer, as the check's own result does — without
+    /// the egui context [`Self::absorb_recovery_result`] needs to report one.
+    pub(crate) fn set_recovery_plan(
+        &mut self,
+        identity_id: dash_sdk::platform::Identifier,
+        plan: crate::model::legacy_recovery::RecoveryPlan,
+    ) {
+        self.recovery.offered(identity_id, plan);
     }
 
     /// The key roles this view believes the node holds.
@@ -261,13 +271,14 @@ impl MasternodeDetailView {
         }
     }
 
-    /// Record the plan the on-arrival detection task returned.
-    pub(crate) fn set_recovery_plan(
+    /// Route a finished backend task into this node's recovery offer, reporting
+    /// whether this node's own restore finished.
+    pub(crate) fn absorb_recovery_result(
         &mut self,
-        identity_id: dash_sdk::platform::Identifier,
-        plan: RecoveryPlan,
-    ) {
-        self.recovery.offered(identity_id, plan);
+        ctx: &egui::Context,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
+        self.recovery.absorb_result(ctx, result)
     }
 
     /// Re-read this node from the store and re-arm its recovery check.
@@ -294,10 +305,9 @@ impl MasternodeDetailView {
     }
 
     /// End this view's recovery operation when the failure that arrived is that
-    /// operation's own — matched on the identity the failing task names, since
-    /// every error reaches whichever screen is visible.
-    pub(crate) fn recovery_failed_for(&mut self, identity_id: dash_sdk::platform::Identifier) {
-        self.recovery.failed_for(identity_id);
+    /// operation's own — every error reaches whichever screen is visible.
+    pub(crate) fn absorb_recovery_error(&mut self, context: &BackendTaskContext) {
+        self.recovery.absorb_error(context);
     }
 
     /// Load the contests this node can still vote on. Empty when the node has no
@@ -685,20 +695,19 @@ impl MasternodeDetailView {
         action
     }
 
-    /// Render the offer to restore keys stranded in the previous version's
-    /// saved data, returning the items the user approved this frame. Renders
-    /// nothing at all when detection found nothing, so the section appears only
-    /// where it has something to say and vanishes once a restore lands.
+    /// Render the offer at the foot of the keys section, returning the items the
+    /// user approved this frame.
     fn render_recovery_section(&self, ui: &mut Ui) -> Option<Vec<RecoveryItem>> {
-        let restoring = self.recovery.is_restoring();
-        let plan = self.recovery.plan().filter(|plan| !plan.is_empty())?;
+        if !self.recovery.has_offer() {
+            return None;
+        }
         ui.add_space(8.0);
-        LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
-            .restoring(restoring)
-            .show(ui)
-            .inner
-            .changed_value()
-            .clone()
+        // This page only ever shows masternode and evonode identities.
+        host_offer(
+            &self.recovery,
+            KeyVocabulary::from(self.identity.identity_type),
+            ui,
+        )
     }
 
     /// The first key whose private material this node actually holds — the only

@@ -561,7 +561,7 @@ fn key_info_agrees_with_the_list_about_a_voting_key_held_on_the_main_identity() 
         let AppAction::AddScreen(Screen::KeyInfoScreen(mut key_info)) = opened else {
             panic!("the row must open Key Info");
         };
-        key_info.refresh_on_arrival();
+        key_info.refresh();
         assert!(
             key_info.private_key_data.is_some(),
             "Key Info must still hold the key the list handed it — re-deriving the \
@@ -1120,13 +1120,20 @@ fn key_info_names_a_users_transfer_key_as_the_keys_list_does() {
             harness.query_by_label(RESTORE).is_some(),
             "the premise: Key Info is showing the offer"
         );
-        assert!(
-            harness.query_by_label("Transfer key").is_some(),
-            "Key Info's offer must name the key as the keys list does"
+        // Twice over: the page's own Purpose row and the offer below it both
+        // render the one caption the keys list used, so a count of one would
+        // mean a surface had gone off and worded it for itself.
+        assert_eq!(
+            harness.query_all_by_label("Transfer key").count(),
+            2,
+            "Key Info's offer and its Purpose row must both name the key as the \
+             keys list does"
         );
-        assert!(
-            harness.query_by_label("Payout address key").is_none(),
-            "and must not tell a plain user their key is a masternode payout address"
+        assert_eq!(
+            harness.query_all_by_label("Payout address key").count(),
+            0,
+            "and neither may tell a plain user their key is a masternode payout \
+             address"
         );
     });
 }

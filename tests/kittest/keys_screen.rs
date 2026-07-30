@@ -975,3 +975,74 @@ fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
         );
     });
 }
+
+/// QA-008: every screen hosting the offer must name a key as the identity it is
+/// showing would.
+///
+/// Three screens render the same offer — the keys list, Key Info, and masternode
+/// detail — and each passes its own vocabulary. Scoping two of them left a user
+/// identity's Key Info offer calling its transfer key a "Payout address key",
+/// asserting the user owns a masternode, and disagreeing with the keys list one
+/// screen away. A required constructor argument makes a *missing* vocabulary a
+/// compile error, but nothing in the type system catches a host passing the
+/// *wrong* one, so the host is where this has to be pinned: this drives Key Info
+/// through the route the user takes and reads the words off the rendered offer.
+#[test]
+fn key_info_names_a_users_transfer_key_as_the_keys_list_does() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let identity = identity_holding_key(
+            0x40,
+            Purpose::TRANSFER,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        );
+        let identity_id = identity.identity.id();
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store the identity so Key Info can re-read it");
+
+        // Arrive at Key Info the way the user does, from the list row.
+        let (mut list, action) = harness_for(KeysScreen::new(identity, &app_context));
+        list.get_by_label(TRANSFER_ROW).click();
+        list.run_steps(2);
+        let opened = std::mem::replace(&mut *action.borrow_mut(), AppAction::None);
+        let AppAction::AddScreen(Screen::KeyInfoScreen(mut key_info)) = opened else {
+            panic!("the row must open Key Info");
+        };
+
+        // Offer Key Info a restorable transfer key, as the check would.
+        key_info.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCandidates {
+            identity_id,
+            plan: RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::Key {
+                        target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                        key_id: 0,
+                    },
+                    purpose: Some(Purpose::TRANSFER),
+                }],
+                excluded: vec![],
+            },
+        });
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1100.0, 900.0))
+            .build_ui(move |ui| {
+                key_info.ui(ui);
+            });
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label(RESTORE).is_some(),
+            "the premise: Key Info is showing the offer"
+        );
+        assert!(
+            harness.query_by_label("Transfer key").is_some(),
+            "Key Info's offer must name the key as the keys list does"
+        );
+        assert!(
+            harness.query_by_label("Payout address key").is_none(),
+            "and must not tell a plain user their key is a masternode payout address"
+        );
+    });
+}

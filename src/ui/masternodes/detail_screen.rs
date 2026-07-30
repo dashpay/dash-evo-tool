@@ -677,7 +677,7 @@ impl MasternodeDetailView {
         let restoring = self.recovery.is_restoring();
         let plan = self.recovery.plan().filter(|plan| !plan.is_empty())?;
         ui.add_space(8.0);
-        LegacyRecoverySection::new(plan)
+        LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
             .restoring(restoring)
             .show(ui)
             .inner

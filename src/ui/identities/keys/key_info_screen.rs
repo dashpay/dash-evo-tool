@@ -1003,12 +1003,13 @@ impl KeyInfoScreen {
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
-        let approved = LegacyRecoverySection::new(plan)
-            .restoring(restoring)
-            .show(ui)
-            .inner
-            .changed_value()
-            .clone();
+        let approved =
+            LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
+                .restoring(restoring)
+                .show(ui)
+                .inner
+                .changed_value()
+                .clone();
         if approved.is_some() {
             self.pending_recovery_restore = approved;
         }

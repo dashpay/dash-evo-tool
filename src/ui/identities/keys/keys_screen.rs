@@ -311,12 +311,12 @@ impl KeysScreen {
         ui.add_space(8.0);
         // `changed_value` hands back a reference into the response, so the
         // approved set has to be cloned out before the response is dropped.
-        if let Some(approved) = LegacyRecoverySection::new(plan)
-            .restoring(restoring)
-            .vocabulary(KeyVocabulary::from(self.identity.identity_type))
-            .show(ui)
-            .inner
-            .changed_value()
+        if let Some(approved) =
+            LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
+                .restoring(restoring)
+                .show(ui)
+                .inner
+                .changed_value()
         {
             self.pending_recovery_restore = Some(approved.clone());
         }

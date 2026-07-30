@@ -450,20 +450,23 @@ pub enum TaskError {
     )]
     IdentityKeyMissing,
 
-    /// More than one of an identity's key lists publishes the key a write was
-    /// aimed at, so nothing may guess which list the private half belongs to.
-    /// A stale local record is the usual cause. Fieldless: no upstream error
-    /// and, by design, never any secret.
+    /// More than one of an identity's key lists publishes the key, so nothing
+    /// may guess which list the private half belongs to. A stale local record
+    /// is the usual cause. Surfaces on Key Info's paste path and its Show/Sign
+    /// path alike, so the remedy presumes neither. Fieldless: no upstream
+    /// error and, by design, never any secret.
     #[error(
-        "This key appears on more than one of this identity's key lists, so where it belongs is unclear. Refresh this identity, then try saving the key again."
+        "This key appears on more than one of this identity's key lists, so where it belongs is unclear. Refresh this identity and open this key again."
     )]
     IdentityKeyPlacementAmbiguous,
 
-    /// None of an identity's key lists publishes the key a write was aimed at,
-    /// and nothing is held for it either, so there is no store to file it
-    /// under. Fieldless: no upstream error and, by design, never any secret.
+    /// None of an identity's key lists publishes the key, and nothing is held
+    /// for it either, so there is no store to file it under or read it from.
+    /// Surfaces on Key Info's paste path and its Show/Sign path alike, so the
+    /// remedy presumes neither. Fieldless: no upstream error and, by design,
+    /// never any secret.
     #[error(
-        "This key is on none of this identity's key lists, so it cannot be saved here. Refresh this identity, then check you entered the key for this identity."
+        "This key is not on any of this identity's key lists. Refresh this identity and open this key again; if it still does not appear, it belongs to a different identity."
     )]
     IdentityKeyNotOnIdentityRecord,
 

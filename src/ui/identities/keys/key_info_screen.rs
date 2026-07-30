@@ -2271,6 +2271,30 @@ mod tests {
             .await;
     }
 
+    /// Both placement errors surface on the Show/Sign read path as well as the
+    /// paste path — `filed_at` is one function serving both — so neither
+    /// remedy may presume the user was saving a key: a user who pressed Show
+    /// entered nothing and asked to save nothing.
+    #[test]
+    fn the_placement_errors_advise_an_action_both_paths_can_perform() {
+        for error in [
+            TaskError::IdentityKeyPlacementAmbiguous,
+            TaskError::IdentityKeyNotOnIdentityRecord,
+        ] {
+            let message = error.to_string();
+            for save_word in ["sav", "enter"] {
+                assert!(
+                    !message.to_lowercase().contains(save_word),
+                    "a remedy shown for a Show or Sign press must not presume a save: {message}",
+                );
+            }
+            assert!(
+                message.contains("Refresh this identity"),
+                "the remedy both paths share is refreshing the identity: {message}",
+            );
+        }
+    }
+
     /// A restore dispatched from one identity's Key Info screen can complete
     /// after the user has opened another's, and results reach whichever screen
     /// is visible. The stray completion must touch nothing here: not the clone,

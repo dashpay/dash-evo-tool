@@ -94,6 +94,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Showing or signing with a key no longer advises saving it**: pressing
+  "Show private key" or "Sign" on a key whose place on the identity could not
+  be worked out answered with advice about saving the key again — about a key
+  the user never entered. Both messages now name a step either situation can
+  take: refresh the identity and open the key again.
+
 - **Cancelling a password request is taken as an answer**: for a key an earlier
   version had saved in more than one place, dismissing the password prompt
   brought up the same prompt again for the same key. Cancelling now ends the

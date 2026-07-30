@@ -84,6 +84,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Entering a key can no longer erase a different one**: keys of a masternode's
+  own record and of its voting identity are numbered separately, so two
+  different keys can carry the same number. Entering the private key of one of
+  them used to take the other's place without a word, and the replaced key's
+  private half was gone — with no copy to restore it from if it had been
+  imported by hand. Dash Evo Tool now refuses that and explains what happened,
+  leaving the saved key untouched. Re-entering a key you already saved still
+  replaces itself, as before.
+
 - **A saved voting key can now actually sign**: a voting key held on an
   identity's own record — rather than on a separate voting identity — was saved
   and shown as being on this device, but nothing could use it. Signing looked for

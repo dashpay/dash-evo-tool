@@ -1117,10 +1117,13 @@ impl KeyInfoScreen {
                 );
                 return;
             };
-            self.identity.private_keys.insert_non_encrypted(
+            if let Err(error) = self.identity.private_keys.insert_non_encrypted(
                 (target, self.key.id()),
                 (self.key.clone().into(), private_key_bytes),
-            );
+            ) {
+                MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
+                return;
+            }
             if let Err(error) = self
                 .app_context
                 .update_local_qualified_identity(&self.identity)

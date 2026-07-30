@@ -450,6 +450,16 @@ pub enum TaskError {
     )]
     IdentityKeyMissing,
 
+    /// The `(placement, key id)` slot a write would take is already held by a
+    /// *different* key. The voter and main id spaces overlap, so two keys can
+    /// share an id; the write is refused because the occupant's private half is
+    /// frequently the only copy in existence. Fieldless: no upstream error and,
+    /// by design, never any secret.
+    #[error(
+        "A different key of this identity is already saved under this key's number. Refresh this identity to update its keys, then try adding it again."
+    )]
+    IdentityKeySlotOccupied,
+
     /// An identity private key was found in the vault but its bytes are not a
     /// usable signing key (vault corruption or a truncated write). Distinct
     /// from [`Self::IdentityKeyMissing`] (genuinely absent) so the user gets

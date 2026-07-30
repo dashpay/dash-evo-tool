@@ -149,7 +149,8 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
             dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey::from(new_ipk.clone()),
             new_private_key_bytes,
         ),
-    );
+    )
+    .expect("the freshly minted key's slot is free");
 
     let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
         &identity,
@@ -269,5 +270,6 @@ async fn materialize_master_key_as_clear(
         .expect("resolve HD seed and derive MASTER private key");
 
     qi.private_keys
-        .insert_non_encrypted(map_key, (master_pub, master_bytes));
+        .insert_non_encrypted(map_key, (master_pub, master_bytes))
+        .expect("the MASTER key's own slot accepts it");
 }

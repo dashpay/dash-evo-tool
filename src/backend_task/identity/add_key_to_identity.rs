@@ -57,13 +57,16 @@ impl AppContext {
         public_key_to_add
             .identity_public_key
             .set_id(qualified_identity.identity.get_public_key_max_id() + 1);
+        // The key was just minted at `max_id + 1`, so its slot is free by
+        // construction; a refusal here means the identity's own record moved
+        // under us and the write must not proceed.
         qualified_identity.private_keys.insert_non_encrypted(
             (
                 PrivateKeyOnMainIdentity,
                 public_key_to_add.identity_public_key.id(),
             ),
             (public_key_to_add.clone(), private_key),
-        );
+        )?;
         // Track balance before operation for fee calculation
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_identity_update();

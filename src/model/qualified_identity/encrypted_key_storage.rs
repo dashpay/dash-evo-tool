@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -606,22 +607,39 @@ impl KeyStorage {
             .collect()
     }
 
-    /// Inserts an unencrypted key into `ClearKeyStorage`. Returns an error if the storage is closed.
+    /// File a key's plaintext private half at exactly `key`, replacing that
+    /// key's own earlier entry if it has one.
+    ///
+    /// A `MEDIUM`-security key is stored as [`PrivateKeyData::AlwaysClear`],
+    /// anything else as [`PrivateKeyData::Clear`].
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::IdentityKeySlotOccupied`] when the slot holds a *different*
+    /// key — one [`same_key`] rejects. The voter and main id spaces overlap, so
+    /// a slot can legitimately belong to another key, whose private half is
+    /// often the only copy there is; taking the slot would destroy it silently.
     pub fn insert_non_encrypted(
         &mut self,
         key: (PrivateKeyTarget, KeyID),
         value: (QualifiedIdentityPublicKey, [u8; 32]),
-    ) {
-        match value.0.identity_public_key.security_level() {
-            SecurityLevel::MEDIUM => {
-                self.private_keys
-                    .insert(key, (value.0, PrivateKeyData::AlwaysClear(value.1)));
-            }
-            _ => {
-                self.private_keys
-                    .insert(key, (value.0, PrivateKeyData::Clear(value.1)));
-            }
+    ) -> Result<(), TaskError> {
+        let (public_key, private_key_bytes) = value;
+        if let Some((occupant, _)) = self.private_keys.get(&key)
+            && !same_key(
+                &occupant.identity_public_key,
+                &public_key.identity_public_key,
+            )
+        {
+            return Err(TaskError::IdentityKeySlotOccupied);
         }
+
+        let data = match public_key.identity_public_key.security_level() {
+            SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(private_key_bytes),
+            _ => PrivateKeyData::Clear(private_key_bytes),
+        };
+        self.private_keys.insert(key, (public_key, data));
+        Ok(())
     }
 
     /// Mark `key` as a vault placeholder ([`PrivateKeyData::InVault`]), wiping
@@ -913,6 +931,76 @@ mod tests {
         let rendered = format!("{blob:?}");
         assert_no_leak_bytes(&rendered, &high, "migrated KeyStorage blob (high)");
         assert_no_leak_bytes(&rendered, &medium, "migrated KeyStorage blob (medium)");
+    }
+
+    const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+    /// A slot already holding a *different* key is not free. The voter and main
+    /// id spaces overlap, so two keys sharing an id is an ordinary masternode
+    /// shape — and overwriting the occupant destroys the only copy of its
+    /// private half, in this map and in the vault it is the sole pointer to.
+    #[test]
+    fn a_different_key_cannot_take_an_occupied_slot() {
+        let pv = PlatformVersion::latest();
+        let occupant = IdentityPublicKey::random_key(0, Some(1), pv);
+        let intruder = IdentityPublicKey::random_key(0, Some(2), pv);
+        assert_ne!(
+            occupant.data(),
+            intruder.data(),
+            "the fixture holds two distinct keys under one id"
+        );
+
+        let mut ks = KeyStorage::default();
+        ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(occupant), [0x11; 32]),
+        )
+        .expect("an empty slot accepts the first key");
+        let before = ks.entry_at(&(MAIN, 0)).cloned().expect("occupant stored");
+
+        let refused = ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(intruder), [0x22; 32]),
+        );
+
+        assert!(
+            matches!(refused, Err(TaskError::IdentityKeySlotOccupied)),
+            "a foreign occupant must refuse the write, got {refused:?}"
+        );
+        assert_eq!(
+            ks.entry_at(&(MAIN, 0)),
+            Some(&before),
+            "the occupant's entry survives the refused write unchanged"
+        );
+    }
+
+    /// Re-entering the same key at its own slot replaces it. The paste path
+    /// relies on this to let a user correct a key already saved, rather than
+    /// growing a second copy under another store.
+    #[test]
+    fn the_same_key_still_overwrites_itself() {
+        let pv = PlatformVersion::latest();
+        let key = IdentityPublicKey::random_key(0, Some(1), pv);
+        let mut ks = KeyStorage::default();
+        ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(key.clone()), [0x11; 32]),
+        )
+        .expect("an empty slot accepts the key");
+
+        ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(key), [0x22; 32]),
+        )
+        .expect("a key may replace itself at its own slot");
+
+        assert_eq!(ks.len(), 1, "replacing in place adds no second entry");
+        match ks.entry_at(&(MAIN, 0)).expect("entry present") {
+            (_, PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes)) => {
+                assert_eq!(bytes, &[0x22; 32], "the re-entered bytes replaced the old")
+            }
+            (_, other) => panic!("expected plaintext bytes, got {other:?}"),
+        }
     }
 
     /// `is_in_vault` and `public_key_for` probes: a vault placeholder reports

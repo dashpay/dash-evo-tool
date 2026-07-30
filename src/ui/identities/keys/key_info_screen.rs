@@ -800,9 +800,8 @@ impl ScreenLike for KeyInfoScreen {
                 }
                 Err(error) => {
                     // The two failure modes carry different remedies, so the
-                    // typed message is the one shown — a shared sentence here
-                    // would tell the ambiguous case to paste the key, which
-                    // the same ambiguity then refuses.
+                    // typed message is shown — a shared sentence would advise
+                    // a paste the same ambiguity then refuses.
                     MessageBanner::set_global_with_error(ctx, error);
                 }
             }
@@ -2088,7 +2087,7 @@ mod tests {
 
         let sealed = public_key(0, Purpose::AUTHENTICATION);
         let (pasted, secret) = keypair(1, Purpose::AUTHENTICATION);
-        let stored = protected_identity(&app_context, 0x7C, &sealed, &[pasted.clone()]);
+        let stored = protected_identity(&app_context, 0x7C, &sealed, std::slice::from_ref(&pasted));
         app_context
             .insert_local_qualified_identity(&stored, &None)
             .expect("a record with no resident plaintext inserts cleanly");
@@ -2138,7 +2137,7 @@ mod tests {
         let sealed = public_key(0, Purpose::AUTHENTICATION);
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
         let other = public_key(2, Purpose::TRANSFER);
-        let mut identity = protected_identity(&app_context, 0x7D, &sealed, &[on_screen.clone()]);
+        let mut identity = protected_identity(&app_context, 0x7D, &sealed, std::slice::from_ref(&on_screen));
         for key in [&on_screen, &other] {
             identity.private_keys.insert_at(
                 (MAIN, key.id()),
@@ -2207,7 +2206,6 @@ mod tests {
         identity.identity = published(0x7E);
         identity.associated_voter_identity = Some((published(0x7F), key.clone()));
         identity.identity_type = IdentityType::Masternode;
-        identity.private_keys = KeyStorage::default();
 
         let mut screen = KeyInfoScreen::new(identity, key, None, &app_context);
         screen.pending_identity_key_display = true;
@@ -2219,8 +2217,7 @@ mod tests {
             });
         harness.run_steps(2);
 
-        let banner_texts =
-            crate::ui::components::message_banner::global_banner_texts(&harness.ctx);
+        let banner_texts = crate::ui::components::message_banner::global_banner_texts(&harness.ctx);
         assert!(
             banner_texts.contains(&TaskError::IdentityKeyPlacementAmbiguous.to_string()),
             "the ambiguity's own message and remedy must reach the user, got {banner_texts:?}",

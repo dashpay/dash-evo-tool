@@ -321,7 +321,7 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(RichText::new("Purpose:").strong().color(text_primary));
                         let (role, role_tip) = key_role_label(
                             KeyVocabulary::from(self.identity.identity_type),
-                            &self.naming_target(),
+                            &self.published_on(),
                             &self.key,
                         );
                         let role = if self
@@ -775,7 +775,7 @@ impl ScreenLike for KeyInfoScreen {
         if wants_display || wants_sign {
             // The vault stores each key under the store it is filed in, so the
             // request has to name the placement the material is actually at.
-            match self.target() {
+            match self.filed_at() {
                 Ok(target) => {
                     if wants_display {
                         action |= AppAction::BackendTask(BackendTask::WalletTask(
@@ -914,14 +914,14 @@ impl KeyInfoScreen {
 
     /// The store this key is *published* under, for naming it.
     ///
-    /// Deliberately the structural answer rather than [`Self::target`]'s: a key's
+    /// Deliberately the structural answer rather than [`Self::filed_at`]'s: a key's
     /// name follows the identity list it belongs to — which is what
     /// `identity_keys` pairs it with on every list that shows it — not wherever
     /// its private half happens to be filed. Naming it from the material's
     /// location would let one key be called two things depending on which build
     /// saved it. `Unknown` names the main identity, which is where a key not yet
     /// on any list is being added.
-    fn naming_target(&self) -> PrivateKeyTarget {
+    fn published_on(&self) -> PrivateKeyTarget {
         self.identity
             .placement_of(&self.key)
             .resolved()
@@ -977,7 +977,7 @@ impl KeyInfoScreen {
     /// their failure modes are distinct answers the user can act on:
     /// [`TaskError::IdentityKeyPlacementAmbiguous`] when several lists publish
     /// it, [`TaskError::IdentityKeyNotOnIdentityRecord`] when none does.
-    fn target(&self) -> Result<PrivateKeyTarget, TaskError> {
+    fn filed_at(&self) -> Result<PrivateKeyTarget, TaskError> {
         if let Some((target, _)) = self.identity.private_keys.first_live_candidate(&self.key) {
             return Ok(target);
         }
@@ -1117,7 +1117,7 @@ impl KeyInfoScreen {
             // itself rather than growing a second copy under another store;
             // otherwise the identity's own lists say where it belongs. Both
             // agree with where the resolver will look for it.
-            let target = match self.target() {
+            let target = match self.filed_at() {
                 Ok(target) => target,
                 Err(error) => {
                     MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);

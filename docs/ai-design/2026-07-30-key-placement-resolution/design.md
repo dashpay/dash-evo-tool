@@ -140,8 +140,15 @@ A crash cannot strand a key because nothing is ever in motion.
   untouched.
 * **Keying by `(Identifier, KeyID)`** — the right end state, since it removes the
   role enum entirely. Mechanical once the store is known-consistent.
-* Validating the signing path's vault-resolved key against the requested public
-  key, deferred separately.
+* ~~Validating the signing path's vault-resolved key against the requested
+  public key~~ — **closed.** `with_identity_secret_key` — the chokepoint both
+  `SignMessageWithIdentityKey` and `DeriveIdentityKeyForDisplay` read through —
+  matches the vault's bytes against the public key the stored identity records
+  at the requested placement before the closure runs, and refuses a disagreement
+  with `TaskError::IdentityKeyMismatch`. This was the last place trusting a
+  caller-supplied placement; the callers still carry `(target, key_id)` fields,
+  but they are now checked rather than believed. A key type this build cannot
+  derive a public half for skips the check, as `key_exclusion` does.
 
 ## 9. Test coverage
 
@@ -163,5 +170,8 @@ A crash cannot strand a key because nothing is ever in motion.
 | `both_keys_of_a_real_v093_blob_resolve_to_their_own_material` | a **real** v0.9.3 blob's keys are reachable, not merely decodable |
 | `removing_a_key_also_removes_its_vault_secret` | §8's first bullet: confirmed RED against the map-only removal, which left the bytes on disk unreachable |
 | `delete_identity_key_secrets_drops_only_the_named_placement` | the per-key delete is not the whole-identity sweep, and repeating it is harmless |
+| `a_vault_secret_that_is_not_the_recorded_key_is_refused` | §8's third bullet: RED against the unchecked chokepoint, which signed with the planted key |
+| `a_placement_the_identity_does_not_record_is_refused` | the other half of it — an orphaned label is not a key of this identity |
+| `a_secret_matching_its_recorded_key_still_resolves` | the check costs a healthy install nothing |
 
 [`PROBE_ORDER`]: ../../../src/model/qualified_identity/key_placement.rs

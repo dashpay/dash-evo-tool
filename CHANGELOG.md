@@ -105,6 +105,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   storage cannot be written to, the removal now stops and says so with the key
   left exactly as it was, so it can simply be tried again.
 
+- **A key is checked before it is used**: showing a saved key or signing with it
+  now confirms the key held on this device really is the key on screen. Should
+  the two disagree — records an older version left inconsistent — the action
+  stops and says so, rather than signing with a key nobody would recognise as
+  this identity's.
+
 - **An identity's keys are reachable again**: the keys list under an identity's
   Settings → Advanced now opens each key's own page, so keys can be inspected
   and restored — and, once a key is on this device, signed with or

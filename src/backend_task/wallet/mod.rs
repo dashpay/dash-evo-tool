@@ -23,6 +23,7 @@ use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::Identifier;
@@ -104,6 +105,21 @@ impl AppContext {
     /// The raw key zeroizes when the closure returns — only `f`'s result
     /// crosses back to the caller. Shared by the identity-key sign and
     /// display tasks.
+    ///
+    /// The placement is the caller's word, and it addresses the vault label
+    /// directly, so the bytes are matched against the public key the stored
+    /// identity records at exactly that placement before `f` ever sees them.
+    /// Nothing else on this path proves the caller named the slot its key
+    /// actually occupies. A key type this build cannot derive a public half for
+    /// skips the check rather than failing it, as the legacy-recovery key check
+    /// does: unverifiable is not wrong.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::IdentityKeyMissing`] when the identity is not stored on this
+    /// device or records no key at that placement, and
+    /// [`TaskError::IdentityKeyMismatch`] when the vault holds a key there that
+    /// is not the one recorded.
     async fn with_identity_secret_key<T>(
         self: &Arc<Self>,
         identity_id: Identifier,
@@ -111,6 +127,16 @@ impl AppContext {
         key_id: KeyID,
         f: impl FnOnce(SecretKey) -> Result<T, TaskError>,
     ) -> Result<T, TaskError> {
+        let recorded = self
+            .get_local_qualified_identity(&identity_id)?
+            .and_then(|identity| {
+                identity
+                    .private_keys
+                    .entry_at(&(target.clone(), key_id))
+                    .map(|(public_key, _)| public_key.identity_public_key.clone())
+            })
+            .ok_or(TaskError::IdentityKeyMissing)?;
+        let network = self.network;
         let scope = crate::wallet_backend::SecretScope::IdentityKey {
             identity_id: identity_id.to_buffer(),
             target,
@@ -129,6 +155,18 @@ impl AppContext {
                     tracing::warn!(error = %detail, "Identity-key secret construction failed");
                     TaskError::IdentityKeyMalformed
                 })?;
+                if let Ok(derived) = recorded
+                    .key_type()
+                    .public_key_data_from_private_key_data(key, network)
+                    && derived.as_slice() != recorded.data().as_slice()
+                {
+                    tracing::warn!(
+                        identity = %identity_id,
+                        key_id,
+                        "Vault key at the requested placement is not the key recorded there",
+                    );
+                    return Err(TaskError::IdentityKeyMismatch);
+                }
                 f(secret_key)
             })
             .await
@@ -284,14 +322,24 @@ mod tests {
     use crate::app_dir::ensure_env_file;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
     use crate::model::wallet::Wallet;
     use crate::model::wallet::birth_height::WalletOrigin;
     use crate::utils::egui_mpsc::SenderAsync;
     use crate::utils::tasks::TaskManager;
+    use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::dashcore::secp256k1::PublicKey;
     use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::{Identity, Purpose, SecurityLevel};
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::IdentityPublicKey;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc::Receiver;
 
@@ -438,5 +486,150 @@ mod tests {
     #[test]
     fn recovers_signer_pubkey_uncompressed() {
         assert_recovers(false);
+    }
+
+    const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+    const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    /// Store an identity holding one ECDSA key at `(Main, key_id)` whose public
+    /// half genuinely is `secret`'s. The insert moves the plaintext into the
+    /// vault, so label and record agree — the state a healthy install is in.
+    fn store_identity_holding(
+        ctx: &Arc<AppContext>,
+        seed: u8,
+        key_id: KeyID,
+        secret: [u8; 32],
+    ) -> Identifier {
+        let platform_version = PlatformVersion::latest();
+        let public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: key_id,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: BinaryData::new(
+                KeyType::ECDSA_SECP256K1
+                    .public_key_data_from_private_key_data(&secret, Network::Testnet)
+                    .expect("derive the public half"),
+            ),
+            disabled_at: None,
+        });
+        let mut private_keys = KeyStorage::default();
+        private_keys.insert_at(
+            (MAIN, key_id),
+            (
+                QualifiedIdentityPublicKey::from(public_key),
+                PrivateKeyData::Clear(secret),
+            ),
+        );
+        let qi = QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([seed; 32]),
+                platform_version,
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("store the identity");
+        qi.identity.id()
+    }
+
+    /// The happy path this chokepoint exists for: a vault secret that really is
+    /// the key recorded at the requested placement reaches the closure intact.
+    /// Verifying the placement must not cost a healthy install its signing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_secret_matching_its_recorded_key_still_resolves() {
+        let fixture = wallet_fixture().await;
+        let secret = [0x21; 32];
+        let identity_id = store_identity_holding(&fixture.ctx, 0x90, 7, secret);
+
+        let bytes = fixture
+            .ctx
+            .with_identity_secret_key(identity_id, MAIN, 7, |key| Ok(key.secret_bytes()))
+            .await
+            .expect("a key that matches its record must resolve");
+
+        assert_eq!(bytes, secret, "the recorded key's own bytes come back");
+    }
+
+    /// The placement is the caller's word, and the vault label it names can hold
+    /// a different key than the record files there — a stale label an older
+    /// build wrote, or a write that landed while the record moved. Signing with
+    /// those bytes yields a signature no verifier attributes to this identity,
+    /// so the chokepoint must refuse them rather than hand them over.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_vault_secret_that_is_not_the_recorded_key_is_refused() {
+        let fixture = wallet_fixture().await;
+        let identity_id = store_identity_holding(&fixture.ctx, 0x91, 7, [0x21; 32]);
+        let backend = fixture.ctx.wallet_backend().expect("backend");
+        IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer())
+            .store(&MAIN, 7, &[0x99; 32])
+            .expect("plant a different key at the same label");
+
+        let reached_key = Arc::new(AtomicBool::new(false));
+        let probe = Arc::clone(&reached_key);
+        let result = fixture
+            .ctx
+            .with_identity_secret_key(identity_id, MAIN, 7, move |_key| {
+                probe.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::IdentityKeyMismatch)),
+            "a secret that is not the recorded key must be refused, got {result:?}"
+        );
+        assert!(
+            !reached_key.load(Ordering::SeqCst),
+            "the wrong key must never reach the caller's closure"
+        );
+    }
+
+    /// A placement the identity records nothing at is not a key of this
+    /// identity, whatever the vault happens to hold there. An orphaned label —
+    /// one an older build left behind — must not be served just because a caller
+    /// asked for it by name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_placement_the_identity_does_not_record_is_refused() {
+        let fixture = wallet_fixture().await;
+        let identity_id = store_identity_holding(&fixture.ctx, 0x92, 7, [0x21; 32]);
+        let backend = fixture.ctx.wallet_backend().expect("backend");
+        IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer())
+            .store(&VOTER, 7, &[0x88; 32])
+            .expect("plant an orphan where the record names nothing");
+
+        let reached_key = Arc::new(AtomicBool::new(false));
+        let probe = Arc::clone(&reached_key);
+        let result = fixture
+            .ctx
+            .with_identity_secret_key(identity_id, VOTER, 7, move |_key| {
+                probe.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::IdentityKeyMissing)),
+            "an unrecorded placement must be refused, got {result:?}"
+        );
+        assert!(
+            !reached_key.load(Ordering::SeqCst),
+            "an orphaned secret must never reach the caller's closure"
+        );
     }
 }

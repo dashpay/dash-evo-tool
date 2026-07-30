@@ -804,7 +804,7 @@ impl QualifiedIdentity {
     /// `BTreeMap<WalletSeedHash, _>`, so the first key is the lowest seed
     /// hash — a stable, content-derived choice that does not depend on
     /// insertion order. Both sides call this one helper so the rule lives in
-    /// exactly one place (SEC-W-001).
+    /// exactly one place.
     pub fn dashpay_wallet_seed_hash(&self) -> Option<WalletSeedHash> {
         self.associated_wallets.keys().next().copied()
     }
@@ -2278,9 +2278,9 @@ mod withdrawal_key_tests {
     }
 }
 
-/// Regression coverage for the `from_bytes` decode-limit fix (SEC-001 from the
-/// PR #885 grumpy-review): a corrupted or length-inflated blob must decode to
-/// a graceful `Err`, never abort the process.
+/// Regression coverage for the `from_bytes` decode-limit fix (PR #885): a
+/// corrupted or length-inflated blob must decode to a graceful `Err`, never
+/// abort the process.
 ///
 /// This deliberately does NOT decode a full `QualifiedIdentity` blob. Crafting
 /// a byte-exact corruption of a real encoded identity is fragile — it would

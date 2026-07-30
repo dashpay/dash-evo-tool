@@ -88,12 +88,19 @@ With nothing to fall through to, the first failure is returned rather than
 `Ok(None)`, so "the vault is not open" never degrades into "you never had that
 key".
 
+The walk is resident-first: placements whose bytes are resident resolve with no
+chokepoint access and are tried before vault-backed or wallet-derived ones — the
+async mirror of `first_live_candidate`'s rule, so the two resolvers agree about
+which copy of a dual-filed key answers first. Within each group, probe order
+decides.
+
 One exception ends the walk early: a cancelled password prompt
 (`TaskError::SecretPromptCancelled`) is returned as-is, outranking any earlier
 placement's mechanical failure. It is the user's answer about the key — falling
 through to a sibling placement would re-ask for what was just declined, one
 dialog per store, and reporting a prior placement's failure instead would deny
-that anything was asked.
+that anything was asked. Because resident placements walk first, the carve-out
+can only fire when no prompt-free copy existed to serve.
 
 ## 4. The map key and the vault label are one address
 
@@ -214,6 +221,7 @@ and the UI rows the screens that consume them.
 | `a_key_with_no_placement_resolves_to_absence` | resolver | absence is `Ok(None)` — never an error, never another key's material |
 | `cancelling_the_prompt_stops_asking_for_the_same_key` | resolver | §3's cancellation carve-out: one refusal, one dialog |
 | `a_cancellation_outranks_an_earlier_placements_failure` | resolver | the cancellation is what surfaces, not a prior placement's mechanical failure |
+| `a_resident_sibling_resolves_without_prompting_for_a_sealed_copy` | resolver | the resident-first walk: a sealed copy cannot put a prompt in front of bytes held in the clear |
 | `duplicate_placements_are_returned_in_probe_order` | resolver | determinism, not iteration order |
 | `an_entry_whose_material_disagrees_is_not_a_candidate` | resolver | the assumption material matching rests on |
 | `an_operator_filed_key_from_a_legacy_blob_stays_reachable` | resolver | `PrivateKeyOnOperatorIdentity` has no live writer but is legacy-reachable |

@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -266,12 +267,23 @@ impl ScreenLike for KeyInfoScreen {
             self.protection_in_flight = false;
             self.protection_status = None;
         }
-        // End whatever recovery operation was in flight. A failed restore
-        // returns to its offer, so a mistyped identity password can be
-        // corrected and Restore pressed again.
-        if matches!(message_type, MessageType::Error) {
+    }
+
+    /// End a recovery operation when the error was its own, leaving a failed
+    /// restore back on its offer so a mistyped identity password can be
+    /// corrected and Restore pressed again.
+    ///
+    /// Never claims the error (always `false`): the user has to see it, and
+    /// `AppState`'s generic banner is how it gets to them. Attribution lives on
+    /// [`LegacyRecoveryState::owns_error`] so this screen and the keys list —
+    /// the two hosts of the same offer — cannot disagree about whether a restore
+    /// ended. Ending it on *any* error would let an unrelated task's failure
+    /// re-arm Restore mid-flight.
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if self.recovery.owns_error(error) {
             self.recovery.failed();
         }
+        false
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

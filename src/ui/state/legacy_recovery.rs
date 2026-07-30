@@ -14,6 +14,7 @@
 use dash_sdk::platform::Identifier;
 
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
@@ -141,6 +142,34 @@ impl LegacyRecoveryState {
     pub fn completed(&mut self) {
         if !matches!(self.state, FetchState::Unavailable) {
             self.state = FetchState::NotRequested;
+        }
+    }
+
+    /// Whether `error` can have come from this identity's own recovery flow.
+    ///
+    /// The variants are those `check_legacy_recovery` and
+    /// `recover_legacy_identity_data` document themselves as returning, scoped
+    /// to this identity wherever the variant names one. Lives here rather than on
+    /// a screen because every screen hosting an offer has to answer it the same
+    /// way — two screens disagreeing about whether a restore ended is worse than
+    /// either answer.
+    ///
+    /// Excluding the shared variants is not an option: a restore genuinely fails
+    /// with them, and ignoring those would strand it mid-flight with no way to
+    /// retry. So attribution is close, not exact — the same variant raised by
+    /// another task while a restore runs still ends it. Closing that needs the
+    /// task's identity to reach the screen, which `ScreenLike` does not carry.
+    pub fn owns_error(&self, error: &TaskError) -> bool {
+        match error {
+            TaskError::LegacyRecoveryNothingApproved
+            | TaskError::LegacyRecoveryIdentityChanged
+            | TaskError::IdentityNotFoundLocally
+            | TaskError::WalletStorageNotReady
+            | TaskError::SecretPromptUnavailable
+            | TaskError::SecretPromptCancelled => true,
+            TaskError::LegacyIdentityUnreadable { identity_id }
+            | TaskError::IdentityLoadInProgress { identity_id } => *identity_id == self.identity_id,
+            _ => false,
         }
     }
 
@@ -370,6 +399,38 @@ mod tests {
         assert!(
             state.ensure_checked().is_some_and(|task| is_check(&task)),
             "the next frame re-checks, so the offer disappears on its own",
+        );
+    }
+
+    /// Task results are not screen-affine — any task's error reaches whichever
+    /// screen is visible — so an offer must only end on an error its own flow
+    /// could have raised. Otherwise an unrelated failure re-arms Restore while a
+    /// restore is still running, and it can be dispatched twice.
+    #[test]
+    fn only_errors_the_recovery_flow_can_raise_are_its_own() {
+        let state = LegacyRecoveryState::armed(identity(0x09));
+
+        assert!(state.owns_error(&TaskError::LegacyRecoveryNothingApproved));
+        assert!(state.owns_error(&TaskError::LegacyRecoveryIdentityChanged));
+        // Shared with other flows, but a restore genuinely fails with them:
+        // ignoring these would strand a failed restore with no way to retry.
+        assert!(state.owns_error(&TaskError::WalletStorageNotReady));
+        assert!(state.owns_error(&TaskError::SecretPromptCancelled));
+
+        assert!(
+            !state.owns_error(&TaskError::WalletStateInconsistent),
+            "an unrelated task's failure is not this offer's business"
+        );
+
+        // Identity-scoped where the variant names one.
+        assert!(state.owns_error(&TaskError::LegacyIdentityUnreadable {
+            identity_id: identity(0x09)
+        }));
+        assert!(
+            !state.owns_error(&TaskError::LegacyIdentityUnreadable {
+                identity_id: identity(0x0a)
+            }),
+            "another identity's unreadable row must not end this offer"
         );
     }
 

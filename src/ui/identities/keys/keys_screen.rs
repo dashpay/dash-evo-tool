@@ -27,7 +27,7 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, RichText, ScrollArea};
 use std::sync::Arc;
 
@@ -104,7 +104,7 @@ impl ScreenLike for KeysScreen {
     /// only ends on *any* error would be re-armed mid-flight by an unrelated
     /// task's failure and could then be dispatched twice.
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if self.is_recovery_error(error) {
+        if self.recovery.owns_error(error) {
             self.recovery.failed();
         }
         false
@@ -178,32 +178,6 @@ impl KeysScreen {
             app_context: app_context.clone(),
             recovery,
             pending_recovery_restore: None,
-        }
-    }
-
-    /// Whether `error` can have come from this identity's own recovery flow.
-    ///
-    /// The variants are those `check_legacy_recovery` and
-    /// `recover_legacy_identity_data` document themselves as returning, scoped
-    /// to this identity wherever the variant names one. Excluding the shared
-    /// ones is not an option: a restore genuinely fails with them, and ignoring
-    /// those would strand it mid-flight with no way to retry.
-    ///
-    /// So attribution is close, not exact — the same variant raised by another
-    /// task while a restore runs still ends it. Closing that needs the task's
-    /// identity to reach the screen, which `ScreenLike` does not carry today.
-    fn is_recovery_error(&self, error: &TaskError) -> bool {
-        let mine = |identity_id: &Identifier| *identity_id == self.identity.identity.id();
-        match error {
-            TaskError::LegacyRecoveryNothingApproved
-            | TaskError::LegacyRecoveryIdentityChanged
-            | TaskError::IdentityNotFoundLocally
-            | TaskError::WalletStorageNotReady
-            | TaskError::SecretPromptUnavailable
-            | TaskError::SecretPromptCancelled => true,
-            TaskError::LegacyIdentityUnreadable { identity_id }
-            | TaskError::IdentityLoadInProgress { identity_id } => mine(identity_id),
-            _ => false,
         }
     }
 

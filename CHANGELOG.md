@@ -94,6 +94,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A key held in the clear is used without asking for a password**: for a key
+  an earlier version had saved in two places, one of them password-protected,
+  using the key could bring up a password prompt even though a copy needing no
+  password was on this device — and dismissing that prompt then refused the
+  key outright. The copy that needs no password is now used first, so the
+  prompt only appears when it is genuinely required.
+
+- **Show and Sign find a key whose first copy is unreadable**: for a key saved
+  in two places where only one copy's stored bytes were still present —
+  as after restoring the app's data without its key store — "Show private
+  key" and "Sign" could fail on the empty copy while the readable one sat
+  unused. Both now reach whichever copy is actually readable.
+
 - **Showing or signing with a key no longer advises saving it**: pressing
   "Show private key" or "Sign" on a key whose place on the identity could not
   be worked out answered with advice about saving the key again — about a key

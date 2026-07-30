@@ -73,9 +73,12 @@ fn dry_run_asset_lock_amount(
 // INTENTIONAL(upstream-bnb-dos): default `BranchAndBound` is algorithmically
 // bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget,
 // which closes rust-dashcore#918; this probe therefore needs no local timeout.
-// TODO(upstream-pin): BLOCKING ASSUMPTION — platform's rust-dashcore dependency
-// and DET's platform pin MUST both include #919 before this merges. Otherwise
-// the original unbounded near-total-balance search is exposed again.
+// Confirmed present: `platform`'s `key-wallet` dep tracks rust-dashcore's
+// `dash-evo-tool` integration branch (rev 34f0921e, which merges #919's
+// source branch directly), and this crate's own `Cargo.toml` pins `platform`
+// to rev a18bd1586858ef680124e150caad6a7dc21d0b64 (feat/platform-wallet-
+// storage-rehydration tip) or later, which resolves to that same key-wallet
+// rev or newer. If either pin ever moves backward, re-verify this holds.
 fn dry_run_asset_lock_amount_with_strategy(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,

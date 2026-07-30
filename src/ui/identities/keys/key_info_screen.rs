@@ -762,8 +762,9 @@ impl ScreenLike for KeyInfoScreen {
         let wants_display = std::mem::take(&mut self.pending_identity_key_display);
         let wants_sign = std::mem::take(&mut self.pending_identity_sign);
         if wants_display || wants_sign {
-            // The vault stores each key under the store it is filed in, so the
-            // request has to name the placement the material is actually at.
+            // The request names the placement this screen sees; the backend
+            // chokepoint verifies that label is live and falls through to a
+            // sibling placement filing the same key when it is not.
             match self.filed_at() {
                 Ok(target) => {
                     if wants_display {
@@ -788,9 +789,8 @@ impl ScreenLike for KeyInfoScreen {
                     }
                 }
                 Err(error) => {
-                    // The two failure modes carry different remedies, so the
-                    // typed message is shown — a shared sentence would advise
-                    // a paste the same ambiguity then refuses.
+                    // Each failure mode speaks its own typed message and
+                    // remedy, worded for this read path as much as the paste.
                     MessageBanner::set_global_with_error(ctx, error);
                 }
             }
@@ -2263,7 +2263,7 @@ mod tests {
                 .candidates(&pasted)
                 .next()
                 .is_none(),
-            "the in-memory record must roll back to what is on disk",
+            "the in-memory record must stay what is on disk",
         );
         let banner_texts =
             crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());

@@ -570,12 +570,16 @@ As a power user, I want to add a new key to my identity so that I can authorize 
 - Key is added via state transition.
 
 ### IDN-008: View identity keys and details [Implemented]
-**Persona:** Priya, Jordan
+**Persona:** Alex, Priya, Jordan
 
 As a user, I want to view all keys associated with my identity so that I can audit access and verify key configuration.
 
-- Lists all keys with type, purpose, and status.
-- View individual key details.
+- The list is reachable from the identity's own Settings tab, under the Advanced section, without changing the interface mode and without starting a payment.
+- Every key on the identity gets a row, and every row opens that key's own page — whether or not this device holds the key's private half. A key the device is missing is exactly the one a user comes here about, so it is never hidden or unopenable.
+- Each row names the key by its role in words that suit the identity — a user identity's keys in plain language, a masternode's in its registration terms — and says whether the key is saved on this device, in words rather than by colour alone. A key the network has retired says so in its name.
+- The on-chain specifics — key id, Platform purpose, security level, key type, read-only — are Expert-view detail, on both the list and the key's own page. The Everyday view gets the role and the held state, which is what it can act on.
+- A key's own page shows its public key, hash and address, and offers to view the private half, sign a message with it, or add and remove it.
+- The offer to restore keys an upgrade left behind also appears here; its criteria are IDN-020's.
 
 ### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]
 **Persona:** Priya, Jordan

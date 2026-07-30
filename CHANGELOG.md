@@ -46,6 +46,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checking that key against the chain instead is tracked as issue #942. The
   previous version's data is only ever read, so this is safe to repeat.
 
+- **Legacy key recovery: closed edge cases found during review**: a recovered
+  key is now checked against the exact key it's meant to replace, not just
+  matching key data found anywhere else on the identity, so a rotated-away or
+  mismatched key can no longer be reported as restored. Restoring no longer
+  races with other actions on the same identity happening at the same moment
+  (an edit, a refresh, a rename, or turning password protection on or off),
+  and a restore still waiting on your password can no longer be reset —
+  showing the Restore button again as if nothing had started — by an
+  unrelated error appearing on screen.
+
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.
   Failed attempts retry on later launches until fresh addresses are saved and
@@ -181,6 +191,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that each key still reads as you expect, and re-enter any key that should be
   saved but no longer is. This will be closed by the in-progress key-placement
   resolution fix.
+
+- **A key's page now catches up on changes made while it was open**: previously,
+  if something else updated your identity while a key's page was open — most
+  relevantly, a restore that finished from a different screen — the next key
+  edit made on that page could silently overwrite the change. The page now
+  picks up such changes as they arrive.
+
+- **Key role names are complete, consistent phrases everywhere**: a key's role
+  (owner, voting, payout, and so on) now reads the same complete phrase across
+  the keys list, a masternode's page, and the key's own page, instead of a
+  partly-assembled label that could vary by screen. The on-chain purpose value
+  itself remains available as its own line in Expert view for anyone who wants
+  it verbatim.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

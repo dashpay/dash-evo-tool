@@ -15,6 +15,7 @@ mod identity_hub_switcher;
 mod identity_selector;
 mod import_single_key;
 mod info_popup;
+mod key_info_screen;
 mod keys_screen;
 mod left_panel;
 mod legacy_recovery_section;

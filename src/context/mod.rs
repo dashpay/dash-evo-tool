@@ -119,6 +119,9 @@ pub struct AppContext {
     /// Per-wallet guards covering the complete wallet-meta alias update.
     /// Different wallets remain independent while same-wallet renames serialize.
     hd_wallet_rename_locks: Mutex<HashMap<WalletSeedHash, Arc<Mutex<()>>>>,
+    /// Per-identity guards covering every whole-record mutation of one stored
+    /// identity. See [`AppContext::identity_record_lock`].
+    identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
     /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
@@ -288,6 +291,40 @@ impl AppContext {
             .clone()
     }
 
+    /// The guard serializing every whole-record mutation of `identity_id`:
+    /// storing the record, deleting it, and changing its key-protection tier.
+    ///
+    /// The stored record is written as one whole snapshot, so any two writers
+    /// of the same identity are a read-modify-write race — the loser's snapshot
+    /// silently reverts the winner's. A multi-step mutation (read → merge →
+    /// seal → write) must therefore hold this guard for its whole span; single
+    /// writers take it for the write alone, inside
+    /// [`insert_local_qualified_identity`](Self::insert_local_qualified_identity),
+    /// [`update_local_qualified_identity`](Self::update_local_qualified_identity),
+    /// [`set_identity_alias`](Self::set_identity_alias) and
+    /// [`delete_local_qualified_identity`](Self::delete_local_qualified_identity),
+    /// so coverage does not depend on remembering it at ~20 call sites.
+    ///
+    /// Lock order is `migration_run` → this guard, never the reverse: the
+    /// delete and legacy-recovery paths both take the storage-migration mutex
+    /// first. Nothing may be held across an `.await`.
+    ///
+    /// A few UI paths write a record straight from the frame loop (a key add or
+    /// remove, an alias rename, removing a node), so they can wait here. That
+    /// wait is bounded and cannot deadlock: no holder needs the UI thread to
+    /// make progress — the one flow that opens a modal, legacy recovery, takes
+    /// this guard only *after* its password prompt has closed — and the longest
+    /// holder is a key-protection tier change, whose per-key derivation runs in
+    /// the low hundreds of milliseconds. Different identities never contend.
+    pub(crate) fn identity_record_lock(&self, identity_id: Identifier) -> Arc<Mutex<()>> {
+        self.identity_record_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(identity_id)
+            .or_default()
+            .clone()
+    }
+
     pub(crate) fn try_claim_contact_request_action(
         &self,
         request_id: Identifier,
@@ -444,6 +481,7 @@ impl AppContext {
             identity_loads: Default::default(),
             wallets: RwLock::new(wallets),
             hd_wallet_rename_locks: Mutex::new(HashMap::new()),
+            identity_record_locks: Mutex::new(HashMap::new()),
             single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),

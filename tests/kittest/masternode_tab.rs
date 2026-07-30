@@ -1187,21 +1187,26 @@ fn key_info_names_a_voter_key_as_the_masternode_key_list_does() {
             "the row must open Key Info"
         );
 
-        // What the page one click later calls it. The masternode surface is
-        // Expert-gated, so the raw purpose is appended here — which is exactly
-        // what makes the disagreement legible: purpose AUTHENTICATION, role
-        // Voting.
+        // What the page one click later calls it — the same whole caption, with
+        // nothing spliced into it.
         assert!(
-            harness
-                .query_by_label("Voting key (AUTHENTICATION)")
-                .is_some(),
+            harness.query_by_label("Voting key").is_some(),
             "Key Info must name the key as the list that opened it does"
         );
         assert!(
-            harness
-                .query_by_label("Authentication key (AUTHENTICATION)")
-                .is_none(),
+            harness.query_by_label("Authentication key").is_none(),
             "and must not rename it by re-deriving its location from its purpose"
+        );
+        // The masternode surface is Expert-gated, so the raw purpose shows in a
+        // labelled field of its own — which is what keeps the disagreement this
+        // test guards against legible: purpose AUTHENTICATION, role Voting.
+        assert!(
+            harness.query_by_label("Platform purpose:").is_some(),
+            "the Expert view must still show the raw purpose it was promised"
+        );
+        assert!(
+            harness.query_by_label("AUTHENTICATION").is_some(),
+            "and that field must carry this key's actual purpose"
         );
 
         // The same wrong target would also lose the held private half on the

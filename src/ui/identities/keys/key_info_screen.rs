@@ -962,13 +962,19 @@ impl KeyInfoScreen {
     /// nothing is held does the identity's on-chain lists decide where a new
     /// private half would go.
     ///
+    /// The placement is picked by
+    /// [`first_live_candidate`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::first_live_candidate),
+    /// the same rule that produced the `private_key_data` this screen displays.
+    /// The two must agree: the vault reads the label this names, so a screen
+    /// naming one store while showing material from another asks the vault for
+    /// a key it never stored.
+    ///
     /// `None` when the key is on none of this identity's lists and nothing is
     /// held for it, which is the one case where no store can be named honestly.
     fn target(&self) -> Option<PrivateKeyTarget> {
         self.identity
             .private_keys
-            .candidates(&self.key)
-            .next()
+            .first_live_candidate(&self.key)
             .map(|(target, _)| target)
             .or_else(|| self.identity.placement_of(&self.key).resolved())
     }
@@ -989,16 +995,7 @@ impl KeyInfoScreen {
                 // Resolved against the record just read, not the stale clone:
                 // the write being picked up here may be the one that filed this
                 // key in the first place.
-                self.private_key_data =
-                    fresh
-                        .private_keys
-                        .candidates(&self.key)
-                        .next()
-                        .and_then(|placement| {
-                            fresh
-                                .private_keys
-                                .get_cloned_private_key_data_and_wallet_info(&placement)
-                        });
+                self.private_key_data = fresh.private_keys.held_private_key_data(&self.key);
                 self.identity = fresh;
             }
             Ok(None) => {}

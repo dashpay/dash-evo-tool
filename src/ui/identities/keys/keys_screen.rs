@@ -223,11 +223,7 @@ impl KeysScreen {
                     None => button,
                 };
                 if button.clicked() {
-                    let holding = filed_at.as_ref().and_then(|placement| {
-                        self.identity
-                            .private_keys
-                            .get_cloned_private_key_data_and_wallet_info(placement)
-                    });
+                    let holding = self.identity.private_keys.held_private_key_data(&key);
                     action |= AppAction::AddScreen(Screen::KeyInfoScreen(
                         KeyInfoScreen::new(
                             self.identity.clone(),

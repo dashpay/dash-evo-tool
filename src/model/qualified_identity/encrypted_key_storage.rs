@@ -501,6 +501,59 @@ impl KeyStorage {
             })
     }
 
+    /// The placement a synchronous caller should name for `key`: the first
+    /// candidate whose bytes are resident, or the first candidate at all.
+    ///
+    /// [`candidates`](Self::candidates) can name a [`PrivateKeyData::InVault`]
+    /// placeholder ahead of an entry that carries its own material. Resolving
+    /// bytes is the honest way to choose between them, but that is async and a
+    /// UI frame cannot await, so this picks the placement whose material is
+    /// visible without opening the vault and falls back to the first match when
+    /// none is. Every synchronous site shares this one rule, so the placement a
+    /// screen names and the material it displays can never come from two
+    /// different stores.
+    pub fn first_live_candidate(
+        &self,
+        key: &IdentityPublicKey,
+    ) -> Option<(PrivateKeyTarget, KeyID)> {
+        let placements: Vec<_> = self.candidates(key).collect();
+        placements
+            .iter()
+            .find(|placement| !self.is_in_vault(placement))
+            .or_else(|| placements.first())
+            .cloned()
+    }
+
+    /// What this identity holds for `key` — its stored [`PrivateKeyData`] and
+    /// the wallet derivation info recorded with it — taken from the placement
+    /// [`first_live_candidate`](Self::first_live_candidate) names.
+    ///
+    /// Clones the entry, so it copies raw key bytes for a plaintext-carrying
+    /// key: call it when the material is actually needed, not to answer whether
+    /// a key is held.
+    pub fn held_private_key_data(
+        &self,
+        key: &IdentityPublicKey,
+    ) -> Option<(PrivateKeyData, Option<WalletDerivationPath>)> {
+        let placement = self.first_live_candidate(key)?;
+        self.get_cloned_private_key_data_and_wallet_info(&placement)
+    }
+
+    /// The wallet derivation path `key` is filed at, under any placement.
+    ///
+    /// A typed probe, not a liveness one: it answers "is this a wallet-derived
+    /// key, and from which wallet", so a key filed under two placements where
+    /// the first is not wallet-derived still finds its wallet.
+    pub fn wallet_derived_at(&self, key: &IdentityPublicKey) -> Option<&WalletDerivationPath> {
+        let placements: Vec<_> = self.candidates(key).collect();
+        placements
+            .into_iter()
+            .find_map(|placement| match self.private_keys.get(&placement) {
+                Some((_, PrivateKeyData::AtWalletDerivationPath(path))) => Some(path),
+                _ => None,
+            })
+    }
+
     /// Returns all stored key identifiers.
     pub fn keys_set(&self) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
         self.private_keys.keys().cloned().collect()
@@ -1001,6 +1054,116 @@ mod tests {
             }
             (_, other) => panic!("expected plaintext bytes, got {other:?}"),
         }
+    }
+
+    const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    /// A storage filing one key under several placements, each with the given
+    /// stored data.
+    fn filed_under(
+        key: &IdentityPublicKey,
+        placements: &[(PrivateKeyTarget, PrivateKeyData)],
+    ) -> KeyStorage {
+        let mut ks = KeyStorage::default();
+        for (target, data) in placements {
+            ks.insert_at(
+                (target.clone(), key.id()),
+                (QualifiedIdentityPublicKey::from(key.clone()), data.clone()),
+            );
+        }
+        ks
+    }
+
+    fn derivation_path(seed_hash: u8) -> WalletDerivationPath {
+        WalletDerivationPath {
+            wallet_seed_hash: [seed_hash; 32],
+            derivation_path: DerivationPath::from(vec![]),
+        }
+    }
+
+    /// A vault placeholder probed first must not hide resident material for the
+    /// same key under a later placement — a screen that named the placeholder
+    /// would show a key it holds as unusable, and would send the vault a label
+    /// its bytes were never stored under.
+    #[test]
+    fn a_resident_placement_wins_over_a_vault_placeholder() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let ks = filed_under(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::InVault),
+                (VOTER, PrivateKeyData::Clear([0x33; 32])),
+            ],
+        );
+
+        assert_eq!(
+            ks.first_live_candidate(&key),
+            Some((VOTER, key.id())),
+            "the resident placement is the one to name"
+        );
+        assert!(
+            matches!(
+                ks.held_private_key_data(&key),
+                Some((PrivateKeyData::Clear(bytes), None)) if bytes == [0x33; 32]
+            ),
+            "the material comes from the placement that was named"
+        );
+    }
+
+    /// With one placement there is nothing to prefer: it is named whether its
+    /// bytes are resident or in the vault, so a vault-backed key stays usable.
+    #[test]
+    fn a_lone_placement_is_named_whatever_it_holds() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+
+        for data in [PrivateKeyData::InVault, PrivateKeyData::Clear([0x44; 32])] {
+            let ks = filed_under(&key, &[(MAIN, data.clone())]);
+            assert_eq!(
+                ks.first_live_candidate(&key),
+                Some((MAIN, key.id())),
+                "a lone {data:?} placement is still the answer"
+            );
+        }
+    }
+
+    /// A key nothing is filed for has no placement to name and no material.
+    #[test]
+    fn an_unheld_key_has_no_placement_and_no_material() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let ks = KeyStorage::default();
+
+        assert_eq!(ks.first_live_candidate(&key), None);
+        assert!(ks.held_private_key_data(&key).is_none());
+    }
+
+    /// `wallet_derived_at` asks a typed question, not a liveness one: a key
+    /// whose first placement carries its own plaintext still finds the wallet
+    /// it is derived from under a later placement.
+    #[test]
+    fn wallet_derived_at_looks_past_a_placement_that_is_not_derived() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let ks = filed_under(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::Clear([0x55; 32])),
+                (
+                    VOTER,
+                    PrivateKeyData::AtWalletDerivationPath(derivation_path(0x66)),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            ks.wallet_derived_at(&key).map(|path| path.wallet_seed_hash),
+            Some([0x66; 32]),
+            "the wallet is found under the placement that names it"
+        );
+
+        let plaintext_only = filed_under(&key, &[(MAIN, PrivateKeyData::Clear([0x55; 32]))]);
+        assert!(
+            plaintext_only.wallet_derived_at(&key).is_none(),
+            "a key no placement derives has no wallet"
+        );
     }
 
     /// `is_in_vault` and `public_key_for` probes: a vault placeholder reports

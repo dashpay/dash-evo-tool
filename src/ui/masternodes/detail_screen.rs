@@ -700,6 +700,9 @@ impl MasternodeDetailView {
     fn first_protectable_key(&self) -> Option<dash_sdk::platform::IdentityPublicKey> {
         identity_keys(&self.identity)
             .into_iter()
+            // Presence only: this gates a button, it never acts on the
+            // placement, so which of several placements is the liveliest one
+            // makes no difference to the answer.
             .find(|(_, key)| self.identity.private_keys.candidates(key).next().is_some())
             .map(|(_, key)| key)
     }
@@ -729,16 +732,7 @@ impl MasternodeDetailView {
         // the retired purpose-derived convention — a main-identity voting key
         // entered by hand — and report a key as unheld here while the identity
         // keys list shows it as saved on this device.
-        let holding = self
-            .identity
-            .private_keys
-            .candidates(key)
-            .next()
-            .and_then(|placement| {
-                self.identity
-                    .private_keys
-                    .get_cloned_private_key_data_and_wallet_info(&placement)
-            });
+        let holding = self.identity.private_keys.held_private_key_data(key);
         let identity = self.identity.clone();
         let key = key.clone();
         let screen = match mode {

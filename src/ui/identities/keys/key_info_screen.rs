@@ -2137,7 +2137,12 @@ mod tests {
         let sealed = public_key(0, Purpose::AUTHENTICATION);
         let on_screen = public_key(1, Purpose::AUTHENTICATION);
         let other = public_key(2, Purpose::TRANSFER);
-        let mut identity = protected_identity(&app_context, 0x7D, &sealed, std::slice::from_ref(&on_screen));
+        let mut identity = protected_identity(
+            &app_context,
+            0x7D,
+            &sealed,
+            std::slice::from_ref(&on_screen),
+        );
         for key in [&on_screen, &other] {
             identity.private_keys.insert_at(
                 (MAIN, key.id()),

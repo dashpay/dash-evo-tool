@@ -80,8 +80,9 @@ impl AppContext {
     /// reported as skipped, and an item the user did not approve is never
     /// restored even if it is missing.
     ///
-    /// On a password-protected identity the password is verified up front and
-    /// every merged key is sealed under it *before* the record is written, so
+    /// On a password-protected identity the password is verified up front, and
+    /// re-proved against the vault as it stands at write time, before every
+    /// merged key is sealed under it — all *before* the record is written, so
     /// the at-rest encoder never sees plaintext on a protected identity and its
     /// downgrade guard cannot trip.
     ///
@@ -92,8 +93,10 @@ impl AppContext {
     /// holds this identity, [`TaskError::WalletStorageNotReady`] while the
     /// storage migration runs, [`TaskError::IdentityNotFoundLocally`] for a
     /// deleted identity, [`TaskError::LegacyIdentityUnreadable`] for a corrupt
-    /// legacy row, and the prompt's own cancel / unavailable errors. Every one
-    /// of them leaves the stored record unchanged.
+    /// legacy row, [`TaskError::LegacyRecoveryIdentityChanged`] when the
+    /// identity's key protection changed under the flow, and the prompt's own
+    /// cancel / unavailable errors. Every one of them leaves the stored record
+    /// unchanged.
     pub(super) async fn recover_legacy_identity_data(
         &self,
         identity_id: Identifier,
@@ -177,14 +180,17 @@ impl AppContext {
 
     /// Merge and write, in one fully synchronous critical section.
     ///
-    /// Everything is read again here, under the storage-migration guard: the
+    /// Everything is read again here, under this identity's record guard: the
     /// password prompt may have been open for minutes, and the record can have
     /// moved on (a refresh, a registered DPNS name) or been deleted outright.
     /// Re-reading and re-merging makes the write a superset of the record as it
-    /// *is*, so a concurrent update cannot be reverted and a deleted identity
-    /// cannot be resurrected — properties that used to hold only as a side
-    /// effect of how long the guard was held. The re-merge costs nothing the
-    /// allowlist-intersection rule did not already make idempotent.
+    /// *is*, so a deleted identity cannot be resurrected. The guard is what
+    /// makes that read-merge-write atomic against every other whole-record
+    /// writer — refreshes, key edits, top-ups, transfers, DPNS registration —
+    /// none of which take the load claim, and any of which would otherwise
+    /// overwrite this merge with the snapshot it read a moment earlier.
+    /// The re-merge costs nothing the allowlist-intersection rule did not
+    /// already make idempotent.
     fn persist_legacy_recovery(
         &self,
         identity_id: Identifier,
@@ -200,6 +206,12 @@ impl AppContext {
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
         }
+        // Lock order: the storage-migration mutex above, then the per-identity
+        // record guard — the same order the delete path takes.
+        let record_lock = self.identity_record_lock(identity_id);
+        let _record_guard = record_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let modern = self
             .get_local_qualified_identity(&identity_id)?
@@ -230,16 +242,27 @@ impl AppContext {
         // downgrade guard evaluates, so its trigger is false either way: Tier-2
         // seals every merged key before the write, and Tier-1 has no protected
         // key for the guard to protect.
-        if self
-            .protected_identity_verify_scope(&applied.merged)?
-            .is_some()
-        {
+        if let Some(verify_scope) = self.protected_identity_verify_scope(&applied.merged)? {
             let password = password.ok_or(TaskError::LegacyRecoveryIdentityChanged)?;
+            // The password was proved against the vault as it stood when the
+            // prompt closed, which is not this vault: an identity unprotected
+            // and re-protected under a NEW password while the prompt was open
+            // still reads as protected here. Sealing under the old password
+            // would leave the identity needing two, so it is proved again
+            // against the scope that exists now — under the record guard, which
+            // keeps a tier change from landing between this check and the seal.
+            if !self
+                .wallet_backend()?
+                .secret_access()
+                .identity_object_password_still_opens(&verify_scope, password)?
+            {
+                return Err(TaskError::LegacyRecoveryIdentityChanged);
+            }
             reject_resident_identity_plaintext(&modern.private_keys)?;
             self.seal_merged_plaintext_keys(&mut applied.merged, password)?;
         }
 
-        self.update_local_qualified_identity(&applied.merged)?;
+        self.write_local_qualified_identity_locked(&applied.merged)?;
 
         tracing::info!(
             target = LOG_TARGET,
@@ -1621,6 +1644,169 @@ mod tests {
             matches!(error, TaskError::LegacyRecoveryNothingApproved),
             "expected LegacyRecoveryNothingApproved, got {error:?}",
         );
+
+        offline.shutdown().await;
+    }
+
+    /// B14 — the password the prompt verified proves nothing about the vault the
+    /// seal will write to. `VerifiedIdentityPassword` records that one protected
+    /// key opened when the prompt closed; an identity unprotected and
+    /// re-protected under a DIFFERENT password after that still reads as
+    /// protected at write time, so the restore would seal the recovered keys
+    /// under the stale password and leave one identity needing two.
+    ///
+    /// The window is real: the tier migrations take neither the recovery claim
+    /// nor the storage-migration mutex. Driven through
+    /// `persist_legacy_recovery` with the password the preflight produced, the
+    /// way B13 drives it with that preflight's `None` — the two are consecutive
+    /// statements with no await between them for a concurrent task to land in
+    /// deterministically, and parking the prompt itself proves something else
+    /// (a tier change during the prompt is caught by the prompt's own re-ask).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn b14_a_password_verified_against_an_obsolete_vault_never_seals() {
+        const NEW_PW: &str = "a-different-identity-password";
+
+        let offline =
+            Offline::new(Some(Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)])))).await;
+        let ctx = &offline.ctx;
+        let (identity_id, _) = seed_tier2_with_a_stranded_key(&offline).await;
+        let approved = vec![RecoveryItem::Key {
+            target: M,
+            key_id: 2,
+        }];
+
+        // The preflight, as the task runs it: one prompt, verified against the
+        // identity as it stands now.
+        let modern = ctx
+            .get_local_qualified_identity(&identity_id)
+            .expect("read the record")
+            .expect("record stored");
+        let legacy = ctx
+            .legacy_identity_record(identity_id)
+            .expect("read the legacy row")
+            .expect("legacy row staged");
+        let password = ctx
+            .verify_recovery_password(&modern, legacy, &approved)
+            .await
+            .expect("the preflight must succeed");
+        assert!(
+            password.is_some(),
+            "a protected identity must carry a verified password, which is what makes this reachable",
+        );
+
+        // The vault moves on: keyless, then sealed again under a password this
+        // restore never saw.
+        ctx.unprotect_identity_keys(identity_id, Secret::new(PW))
+            .expect("opt out takes neither the recovery claim nor the migration mutex");
+        ctx.protect_identity_keys(identity_id, Secret::new(NEW_PW), None)
+            .expect("re-protect under a new password");
+
+        let error = ctx
+            .persist_legacy_recovery(identity_id, &approved, password.as_ref())
+            .expect_err("a stale password must never seal the recovered keys");
+        assert!(
+            matches!(error, TaskError::LegacyRecoveryIdentityChanged),
+            "expected LegacyRecoveryIdentityChanged, got {error:?}",
+        );
+
+        offline.with_keys(identity_id, |view| {
+            assert_eq!(
+                view.scheme(&M, 2).expect("scheme"),
+                SecretScheme::Absent,
+                "the recovered key must not have been sealed at all",
+            );
+            assert_eq!(
+                view.scheme(&M, 1).expect("scheme"),
+                SecretScheme::Protected,
+                "the identity's existing key is still protected",
+            );
+            assert!(
+                view.get_protected(&M, 1, &SecretString::new(NEW_PW))
+                    .expect("get_protected")
+                    .is_some(),
+                "and it opens under the one password the identity now has",
+            );
+        });
+
+        offline.shutdown().await;
+    }
+
+    /// B15 — the serialization claim behind the recovery write: while this
+    /// identity's record guard is held — the guard `persist_legacy_recovery`
+    /// takes for its whole read → merge → seal → write span — no other
+    /// whole-record writer of the same identity can land.
+    ///
+    /// Every ordinary writer goes through one of these entry points: a refresh,
+    /// a top-up, a transfer, a DPNS registration and a key edit all call
+    /// `update_local_qualified_identity`. None of them take the identity-load
+    /// claim, so before the guard any of them could write its own snapshot
+    /// between the merge's read and its write, and erase the restored keys.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn b15_a_held_record_guard_excludes_every_whole_record_writer() {
+        use std::time::Duration;
+
+        let offline = Offline::new(None).await;
+        let owner = test_key(1, Purpose::OWNER, 0x5A);
+        let stored = identity_with_keys(
+            0xE5,
+            IdentityType::Masternode,
+            &[],
+            vec![(M, &owner, owner.clear())],
+        );
+        let identity_id = stored.identity.id();
+        offline
+            .ctx
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        type Writer = fn(&AppContext, Identifier, &QualifiedIdentity);
+        let writers: [(&str, Writer); 5] = [
+            ("a key edit or refresh", |ctx, _id, qi| {
+                ctx.update_local_qualified_identity(qi).expect("update");
+            }),
+            ("a re-load", |ctx, _id, qi| {
+                ctx.insert_local_qualified_identity(qi, &None)
+                    .expect("insert");
+            }),
+            ("a rename", |ctx, id, _qi| {
+                ctx.set_identity_alias(&id, Some("renamed")).expect("alias");
+            }),
+            ("a protection opt-in", |ctx, id, _qi| {
+                ctx.protect_identity_keys(id, Secret::new(PW), None)
+                    .expect("protect");
+            }),
+            ("a removal", |ctx, id, _qi| {
+                ctx.delete_local_qualified_identity(&id).expect("delete");
+            }),
+        ];
+
+        for (what, writer) in writers {
+            let lock = offline.ctx.identity_record_lock(identity_id);
+            let guard = lock.lock().expect("the record guard");
+
+            let (started, has_started) = std::sync::mpsc::channel();
+            let (finished, has_finished) = std::sync::mpsc::channel();
+            let ctx = offline.ctx.clone();
+            let snapshot = stored.clone();
+            let thread = std::thread::spawn(move || {
+                started.send(()).expect("report the writer started");
+                writer(&ctx, identity_id, &snapshot);
+                finished.send(()).expect("report the write landed");
+            });
+            has_started.recv().expect("the writer thread started");
+
+            assert!(
+                has_finished
+                    .recv_timeout(Duration::from_millis(250))
+                    .is_err(),
+                "{what} must not land inside a held record guard",
+            );
+            drop(guard);
+            has_finished
+                .recv_timeout(Duration::from_secs(30))
+                .unwrap_or_else(|_| panic!("{what} must land once the guard is released"));
+            thread.join().expect("the writer thread must not panic");
+        }
 
         offline.shutdown().await;
     }

@@ -7,8 +7,8 @@
 //! below exists to help. Keeping this list ungated is the point of it.
 
 use crate::app::AppAction;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -95,18 +95,19 @@ impl ScreenLike for KeysScreen {
         }
     }
 
-    /// Return a recovery operation to its offer when the error was its own.
+    /// Return a recovery operation to its offer only when the failure is that
+    /// operation's own.
     ///
-    /// Never claims the error (always `false`): the user has to see it, and
-    /// `AppState`'s generic banner is how it gets to them. This exists for the
-    /// typed error, which `display_message` does not receive — a restore that
-    /// only ends on *any* error would be re-armed mid-flight by an unrelated
-    /// task's failure and could then be dispatched twice.
-    fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if self.recovery.owns_error(error) {
-            self.recovery.failed();
+    /// Every failing task reaches whichever screen is visible, so the identity
+    /// the error's operation names is what tells this list's own check or restore
+    /// from an unrelated failure that merely landed while the list was open. A
+    /// restore ended on *any* error would be re-armed mid-flight and could then
+    /// be dispatched twice. The error itself is never claimed: `AppState`'s
+    /// generic banner is how the user gets to see it.
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if let Some(identity_id) = context.legacy_recovery_identity() {
+            self.recovery.failed_for(identity_id);
         }
-        false
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

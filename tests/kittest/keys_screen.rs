@@ -8,8 +8,8 @@
 
 use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
-use dash_evo_tool::backend_task::BackendTaskSuccessResult;
 use dash_evo_tool::backend_task::error::TaskError;
+use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -322,23 +322,29 @@ fn a_failed_restore_leaves_the_offer_in_place_to_retry() {
         );
 
         // An unrelated task failing while the restore runs must not re-arm it.
-        // Results are not screen-affine — any task's error reaches whichever
+        // Errors are not screen-affine — any task's failure reaches whichever
         // screen is visible — and a re-armed Restore can be pressed again,
         // dispatching the same restore twice.
-        screen
-            .borrow_mut()
-            .display_task_error(&TaskError::WalletStateInconsistent);
-        harness.run_steps(2);
-        assert!(
-            harness.query_by_label(RESTORE).is_none(),
-            "an unrelated task's failure must not re-enable Restore mid-restore"
-        );
+        for unrelated in [
+            BackendTaskContext::Other,
+            BackendTaskContext::LegacyRecoveryRestore(Identifier::from([0x7c; 32])),
+        ] {
+            screen
+                .borrow_mut()
+                .display_backend_task_error(&unrelated, &TaskError::LegacyRecoveryIdentityChanged);
+            harness.run_steps(2);
+            assert!(
+                harness.query_by_label(RESTORE).is_none(),
+                "{unrelated:?} is not this restore, so it must not re-enable Restore mid-restore"
+            );
+        }
 
         // The restore's own failure does end it, so a mistyped identity password
         // can be corrected and Restore pressed again.
-        screen
-            .borrow_mut()
-            .display_task_error(&TaskError::LegacyRecoveryIdentityChanged);
+        screen.borrow_mut().display_backend_task_error(
+            &BackendTaskContext::LegacyRecoveryRestore(identity_id),
+            &TaskError::LegacyRecoveryIdentityChanged,
+        );
         harness.run_steps(2);
         assert!(
             harness.query_by_label(RESTORE).is_some(),

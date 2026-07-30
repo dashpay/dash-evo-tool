@@ -297,6 +297,11 @@ fn observe_asset_lock_inputs_locked(
                 // A sub-dust batch is an ordinary near-drained state, not a
                 // failure; its eligible candidates still shape the real
                 // builder's cross-batch choices, so they stay in the key.
+                // Unlike the success branch above, this arm cannot filter out
+                // an already-reserved outpoint, so one may transiently enter
+                // `observed`. That is safe: this key only ever drives quote
+                // *match* detection (see the doc comment below), never the
+                // amount `TransactionBuilder` reports or actually spends.
                 observed.extend(batch.iter().map(|utxo| (utxo.outpoint, utxo.value())));
             }
             Err(source) => return Err(source),
@@ -306,9 +311,12 @@ fn observe_asset_lock_inputs_locked(
     Ok(Some(AssetLockInputState::from_inputs(observed)))
 }
 
-/// Observe the exact final, unreserved input composition under the global
-/// observation lock. `Ok(None)` means the deadline expired before the whole
-/// composition was observed — a truncated set must never be used as a key.
+/// Observe the final input composition under the global observation lock.
+/// This is a match key for quote-staleness detection, not a spendable-funds
+/// set — it may transiently include a reserved outpoint (see the sub-dust
+/// batch arm above), which only affects key matching and is fail-closed.
+/// `Ok(None)` means the deadline expired before the whole composition was
+/// observed — a truncated set must never be used as a key.
 pub(super) fn asset_lock_final_input_state(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,

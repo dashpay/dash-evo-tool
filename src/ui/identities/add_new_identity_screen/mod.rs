@@ -27,14 +27,15 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::{
-    FundingMethod, WalletFundedScreenStep, append_concurrent_backend_tasks,
-    can_append_concurrent_backend_tasks, default_funding_state, deposit_event_outcome,
+    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
     funding_method_after_switch, max_amount_after_fee_reserve, receive_deposit_ceiling_duffs,
     spendable_covers_minimum, step_after_task_failure, wallet_selection_combo,
 };
 use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::{
+    MessageType, ScreenLike, append_concurrent_backend_tasks, can_append_concurrent_backend_tasks,
+};
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -505,11 +506,10 @@ impl AddNewIdentityScreen {
             .as_ref()
             .and_then(|wallet| wallet.read().ok())
             .map(|wallet| wallet.seed_hash())?;
-        let (_, final_funds_duffs, utxo_revision) =
-            self.app_context.asset_lock_probe_snapshot(&seed_hash);
-        let wallet_ceiling_duffs =
-            self.asset_lock_balance
-                .get_current(&seed_hash, final_funds_duffs, utxo_revision)?;
+        let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let wallet_ceiling_duffs = self
+            .asset_lock_balance
+            .get_current(&seed_hash, &input_state)?;
 
         match funding_method {
             FundingMethod::UseWalletBalance => Some(wallet_ceiling_duffs),
@@ -1476,12 +1476,16 @@ impl ScreenLike for AddNewIdentityScreen {
                 snapshot_generation,
                 request_id,
                 amount_duffs,
+                observed_inputs,
+                is_partial,
             } => {
                 self.asset_lock_balance.store(
                     *seed_hash,
                     *snapshot_generation,
                     *request_id,
                     *amount_duffs,
+                    observed_inputs.clone(),
+                    *is_partial,
                 );
                 return;
             }
@@ -1878,12 +1882,12 @@ impl ScreenLike for AddNewIdentityScreen {
                     .as_ref()
                     .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
             {
-                let (snapshot_generation, final_funds_duffs, utxo_revision) =
+                let (snapshot_generation, input_state, utxo_revision) =
                     self.app_context.asset_lock_probe_snapshot(&seed_hash);
                 if let Some(task) = self.asset_lock_balance.ensure_requested(
                     seed_hash,
                     snapshot_generation,
-                    final_funds_duffs,
+                    input_state,
                     utxo_revision,
                 ) {
                     pending_tasks.push(task);
@@ -1912,7 +1916,15 @@ mod funding_method_tests {
     use crate::context::test_support::{test_app_context, test_app_context_for_network};
     use crate::model::amount::DASH_DECIMAL_PLACES;
     use crate::ui::Screen;
-    use dash_sdk::dpp::dashcore::Network;
+    use crate::wallet_backend::AssetLockInputState;
+    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
+
+    fn different_asset_lock_inputs(seed_byte: u8) -> AssetLockInputState {
+        AssetLockInputState::from_inputs([(
+            OutPoint::new(Txid::from_byte_array([seed_byte; 32]), 0),
+            1,
+        )])
+    }
 
     fn wallet_balance_screen(
         seed_byte: u8,
@@ -2017,12 +2029,17 @@ mod funding_method_tests {
         let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
             seed_hash,
             generation,
-            final_funds,
+            final_funds.clone(),
             revision,
         ));
-        screen
-            .asset_lock_balance
-            .store(seed_hash, generation, request_id, WALLET_CEILING_DUFFS);
+        screen.asset_lock_balance.store(
+            seed_hash,
+            generation,
+            request_id,
+            WALLET_CEILING_DUFFS,
+            final_funds,
+            false,
+        );
 
         assert!(matches!(
             screen.register_identity_clicked(FundingMethod::ReceiveDeposit),
@@ -2035,17 +2052,17 @@ mod funding_method_tests {
         let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x35);
         let (_, current_final_funds, current_revision) =
             screen.app_context.asset_lock_probe_snapshot(&seed_hash);
-        let stale_revision = current_revision.saturating_add(1);
+        let stale_inputs = different_asset_lock_inputs(0x35);
 
         let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
             seed_hash,
             7,
             current_final_funds,
-            stale_revision,
+            current_revision,
         ));
         screen
             .asset_lock_balance
-            .store(seed_hash, 7, request_id, 10_000_000);
+            .store(seed_hash, 7, request_id, 10_000_000, stale_inputs, false);
 
         assert!(matches!(
             screen.register_identity_clicked(FundingMethod::UseWalletBalance),
@@ -2122,14 +2139,20 @@ mod funding_method_tests {
         let seed_hash = wallet.read_recover().seed_hash();
         let mut screen = AddNewIdentityScreen::new(&old_context);
         screen.selected_wallet = Some(wallet);
-        let request_id = asset_lock_request_id(
-            screen
-                .asset_lock_balance
-                .ensure_requested(seed_hash, 7, 1_000, 1),
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            7,
+            AssetLockInputState::default(),
+            1,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            7,
+            request_id,
+            900,
+            AssetLockInputState::default(),
+            false,
         );
-        screen
-            .asset_lock_balance
-            .store(seed_hash, 7, request_id, 900);
 
         let mut screen = Screen::AddNewIdentityScreen(screen);
         screen.change_context(new_context.clone());
@@ -2141,25 +2164,37 @@ mod funding_method_tests {
         assert!(screen.selected_wallet.is_none());
         assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
 
-        let request_id = asset_lock_request_id(
-            screen
-                .asset_lock_balance
-                .ensure_requested(seed_hash, 8, 1_000, 1),
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            8,
+            AssetLockInputState::default(),
+            1,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            8,
+            request_id,
+            800,
+            AssetLockInputState::default(),
+            false,
         );
-        screen
-            .asset_lock_balance
-            .store(seed_hash, 8, request_id, 800);
         screen.refresh_on_arrival();
         assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
 
-        let request_id = asset_lock_request_id(
-            screen
-                .asset_lock_balance
-                .ensure_requested(seed_hash, 9, 1_000, 1),
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            9,
+            AssetLockInputState::default(),
+            1,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            9,
+            request_id,
+            700,
+            AssetLockInputState::default(),
+            false,
         );
-        screen
-            .asset_lock_balance
-            .store(seed_hash, 9, request_id, 700);
         screen.refresh();
         assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
     }

@@ -3,22 +3,56 @@
 use crate::backend_task::BackendTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::AssetLockInputState;
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 const LOADING_VALIDATION_MESSAGE: &str =
     "Your wallet's available amount is still being checked. Wait a moment and try again.";
 const FAILED_VALIDATION_MESSAGE: &str =
     "The available amount could not be checked. Use Retry and try again.";
+const ASSET_LOCK_REQUEST_DEADLINE: Duration = Duration::from_secs(15);
+
+#[derive(Clone)]
+struct RequestKey {
+    generation: u64,
+    inputs: AssetLockInputState,
+    revision: u64,
+}
+
+impl RequestKey {
+    fn matches(&self, generation: u64, inputs: &AssetLockInputState, revision: u64) -> bool {
+        self.generation == generation && self.inputs == *inputs && self.revision == revision
+    }
+
+    fn matches_composition(&self, inputs: &AssetLockInputState, revision: u64) -> bool {
+        self.inputs == *inputs && self.revision == revision
+    }
+}
+
+struct InFlight {
+    request_id: u64,
+    key: RequestKey,
+    started_at: Instant,
+}
+
+struct LoadedQuote {
+    observed_inputs: AssetLockInputState,
+    amount_duffs: u64,
+}
+
+struct FailedRequest {
+    key: RequestKey,
+}
 
 /// Preserves result ordering within one generation sequence without making old
 /// high-water marks or unresolved requests permanent dispatch barriers.
 struct FetchState {
-    request_generation: u64,
-    request_final_funds_duffs: u64,
-    request_utxo_revision: u64,
-    loaded: Option<(u64, u64, u64, u64)>,
-    in_flight: Option<(u64, u64, u64, u64)>,
-    failed: Option<(u64, u64, u64, u64)>,
+    request_key: RequestKey,
+    loaded: Option<LoadedQuote>,
+    in_flight: Option<InFlight>,
+    failed: Option<FailedRequest>,
+    retry_available: bool,
 }
 
 /// Async fetch state for asset-lock maximum amounts, keyed by wallet.
@@ -38,59 +72,102 @@ impl AssetLockBalanceCache {
         &mut self,
         seed_hash: WalletSeedHash,
         snapshot_generation: u64,
-        final_funds_duffs: u64,
+        inputs: AssetLockInputState,
         utxo_revision: u64,
     ) -> Option<BackendTask> {
+        self.ensure_requested_at(
+            seed_hash,
+            snapshot_generation,
+            inputs,
+            utxo_revision,
+            Instant::now(),
+        )
+    }
+
+    fn ensure_requested_at(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        snapshot_generation: u64,
+        inputs: AssetLockInputState,
+        utxo_revision: u64,
+        now: Instant,
+    ) -> Option<BackendTask> {
         let state = self.states.entry(seed_hash).or_insert(FetchState {
-            request_generation: snapshot_generation,
-            request_final_funds_duffs: final_funds_duffs,
-            request_utxo_revision: utxo_revision,
+            request_key: RequestKey {
+                generation: snapshot_generation,
+                inputs: inputs.clone(),
+                revision: utxo_revision,
+            },
             loaded: None,
             in_flight: None,
             failed: None,
+            retry_available: false,
         });
-        let generation_restarted = snapshot_generation < state.request_generation;
-        let final_funds_changed = final_funds_duffs != state.request_final_funds_duffs;
-        let utxo_composition_changed = utxo_revision != state.request_utxo_revision;
-        if generation_restarted || final_funds_changed || utxo_composition_changed {
-            state.request_generation = snapshot_generation;
-            state.request_final_funds_duffs = final_funds_duffs;
-            state.request_utxo_revision = utxo_revision;
+        let generation_restarted = snapshot_generation < state.request_key.generation;
+        let input_composition_changed =
+            inputs != state.request_key.inputs || utxo_revision != state.request_key.revision;
+        if generation_restarted || input_composition_changed {
+            state.request_key = RequestKey {
+                generation: snapshot_generation,
+                inputs: inputs.clone(),
+                revision: utxo_revision,
+            };
             state.in_flight = None;
             state.failed = None;
+            state.retry_available = false;
             if generation_restarted {
                 state.loaded = None;
             }
-        } else if snapshot_generation != state.request_generation {
-            return None;
         }
-        let request_key = (snapshot_generation, final_funds_duffs, utxo_revision);
+
+        let in_flight_expired = state.in_flight.as_ref().is_some_and(|in_flight| {
+            in_flight.key.matches_composition(&inputs, utxo_revision)
+                && now
+                    .checked_duration_since(in_flight.started_at)
+                    .is_some_and(|elapsed| elapsed >= ASSET_LOCK_REQUEST_DEADLINE)
+        });
+        if in_flight_expired {
+            state.in_flight = None;
+            state.retry_available = true;
+            state.request_key = RequestKey {
+                generation: snapshot_generation,
+                inputs: inputs.clone(),
+                revision: utxo_revision,
+            };
+        }
+
         if state
             .in_flight
-            .is_some_and(|(_, generation, funds, revision)| {
-                (generation, funds, revision) == request_key
-            })
+            .as_ref()
+            .is_some_and(|in_flight| in_flight.key.matches_composition(&inputs, utxo_revision))
             || state
                 .loaded
-                .is_some_and(|(generation, final_funds, revision, _)| {
-                    (generation, final_funds, revision) == request_key
-                })
-            || state
-                .failed
-                .is_some_and(|(_, generation, funds, revision)| {
-                    (generation, funds, revision) == request_key
-                })
+                .as_ref()
+                .is_some_and(|loaded| loaded.observed_inputs == inputs)
+            || state.failed.as_ref().is_some_and(|failed| {
+                failed
+                    .key
+                    .matches(snapshot_generation, &inputs, utxo_revision)
+            })
         {
             return None;
         }
         let request_id = self.next_request_id.checked_add(1)?;
         self.next_request_id = request_id;
-        state.in_flight = Some((
+        state.request_key = RequestKey {
+            generation: snapshot_generation,
+            inputs: inputs.clone(),
+            revision: utxo_revision,
+        };
+        state.in_flight = Some(InFlight {
             request_id,
-            snapshot_generation,
-            final_funds_duffs,
-            utxo_revision,
-        ));
+            key: RequestKey {
+                generation: snapshot_generation,
+                inputs,
+                revision: utxo_revision,
+            },
+            started_at: now,
+        });
         state.failed = None;
         Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
             seed_hash,
@@ -106,35 +183,28 @@ impl AssetLockBalanceCache {
         snapshot_generation: u64,
         request_id: u64,
         amount_duffs: u64,
+        observed_inputs: AssetLockInputState,
+        is_partial: bool,
     ) {
         let Some(state) = self.states.get_mut(&seed_hash) else {
             return;
         };
-        if let Some((
-            in_flight_request_id,
-            in_flight_generation,
-            in_flight_final_funds,
-            in_flight_revision,
-        )) = state.in_flight
-            && (in_flight_request_id, in_flight_generation) == (request_id, snapshot_generation)
+        if let Some(in_flight) = state.in_flight.as_ref()
+            && (in_flight.request_id, in_flight.key.generation) == (request_id, snapshot_generation)
         {
+            let in_flight_key = in_flight.key.clone();
             state.in_flight = None;
-            if (
-                state.request_generation,
-                state.request_final_funds_duffs,
-                state.request_utxo_revision,
-            ) == (
-                in_flight_generation,
-                in_flight_final_funds,
-                in_flight_revision,
+            if state.request_key.matches(
+                in_flight_key.generation,
+                &in_flight_key.inputs,
+                in_flight_key.revision,
             ) {
-                state.loaded = Some((
-                    in_flight_generation,
-                    in_flight_final_funds,
-                    in_flight_revision,
+                state.loaded = Some(LoadedQuote {
+                    observed_inputs,
                     amount_duffs,
-                ));
+                });
                 state.failed = None;
+                state.retry_available = is_partial;
             }
         }
     }
@@ -149,30 +219,18 @@ impl AssetLockBalanceCache {
         let Some(state) = self.states.get_mut(seed_hash) else {
             return;
         };
-        if let Some((
-            in_flight_request_id,
-            in_flight_generation,
-            in_flight_final_funds,
-            in_flight_revision,
-        )) = state.in_flight
-            && (in_flight_request_id, in_flight_generation) == (request_id, snapshot_generation)
+        if let Some(in_flight) = state.in_flight.as_ref()
+            && (in_flight.request_id, in_flight.key.generation) == (request_id, snapshot_generation)
         {
+            let in_flight_key = in_flight.key.clone();
             state.in_flight = None;
-            if (
-                state.request_generation,
-                state.request_final_funds_duffs,
-                state.request_utxo_revision,
-            ) == (
-                in_flight_generation,
-                in_flight_final_funds,
-                in_flight_revision,
+            if state.request_key.matches(
+                in_flight_key.generation,
+                &in_flight_key.inputs,
+                in_flight_key.revision,
             ) {
-                state.failed = Some((
-                    in_flight_request_id,
-                    in_flight_generation,
-                    in_flight_final_funds,
-                    in_flight_revision,
-                ));
+                state.failed = Some(FailedRequest { key: in_flight_key });
+                state.retry_available = true;
             }
         }
     }
@@ -181,40 +239,44 @@ impl AssetLockBalanceCache {
     pub fn get(&self, seed_hash: &WalletSeedHash) -> Option<u64> {
         self.states
             .get(seed_hash)
-            .and_then(|state| state.loaded.map(|(_, _, _, amount_duffs)| amount_duffs))
+            .and_then(|state| state.loaded.as_ref().map(|loaded| loaded.amount_duffs))
     }
 
     /// Return a quote only when it matches the current validation inputs.
     pub fn get_current(
         &self,
         seed_hash: &WalletSeedHash,
-        final_funds_duffs: u64,
-        utxo_revision: u64,
+        inputs: &AssetLockInputState,
     ) -> Option<u64> {
         self.states.get(seed_hash).and_then(|state| {
             state
                 .loaded
-                .filter(|(_, loaded_final_funds, loaded_revision, _)| {
-                    (*loaded_final_funds, *loaded_revision) == (final_funds_duffs, utxo_revision)
-                })
-                .map(|(_, _, _, amount_duffs)| amount_duffs)
+                .as_ref()
+                .filter(|loaded| loaded.observed_inputs == *inputs)
+                .map(|loaded| loaded.amount_duffs)
         })
     }
 
     /// Whether the query failed and needs an explicit retry.
     pub fn is_failed(&self, seed_hash: &WalletSeedHash) -> bool {
         self.states.get(seed_hash).is_some_and(|state| {
-            state.failed.is_some_and(
-                |(_, failed_generation, failed_final_funds, failed_revision)| {
-                    (failed_generation, failed_final_funds, failed_revision)
-                        == (
-                            state.request_generation,
-                            state.request_final_funds_duffs,
-                            state.request_utxo_revision,
-                        )
-                },
-            )
+            state.failed.as_ref().is_some_and(|failed| {
+                failed.key.matches(
+                    state.request_key.generation,
+                    &state.request_key.inputs,
+                    state.request_key.revision,
+                )
+            })
         })
+    }
+
+    /// Whether the current loading/partial state should show a Retry button.
+    pub fn should_offer_retry(&self, seed_hash: &WalletSeedHash) -> bool {
+        self.is_failed(seed_hash)
+            || self
+                .states
+                .get(seed_hash)
+                .is_some_and(|state| state.retry_available)
     }
 
     /// Explain why validation cannot use a builder quote yet.
@@ -242,7 +304,37 @@ mod tests {
     use super::AssetLockBalanceCache;
     use crate::backend_task::BackendTask;
     use crate::backend_task::wallet::WalletTask;
+    use crate::wallet_backend::AssetLockInputState;
     use crate::wallet_backend::DetWalletBalance;
+    use dash_sdk::dpp::dashcore::{OutPoint, Txid};
+    use std::time::{Duration, Instant};
+
+    fn input_state(byte: u8, value: u64) -> AssetLockInputState {
+        AssetLockInputState::from_inputs([(OutPoint::new(Txid::from([byte; 32]), 0), value)])
+    }
+
+    fn snapshot_inputs(final_funds_duffs: u64, utxo_revision: u64) -> AssetLockInputState {
+        input_state(utxo_revision as u8, final_funds_duffs)
+    }
+
+    fn store(
+        cache: &mut AssetLockBalanceCache,
+        seed_hash: [u8; 32],
+        snapshot_generation: u64,
+        request_id: u64,
+        amount_duffs: u64,
+        final_funds_duffs: u64,
+        utxo_revision: u64,
+    ) {
+        cache.store(
+            seed_hash,
+            snapshot_generation,
+            request_id,
+            amount_duffs,
+            snapshot_inputs(final_funds_duffs, utxo_revision),
+            false,
+        );
+    }
 
     fn request(
         cache: &mut AssetLockBalanceCache,
@@ -254,7 +346,7 @@ mod tests {
         match cache.ensure_requested(
             seed_hash,
             snapshot_generation,
-            final_funds_duffs,
+            snapshot_inputs(final_funds_duffs, utxo_revision),
             utxo_revision,
         ) {
             Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
@@ -276,7 +368,7 @@ mod tests {
         let mut cache = AssetLockBalanceCache::default();
 
         let request_7 = request(&mut cache, seed_hash, 7, 1_000, 1);
-        cache.store(seed_hash, 7, request_7, 1_000);
+        store(&mut cache, seed_hash, 7, request_7, 1_000, 1_000, 1);
         assert_eq!(cache.get(&seed_hash), Some(1_000));
 
         let request_8 = request(&mut cache, seed_hash, 8, 900, 2);
@@ -286,18 +378,20 @@ mod tests {
             "the last loaded value must remain displayable while generation 8 refreshes"
         );
         assert!(
-            cache.ensure_requested(seed_hash, 8, 900, 2).is_none(),
+            cache
+                .ensure_requested(seed_hash, 8, snapshot_inputs(900, 2), 2)
+                .is_none(),
             "an in-flight refresh for the current generation must not dispatch twice"
         );
 
-        cache.store(seed_hash, 7, request_7, 1_000);
+        store(&mut cache, seed_hash, 7, request_7, 1_000, 1_000, 1);
         assert_eq!(
             cache.get(&seed_hash),
             Some(1_000),
             "a stale response must not overwrite or erase the last displayable value"
         );
 
-        cache.store(seed_hash, 8, request_8, 900);
+        store(&mut cache, seed_hash, 8, request_8, 900, 900, 2);
         assert_eq!(cache.get(&seed_hash), Some(900));
     }
 
@@ -307,7 +401,7 @@ mod tests {
         let mut cache = AssetLockBalanceCache::default();
 
         let old_request = request(&mut cache, seed_hash, 7, 1_000, 1);
-        cache.store(seed_hash, 7, old_request, 1_000);
+        store(&mut cache, seed_hash, 7, old_request, 1_000, 1_000, 1);
         assert_eq!(cache.get(&seed_hash), Some(1_000));
 
         let restarted_request = request(&mut cache, seed_hash, 2, 1_000, 1);
@@ -317,17 +411,19 @@ mod tests {
             "a restarted generation sequence must discard data from the previous sequence"
         );
         assert!(
-            cache.ensure_requested(seed_hash, 2, 1_000, 1).is_none(),
+            cache
+                .ensure_requested(seed_hash, 2, snapshot_inputs(1_000, 1), 1)
+                .is_none(),
             "the replacement request must still deduplicate its own generation"
         );
 
-        cache.store(seed_hash, 7, old_request, 2_000);
+        store(&mut cache, seed_hash, 7, old_request, 2_000, 1_000, 1);
         assert_eq!(
             cache.get(&seed_hash),
             None,
             "a late result from before the generation restart must be ignored"
         );
-        cache.store(seed_hash, 2, restarted_request, 800);
+        store(&mut cache, seed_hash, 2, restarted_request, 800, 1_000, 1);
         assert_eq!(cache.get(&seed_hash), Some(800));
     }
 
@@ -339,17 +435,19 @@ mod tests {
         let old_request = request(&mut cache, seed_hash, 4, 1_000, 1);
         let current_request = request(&mut cache, seed_hash, 5, 900, 2);
         assert!(
-            cache.ensure_requested(seed_hash, 5, 900, 2).is_none(),
+            cache
+                .ensure_requested(seed_hash, 5, snapshot_inputs(900, 2), 2)
+                .is_none(),
             "the superseding request must deduplicate its own generation"
         );
 
-        cache.store(seed_hash, 4, old_request, 1_000);
+        store(&mut cache, seed_hash, 4, old_request, 1_000, 1_000, 1);
         assert_eq!(
             cache.get(&seed_hash),
             None,
             "the superseded request must not populate the cache"
         );
-        cache.store(seed_hash, 5, current_request, 900);
+        store(&mut cache, seed_hash, 5, current_request, 900, 900, 2);
         assert_eq!(cache.get(&seed_hash), Some(900));
     }
 
@@ -360,11 +458,13 @@ mod tests {
 
         let request_id = request(&mut cache, seed_hash, 7, 1_000, 1);
         assert!(
-            cache.ensure_requested(seed_hash, 8, 1_000, 1).is_none(),
+            cache
+                .ensure_requested(seed_hash, 8, snapshot_inputs(1_000, 1), 1)
+                .is_none(),
             "a generation-only change must not restart the live-builder probe"
         );
 
-        cache.store(seed_hash, 7, request_id, 900);
+        store(&mut cache, seed_hash, 7, request_id, 900, 1_000, 1);
         assert_eq!(
             cache.get(&seed_hash),
             Some(900),
@@ -398,7 +498,15 @@ mod tests {
 
         assert_eq!(unconfirmed.spendable(), confirmed.spendable());
         let unconfirmed_request = request(&mut cache, seed_hash, 7, unconfirmed.confirmed, 1);
-        cache.store(seed_hash, 7, unconfirmed_request, 0);
+        store(
+            &mut cache,
+            seed_hash,
+            7,
+            unconfirmed_request,
+            0,
+            unconfirmed.confirmed,
+            1,
+        );
 
         request(&mut cache, seed_hash, 8, confirmed.confirmed, 2);
     }
@@ -409,14 +517,24 @@ mod tests {
         let mut cache = AssetLockBalanceCache::default();
 
         let first_request = request(&mut cache, seed_hash, 7, 1_000, 1);
-        cache.store(seed_hash, 7, first_request, 900);
+        store(&mut cache, seed_hash, 7, first_request, 900, 1_000, 1);
         assert_eq!(cache.get(&seed_hash), Some(900));
 
         let replacement_request = request(&mut cache, seed_hash, 7, 1_500, 2);
-        cache.store(seed_hash, 7, replacement_request, 1_400);
+        store(
+            &mut cache,
+            seed_hash,
+            7,
+            replacement_request,
+            1_400,
+            1_500,
+            2,
+        );
         assert_eq!(cache.get(&seed_hash), Some(1_400));
         assert!(
-            cache.ensure_requested(seed_hash, 7, 1_500, 2).is_none(),
+            cache
+                .ensure_requested(seed_hash, 7, snapshot_inputs(1_500, 2), 2)
+                .is_none(),
             "the replacement result must deduplicate its own generation and signal"
         );
     }
@@ -433,9 +551,9 @@ mod tests {
             "every actual dispatch must advance the request ID"
         );
 
-        cache.store(seed_hash, 7, request_t1, 900);
+        store(&mut cache, seed_hash, 7, request_t1, 900, 1_000, 1);
         assert_eq!(
-            cache.get_current(&seed_hash, 1_500, 2),
+            cache.get_current(&seed_hash, &snapshot_inputs(1_500, 2)),
             None,
             "T1's stale reply must not be tagged as T2's current quote"
         );
@@ -444,8 +562,11 @@ mod tests {
             !cache.is_failed(&seed_hash),
             "T1's stale failure must not mark T2 as failed"
         );
-        cache.store(seed_hash, 7, request_t2, 1_400);
-        assert_eq!(cache.get_current(&seed_hash, 1_500, 2), Some(1_400));
+        store(&mut cache, seed_hash, 7, request_t2, 1_400, 1_500, 2);
+        assert_eq!(
+            cache.get_current(&seed_hash, &snapshot_inputs(1_500, 2)),
+            Some(1_400)
+        );
     }
 
     #[test]
@@ -454,7 +575,7 @@ mod tests {
         let mut cache = AssetLockBalanceCache::default();
 
         let stale_request = request(&mut cache, seed_hash, 7, 1_000, 1);
-        cache.store(seed_hash, 7, stale_request, 900);
+        store(&mut cache, seed_hash, 7, stale_request, 900, 1_000, 1);
         assert_eq!(cache.get(&seed_hash), Some(900));
 
         let current_request = request(&mut cache, seed_hash, 8, 1_000, 2);
@@ -464,12 +585,148 @@ mod tests {
             "stale-while-revalidate must keep the prior quote displayable"
         );
         assert_eq!(
-            cache.get_current(&seed_hash, 1_000, 2),
+            cache.get_current(&seed_hash, &snapshot_inputs(1_000, 2)),
             None,
             "validation must not use the stale higher quote for the new composition"
         );
 
-        cache.store(seed_hash, 8, current_request, 700);
-        assert_eq!(cache.get_current(&seed_hash, 1_000, 2), Some(700));
+        store(&mut cache, seed_hash, 8, current_request, 700, 1_000, 2);
+        assert_eq!(
+            cache.get_current(&seed_hash, &snapshot_inputs(1_000, 2)),
+            Some(700)
+        );
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_validates_the_observed_not_dispatched_composition() {
+        let seed_hash = [0x32; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let dispatched = input_state(1, 1_000);
+        let observed = input_state(2, 900);
+
+        let request_id = cache
+            .ensure_requested(seed_hash, 7, dispatched.clone(), 1)
+            .and_then(|task| match task {
+                BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                    request_id, ..
+                }) => Some(request_id),
+                _ => None,
+            })
+            .expect("asset-lock maximum request");
+        cache.store(seed_hash, 7, request_id, 800, observed.clone(), false);
+
+        assert_eq!(
+            cache.get_current(&seed_hash, &dispatched),
+            None,
+            "dispatch-time bookkeeping must not validate a quote measured against other inputs"
+        );
+        assert_eq!(cache.get_current(&seed_hash, &observed), Some(800));
+    }
+
+    #[test]
+    fn asset_lock_balance_cache_redispatches_and_offers_retry_after_reply_deadline() {
+        let seed_hash = [0x33; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let inputs = input_state(3, 1_000);
+        let started_at = Instant::now();
+
+        let first = cache
+            .ensure_requested_at(seed_hash, 7, inputs.clone(), 1, started_at)
+            .expect("initial request");
+        assert!(
+            cache
+                .ensure_requested_at(
+                    seed_hash,
+                    7,
+                    inputs.clone(),
+                    1,
+                    started_at + Duration::from_secs(1),
+                )
+                .is_none(),
+            "a live request must still deduplicate"
+        );
+
+        let after_deadline =
+            started_at + super::ASSET_LOCK_REQUEST_DEADLINE + Duration::from_nanos(1);
+        let replacement = cache
+            .ensure_requested_at(seed_hash, 8, inputs, 1, after_deadline)
+            .expect("expired request must be replaced");
+
+        assert_ne!(
+            asset_lock_request_id(first),
+            asset_lock_request_id(replacement),
+            "the replacement must have a fresh request ID"
+        );
+        assert!(
+            cache.should_offer_retry(&seed_hash),
+            "the loading UI must expose Retry after a reply deadline expires"
+        );
+    }
+
+    #[test]
+    fn invalidate_one_rearms_only_the_selected_wallet() {
+        let first_seed = [0x34; 32];
+        let second_seed = [0x35; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let inputs = input_state(4, 1_000);
+
+        assert!(
+            cache
+                .ensure_requested(first_seed, 1, inputs.clone(), 1)
+                .is_some()
+        );
+        assert!(
+            cache
+                .ensure_requested(second_seed, 1, inputs.clone(), 1)
+                .is_some()
+        );
+        cache.invalidate_one(&first_seed);
+
+        assert!(
+            cache
+                .ensure_requested(first_seed, 1, inputs.clone(), 1)
+                .is_some(),
+            "the invalidated wallet must dispatch again"
+        );
+        assert!(
+            cache.ensure_requested(second_seed, 1, inputs, 1).is_none(),
+            "other wallet state must remain deduplicated"
+        );
+    }
+
+    #[test]
+    fn invalidate_rearms_every_wallet() {
+        let first_seed = [0x36; 32];
+        let second_seed = [0x37; 32];
+        let mut cache = AssetLockBalanceCache::default();
+        let inputs = input_state(5, 1_000);
+
+        assert!(
+            cache
+                .ensure_requested(first_seed, 1, inputs.clone(), 1)
+                .is_some()
+        );
+        assert!(
+            cache
+                .ensure_requested(second_seed, 1, inputs.clone(), 1)
+                .is_some()
+        );
+        cache.invalidate();
+
+        assert!(
+            cache
+                .ensure_requested(first_seed, 1, inputs.clone(), 1)
+                .is_some()
+        );
+        assert!(cache.ensure_requested(second_seed, 1, inputs, 1).is_some());
+    }
+
+    fn asset_lock_request_id(task: BackendTask) -> u64 {
+        match task {
+            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount { request_id, .. }) => {
+                request_id
+            }
+            other => panic!("expected asset-lock maximum request, got {other:?}"),
+        }
     }
 }

@@ -181,9 +181,17 @@ impl AddNewIdentityScreen {
                 }
                 return action;
             };
-            if self.asset_lock_balance.is_failed(&seed_hash) {
-                ui.label("The available amount could not be checked.");
-                if ui.button("Retry available amount check").clicked() {
+            let failed = self.asset_lock_balance.is_failed(&seed_hash);
+            let loading = self.asset_lock_balance.get(&seed_hash).is_none();
+            if failed || loading {
+                ui.label(if failed {
+                    "The available amount could not be checked."
+                } else {
+                    "Checking the available amount…"
+                });
+                if self.asset_lock_balance.should_offer_retry(&seed_hash)
+                    && ui.button("Retry available amount check").clicked()
+                {
                     self.asset_lock_balance.invalidate_one(&seed_hash);
                 }
                 if ui.button("Choose a different funding method").clicked() {
@@ -191,12 +199,13 @@ impl AddNewIdentityScreen {
                 }
                 return action;
             }
-            if self.asset_lock_balance.get(&seed_hash).is_none() {
-                ui.label("Checking the available amount…");
-                if ui.button("Choose a different funding method").clicked() {
-                    self.reset_to_choose_funding();
+            if self.asset_lock_balance.should_offer_retry(&seed_hash) {
+                ui.label(
+                    "The amount shown is safe but may be lower than your full available amount.",
+                );
+                if ui.button("Retry available amount check").clicked() {
+                    self.asset_lock_balance.invalidate_one(&seed_hash);
                 }
-                return action;
             }
             self.render_funding_amount_input(ui);
 

@@ -1468,8 +1468,11 @@ impl AppContext {
             .unwrap_or_default()
     }
 
-    /// Snapshot generation, final-funds subtotal, and eligible-input revision.
-    pub fn asset_lock_probe_snapshot(&self, seed_hash: &WalletSeedHash) -> (u64, u64, u64) {
+    /// Snapshot generation, exact builder-input composition, and its revision.
+    pub fn asset_lock_probe_snapshot(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> (u64, crate::wallet_backend::AssetLockInputState, u64) {
         self.wallet_backend()
             .map(|wallet_backend| wallet_backend.asset_lock_probe_snapshot(seed_hash))
             .unwrap_or_default()

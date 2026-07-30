@@ -24,13 +24,19 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
     BuilderError, TransactionBuilder,
 };
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use super::{DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend};
+use super::snapshot::asset_lock_final_input_state;
+use super::{
+    AssetLockInputState, DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend,
+};
 
 // `AssetLockManager` passes its private `DEFAULT_FEE_PER_KB` explicitly to key-wallet, so DET
 // cannot reuse the real path's source.
 // TODO(upstream): export that default or expose an asset-lock ceiling quote primitive.
 const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
+/// Bounds how long the quote search may retain exclusive wallet access.
+const ASSET_LOCK_PROBE_LOCK_HOLD_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_DRAIN_SEARCH_DOUBLINGS: u32 = 40;
 const P2PKH_CREDIT_OUTPUT_SCRIPT_LEN: usize = 25;
 const P2PKH_INPUT_SIZE: usize = 148;
@@ -45,6 +51,53 @@ enum AssetLockDrainSeed {
     Ceiling(u64),
     Unavailable,
     TooManyInputs { max: usize },
+}
+
+/// Conservative builder quote and the exact input composition it observed.
+#[derive(Debug, Clone)]
+pub struct AssetLockMaxAmountQuote {
+    /// Largest amount proven buildable before the search deadline.
+    pub amount_duffs: u64,
+    /// Final, unreserved inputs visible to the builder under the wallet lock.
+    pub observed_inputs: AssetLockInputState,
+    /// Whether the deadline stopped the search before the exact maximum was found.
+    pub is_partial: bool,
+}
+
+struct ProbeDeadline {
+    expires_at: Option<Instant>,
+    timed_out: std::cell::Cell<bool>,
+}
+
+impl ProbeDeadline {
+    fn after(duration: Duration) -> Self {
+        Self {
+            expires_at: Instant::now().checked_add(duration),
+            timed_out: std::cell::Cell::new(false),
+        }
+    }
+
+    #[cfg(test)]
+    fn unbounded() -> Self {
+        Self {
+            expires_at: None,
+            timed_out: std::cell::Cell::new(false),
+        }
+    }
+
+    fn expired(&self) -> bool {
+        let expired = self
+            .expires_at
+            .is_some_and(|expires_at| Instant::now() >= expires_at);
+        if expired {
+            self.timed_out.set(true);
+        }
+        expired
+    }
+
+    fn timed_out(&self) -> bool {
+        self.timed_out.get()
+    }
 }
 
 fn asset_lock_builder_height(
@@ -72,7 +125,8 @@ fn dry_run_asset_lock_amount(
 
 // INTENTIONAL(upstream-bnb-dos): default `BranchAndBound` is algorithmically
 // bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget,
-// which closes rust-dashcore#918; this probe therefore needs no local timeout.
+// which closes rust-dashcore#918. The aggregate quote still has a deadline
+// because it performs many individually bounded selections under a write lock.
 // Confirmed present: `platform`'s `key-wallet` dep tracks rust-dashcore's
 // `dash-evo-tool` integration branch (rev 34f0921e, which merges #919's
 // source branch directly), and this crate's own `Cargo.toml` pins `platform`
@@ -130,7 +184,11 @@ fn asset_lock_drain_ceiling(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
     current_height: u32,
+    deadline: &ProbeDeadline,
 ) -> Result<AssetLockDrainSeed, BuilderError> {
+    if deadline.expired() {
+        return Ok(AssetLockDrainSeed::Unavailable);
+    }
     let mut dry_run_account = managed_account.clone();
     let result = TransactionBuilder::new()
         .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
@@ -198,10 +256,14 @@ fn largest_first_asset_lock_max_below(
     account: &Account,
     current_height: u32,
     upper_bound: u64,
+    deadline: &ProbeDeadline,
 ) -> Result<u64, BuilderError> {
     let mut low = 0;
     let mut high = upper_bound;
     while low < high {
+        if deadline.expired() {
+            return Ok(low);
+        }
         let candidate = low + (high - low).div_ceil(2);
         match dry_run_asset_lock_amount_with_strategy(
             managed_account,
@@ -225,17 +287,30 @@ fn default_strategy_max_from_seed(
     current_height: u32,
     seed: u64,
     upper_bound: u64,
+    deadline: &ProbeDeadline,
 ) -> Result<u64, BuilderError> {
+    if deadline.expired() {
+        return Ok(0);
+    }
     if !matches!(
         dry_run_asset_lock_amount(managed_account, account, current_height, seed)?,
         AssetLockDryRun::Builds
     ) {
-        return asset_lock_max_below_upper_bound(managed_account, account, current_height, seed);
+        return asset_lock_max_below_upper_bound(
+            managed_account,
+            account,
+            current_height,
+            seed,
+            deadline,
+        );
     }
 
     let mut low = seed;
     let mut step = 1_u64;
     while low < upper_bound {
+        if deadline.expired() {
+            return Ok(low);
+        }
         let candidate = seed.saturating_add(step).min(upper_bound);
         match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
             AssetLockDryRun::Builds if candidate == upper_bound => return Ok(candidate),
@@ -246,6 +321,9 @@ fn default_strategy_max_from_seed(
             AssetLockDryRun::Rejected { .. } | AssetLockDryRun::TooManyInputs { .. } => {
                 let mut high = candidate - 1;
                 while low < high {
+                    if deadline.expired() {
+                        return Ok(low);
+                    }
                     let midpoint = low + (high - low).div_ceil(2);
                     match dry_run_asset_lock_amount(
                         managed_account,
@@ -270,15 +348,31 @@ fn asset_lock_max_with_input_cap(
     account: &Account,
     current_height: u32,
     max_inputs: usize,
+    deadline: &ProbeDeadline,
 ) -> Result<u64, BuilderError> {
+    if deadline.expired() {
+        return Ok(0);
+    }
     let upper_bound = asset_lock_input_cap_upper_bound(managed_account, current_height, max_inputs);
-    let largest_first_seed =
-        largest_first_asset_lock_max_below(managed_account, account, current_height, upper_bound)?;
+    let largest_first_seed = largest_first_asset_lock_max_below(
+        managed_account,
+        account,
+        current_height,
+        upper_bound,
+        deadline,
+    )?;
     // Branch-and-bound's exact-match sizing looks one P2PKH input ahead; this
     // is only a starting point, and default-strategy probes remain authoritative.
     let seed = largest_first_seed
         .saturating_sub(FeeRate::new(ASSET_LOCK_FEE_PER_KB).calculate_fee(P2PKH_INPUT_SIZE));
-    default_strategy_max_from_seed(managed_account, account, current_height, seed, upper_bound)
+    default_strategy_max_from_seed(
+        managed_account,
+        account,
+        current_height,
+        seed,
+        upper_bound,
+        deadline,
+    )
 }
 
 fn asset_lock_max_below_upper_bound(
@@ -286,15 +380,22 @@ fn asset_lock_max_below_upper_bound(
     account: &Account,
     current_height: u32,
     upper_bound: u64,
+    deadline: &ProbeDeadline,
 ) -> Result<u64, BuilderError> {
     let mut step = 1_u64;
     let mut high = upper_bound;
     for _ in 0..MAX_DRAIN_SEARCH_DOUBLINGS {
+        if deadline.expired() {
+            return Ok(0);
+        }
         let candidate = upper_bound.saturating_sub(step);
         match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
             AssetLockDryRun::Builds => {
                 let mut low = candidate;
                 while low < high {
+                    if deadline.expired() {
+                        return Ok(low);
+                    }
                     let midpoint = low + (high - low).div_ceil(2);
                     match dry_run_asset_lock_amount(
                         managed_account,
@@ -321,7 +422,7 @@ fn asset_lock_max_below_upper_bound(
         }
     }
 
-    full_range_asset_lock_max_amount(managed_account, account, current_height, None)
+    full_range_asset_lock_max_amount(managed_account, account, current_height, None, deadline)
 }
 
 fn full_range_asset_lock_max_amount(
@@ -329,9 +430,20 @@ fn full_range_asset_lock_max_amount(
     account: &Account,
     current_height: u32,
     input_cap: Option<usize>,
+    deadline: &ProbeDeadline,
 ) -> Result<u64, BuilderError> {
     if let Some(max_inputs) = input_cap {
-        return asset_lock_max_with_input_cap(managed_account, account, current_height, max_inputs);
+        return asset_lock_max_with_input_cap(
+            managed_account,
+            account,
+            current_height,
+            max_inputs,
+            deadline,
+        );
+    }
+
+    if deadline.expired() {
+        return Ok(0);
     }
 
     let mut high = match dry_run_asset_lock_amount(
@@ -343,12 +455,21 @@ fn full_range_asset_lock_max_amount(
         AssetLockDryRun::Rejected { available } => available,
         AssetLockDryRun::Builds => MAX_MONEY,
         AssetLockDryRun::TooManyInputs { max } => {
-            return asset_lock_max_with_input_cap(managed_account, account, current_height, max);
+            return asset_lock_max_with_input_cap(
+                managed_account,
+                account,
+                current_height,
+                max,
+                deadline,
+            );
         }
     };
     let mut low = 0;
 
     while low < high {
+        if deadline.expired() {
+            return Ok(low);
+        }
         let candidate = low + (high - low).div_ceil(2);
         match dry_run_asset_lock_amount(managed_account, account, current_height, candidate)? {
             AssetLockDryRun::Builds => low = candidate,
@@ -365,24 +486,47 @@ fn full_range_asset_lock_max_amount(
 ///
 /// A drain build supplies a tight upper bound, then default-strategy probes find
 /// the exact boundary without reproducing the selector's internal fee model.
+fn asset_lock_max_amount_from_account_until(
+    managed_account: &ManagedCoreFundsAccount,
+    account: &Account,
+    current_height: u32,
+    deadline: &ProbeDeadline,
+) -> Result<u64, BuilderError> {
+    let drain_ceiling =
+        match asset_lock_drain_ceiling(managed_account, account, current_height, deadline)? {
+            AssetLockDrainSeed::Ceiling(ceiling) => ceiling,
+            AssetLockDrainSeed::Unavailable => return Ok(0),
+            AssetLockDrainSeed::TooManyInputs { max } => {
+                return full_range_asset_lock_max_amount(
+                    managed_account,
+                    account,
+                    current_height,
+                    Some(max),
+                    deadline,
+                );
+            }
+        };
+    asset_lock_max_below_upper_bound(
+        managed_account,
+        account,
+        current_height,
+        drain_ceiling,
+        deadline,
+    )
+}
+
+#[cfg(test)]
 fn asset_lock_max_amount_from_account(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
     current_height: u32,
 ) -> Result<u64, BuilderError> {
-    let drain_ceiling = match asset_lock_drain_ceiling(managed_account, account, current_height)? {
-        AssetLockDrainSeed::Ceiling(ceiling) => ceiling,
-        AssetLockDrainSeed::Unavailable => return Ok(0),
-        AssetLockDrainSeed::TooManyInputs { max } => {
-            return full_range_asset_lock_max_amount(
-                managed_account,
-                account,
-                current_height,
-                Some(max),
-            );
-        }
-    };
-    asset_lock_max_below_upper_bound(managed_account, account, current_height, drain_ceiling)
+    asset_lock_max_amount_from_account_until(
+        managed_account,
+        account,
+        current_height,
+        &ProbeDeadline::unbounded(),
+    )
 }
 
 impl WalletBackend {
@@ -394,12 +538,22 @@ impl WalletBackend {
     pub async fn asset_lock_max_amount(
         &self,
         seed_hash: &WalletSeedHash,
-    ) -> Result<u64, TaskError> {
+    ) -> Result<AssetLockMaxAmountQuote, TaskError> {
+        self.asset_lock_max_amount_with_timeout(seed_hash, ASSET_LOCK_PROBE_LOCK_HOLD_DEADLINE)
+            .await
+    }
+
+    async fn asset_lock_max_amount_with_timeout(
+        &self,
+        seed_hash: &WalletSeedHash,
+        timeout: Duration,
+    ) -> Result<AssetLockMaxAmountQuote, TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
         // Every dry run performs one reservation read→reserve→release cycle.
         // Keep them all under the same exclusive boundary as real builds.
         let wallet_manager = Arc::clone(wallet.wallet_manager()).write_owned().await;
+        let deadline = ProbeDeadline::after(timeout);
         let (managed_account, account, current_height) = {
             let (key_wallet, info) = wallet_manager
                 .get_wallet_and_info(&wallet_id)
@@ -420,10 +574,21 @@ impl WalletBackend {
         };
 
         tokio::task::spawn_blocking(move || {
-            let result =
-                asset_lock_max_amount_from_account(&managed_account, &account, current_height);
+            let observed_inputs =
+                asset_lock_final_input_state(&managed_account, &account, current_height)?;
+            let amount_duffs = asset_lock_max_amount_from_account_until(
+                &managed_account,
+                &account,
+                current_height,
+                &deadline,
+            )?;
+            let is_partial = deadline.timed_out();
             drop(wallet_manager);
-            result
+            Ok(AssetLockMaxAmountQuote {
+                amount_duffs,
+                observed_inputs,
+                is_partial,
+            })
         })
         .await?
         .map_err(|source| TaskError::AssetLockBalanceQueryFailed {
@@ -1039,6 +1204,60 @@ mod tests {
             .expect("probe completes after read guard drops")
             .expect("probe task")
             .expect("asset-lock maximum");
-        assert_eq!(amount, 0, "an empty wallet has no asset-lock maximum");
+        assert_eq!(
+            amount.amount_duffs, 0,
+            "an empty wallet has no asset-lock maximum"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn asset_lock_max_probe_deadline_bounds_the_wallet_manager_write_lock() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(16);
+        app_context
+            .ensure_wallet_backend(SenderAsync::new(sender, app_context.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = app_context.wallet_backend().expect("wired backend");
+
+        let seed = [0x42; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("Probe timeout test".to_string()),
+            None,
+        )
+        .expect("DET wallet");
+        let seed_hash = wallet.seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet");
+
+        let quote = backend
+            .asset_lock_max_amount_with_timeout(&seed_hash, Duration::ZERO)
+            .await
+            .expect("deadline returns a conservative quote");
+        assert!(
+            quote.is_partial,
+            "an expired search must be tagged as partial"
+        );
+
+        let platform_wallet = backend
+            .resolve_wallet(&seed_hash)
+            .await
+            .expect("platform wallet");
+        let _write_guard = tokio::time::timeout(
+            Duration::from_secs(1),
+            platform_wallet.wallet_manager().write(),
+        )
+        .await
+        .expect("the expired probe must release its exclusive lock");
     }
 }

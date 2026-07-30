@@ -633,6 +633,8 @@ pub enum BackendTaskSuccessResult {
         snapshot_generation: u64,
         request_id: u64,
         amount_duffs: u64,
+        observed_inputs: crate::wallet_backend::AssetLockInputState,
+        is_partial: bool,
     },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
@@ -1283,14 +1285,14 @@ impl AppContext {
             } => backend
                 .asset_lock_max_amount(&seed_hash)
                 .await
-                .map(
-                    |amount_duffs| BackendTaskSuccessResult::AssetLockMaxAmount {
-                        seed_hash,
-                        snapshot_generation,
-                        request_id,
-                        amount_duffs,
-                    },
-                ),
+                .map(|quote| BackendTaskSuccessResult::AssetLockMaxAmount {
+                    seed_hash,
+                    snapshot_generation,
+                    request_id,
+                    amount_duffs: quote.amount_duffs,
+                    observed_inputs: quote.observed_inputs,
+                    is_partial: quote.is_partial,
+                }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }

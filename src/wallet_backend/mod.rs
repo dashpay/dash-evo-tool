@@ -98,9 +98,12 @@ pub use event_bridge::EventBridge;
 pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::LoadedWallets;
+pub use payments::AssetLockMaxAmountQuote;
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
-pub use snapshot::{DetUtxo, DetWalletBalance, TransactionHistoryStatus, WalletSnapshot};
+pub use snapshot::{
+    AssetLockInputState, DetUtxo, DetWalletBalance, TransactionHistoryStatus, WalletSnapshot,
+};
 use token_balance::TokenBalanceStore;
 pub use token_balance::UpstreamTokenBalances;
 pub use wallet_meta::WalletMetaView;
@@ -2403,8 +2406,11 @@ impl WalletBackend {
         self.inner.snapshots.snapshot(seed_hash).generation
     }
 
-    /// Snapshot generation, final-funds subtotal, and eligible-input revision.
-    pub fn asset_lock_probe_snapshot(&self, seed_hash: &WalletSeedHash) -> (u64, u64, u64) {
+    /// Snapshot generation, exact builder-input composition, and its revision.
+    pub fn asset_lock_probe_snapshot(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> (u64, AssetLockInputState, u64) {
         self.inner.snapshots.asset_lock_probe_snapshot(seed_hash)
     }
 

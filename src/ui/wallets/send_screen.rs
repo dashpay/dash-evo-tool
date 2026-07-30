@@ -1,4 +1,4 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
@@ -34,7 +34,10 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::state::AssetLockBalanceCache;
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use crate::ui::{
+    MessageType, RootScreenType, ScreenLike, append_concurrent_backend_tasks,
+    can_append_concurrent_backend_tasks,
+};
 use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -632,10 +635,9 @@ impl WalletSendScreen {
     }
 
     fn asset_lock_max_amount(&self, seed_hash: &WalletSeedHash) -> Result<u64, String> {
-        let (_, final_funds_duffs, utxo_revision) =
-            self.app_context.asset_lock_probe_snapshot(seed_hash);
+        let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(seed_hash);
         self.asset_lock_balance
-            .get_current(seed_hash, final_funds_duffs, utxo_revision)
+            .get_current(seed_hash, &input_state)
             .ok_or_else(|| {
                 self.asset_lock_balance
                     .validation_unavailable_message(seed_hash)
@@ -653,12 +655,12 @@ impl WalletSendScreen {
             return None;
         }
         let seed_hash = self.selected_wallet_seed_hash?;
-        let (snapshot_generation, final_funds_duffs, utxo_revision) =
+        let (snapshot_generation, input_state, utxo_revision) =
             self.app_context.asset_lock_probe_snapshot(&seed_hash);
         self.asset_lock_balance.ensure_requested(
             seed_hash,
             snapshot_generation,
-            final_funds_duffs,
+            input_state,
             utxo_revision,
         )
     }
@@ -676,13 +678,19 @@ impl WalletSendScreen {
             return;
         }
 
-        if self.asset_lock_balance.is_failed(&seed_hash) {
+        let failed = self.asset_lock_balance.is_failed(&seed_hash);
+        let loading = self.asset_lock_balance.get(&seed_hash).is_none();
+        if failed {
             ui.label("The available amount could not be checked.");
-            if ui.button("Retry available amount check").clicked() {
-                self.asset_lock_balance.invalidate_one(&seed_hash);
-            }
-        } else if self.asset_lock_balance.get(&seed_hash).is_none() {
+        } else if loading {
             ui.label("Checking the available amount…");
+        } else if self.asset_lock_balance.should_offer_retry(&seed_hash) {
+            ui.label("The amount shown is safe but may be lower than your full available amount.");
+        }
+        if self.asset_lock_balance.should_offer_retry(&seed_hash)
+            && ui.button("Retry available amount check").clicked()
+        {
+            self.asset_lock_balance.invalidate_one(&seed_hash);
         }
     }
 
@@ -1344,9 +1352,6 @@ impl WalletSendScreen {
         ui.add_space(10.0);
 
         // Amount
-        if let Some(task) = self.request_asset_lock_max_amount() {
-            action |= AppAction::BackendTask(task);
-        }
         self.render_asset_lock_balance_status(ui);
         self.render_amount_input(ui);
 
@@ -1504,10 +1509,6 @@ impl WalletSendScreen {
 
         self.sync_flow_state();
         self.render_flow_source(ui);
-        if let Some(task) = self.request_asset_lock_max_amount() {
-            action |= AppAction::BackendTask(task);
-        }
-
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
@@ -1653,21 +1654,19 @@ impl WalletSendScreen {
             .fee_estimator()
             .estimate_shield_from_core_fees_duffs();
         let asset_lock_max = self.asset_lock_max_amount(&seed_hash)?;
-        match validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max) {
-            Ok(()) => {}
-            Err(AssetLockAmountError::Overflow) => {
-                return Err(
-                    "The amount is too large. Enter a smaller amount and try again.".to_string(),
-                );
-            }
-            Err(AssetLockAmountError::ExceedsMaximum {
-                maximum_amount_duffs,
-            }) => {
-                return Err(format!(
-                    "You can shield up to {} right now. Choose a smaller amount or wait for more funds.",
-                    format_duffs_as_dash(maximum_amount_duffs)
-                ));
-            }
+        if let Err(error) =
+            validate_asset_lock_amount(amount_duffs, platform_fee_duffs, asset_lock_max)
+        {
+            let maximum_amount_duffs = match error {
+                AssetLockAmountError::Overflow => asset_lock_max,
+                AssetLockAmountError::ExceedsMaximum {
+                    maximum_amount_duffs,
+                } => maximum_amount_duffs,
+            };
+            return Err(format!(
+                "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
+                format_duffs_as_dash(maximum_amount_duffs)
+            ));
         }
 
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
@@ -3325,20 +3324,26 @@ impl WalletSendScreen {
         seed_hash: WalletSeedHash,
         amount_duffs: u64,
     ) {
-        let (snapshot_generation, final_funds_duffs, utxo_revision) =
+        let (snapshot_generation, input_state, utxo_revision) =
             self.app_context.asset_lock_probe_snapshot(&seed_hash);
         let Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount { request_id, .. })) =
             self.asset_lock_balance.ensure_requested(
                 seed_hash,
                 snapshot_generation,
-                final_funds_duffs,
+                input_state.clone(),
                 utxo_revision,
             )
         else {
             return;
         };
-        self.asset_lock_balance
-            .store(seed_hash, snapshot_generation, request_id, amount_duffs);
+        self.asset_lock_balance.store(
+            seed_hash,
+            snapshot_generation,
+            request_id,
+            amount_duffs,
+            input_state,
+            false,
+        );
     }
 
     #[cfg(feature = "testing")]
@@ -4318,7 +4323,25 @@ impl ScreenLike for WalletSendScreen {
             inner_action
         });
 
-        action |= self.render_send_confirmation(ui);
+        let confirmation_action = self.render_send_confirmation(ui);
+        if can_append_concurrent_backend_tasks(&action) {
+            action = match confirmation_action {
+                AppAction::BackendTask(task) => append_concurrent_backend_tasks(action, vec![task]),
+                AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) => {
+                    append_concurrent_backend_tasks(action, tasks)
+                }
+                other => {
+                    action |= other;
+                    action
+                }
+            };
+        }
+
+        if can_append_concurrent_backend_tasks(&action)
+            && let Some(task) = self.request_asset_lock_max_amount()
+        {
+            action = append_concurrent_backend_tasks(action, vec![task]);
+        }
 
         // Show wallet unlock popup if open
         if self.wallet_unlock_popup.is_open()
@@ -4361,6 +4384,8 @@ impl ScreenLike for WalletSendScreen {
             snapshot_generation,
             request_id,
             amount_duffs,
+            observed_inputs,
+            is_partial,
         } = &backend_task_success_result
         {
             self.asset_lock_balance.store(
@@ -4368,6 +4393,8 @@ impl ScreenLike for WalletSendScreen {
                 *snapshot_generation,
                 *request_id,
                 *amount_duffs,
+                observed_inputs.clone(),
+                *is_partial,
             );
             return;
         }
@@ -4525,13 +4552,22 @@ mod tests {
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::utils::tasks::TaskManager;
+    use crate::wallet_backend::AssetLockInputState;
     use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
     use dash_sdk::dashcore_rpc::dashcore::{Network, PrivateKey, PublicKey};
+    use dash_sdk::dpp::dashcore::{OutPoint, Txid, hashes::Hash};
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    fn different_asset_lock_inputs(seed_byte: u8) -> AssetLockInputState {
+        AssetLockInputState::from_inputs([(
+            OutPoint::new(Txid::from_byte_array([seed_byte; 32]), 0),
+            1,
+        )])
+    }
 
     fn testnet_core_address(key_byte: u8) -> Address {
         let secp = Secp256k1::new();
@@ -4602,6 +4638,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn same_frame_probe_and_confirmation_dispatch_are_both_preserved() {
+        let seed_hash = [0x43; 32];
+        let confirmation =
+            BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+        let probe = BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+            seed_hash,
+            snapshot_generation: 9,
+            request_id: 17,
+        });
+
+        let action = crate::ui::append_concurrent_backend_tasks(
+            AppAction::BackendTask(confirmation),
+            vec![probe],
+        );
+        let AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) = action else {
+            panic!("same-frame tasks must be dispatched as one concurrent batch");
+        };
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount { request_id: 17, .. })
+        )));
+        assert!(tasks.iter().any(|task| matches!(
+            task,
+            BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { .. })
+        )));
+        assert!(
+            !crate::ui::can_append_concurrent_backend_tasks(&AppAction::PopScreen),
+            "navigation must keep priority instead of being overwritten by a probe"
+        );
+    }
+
     fn click_in_one_frame(harness: &mut Harness<'_, WalletSendScreen>, label: &str) {
         let pos = harness.get_by_label(label).rect().center();
         harness.input_mut().events.extend([
@@ -4641,7 +4710,7 @@ mod tests {
         let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
             seed_hash,
             snapshot_generation,
-            final_funds_duffs,
+            final_funds_duffs.clone(),
             utxo_revision,
         ));
         screen.asset_lock_balance.store(
@@ -4649,6 +4718,8 @@ mod tests {
             snapshot_generation,
             request_id,
             BUILDER_MAX_DUFFS,
+            final_funds_duffs,
+            false,
         );
         screen.selected_source = Some(SourceSelection::CoreWallet);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
@@ -4684,7 +4755,7 @@ mod tests {
             .send_core_to_shielded(seed_hash)
             .expect_err("one duff above Max must be rejected before dispatch");
         assert!(
-            error.starts_with("You can shield up to "),
+            error.starts_with("You can transfer up to "),
             "validation should report the builder-derived ceiling: {error}"
         );
 
@@ -4790,17 +4861,22 @@ mod tests {
             .expect("selected wallet seed hash");
         let (_, current_final_funds, current_revision) =
             screen.app_context.asset_lock_probe_snapshot(&seed_hash);
-        let stale_revision = current_revision.saturating_add(1);
+        let stale_inputs = different_asset_lock_inputs(0x39);
 
         let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
             seed_hash,
             7,
             current_final_funds,
-            stale_revision,
+            current_revision,
         ));
-        screen
-            .asset_lock_balance
-            .store(seed_hash, 7, request_id, STALE_MAX_DUFFS);
+        screen.asset_lock_balance.store(
+            seed_hash,
+            7,
+            request_id,
+            STALE_MAX_DUFFS,
+            stale_inputs,
+            false,
+        );
         screen.selected_source = Some(SourceSelection::CoreWallet);
         screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
         screen.amount = Some(Amount::dash_from_duffs(1));

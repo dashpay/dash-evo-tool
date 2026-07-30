@@ -1,4 +1,5 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -74,6 +75,39 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
+
+pub(crate) fn can_append_concurrent_backend_tasks(action: &AppAction) -> bool {
+    matches!(
+        action,
+        AppAction::None
+            | AppAction::BackendTask(_)
+            | AppAction::BackendTasks(_, BackendTasksExecutionMode::Concurrent)
+    )
+}
+
+pub(crate) fn append_concurrent_backend_tasks(
+    action: AppAction,
+    mut pending_tasks: Vec<BackendTask>,
+) -> AppAction {
+    if pending_tasks.is_empty() {
+        return action;
+    }
+
+    match action {
+        AppAction::None => {
+            AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+        }
+        AppAction::BackendTask(task) => {
+            pending_tasks.insert(0, task);
+            AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+        }
+        AppAction::BackendTasks(mut tasks, BackendTasksExecutionMode::Concurrent) => {
+            tasks.append(&mut pending_tasks);
+            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
+        }
+        other => other,
+    }
+}
 
 pub mod components;
 pub mod contracts_documents;

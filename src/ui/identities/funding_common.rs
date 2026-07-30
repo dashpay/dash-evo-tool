@@ -1,5 +1,3 @@
-use crate::app::{AppAction, BackendTasksExecutionMode};
-use crate::backend_task::BackendTask;
 use crate::model::wallet::Wallet;
 use crate::ui::state::TrackedAssetLockCache;
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -14,39 +12,6 @@ use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAsset
 use qrcode::QrCode;
 use std::fmt;
 use std::sync::{Arc, RwLock};
-
-pub(super) fn can_append_concurrent_backend_tasks(action: &AppAction) -> bool {
-    matches!(
-        action,
-        AppAction::None
-            | AppAction::BackendTask(_)
-            | AppAction::BackendTasks(_, BackendTasksExecutionMode::Concurrent)
-    )
-}
-
-pub(super) fn append_concurrent_backend_tasks(
-    action: AppAction,
-    mut pending_tasks: Vec<BackendTask>,
-) -> AppAction {
-    if pending_tasks.is_empty() {
-        return action;
-    }
-
-    match action {
-        AppAction::None => {
-            AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
-        }
-        AppAction::BackendTask(task) => {
-            pending_tasks.insert(0, task);
-            AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
-        }
-        AppAction::BackendTasks(mut tasks, BackendTasksExecutionMode::Concurrent) => {
-            tasks.append(&mut pending_tasks);
-            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
-        }
-        other => other,
-    }
-}
 
 /// How the user chooses to fund an identity operation. Shared by the
 /// create-identity and top-up screens (both render the same chooser), so the

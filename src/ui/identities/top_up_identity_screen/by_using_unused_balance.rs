@@ -98,16 +98,26 @@ impl TopUpIdentityScreen {
         let Some(seed_hash) = seed_hash else {
             return action;
         };
-        if self.asset_lock_balance.is_failed(&seed_hash) {
-            ui.label("The available amount could not be checked.");
-            if ui.button("Retry available amount check").clicked() {
+        let failed = self.asset_lock_balance.is_failed(&seed_hash);
+        let loading = self.asset_lock_balance.get(&seed_hash).is_none();
+        if failed || loading {
+            ui.label(if failed {
+                "The available amount could not be checked."
+            } else {
+                "Checking the available amount…"
+            });
+            if self.asset_lock_balance.should_offer_retry(&seed_hash)
+                && ui.button("Retry available amount check").clicked()
+            {
                 self.asset_lock_balance.invalidate_one(&seed_hash);
             }
             return action;
         }
-        if self.asset_lock_balance.get(&seed_hash).is_none() {
-            ui.label("Checking the available amount…");
-            return action;
+        if self.asset_lock_balance.should_offer_retry(&seed_hash) {
+            ui.label("The amount shown is safe but may be lower than your full available amount.");
+            if ui.button("Retry available amount check").clicked() {
+                self.asset_lock_balance.invalidate_one(&seed_hash);
+            }
         }
 
         if let Some(insufficient_action) = self.render_insufficient_wallet_balance_banner(ui) {

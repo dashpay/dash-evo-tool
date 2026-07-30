@@ -84,6 +84,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Cancelling a password request is taken as an answer**: for a key an earlier
+  version had saved in more than one place, dismissing the password prompt
+  brought up the same prompt again for the same key. Cancelling now ends the
+  attempt.
+
 - **Messages about a key that cannot be used now say what to do**: being told a
   key is not saved on this device, or cannot be saved here, left nowhere to go
   next. Each of these messages now names the step that resolves it — entering

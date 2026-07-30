@@ -694,7 +694,10 @@ impl QualifiedIdentity {
     ///
     /// `Ok(None)` when no placement holds this key. When every candidate failed,
     /// the first failure is returned rather than `None`, so a lone dead entry
-    /// still surfaces its own typed error instead of a silent miss.
+    /// still surfaces its own typed error instead of a silent miss. A cancelled
+    /// prompt ([`TaskError::SecretPromptCancelled`]) ends the walk immediately —
+    /// it is the user's answer about this key, and asking again for the next
+    /// placement would be one dialog per store.
     ///
     /// [`PrivateKeyData::AtWalletDerivationPath`]: encrypted_key_storage::PrivateKeyData::AtWalletDerivationPath
     /// [`PrivateKeyData::InVault`]: encrypted_key_storage::PrivateKeyData::InVault
@@ -712,8 +715,18 @@ impl QualifiedIdentity {
                 // store may hold the same key's live material.
                 Ok(None) => {}
                 Err(failure) => {
+                    // A cancellation answers for the key, not for one store of
+                    // it: trying the next candidate would re-ask for what the
+                    // user just declined, one dialog per placement.
+                    // `SecretPromptUnavailable` is not a decision but a
+                    // property of the host (no window to ask in), so a sibling
+                    // placement that needs no prompt is still worth trying.
+                    let user_declined = matches!(failure, TaskError::SecretPromptCancelled);
                     if first_failure.is_none() {
                         first_failure = Some(failure);
+                    }
+                    if user_declined {
+                        break;
                     }
                 }
             }
@@ -1818,6 +1831,68 @@ mod key_resolution_tests {
         assert!(
             matches!(error, TaskError::WalletLocked),
             "expected the vault-unavailable error, got {error:?}",
+        );
+    }
+
+    /// Cancelling the password prompt answers for the key, not for one of the
+    /// stores it happens to be filed under. Carrying on to the next candidate
+    /// re-asks for the key the user just declined to unlock — one dialog per
+    /// placement, each looking like the app ignored the last answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_the_prompt_stops_asking_for_the_same_key() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::SecretSeam;
+        use crate::wallet_backend::single_key::open_secret_store;
+        use crate::wallet_backend::{SecretAccess, SecretScope};
+        use platform_wallet_storage::secrets::{
+            SecretBytes, SecretString, WalletId as SecretWalletId,
+        };
+
+        let key = voting_key(0);
+        // The id `masternode_with` builds its identity under.
+        let identity_id = [1u8; 32];
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
+        // Sealed Tier-2 under both placements: either one alone would prompt,
+        // so the prompt count is what tells stopping from carrying on.
+        for target in [MAIN, VOTER] {
+            SecretSeam::new(&store)
+                .put_secret_protected(
+                    &SecretWalletId::from(identity_id),
+                    &SecretScope::identity_key_label(&target, key.id()),
+                    &SecretBytes::from_slice(&[0x99; 32]),
+                    &SecretString::new("the-object-password"),
+                )
+                .expect("seal the identity key");
+        }
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::Cancel,
+            ScriptedAnswer::Cancel,
+        ]));
+        let mut identity = masternode_with(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::InVault),
+                (VOTER, PrivateKeyData::InVault),
+            ],
+        );
+        identity.secret_access = Some(SecretAccess::new(store, prompt.clone(), Network::Testnet));
+
+        let error = identity
+            .resolve_private_key_bytes(&key)
+            .await
+            .expect_err("a cancelled prompt resolves nothing");
+        assert!(
+            matches!(error, TaskError::SecretPromptCancelled),
+            "the user's refusal is what surfaces, got {error:?}",
+        );
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "one refusal ends the attempt; it must not open the next placement's prompt",
         );
     }
 

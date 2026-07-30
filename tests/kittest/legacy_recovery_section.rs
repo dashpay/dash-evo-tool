@@ -9,6 +9,7 @@ use dash_evo_tool::model::legacy_recovery::{
 use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
 use dash_evo_tool::ui::components::legacy_recovery_section::LegacyRecoverySection;
 use dash_evo_tool::ui::components::{Component, ComponentResponse};
+use dash_evo_tool::ui::masternodes::KeyVocabulary;
 use dash_sdk::dpp::identity::Purpose;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -52,7 +53,7 @@ fn render(
     let mut harness = Harness::builder()
         .with_size(egui::vec2(600.0, 400.0))
         .build_ui(move |ui| {
-            let response = LegacyRecoverySection::new(&plan)
+            let response = LegacyRecoverySection::new(&plan, KeyVocabulary::Masternode)
                 .restoring(restoring)
                 .show(ui);
             if let Some(items) = response.inner.changed_value() {

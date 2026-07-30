@@ -19,21 +19,21 @@ use std::collections::BTreeMap;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
+use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::secret::Secret;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
-use crate::ui::components::legacy_recovery_section::LegacyRecoverySection;
+use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
@@ -41,7 +41,9 @@ use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
-use crate::ui::masternodes::{disambiguate_role_labels, key_status_tokens, role_label_and_tip};
+use crate::ui::masternodes::{
+    KeyVocabulary, identity_keys, key_filed_at, key_status_tokens, manage_keys_labels,
+};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -122,47 +124,6 @@ fn contest_status_line(candidate_count: usize, end_time: Option<TimestampMillis>
 
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
-
-/// A short role name for a masternode key and its tooltip, from the shared
-/// [`role_label_and_tip`] vocabulary.
-fn key_role_label(
-    target: &PrivateKeyTarget,
-    key: &dash_sdk::platform::IdentityPublicKey,
-) -> (String, Option<&'static str>) {
-    role_label_and_tip(
-        *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity,
-        key.purpose(),
-    )
-}
-
-/// Button labels (and DIP-3-aligned tooltips) for the "Manage keys" list, one
-/// per entry of `keys`, in order.
-///
-/// Each label is the key's role word (`Owner`/`Payout address`/`Voting`/…)
-/// plus a `(disabled)` marker for keys platform has retired: a node that
-/// rotates its payout address keeps the old, disabled Payout key on-chain
-/// next to the new active one, so a role word alone is not unique. Keys that
-/// would still collide are told apart by their key id.
-fn manage_keys_labels(
-    keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
-) -> Vec<(String, Option<&'static str>)> {
-    let mut labels: Vec<(String, Option<&'static str>)> = keys
-        .iter()
-        .map(|(target, key)| {
-            let (role, tip) = key_role_label(target, key);
-            let label = if key.is_disabled() {
-                format!("{role} key (disabled)")
-            } else {
-                format!("{role} key")
-            };
-            (label, tip)
-        })
-        .collect();
-
-    let key_ids: Vec<_> = keys.iter().map(|(_, key)| Some(key.id())).collect();
-    disambiguate_role_labels(&mut labels, &key_ids);
-    labels
-}
 
 /// At-rest protection posture of a node's vault keys, reduced to what the detail
 /// view needs: the tier label and whether an `Add password protection…` action
@@ -250,7 +211,17 @@ impl MasternodeDetailView {
 
     /// Whether a recovery offer is currently on screen for this node.
     pub(crate) fn has_recovery_offer_for_test(&self) -> bool {
-        self.recovery.plan().is_some_and(|plan| !plan.is_empty())
+        self.recovery.has_offer()
+    }
+
+    /// Put a detected plan on offer, as the check's own result does — without
+    /// the egui context [`Self::absorb_recovery_result`] needs to report one.
+    pub(crate) fn set_recovery_plan(
+        &mut self,
+        identity_id: dash_sdk::platform::Identifier,
+        plan: crate::model::legacy_recovery::RecoveryPlan,
+    ) {
+        self.recovery.offered(identity_id, plan);
     }
 
     /// The key roles this view believes the node holds.
@@ -300,13 +271,14 @@ impl MasternodeDetailView {
         }
     }
 
-    /// Record the plan the on-arrival detection task returned.
-    pub(crate) fn set_recovery_plan(
+    /// Route a finished backend task into this node's recovery offer, reporting
+    /// whether this node's own restore finished.
+    pub(crate) fn absorb_recovery_result(
         &mut self,
-        identity_id: dash_sdk::platform::Identifier,
-        plan: RecoveryPlan,
-    ) {
-        self.recovery.offered(identity_id, plan);
+        ctx: &egui::Context,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
+        self.recovery.absorb_result(ctx, result)
     }
 
     /// Re-read this node from the store and re-arm its recovery check.
@@ -333,10 +305,9 @@ impl MasternodeDetailView {
     }
 
     /// End this view's recovery operation when the failure that arrived is that
-    /// operation's own — matched on the identity the failing task names, since
-    /// every error reaches whichever screen is visible.
-    pub(crate) fn recovery_failed_for(&mut self, identity_id: dash_sdk::platform::Identifier) {
-        self.recovery.failed_for(identity_id);
+    /// operation's own — every error reaches whichever screen is visible.
+    pub(crate) fn absorb_recovery_error(&mut self, context: &BackendTaskContext) {
+        self.recovery.absorb_error(context);
     }
 
     /// Load the contests this node can still vote on. Empty when the node has no
@@ -680,19 +651,20 @@ impl MasternodeDetailView {
         let tier = self.protection_tier();
         ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
 
-        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen` —
-        // the real, interactive per-key screen with view/sign/seal actions —
-        // not the static read-only `KeysScreen` table. This mirrors
-        // `identities_screen.rs`: one button per key, each pushing
-        // `Screen::KeyInfoScreen`.
+        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`,
+        // the interactive per-key screen with view/sign/seal actions. This
+        // mirrors `identities_screen.rs` and the identity keys list: one button
+        // per key, each pushing `Screen::KeyInfoScreen` with the target the row
+        // found the material at.
         ui.add_space(4.0);
         ui.label(
             RichText::new("Manage keys")
                 .strong()
                 .color(DashColors::text_primary(dark_mode)),
         );
-        let keys = self.identity_keys();
-        let labels = manage_keys_labels(&keys);
+        let keys = identity_keys(&self.identity);
+        // This page only ever shows masternode and evonode identities.
+        let labels = manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
         for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
             let button = ui.button(format!("{label} ›"));
             let button = match tip {
@@ -723,36 +695,19 @@ impl MasternodeDetailView {
         action
     }
 
-    /// Render the offer to restore keys stranded in the previous version's
-    /// saved data, returning the items the user approved this frame. Renders
-    /// nothing at all when detection found nothing, so the section appears only
-    /// where it has something to say and vanishes once a restore lands.
+    /// Render the offer at the foot of the keys section, returning the items the
+    /// user approved this frame.
     fn render_recovery_section(&self, ui: &mut Ui) -> Option<Vec<RecoveryItem>> {
-        let restoring = self.recovery.is_restoring();
-        let plan = self.recovery.plan().filter(|plan| !plan.is_empty())?;
+        if !self.recovery.has_offer() {
+            return None;
+        }
         ui.add_space(8.0);
-        LegacyRecoverySection::new(plan)
-            .restoring(restoring)
-            .show(ui)
-            .inner
-            .changed_value()
-            .clone()
-    }
-
-    /// Every key of this node, main-identity keys first then voter-identity
-    /// keys, each paired with the `PrivateKeyTarget` that scopes it. Backs the
-    /// per-key "Manage keys" list and the Add-protection routing.
-    fn identity_keys(&self) -> Vec<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
-        let mut keys = Vec::new();
-        for key in self.identity.identity.public_keys().values() {
-            keys.push((PrivateKeyTarget::PrivateKeyOnMainIdentity, key.clone()));
-        }
-        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
-            for key in voter.public_keys().values() {
-                keys.push((PrivateKeyTarget::PrivateKeyOnVoterIdentity, key.clone()));
-            }
-        }
-        keys
+        // This page only ever shows masternode and evonode identities.
+        host_offer(
+            &self.recovery,
+            KeyVocabulary::from(self.identity.identity_type),
+            ui,
+        )
     }
 
     /// The first key whose private material this node actually holds — the only
@@ -761,12 +716,14 @@ impl MasternodeDetailView {
     fn first_protectable_key(
         &self,
     ) -> Option<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
-        self.identity_keys().into_iter().find(|(target, key)| {
-            self.identity
-                .private_keys
-                .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()))
-                .is_some()
-        })
+        identity_keys(&self.identity)
+            .into_iter()
+            .find(|(target, key)| {
+                self.identity
+                    .private_keys
+                    .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()))
+                    .is_some()
+            })
     }
 
     /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,
@@ -795,10 +752,16 @@ impl MasternodeDetailView {
         key: &dash_sdk::platform::IdentityPublicKey,
         mode: KeyInfoOpenMode,
     ) -> AppAction {
+        // Where this key's private half actually is, by the one rule every
+        // "Manage keys" surface uses. The structural target alone would miss
+        // material filed under the purpose-derived convention — a main-identity
+        // voting key entered by hand — and report a key as unheld here while the
+        // identity keys list shows it as saved on this device.
+        let filed_at = key_filed_at(&self.identity, &target, key).unwrap_or(target);
         let holding = self
             .identity
             .private_keys
-            .get_cloned_private_key_data_and_wallet_info(&(target, key.id()));
+            .get_cloned_private_key_data_and_wallet_info(&(filed_at.clone(), key.id()));
         let identity = self.identity.clone();
         let key = key.clone();
         let screen = match mode {
@@ -809,7 +772,12 @@ impl MasternodeDetailView {
                 KeyInfoScreen::new_with_protection_prompt(identity, key, holding, &self.app_context)
             }
         };
-        AppAction::AddScreen(Screen::KeyInfoScreen(screen))
+        // Hand the resolved location over rather than letting the screen guess.
+        // Left to itself it re-derives the target from the key's purpose, which
+        // disagrees for a key filed on the voter identity whose purpose is not
+        // `VOTING` — it would name the key differently from the row just clicked
+        // and lose the private half on its own re-read.
+        AppAction::AddScreen(Screen::KeyInfoScreen(screen.with_target(filed_at)))
     }
 
     /// Render the collapsible DPNS voting section (collapsed by default,
@@ -1104,111 +1072,6 @@ mod tests {
             SECTION_ORDER,
             ["Header", "Actions", "Keys", "DPNS", "Remove"]
         );
-    }
-
-    /// Build a masternode key with a chosen id / purpose / disabled state.
-    fn mn_key(
-        id: dash_sdk::dpp::identity::KeyID,
-        purpose: dash_sdk::dpp::identity::Purpose,
-        disabled: bool,
-    ) -> dash_sdk::platform::IdentityPublicKey {
-        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-        use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
-        use dash_sdk::dpp::platform_value::BinaryData;
-        IdentityPublicKeyV0 {
-            id,
-            key_type: KeyType::ECDSA_HASH160,
-            purpose,
-            security_level: SecurityLevel::CRITICAL,
-            read_only: true,
-            data: BinaryData::new(vec![id as u8; 20]),
-            disabled_at: disabled.then_some(1),
-            contract_bounds: None,
-        }
-        .into()
-    }
-
-    /// An evonode that has rotated its payout address holds two `TRANSFER`
-    /// (Payout) keys on its main identity — the active new one and the disabled
-    /// old one — plus the owner key and a voter-identity voting key. Every
-    /// "Manage keys" button must get a distinct, correct label: the disabled
-    /// payout key is marked `(disabled)` instead of colliding with the active
-    /// one under a bare "Payout key".
-    #[test]
-    fn manage_keys_labels_disambiguate_rotated_evonode_payout_keys() {
-        use dash_sdk::dpp::identity::Purpose;
-        let keys = vec![
-            (
-                PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                mn_key(0, Purpose::TRANSFER, false),
-            ),
-            (
-                PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                mn_key(1, Purpose::OWNER, false),
-            ),
-            (
-                PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                mn_key(2, Purpose::TRANSFER, true),
-            ),
-            (
-                PrivateKeyTarget::PrivateKeyOnVoterIdentity,
-                mn_key(0, Purpose::VOTING, false),
-            ),
-        ];
-
-        let labels: Vec<String> = manage_keys_labels(&keys)
-            .into_iter()
-            .map(|(label, _tip)| label)
-            .collect();
-        assert_eq!(
-            labels,
-            vec![
-                "Payout address key".to_string(),
-                "Owner key".to_string(),
-                "Payout address key (disabled)".to_string(),
-                "Voting key".to_string(),
-            ]
-        );
-        // No two buttons ever share a label.
-        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
-        assert_eq!(unique.len(), labels.len(), "labels must be unique");
-    }
-
-    /// When even the role + `(disabled)` marker still collides — a payout
-    /// address rotated twice leaves two disabled Payout keys — the key id
-    /// breaks the tie so every button stays unique.
-    #[test]
-    fn manage_keys_labels_fall_back_to_key_id_on_residual_collision() {
-        use dash_sdk::dpp::identity::Purpose;
-        let keys = vec![
-            (
-                PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                mn_key(0, Purpose::TRANSFER, false),
-            ),
-            (
-                PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                mn_key(2, Purpose::TRANSFER, true),
-            ),
-            (
-                PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                mn_key(3, Purpose::TRANSFER, true),
-            ),
-        ];
-
-        let labels: Vec<String> = manage_keys_labels(&keys)
-            .into_iter()
-            .map(|(label, _tip)| label)
-            .collect();
-        assert_eq!(
-            labels,
-            vec![
-                "Payout address key".to_string(),
-                "Payout address key (disabled) #2".to_string(),
-                "Payout address key (disabled) #3".to_string(),
-            ]
-        );
-        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
-        assert_eq!(unique.len(), labels.len(), "labels must be unique");
     }
 
     #[test]

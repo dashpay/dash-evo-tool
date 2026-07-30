@@ -94,6 +94,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An identity's keys are reachable again**: the keys list under an identity's
+  Settings → Advanced now opens each key's own page, so keys can be inspected
+  and restored — and, once a key is on this device, signed with or
+  password-protected — without changing the interface mode and without starting
+  a payment. Previously that list was a read-only table with no way onward, and
+  every route to a key's page ran through an action screen — sending,
+  withdrawing, a token operation — each of which offers it only when the
+  identity already holds a key of the kind that action needs. So an identity
+  missing its keys, the one case where this matters most, could not get to them
+  at all. The offer to restore keys left behind by an earlier version now also
+  appears on the keys list itself, above the keys, rather than only inside a
+  key's page. Each key is named by its role and states whether it is saved on
+  this device. Keys are named for the identity they belong to: a user identity's
+  keys are described in plain language rather than in masternode registration
+  terms, which previously appeared on every identity. Leaving a key returns to
+  the list with both its keys and the restore offer brought up to date, so a
+  restore made from a key's page is reflected immediately instead of being
+  offered again.
+
+  A key opened from a masternode's page keeps its name too. A voting key is the
+  node's voting key however it is recorded, and its own page now says so instead
+  of describing it as another kind of key, which also means the page no longer
+  reports such a key as missing while the list it was opened from shows it as
+  saved on this device.
+
+  One known limitation, for a voting key stored on the identity itself rather
+  than on a separate voting identity: the keys list and the key's page now agree
+  on whether such a key is saved here, but saving or removing one by hand can
+  affect a voting key of the same number on a linked voting identity, and
+  removing it may leave the original in place. So until then, after saving or
+  removing a voting key on an identity like that, open the keys list and check
+  that each key still reads as you expect, and re-enter any key that should be
+  saved but no longer is. This will be closed by the in-progress key-placement
+  resolution fix.
+
+- **A key's page now catches up on changes made while it was open**: previously,
+  if something else updated your identity while a key's page was open — most
+  relevantly, a restore that finished from a different screen — the next key
+  edit made on that page could silently overwrite the change. The page now
+  picks up such changes as they arrive.
+
+- **Key role names are complete, consistent phrases everywhere**: a key's role
+  (owner, voting, payout, and so on) now reads the same complete phrase across
+  the keys list, a masternode's page, and the key's own page, instead of a
+  partly-assembled label that could vary by screen. The on-chain purpose value
+  itself remains available as its own line in Expert view for anyone who wants
+  it verbatim.
+
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and
   wallet removals also keep displayed aliases and deleted-wallet metadata

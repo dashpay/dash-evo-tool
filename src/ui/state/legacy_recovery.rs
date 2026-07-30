@@ -13,10 +13,13 @@
 
 use dash_sdk::platform::Identifier;
 
-use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::legacy_recovery::{RecoveryItem, RecoveryPlan};
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::legacy_recovery_section::completion_message;
 
 /// Where one identity's recovery offer currently stands.
 enum FetchState {
@@ -91,6 +94,13 @@ impl LegacyRecoveryState {
         matches!(self.state, FetchState::Restoring(_))
     }
 
+    /// Whether the offer has anything to show this frame — for a host deciding
+    /// whether to draw the separators and spacing that frame it. The offer
+    /// itself renders nothing when this is `false`.
+    pub fn has_offer(&self) -> bool {
+        self.plan().is_some_and(|plan| !plan.is_empty())
+    }
+
     /// The restore task for `approved`, marking it in flight. Returns `None`
     /// unless there is a plan on offer and no restore already running.
     pub fn restore(&mut self, approved: Vec<RecoveryItem>) -> Option<BackendTask> {
@@ -152,7 +162,9 @@ impl LegacyRecoveryState {
     /// unrelated task's failure must leave this offer alone. Ending a restore
     /// it never started would re-enable the Restore button while the original
     /// task still holds the identity, and pressing it again would only report
-    /// that a load is already in progress.
+    /// that a load is already in progress. Every screen hosting an offer routes
+    /// its failures through here, so no two can disagree about whether a restore
+    /// ended.
     ///
     /// A failed restore returns to its offer, so a mistyped identity password
     /// can be corrected and Restore pressed again. A failed detection is
@@ -167,6 +179,65 @@ impl LegacyRecoveryState {
             other => other,
         };
         true
+    }
+
+    /// Route a finished backend task into this offer, reporting whether it was
+    /// *this* identity's own restore that finished.
+    ///
+    /// The whole of what a hosting screen owes a recovery result, so no host has
+    /// to restate it: adopting a detected plan, attributing a completion through
+    /// [`Self::completed_for`], and telling the user the outcome in the one
+    /// wording every host shares. `true` is the host's cue to re-read whatever
+    /// it derives from the identity record — the clone it persists, a key-role
+    /// presence line, a cached protection status — since only this identity's
+    /// own restore wrote that record.
+    ///
+    /// A result of any other kind, or a completion for another identity, is
+    /// ignored and reported as not this offer's: results reach whichever screen
+    /// is visible when they arrive, and a banner claiming these keys came back
+    /// when they did not is worse than silence.
+    pub fn absorb_result(
+        &mut self,
+        ctx: &egui::Context,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
+        match result {
+            BackendTaskSuccessResult::LegacyRecoveryCandidates { identity_id, plan } => {
+                self.offered(*identity_id, plan.clone());
+                false
+            }
+            BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                identity_id,
+                applied,
+                ..
+            } => {
+                if !self.completed_for(*identity_id) {
+                    return false;
+                }
+                MessageBanner::set_global(
+                    ctx,
+                    completion_message(!applied.is_empty()),
+                    MessageType::Success,
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Route a failing task's context into this offer, ending a recovery
+    /// operation only when the failure is that operation's own, and reporting
+    /// whether it was.
+    ///
+    /// The error itself is never claimed — `AppState`'s generic banner is how
+    /// the user gets to see it. This exists so every host attributes a failure
+    /// through the single rule in [`Self::failed_for`]: a host that ended a
+    /// restore on any error that merely landed while it was visible would
+    /// re-enable Restore while the original task still held the identity.
+    pub fn absorb_error(&mut self, context: &BackendTaskContext) -> bool {
+        context
+            .legacy_recovery_identity()
+            .is_some_and(|identity_id| self.failed_for(identity_id))
     }
 }
 

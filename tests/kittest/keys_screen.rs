@@ -9,8 +9,10 @@
 use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
 use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
@@ -20,6 +22,7 @@ use dash_evo_tool::ui::identities::keys::keys_screen::KeysScreen;
 use dash_evo_tool::ui::masternodes::manage_keys_labels;
 use dash_evo_tool::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Identity, KeyID, Purpose};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -34,12 +37,22 @@ const AUTH_ROW: &str = "Authentication key ›";
 /// The row control for a `TRANSFER`-purpose key, which the shared vocabulary
 /// names for its DIP-3 counterpart rather than its Platform purpose.
 const PAYOUT_ROW: &str = "Payout address key ›";
-/// The restore control of the recovery offer.
+/// The row control for a `VOTING`-purpose key.
+const VOTING_ROW: &str = "Voting key ›";
+/// The row control of the recovery offer.
 const RESTORE: &str = "Restore keys";
+/// The held/not-held disclosure, mirroring `keys_screen.rs`'s own copy. A
+/// divergence here is a test bug, not a screen bug — these are the strings the
+/// user reads.
+const HELD: &str = "This key is saved on this device.";
+const NOT_HELD: &str = "This key is not saved on this device.";
 /// The banner text a restore that put keys back reports, from
 /// `completion_message(true)`.
 const RESTORED: &str =
     "Your keys from the previous Dash Evo Tool version have been restored to this identity.";
+/// The banner text a restore that put nothing back reports, from
+/// `completion_message(false)`.
+const NOTHING_RESTORED: &str = "There was nothing left to restore for this identity.";
 /// Stands in for the typed error text `AppState` banners when a restore fails.
 const RESTORE_FAILED: &str = "Those keys could not be restored. Check the password and try again.";
 
@@ -80,6 +93,52 @@ fn stranded_identity(id_byte: u8, purposes: &[Purpose], alias: &str) -> Qualifie
         alias: Some(alias.to_string()),
         // The point of the fixture: the device holds nothing.
         private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: dash_sdk::dpp::dashcore::Network::Testnet,
+    }
+}
+
+/// A user identity holding the private half of one key, filed at `target`.
+///
+/// `Purpose::VOTING` filed at `PrivateKeyOnMainIdentity` is the shape where the
+/// two target conventions in this codebase disagree: `identity_keys` derives the
+/// target from which identity it walked, while `impl From<Purpose> for
+/// PrivateKeyTarget` maps every voting key to the voter identity regardless of
+/// where it actually sits. A voting-purpose key on the main identity is real —
+/// `masternode_key_presence` treats it as voting readiness on its own.
+fn identity_holding_key(
+    id_byte: u8,
+    purpose: Purpose,
+    target: PrivateKeyTarget,
+) -> QualifiedIdentity {
+    let public_key = key(0, purpose);
+    let identity = Identity::new_with_id_and_keys(
+        Identifier::from([id_byte; 32]),
+        BTreeMap::from([(public_key.id(), public_key.clone())]),
+        PlatformVersion::latest(),
+    )
+    .expect("identity with one key");
+    QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: Some("held-key".to_string()),
+        private_keys: KeyStorage {
+            private_keys: BTreeMap::from([(
+                (target, public_key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(public_key),
+                    PrivateKeyData::Clear([id_byte; 32]),
+                ),
+            )]),
+        },
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
@@ -157,8 +216,10 @@ fn harness_showing_banner(
 }
 
 /// The screen must actually render global banners. It is built on
-/// `island_central_panel` for this reason: that is the only caller of
-/// `MessageBanner::show_global`, so on a bare `CentralPanel` every restore
+/// `island_central_panel` for this reason: that is the only banner-rendering
+/// path a screen gets from the standard chrome (a screen wanting them without
+/// it has to call `MessageBanner::show_global` itself, as
+/// `contracts_documents_screen` does). On a bare `CentralPanel` every restore
 /// outcome would be invisible and a failed restore would look exactly like a
 /// successful one — the offer self-extinguishes on the next check either way.
 #[test]
@@ -190,19 +251,24 @@ fn the_keys_list_renders_global_banners() {
     });
 }
 
-/// A finished restore announces itself. The offer disappearing proves nothing
-/// on its own: it self-extinguishes on the next check whatever the outcome, so
-/// without this banner a user cannot tell a restore that landed from one that
-/// did not.
+/// A finished restore announces itself — and only its own.
+///
+/// Results reach whichever screen is visible when they arrive, so a completion
+/// for another identity must say nothing here: a banner claiming this
+/// identity's keys came back when they did not is worse than silence. The
+/// *content* of the banner is pinned by
+/// `a_restore_reports_success_and_failure_on_the_keys_list_in_the_running_app`,
+/// which runs in the app's own context; `fresh_app_context` drops the harness
+/// its context belongs to, so text cannot be read back at this level and
+/// `has_global` is all this test can honestly assert.
 #[test]
-fn a_finished_restore_reports_its_outcome() {
+fn a_finished_restore_reports_only_its_own_outcome() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
         let identity = stranded_identity(0x3a, &[Purpose::AUTHENTICATION], "restore-outcome");
         let identity_id = identity.identity.id();
         let mut screen = KeysScreen::new(identity, &app_context);
-
-        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+        let completed = |identity_id| BackendTaskSuccessResult::LegacyRecoveryCompleted {
             identity_id,
             applied: vec![RecoveryItemDescriptor {
                 item: RecoveryItem::Key {
@@ -213,11 +279,19 @@ fn a_finished_restore_reports_its_outcome() {
             }],
             skipped_stale: vec![],
             excluded: vec![],
-        });
+        };
 
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        screen.display_task_result(completed(Identifier::from([0xee; 32])));
+        assert!(
+            !MessageBanner::has_global(app_context.egui_ctx()),
+            "another identity's restore must not report anything on this screen"
+        );
+
+        screen.display_task_result(completed(identity_id));
         assert!(
             MessageBanner::has_global(app_context.egui_ctx()),
-            "a completed restore must raise a banner saying so"
+            "this identity's own restore must report that it finished"
         );
     });
 }
@@ -239,14 +313,30 @@ fn a_failed_restore_leaves_the_offer_in_place_to_retry() {
         let (mut harness, screen) = harness_keeping_screen(screen);
         harness.get_by_label(RESTORE).click();
         harness.run_steps(2);
+        assert!(
+            harness.query_by_label(RESTORE).is_none(),
+            "the premise: a restore in flight shows progress, not another Restore"
+        );
 
-        // How a failed restore reaches the screen: `AppState` banners the typed
-        // error centrally and tells the screen a message was displayed.
+        // An unrelated task failing while the restore runs must not re-arm it.
+        // Results are not screen-affine — any task's error reaches whichever
+        // screen is visible — and a re-armed Restore can be pressed again,
+        // dispatching the same restore twice.
         screen
             .borrow_mut()
-            .display_message(RESTORE_FAILED, MessageType::Error);
+            .display_task_error(&TaskError::WalletStateInconsistent);
         harness.run_steps(2);
+        assert!(
+            harness.query_by_label(RESTORE).is_none(),
+            "an unrelated task's failure must not re-enable Restore mid-restore"
+        );
 
+        // The restore's own failure does end it, so a mistyped identity password
+        // can be corrected and Restore pressed again.
+        screen
+            .borrow_mut()
+            .display_task_error(&TaskError::LegacyRecoveryIdentityChanged);
+        harness.run_steps(2);
         assert!(
             harness.query_by_label(RESTORE).is_some(),
             "a failed restore must leave its offer on screen so it can be retried"
@@ -374,23 +464,89 @@ fn every_key_opens_key_info_even_when_the_device_holds_none() {
     });
 }
 
-/// AC-2's second half: the row passes the identity's real held-key data
-/// through, so Key Info does not misreport a held key as missing.
+/// AC-2's second half, both directions: the row reports a key this device holds
+/// as held, and one it does not as missing. Asserting only the negative half
+/// would pass against a screen that says "not saved" about everything.
 #[test]
 fn a_held_key_is_reported_as_held_and_a_missing_one_is_not() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_app_context();
-        let identity = stranded_identity(0x35, &[Purpose::AUTHENTICATION], "held-state");
-        let (harness, _) = harness_for(KeysScreen::new(identity, &app_context));
 
         // Held state is stated in words, not conveyed by colour alone
         // (WCAG 1.4.1) — it is the single fact a user with stranded keys
         // came to this screen to find.
+        let missing = stranded_identity(0x35, &[Purpose::AUTHENTICATION], "held-state");
+        let (missing, _) = harness_for(KeysScreen::new(missing, &app_context));
         assert!(
-            harness
-                .query_by_label("This key is not saved on this device.")
-                .is_some(),
+            missing.query_by_label(NOT_HELD).is_some(),
             "a key with no private material must say so in text"
+        );
+        assert!(
+            missing.query_by_label(HELD).is_none(),
+            "and must not also claim to be held"
+        );
+
+        let held = identity_holding_key(
+            0x3d,
+            Purpose::AUTHENTICATION,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        );
+        let (held, _) = harness_for(KeysScreen::new(held, &app_context));
+        assert!(
+            held.query_by_label(HELD).is_some(),
+            "a key this device holds must be reported as held"
+        );
+        assert!(
+            held.query_by_label(NOT_HELD).is_none(),
+            "and must not also claim to be missing"
+        );
+    });
+}
+
+/// SEC-001: the keys list and the Key Info screen it opens must agree about
+/// whether a key is held — including for a `Purpose::VOTING` key filed on the
+/// main identity, the one shape where this codebase's two target conventions
+/// disagree.
+///
+/// The list resolves the target from the identity it walked and hands it over.
+/// Key Info re-deriving it from the purpose instead lands on the voter identity,
+/// finds nothing there, and reports a key the device demonstrably holds as
+/// missing — on the screen built to answer that question, about a key whose
+/// private half the user can see listed one screen earlier.
+#[test]
+fn key_info_agrees_with_the_list_about_a_voting_key_held_on_the_main_identity() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let identity = identity_holding_key(
+            0x3e,
+            Purpose::VOTING,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        );
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store the identity so Key Info can re-read it");
+
+        // What the list says.
+        let (mut list, action) = harness_for(KeysScreen::new(identity, &app_context));
+        assert!(
+            list.query_by_label(HELD).is_some(),
+            "the list must report the key it can see the private half of as held"
+        );
+
+        list.get_by_label(VOTING_ROW).click();
+        list.run_steps(2);
+
+        // What the screen the list opens says, after it re-reads the record —
+        // which it does on arrival, and after any restore lands.
+        let opened = std::mem::replace(&mut *action.borrow_mut(), AppAction::None);
+        let AppAction::AddScreen(Screen::KeyInfoScreen(mut key_info)) = opened else {
+            panic!("the row must open Key Info");
+        };
+        key_info.refresh_on_arrival();
+        assert!(
+            key_info.private_key_data.is_some(),
+            "Key Info must still hold the key the list handed it — re-deriving the \
+             target from the purpose loses a voting key filed on the main identity"
         );
     });
 }
@@ -427,8 +583,9 @@ fn the_restore_offer_renders_above_the_key_list() {
     });
 }
 
-/// AC-9: an identity with no keys explains itself instead of rendering an
-/// empty table.
+/// AC-9: an identity with no keys explains itself instead of rendering an empty
+/// table — and does not borrow the per-key "not saved on this device" wording,
+/// which says something different (this identity has keys, just not here).
 #[test]
 fn an_identity_with_no_keys_shows_an_empty_state() {
     with_isolated_data_dir(|| {
@@ -438,7 +595,7 @@ fn an_identity_with_no_keys_shows_an_empty_state() {
 
         assert!(
             harness
-                .query_by_label("This identity has no keys saved on this device yet.")
+                .query_by_label("No keys are listed for this identity yet.")
                 .is_some(),
             "an empty key list must say what the user is looking at"
         );
@@ -575,6 +732,10 @@ fn a_restore_reports_success_and_failure_on_the_keys_list_in_the_running_app() {
             harness.query_by_label(RESTORED).is_some(),
             "a restore that landed must say so on the keys list itself"
         );
+        assert!(
+            harness.query_by_label(NOTHING_RESTORED).is_none(),
+            "and must not report that there was nothing to restore"
+        );
 
         // The failing case: `AppState` banners a task error centrally, on this
         // same context. The keys list has to surface that too, or a restore
@@ -586,6 +747,37 @@ fn a_restore_reports_success_and_failure_on_the_keys_list_in_the_running_app() {
         assert!(
             harness.query_by_label(RESTORE_FAILED).is_some(),
             "a restore that failed must say so on the keys list too"
+        );
+    });
+}
+
+/// QA-007: the Expert-only per-key detail row, both directions. Raw key ids,
+/// purposes and security levels are Expert material; the Everyday view gets the
+/// role word and the held state, which is what it can act on.
+#[test]
+fn raw_key_detail_is_expert_only() {
+    use dash_evo_tool::model::user_role::UserRole;
+
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let identity = stranded_identity(0x3f, &[Purpose::AUTHENTICATION], "expert-detail");
+
+        app_context.set_user_role(UserRole::Everyday);
+        let (everyday, _) = harness_for(KeysScreen::new(identity.clone(), &app_context));
+        assert!(
+            everyday.query_by_label_contains("AUTHENTICATION").is_none(),
+            "the Everyday view must not show raw key internals"
+        );
+        assert!(
+            everyday.query_by_label(AUTH_ROW).is_some(),
+            "but it must still show the key itself, named in role words"
+        );
+
+        app_context.set_user_role(UserRole::Power);
+        let (expert, _) = harness_for(KeysScreen::new(identity, &app_context));
+        assert!(
+            expert.query_by_label_contains("AUTHENTICATION").is_some(),
+            "the Expert view must show the raw purpose it was promised"
         );
     });
 }

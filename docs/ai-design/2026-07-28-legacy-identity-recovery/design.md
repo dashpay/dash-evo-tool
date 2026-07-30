@@ -104,12 +104,9 @@ Two surfaces, one shared component:
   fallback — which is the user story verbatim ("without having to re-enter
   WIFs I no longer have on hand").
 - **Key Info screen** (`ui/identities/keys/key_info_screen.rs`), reached from
-  the identity keys list for `User` identities and via "Manage keys" for nodes —
+  the Identities screen for `User` identities and via "Manage keys" for nodes —
   the issue's suggested location, covering the non-masternode partial-load
-  variant. The `User` route did not exist when this was written; see §10.13.
-- **Identity keys list** (`ui/identities/keys/keys_screen.rs`), the
-  identity-scoped surface reached from Settings → Advanced → "Manage keys". The
-  offer renders above the key rows, so it is found without opening a key.
+  variant.
 
 Gating, cheap to strict:
 
@@ -767,6 +764,12 @@ screens) is gated on the identity already holding a key of the kind that action
 needs, which is exactly false for the identities this flow exists to help. A
 `User` identity with stranded keys could therefore reach the offer only in
 Developer view, through a send-money screen.
+
+§2.1 and §7 row 1 are both left as written, per this document's model — the
+proposal stands as proposed and this section is the correction. A third surface
+now carries the offer that §2.1 names two for, and the mechanism §7 row 1 calls
+an "on-arrival" detection task is the `ensure_checked()` render-loop latch of
+§10.1.
 
 Shipped: `KeysScreen` carries the `QualifiedIdentity`, renders one row per key
 in the §10.8 vocabulary with its held state in words, and opens

@@ -112,6 +112,9 @@ pub struct KeyInfoScreen {
     recovery: LegacyRecoveryState,
     /// A queued restore (the approved items), drained in `ui()`.
     pending_recovery_restore: Option<Vec<RecoveryItem>>,
+    /// Which of the identity's key stores this key is filed under, when the
+    /// caller knew. See [`Self::target`] for why that beats deriving it.
+    target: Option<PrivateKeyTarget>,
 }
 
 /// At-rest protection posture of an identity's vault-stored keys.
@@ -743,7 +746,7 @@ impl ScreenLike for KeyInfoScreen {
         // Vault-backed (InVault) identity-key requests: the raw key is fetched
         // JIT in the backend and only the public WIF / signature returns.
         let identity_id = self.identity.identity.id();
-        let target: PrivateKeyTarget = self.key.purpose().into();
+        let target: PrivateKeyTarget = self.target();
         let key_id = self.key.id();
         if std::mem::take(&mut self.pending_identity_key_display) {
             action |= AppAction::BackendTask(BackendTask::WalletTask(
@@ -865,7 +868,37 @@ impl KeyInfoScreen {
             pending_unprotect: None,
             recovery,
             pending_recovery_restore: None,
+            target: None,
         }
+    }
+
+    /// Record which key store this key is filed under, for a caller that already
+    /// resolved it from the identity the key was listed from.
+    ///
+    /// Prefer this wherever the target is known. Without it the screen falls
+    /// back to deriving the target from the key's purpose, which cannot
+    /// distinguish a voting key filed on the main identity from one on a voter
+    /// identity — see [`Self::target`].
+    pub fn with_target(mut self, target: PrivateKeyTarget) -> Self {
+        self.target = Some(target);
+        self
+    }
+
+    /// The key store this key is filed under: what the caller resolved, else
+    /// derived from the key's purpose.
+    ///
+    /// The derivation is lossy and cannot be made otherwise:
+    /// `impl From<Purpose> for PrivateKeyTarget` sends every `Purpose::VOTING`
+    /// key to the voter identity, but a voting-purpose key filed on the main
+    /// identity is a supported shape (`masternode_key_presence` reads it as
+    /// voting readiness on its own). For that key the derivation names a store
+    /// it was never filed under, so a read misses it and a write or delete
+    /// lands on a different key that happens to share its id. Only the caller
+    /// that walked the identity knows which store it came from.
+    fn target(&self) -> PrivateKeyTarget {
+        self.target
+            .clone()
+            .unwrap_or_else(|| self.key.purpose().into())
     }
 
     /// Re-read this screen's identity from the store, after a backend task
@@ -883,10 +916,7 @@ impl KeyInfoScreen {
             Ok(Some(fresh)) => {
                 self.private_key_data = fresh
                     .private_keys
-                    .get_cloned_private_key_data_and_wallet_info(&(
-                        self.key.purpose().into(),
-                        self.key.id(),
-                    ));
+                    .get_cloned_private_key_data_and_wallet_info(&(self.target(), self.key.id()));
                 self.identity = fresh;
             }
             Ok(None) => {}
@@ -993,7 +1023,7 @@ impl KeyInfoScreen {
             // If valid, store the private key in the context and reset the input field
             self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
             self.identity.private_keys.insert_non_encrypted(
-                (self.key.purpose().into(), self.key.id()),
+                (self.target(), self.key.id()),
                 (self.key.clone().into(), private_key_bytes),
             );
             if let Err(error) = self
@@ -1197,7 +1227,7 @@ impl KeyInfoScreen {
                     self.identity
                         .private_keys
                         .private_keys
-                        .remove(&(self.key.purpose().into(), self.key.id()));
+                        .remove(&(self.target(), self.key.id()));
                     if let Err(error) = self
                         .app_context
                         .update_local_qualified_identity(&self.identity)

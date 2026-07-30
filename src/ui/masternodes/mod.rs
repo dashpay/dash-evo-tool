@@ -4,6 +4,12 @@
 //! vote on DPNS name contests and manage owner/voting/payout keys. The page is
 //! a sibling root screen behind the Expert-Mode nav gate (FR-1); its identities
 //! are page-scoped and never leak into the everyday-user surfaces (FR-6, B1).
+//!
+//! The gate covers the screens, not this module's key vocabulary
+//! ([`role_label_and_tip`], [`manage_keys_labels`], [`identity_keys`]): those
+//! name and enumerate the keys of any identity and are used from ungated
+//! surfaces — the identity keys list and the recovery-offer component — so that
+//! one key cannot be called two different things on two screens.
 
 pub mod card;
 pub mod detail_screen;
@@ -100,7 +106,7 @@ pub fn role_label_and_tip(
 
 /// A short role name for one key and its tooltip, from the shared
 /// [`role_label_and_tip`] vocabulary.
-pub fn key_role_label(
+pub(crate) fn key_role_label(
     target: &PrivateKeyTarget,
     key: &dash_sdk::platform::IdentityPublicKey,
 ) -> (String, Option<&'static str>) {

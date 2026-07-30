@@ -8,6 +8,7 @@
 
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -25,7 +26,7 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::platform::IdentityPublicKey;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, RichText, ScrollArea};
 use std::sync::Arc;
 
@@ -85,12 +86,18 @@ impl ScreenLike for KeysScreen {
         }
     }
 
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // A failed restore returns to its offer so it can be retried; the
-        // error itself already reached the user through the global banner.
-        if matches!(message_type, MessageType::Error) {
+    /// Return a recovery operation to its offer when the error was its own.
+    ///
+    /// Never claims the error (always `false`): the user has to see it, and
+    /// `AppState`'s generic banner is how it gets to them. This exists for the
+    /// typed error, which `display_message` does not receive — a restore that
+    /// only ends on *any* error would be re-armed mid-flight by an unrelated
+    /// task's failure and could then be dispatched twice.
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if self.is_recovery_error(error) {
             self.recovery.failed();
         }
+        false
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -164,26 +171,52 @@ impl KeysScreen {
         }
     }
 
+    /// Whether `error` can have come from this identity's own recovery flow.
+    ///
+    /// The variants are those `check_legacy_recovery` and
+    /// `recover_legacy_identity_data` document themselves as returning, scoped
+    /// to this identity wherever the variant names one. Excluding the shared
+    /// ones is not an option: a restore genuinely fails with them, and ignoring
+    /// those would strand it mid-flight with no way to retry.
+    ///
+    /// So attribution is close, not exact — the same variant raised by another
+    /// task while a restore runs still ends it. Closing that needs the task's
+    /// identity to reach the screen, which `ScreenLike` does not carry today.
+    fn is_recovery_error(&self, error: &TaskError) -> bool {
+        let mine = |identity_id: &Identifier| *identity_id == self.identity.identity.id();
+        match error {
+            TaskError::LegacyRecoveryNothingApproved
+            | TaskError::LegacyRecoveryIdentityChanged
+            | TaskError::IdentityNotFoundLocally
+            | TaskError::WalletStorageNotReady
+            | TaskError::SecretPromptUnavailable
+            | TaskError::SecretPromptCancelled => true,
+            TaskError::LegacyIdentityUnreadable { identity_id }
+            | TaskError::IdentityLoadInProgress { identity_id } => mine(identity_id),
+            _ => false,
+        }
+    }
+
     /// One row per key: what it is for, whether this device holds it, and the
     /// way into its own page. Ungated — a key the device does not hold is
     /// exactly the key a user comes here to do something about.
-    fn render_key_list(&mut self, ui: &mut egui::Ui, dark_mode: bool) -> AppAction {
+    fn render_key_list(&self, ui: &mut egui::Ui, dark_mode: bool) -> AppAction {
         let mut action = AppAction::None;
         let keys = identity_keys(&self.identity);
 
         if keys.is_empty() {
             ui.add_space(8.0);
+            // Not "no keys saved on this device": that phrase means held=false
+            // in this screen's own per-key vocabulary, and an empty record is a
+            // different statement about a different thing.
             ui.label(
-                RichText::new("This identity has no keys saved on this device yet.")
+                RichText::new("No keys are listed for this identity yet.")
                     .color(DashColors::text_primary(dark_mode)),
             );
             ui.label(
-                RichText::new(
-                    "Refresh this identity to load its keys from Dash Platform, or add a key to \
-                     it.",
-                )
-                .small()
-                .color(DashColors::text_secondary(dark_mode)),
+                RichText::new("Refresh this identity to load its keys from Dash Platform.")
+                    .small()
+                    .color(DashColors::text_secondary(dark_mode)),
             );
             return action;
         }
@@ -191,11 +224,15 @@ impl KeysScreen {
         let expert = self.app_context.user_role().at_least(UserRole::Power);
         let labels = manage_keys_labels(&keys);
         for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
-            let holding = self
-                .identity
-                .private_keys
-                .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()));
-            let held = if holding.is_some() { HELD } else { NOT_HELD };
+            let entry = (target.clone(), key.id());
+            // A presence check, not a read: cloning the entry copies the raw
+            // private key out of the vault, unscrubbed, and this renders every
+            // frame for every key — to answer whether the key is there at all.
+            let held = if self.identity.private_keys.has(&entry) {
+                HELD
+            } else {
+                NOT_HELD
+            };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let button =
@@ -205,12 +242,23 @@ impl KeysScreen {
                     None => button,
                 };
                 if button.clicked() {
-                    action = AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                        self.identity.clone(),
-                        key.clone(),
-                        holding,
-                        &self.app_context,
-                    )));
+                    let holding = self
+                        .identity
+                        .private_keys
+                        .get_cloned_private_key_data_and_wallet_info(&entry);
+                    action |= AppAction::AddScreen(Screen::KeyInfoScreen(
+                        KeyInfoScreen::new(
+                            self.identity.clone(),
+                            key.clone(),
+                            holding,
+                            &self.app_context,
+                        )
+                        // The target travels with the key: this screen resolved
+                        // it from the identity it walked, and deriving it again
+                        // from the purpose loses a voting key filed on the main
+                        // identity.
+                        .with_target(target.clone()),
+                    ));
                 }
                 ui.label(RichText::new(held).color(DashColors::text_secondary(dark_mode)));
             });
@@ -249,14 +297,15 @@ impl KeysScreen {
             return;
         };
         ui.add_space(8.0);
-        let approved = LegacyRecoverySection::new(plan)
+        // `changed_value` hands back a reference into the response, so the
+        // approved set has to be cloned out before the response is dropped.
+        if let Some(approved) = LegacyRecoverySection::new(plan)
             .restoring(restoring)
             .show(ui)
             .inner
             .changed_value()
-            .clone();
-        if approved.is_some() {
-            self.pending_recovery_restore = approved;
+        {
+            self.pending_recovery_restore = Some(approved.clone());
         }
         ui.add_space(8.0);
         ui.separator();

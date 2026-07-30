@@ -33,6 +33,7 @@ mod startup;
 mod support;
 mod tokens_screen;
 mod tools_screen;
+mod transfer_screen;
 mod wallets_screen;
 mod welcome_screen;
 mod withdraw_screen;

@@ -1109,8 +1109,10 @@ impl KeyInfoScreen {
             )
             .with_details(error);
         } else if validation_result.expect("invariant: Err handled in the preceding branch") {
-            // If valid, store the private key in the context and reset the input field
-            self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
+            // Every reason the key might not be storable is settled before the
+            // screen calls it held: a key shown as held offers to sign, to be
+            // revealed and to be removed, none of which a refused key can do.
+            //
             // An existing placement is reused so a re-entered key overwrites
             // itself rather than growing a second copy under another store;
             // otherwise the identity's own lists say where it belongs. Both
@@ -1129,6 +1131,7 @@ impl KeyInfoScreen {
                 MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
                 return;
             }
+            self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
             if let Err(error) = self
                 .app_context
                 .update_local_qualified_identity(&self.identity)
@@ -1954,6 +1957,70 @@ mod tests {
                 .private_keys
                 .has(&(MAIN, restored_key.id())),
             "a key edit on this screen must not erase keys restored while it was away",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A key and the private key that opens it, so the paste path's validation
+    /// passes and the placement check is what decides the outcome.
+    fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
+        let secret_bytes = [0x2A; 32];
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_byte_array(&secret_bytes).expect("a valid secret key");
+        let data = PrivateKey::new(secret, Network::Testnet)
+            .public_key(&secp)
+            .to_bytes();
+        (
+            IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id,
+                purpose,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: BinaryData::new(data),
+                disabled_at: None,
+            }),
+            secret_bytes,
+        )
+    }
+
+    /// A key on none of this identity's lists has no store to be filed under,
+    /// so the paste is refused. The screen must not report it as held anyway:
+    /// a key the app just rejected would otherwise offer to sign, to be shown,
+    /// and to be removed — none of which it can do, since nothing was saved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_that_cannot_be_placed_is_not_reported_as_held() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // The record publishes no keys at all, so this one is on no list.
+        let (unlisted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x6B, &[]);
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let mut screen = KeyInfoScreen::new(stored, unlisted.clone(), None, &app_context);
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        assert!(
+            screen.private_key_data.is_none(),
+            "a refused key must not be left on screen as held",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&unlisted)
+                .next()
+                .is_none(),
+            "and nothing was filed for it either",
         );
 
         app_context

@@ -84,6 +84,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A key that could not be saved no longer looks saved**: when entering a
+  private key was refused, the key's page still showed it as saved on this
+  device until the page was left and reopened — offering to reveal it, to sign
+  with it, and to remove it, none of which could work. The page now reports a
+  refused key as not saved, which is what it is.
+
 - **A key's wallet is found even when the key is filed twice**: a key that an
   earlier version had saved in two places, wallet-derived in only one of them,
   was treated as belonging to no wallet at all — so the wallet was never offered

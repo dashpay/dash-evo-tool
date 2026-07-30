@@ -582,7 +582,7 @@ mod tests {
         publish_on(&mut identity, published);
         for (target, key, data) in held {
             publish_on(&mut identity, &[key]);
-            private_keys.private_keys.insert(
+            private_keys.insert_at(
                 (target, key.id()),
                 (QualifiedIdentityPublicKey::from(key.public.clone()), data),
             );
@@ -1583,7 +1583,7 @@ mod tests {
             "the update that landed during the prompt must survive the restore",
         );
         assert!(
-            stored.private_keys.private_keys.contains_key(&(M, 2)),
+            stored.private_keys.has(&(M, 2)),
             "and the restored key must still be there",
         );
 

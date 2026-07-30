@@ -6,11 +6,13 @@
 //! are page-scoped and never leak into the everyday-user surfaces (FR-6, B1).
 //!
 //! The gate covers the screens, not this module's shared key helpers
-//! ([`role_label_and_tip`], [`manage_keys_labels`], [`identity_keys`],
-//! [`key_filed_at`]): those name, enumerate and resolve the keys of any identity
-//! and are used from ungated surfaces — the identity keys list and the
-//! recovery-offer component — so that one key cannot be called two different
-//! things, or reported as saved on one screen and missing on another.
+//! ([`role_label_and_tip`], [`manage_keys_labels`], [`identity_keys`]): those
+//! name and enumerate the keys of any identity and are used from ungated
+//! surfaces — the identity keys list and the recovery-offer component — so that
+//! one key cannot be called two different things on two screens. Whether a key
+//! is *held* is resolved by
+//! [`KeyStorage::candidates`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::candidates),
+//! shared for the same reason.
 
 pub mod card;
 pub mod detail_screen;
@@ -242,9 +244,10 @@ pub(crate) fn key_role_label(
 /// keys identically. The target paired here is the *structural* one — which
 /// identity's key map the key came from — which is only half of pairing a public
 /// key with the private material the device may hold for it. Resolving that is
-/// [`key_filed_at`], shared for the same reason: enumerating alike while
-/// resolving differently is how the two surfaces came to disagree about whether
-/// one key was saved on this device.
+/// [`KeyStorage::candidates`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::candidates),
+/// which every surface shares: enumerating alike while resolving differently is
+/// how the two surfaces came to disagree about whether one key was saved on this
+/// device.
 pub fn identity_keys(
     identity: &QualifiedIdentity,
 ) -> Vec<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
@@ -263,98 +266,6 @@ pub fn identity_keys(
         );
     }
     keys
-}
-
-/// Whether a stored public key and a live one are the same key.
-///
-/// Compares every field except `disabled_at`. A Platform identity public key is
-/// immutable once added, with that single exception: disabling one rewrites that
-/// field. The stored copy is a snapshot taken when the private half was saved, so
-/// plain `==` stops matching as soon as a key is disabled or rotated, and a key
-/// this device demonstrably holds is reported as missing.
-///
-/// Comparing only the id and the key material would fix that and reopen a worse
-/// hole in the other direction. Both are shared by construction where it matters:
-/// `id` is already the lookup key, and a main identity's voting key and a linked
-/// voter identity's key can carry identical `data`, leaving `purpose` as the only
-/// thing telling them apart. Conflating those hands over private material the
-/// clicked key does not own — so this excludes the one field that legitimately
-/// moves, and nothing else.
-fn same_key(
-    stored: &dash_sdk::platform::IdentityPublicKey,
-    live: &dash_sdk::platform::IdentityPublicKey,
-) -> bool {
-    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
-    use dash_sdk::platform::IdentityPublicKey;
-
-    let IdentityPublicKey::V0(stored) = stored;
-    let IdentityPublicKey::V0(live) = live;
-    // Destructured exhaustively, and without `..`, on purpose: a field added
-    // upstream must break this build rather than be silently ignored. A new
-    // field that distinguishes two keys would otherwise leave this reporting a
-    // match where there is none — which is how a key's private material ends up
-    // attributed to a different key. Whoever adds it decides here whether it
-    // identifies a key or, like `disabled_at`, merely describes its state.
-    let IdentityPublicKeyV0 {
-        id,
-        purpose,
-        security_level,
-        contract_bounds,
-        key_type,
-        read_only,
-        data,
-        // The one field Platform lets move after a key is added: disabling a key
-        // rewrites it, and the stored snapshot was taken before that happened.
-        disabled_at: _,
-    } = stored;
-
-    *id == live.id
-        && *purpose == live.purpose
-        && *security_level == live.security_level
-        && *contract_bounds == live.contract_bounds
-        && *key_type == live.key_type
-        && *read_only == live.read_only
-        && *data == live.data
-}
-
-/// Which store `key`'s private half is actually in, or `None` if this device
-/// holds no material for it.
-///
-/// `structural` is the target [`identity_keys`] paired the key with — which
-/// identity's key map it was found in. Two conventions for that target are in use
-/// in this codebase: the structural one, and `impl From<Purpose> for
-/// PrivateKeyTarget`, which files by purpose alone. Real installs hold material
-/// written under each, so both are tried.
-///
-/// Shared by every "Manage keys" surface on purpose. [`identity_keys`] enumerates
-/// the same keys for all of them and this resolves held-ness the same way for all
-/// of them; splitting either one is how the identity keys list and the masternode
-/// detail view came to disagree about whether one key was saved on this device.
-///
-/// This is a read. Looking in the second place can only find material that is
-/// already there, so it corrects a false "not saved on this device" without
-/// moving anything; reconciling the two conventions on the write path is a
-/// migration, tracked separately.
-///
-/// Each candidate has to hold *this* public key, not merely have its slot filled:
-/// a voter identity's own key can share a key id with a main-identity key, so an
-/// occupied slot proves nothing about whose material is in it.
-///
-/// Reads the stored public half only, never the private one: fetching the entry
-/// would clone the raw private key out of the vault unscrubbed, and this runs
-/// every frame for every key.
-pub fn key_filed_at(
-    identity: &QualifiedIdentity,
-    structural: &PrivateKeyTarget,
-    key: &dash_sdk::platform::IdentityPublicKey,
-) -> Option<PrivateKeyTarget> {
-    let derived: PrivateKeyTarget = key.purpose().into();
-    [structural.clone(), derived].into_iter().find(|candidate| {
-        identity
-            .private_keys
-            .public_key_for(&(candidate.clone(), key.id()))
-            .is_some_and(|stored| same_key(&stored.identity_public_key, key))
-    })
 }
 
 /// Button labels (and DIP-3-aligned tooltips) for a "Manage keys" list, one
@@ -729,129 +640,6 @@ mod tests {
                 ("O", TIP_OWNER_KEY),
                 ("P", TIP_PAYOUT_KEY),
             ]
-        );
-    }
-
-    /// Build a `QualifiedIdentity` holding the private half of `stored` filed at
-    /// `at`, whose on-chain key set is `live`.
-    fn identity_holding(
-        at: PrivateKeyTarget,
-        stored: dash_sdk::platform::IdentityPublicKey,
-        live: &[dash_sdk::platform::IdentityPublicKey],
-    ) -> QualifiedIdentity {
-        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
-        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-        use crate::model::qualified_identity::{IdentityStatus, IdentityType};
-        use dash_sdk::dpp::identity::Identity;
-        use dash_sdk::dpp::version::PlatformVersion;
-        use dash_sdk::platform::Identifier;
-        use std::collections::BTreeMap;
-
-        let identity = Identity::new_with_id_and_keys(
-            Identifier::from([0x60u8; 32]),
-            live.iter().map(|k| (k.id(), k.clone())).collect(),
-            PlatformVersion::latest(),
-        )
-        .expect("identity with keys");
-        QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::Masternode,
-            alias: Some("filed-at".to_string()),
-            private_keys: KeyStorage {
-                private_keys: BTreeMap::from([(
-                    (at, stored.id()),
-                    (
-                        QualifiedIdentityPublicKey::from(stored),
-                        PrivateKeyData::Clear([0x60; 32]),
-                    ),
-                )]),
-            },
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: dash_sdk::dpp::dashcore::Network::Testnet,
-        }
-    }
-
-    /// The resolution rule every "Manage keys" surface shares, in one place.
-    ///
-    /// Two target conventions are in use, so both are tried; a key must be
-    /// matched by its own public half rather than by an occupied slot; and
-    /// `disabled_at` must not break the match, because it is the one field
-    /// Platform lets move after a key is added.
-    #[test]
-    fn held_material_is_found_under_either_convention_and_only_for_the_right_key() {
-        use dash_sdk::dpp::identity::Purpose;
-
-        // Filed structurally, where `identity_keys` says it is.
-        let key = mn_key(0, Purpose::AUTHENTICATION, false);
-        let identity = identity_holding(
-            PrivateKeyTarget::PrivateKeyOnMainIdentity,
-            key.clone(),
-            std::slice::from_ref(&key),
-        );
-        assert_eq!(
-            key_filed_at(&identity, &PrivateKeyTarget::PrivateKeyOnMainIdentity, &key),
-            Some(PrivateKeyTarget::PrivateKeyOnMainIdentity),
-            "material filed where the key structurally sits must be found"
-        );
-
-        // Filed under the purpose-derived convention instead: a voting key on
-        // the main identity, entered by hand. Reported as unheld before the
-        // fallback existed.
-        let voting = mn_key(0, Purpose::VOTING, false);
-        let identity = identity_holding(
-            PrivateKeyTarget::PrivateKeyOnVoterIdentity,
-            voting.clone(),
-            std::slice::from_ref(&voting),
-        );
-        assert_eq!(
-            key_filed_at(
-                &identity,
-                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                &voting
-            ),
-            Some(PrivateKeyTarget::PrivateKeyOnVoterIdentity),
-            "material filed by purpose derivation must still be found"
-        );
-
-        // A *different* key at the same id must not match. These two share
-        // `id` and `data`, so purpose is the only thing telling them apart —
-        // matching here would report one key as held on the strength of
-        // another's private half.
-        assert_eq!(
-            key_filed_at(
-                &identity,
-                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                &mn_key(0, Purpose::AUTHENTICATION, false)
-            ),
-            None,
-            "an occupied slot proves nothing about whose material is in it"
-        );
-
-        // Disabling a key on chain does not remove its private half from this
-        // device, so the stored snapshot must still match the live key.
-        let disabled = mn_key(0, Purpose::AUTHENTICATION, true);
-        let identity = identity_holding(
-            PrivateKeyTarget::PrivateKeyOnMainIdentity,
-            mn_key(0, Purpose::AUTHENTICATION, false),
-            std::slice::from_ref(&disabled),
-        );
-        assert_eq!(
-            key_filed_at(
-                &identity,
-                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                &disabled
-            ),
-            Some(PrivateKeyTarget::PrivateKeyOnMainIdentity),
-            "`disabled_at` is the one field that legitimately moves, so it must \
-             not break the match"
         );
     }
 }

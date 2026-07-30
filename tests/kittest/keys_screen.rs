@@ -133,15 +133,13 @@ fn identity_holding_key(
         associated_owner_key_id: None,
         identity_type: IdentityType::User,
         alias: Some("held-key".to_string()),
-        private_keys: KeyStorage {
-            private_keys: BTreeMap::from([(
-                (target, public_key.id()),
-                (
-                    QualifiedIdentityPublicKey::from(public_key),
-                    PrivateKeyData::Clear([id_byte; 32]),
-                ),
-            )]),
-        },
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            (target, public_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(public_key),
+                PrivateKeyData::Clear([id_byte; 32]),
+            ),
+        )])),
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
@@ -947,15 +945,13 @@ fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
             associated_owner_key_id: None,
             identity_type: IdentityType::Masternode,
             alias: Some("id-collision".to_string()),
-            private_keys: KeyStorage {
-                private_keys: BTreeMap::from([(
-                    (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
-                    (
-                        QualifiedIdentityPublicKey::from(voter_key),
-                        PrivateKeyData::Clear([0x42; 32]),
-                    ),
-                )]),
-            },
+            private_keys: KeyStorage::from(BTreeMap::from([(
+                (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(voter_key),
+                    PrivateKeyData::Clear([0x42; 32]),
+                ),
+            )])),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             secret_access: None,
@@ -1029,15 +1025,13 @@ fn a_disabled_key_whose_private_half_is_saved_is_still_reported_as_held() {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: Some("disabled-but-held".to_string()),
-            private_keys: KeyStorage {
-                private_keys: BTreeMap::from([(
-                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, snapshot.id()),
-                    (
-                        QualifiedIdentityPublicKey::from(snapshot),
-                        PrivateKeyData::Clear([0x43; 32]),
-                    ),
-                )]),
-            },
+            private_keys: KeyStorage::from(BTreeMap::from([(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, snapshot.id()),
+                (
+                    QualifiedIdentityPublicKey::from(snapshot),
+                    PrivateKeyData::Clear([0x43; 32]),
+                ),
+            )])),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
             secret_access: None,

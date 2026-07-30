@@ -94,6 +94,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A saved voting key can now actually sign**: a voting key held on an
+  identity's own record — rather than on a separate voting identity — was saved
+  and shown as being on this device, but nothing could use it. Signing looked for
+  it in the wrong place, so voting with it failed and the key's page reported it
+  missing, on the screen whose job is to answer that question. Dash Evo Tool now
+  finds a key by matching it against the key itself, wherever it is filed, so it
+  is found whichever version of the app saved it and no key material has to be
+  moved to fix this. This also means a key is no longer confused with a different
+  key that happens to share its number, which a masternode has whenever its
+  voting identity numbers a key the same way as its main identity: removing one
+  key could remove the other's private half, and a key could be reported as
+  saved on the strength of an unrelated key being present.
+
 - **An identity's keys are reachable again**: the keys list under an identity's
   Settings → Advanced now opens each key's own page, so keys can be inspected
   and restored — and, once a key is on this device, signed with or

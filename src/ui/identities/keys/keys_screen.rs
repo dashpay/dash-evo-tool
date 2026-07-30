@@ -19,7 +19,7 @@ use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::masternodes::{KeyVocabulary, identity_keys, key_filed_at, manage_keys_labels};
+use crate::ui::masternodes::{KeyVocabulary, identity_keys, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
@@ -181,8 +181,12 @@ impl KeysScreen {
         let expert = self.app_context.user_role().at_least(UserRole::Power);
         let vocabulary = KeyVocabulary::from(self.identity.identity_type);
         let labels = manage_keys_labels(vocabulary, &keys);
-        for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
-            let filed_at = key_filed_at(&self.identity, &target, &key);
+        for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
+            // Where this key's private half actually is, whichever store filed
+            // it. A presence check rather than a fetch: cloning the entry copies
+            // raw key bytes out of the vault unscrubbed, and this runs every
+            // frame for every key.
+            let filed_at = self.identity.private_keys.candidates(&key).next();
             let held = if filed_at.is_some() { HELD } else { NOT_HELD };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -193,14 +197,11 @@ impl KeysScreen {
                     None => button,
                 };
                 if button.clicked() {
-                    let opened_at = filed_at.clone().unwrap_or_else(|| target.clone());
-                    let holding = self
-                        .identity
-                        .private_keys
-                        .get_cloned_private_key_data_and_wallet_info(&(
-                            opened_at.clone(),
-                            key.id(),
-                        ));
+                    let holding = filed_at.as_ref().and_then(|placement| {
+                        self.identity
+                            .private_keys
+                            .get_cloned_private_key_data_and_wallet_info(placement)
+                    });
                     action |= AppAction::AddScreen(Screen::KeyInfoScreen(
                         KeyInfoScreen::new(
                             self.identity.clone(),
@@ -208,9 +209,6 @@ impl KeysScreen {
                             holding,
                             &self.app_context,
                         )
-                        // Where the material actually is, so the screen's own
-                        // re-read finds the same key this row just reported.
-                        .with_target(opened_at)
                         .with_parent(PARENT_CRUMB),
                     ));
                 }

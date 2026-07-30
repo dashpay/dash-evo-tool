@@ -10,6 +10,7 @@ use chrono::{LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+#[cfg(test)]
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, RichText, Ui};
@@ -41,9 +42,7 @@ use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
-use crate::ui::masternodes::{
-    KeyVocabulary, identity_keys, key_filed_at, key_status_tokens, manage_keys_labels,
-};
+use crate::ui::masternodes::{KeyVocabulary, identity_keys, key_status_tokens, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -665,14 +664,14 @@ impl MasternodeDetailView {
         let keys = identity_keys(&self.identity);
         // This page only ever shows masternode and evonode identities.
         let labels = manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
-        for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
+        for ((_target, key), (label, tip)) in keys.into_iter().zip(labels) {
             let button = ui.button(format!("{label} ›"));
             let button = match tip {
                 Some(tip) => button.clickable_tooltip(tip),
                 None => button,
             };
             if button.clicked() {
-                action = Some(self.open_key_info(target, &key));
+                action = Some(self.open_key_info(&key));
             }
         }
 
@@ -681,10 +680,10 @@ impl MasternodeDetailView {
         // lives inside `KeyInfoScreen`. Open the first held key so the user
         // lands directly on the interactive seal flow.
         if tier.offers_add_protection()
-            && let Some((target, key)) = self.first_protectable_key()
+            && let Some((_target, key)) = self.first_protectable_key()
             && ui.button("Add password protection…").clicked()
         {
-            action = Some(self.open_key_info_with_protection_prompt(target, &key));
+            action = Some(self.open_key_info_with_protection_prompt(&key));
         }
 
         if let Some(approved) = self.render_recovery_section(ui)
@@ -713,55 +712,59 @@ impl MasternodeDetailView {
     /// The first key whose private material this node actually holds — the only
     /// keys that can be sealed. Used to route the Add-protection CTA straight
     /// into an interactive `KeyInfoScreen` seal flow.
+    ///
+    /// Resolves "held" through `candidates()`, the same rule every other
+    /// resolution site on this identity uses — a structural `(target, key_id)`
+    /// probe would miss material filed under a target other than the one
+    /// `identity_keys` structurally pairs the key with (e.g. a main-identity
+    /// voting key filed under the voter placement by an older build), and could
+    /// match a different key that merely shares the id. `candidates()` only
+    /// checks presence, so no raw key bytes are cloned out of the vault here —
+    /// unlike `open_key_info_with_mode`, which needs the actual secret and thus
+    /// pays for the clone.
     fn first_protectable_key(
         &self,
     ) -> Option<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
         identity_keys(&self.identity)
             .into_iter()
-            .find(|(target, key)| {
-                self.identity
-                    .private_keys
-                    .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()))
-                    .is_some()
-            })
+            .find(|(_, key)| self.identity.private_keys.candidates(key).next().is_some())
     }
 
     /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,
     /// carrying its held private-key data if any. Mirrors the
     /// per-key push in `identities_screen.rs`.
-    fn open_key_info(
-        &self,
-        target: PrivateKeyTarget,
-        key: &dash_sdk::platform::IdentityPublicKey,
-    ) -> AppAction {
-        self.open_key_info_with_mode(target, key, KeyInfoOpenMode::Normal)
+    fn open_key_info(&self, key: &dash_sdk::platform::IdentityPublicKey) -> AppAction {
+        self.open_key_info_with_mode(key, KeyInfoOpenMode::Normal)
     }
 
     /// Open `KeyInfoScreen` directly in the add-protection confirmation flow.
     fn open_key_info_with_protection_prompt(
         &self,
-        target: PrivateKeyTarget,
         key: &dash_sdk::platform::IdentityPublicKey,
     ) -> AppAction {
-        self.open_key_info_with_mode(target, key, KeyInfoOpenMode::WithProtectionPrompt)
+        self.open_key_info_with_mode(key, KeyInfoOpenMode::WithProtectionPrompt)
     }
 
     fn open_key_info_with_mode(
         &self,
-        target: PrivateKeyTarget,
         key: &dash_sdk::platform::IdentityPublicKey,
         mode: KeyInfoOpenMode,
     ) -> AppAction {
         // Where this key's private half actually is, by the one rule every
-        // "Manage keys" surface uses. The structural target alone would miss
-        // material filed under the purpose-derived convention — a main-identity
-        // voting key entered by hand — and report a key as unheld here while the
-        // identity keys list shows it as saved on this device.
-        let filed_at = key_filed_at(&self.identity, &target, key).unwrap_or(target);
+        // surface uses. A structural target alone would miss material filed under
+        // the retired purpose-derived convention — a main-identity voting key
+        // entered by hand — and report a key as unheld here while the identity
+        // keys list shows it as saved on this device.
         let holding = self
             .identity
             .private_keys
-            .get_cloned_private_key_data_and_wallet_info(&(filed_at.clone(), key.id()));
+            .candidates(key)
+            .next()
+            .and_then(|placement| {
+                self.identity
+                    .private_keys
+                    .get_cloned_private_key_data_and_wallet_info(&placement)
+            });
         let identity = self.identity.clone();
         let key = key.clone();
         let screen = match mode {
@@ -772,12 +775,10 @@ impl MasternodeDetailView {
                 KeyInfoScreen::new_with_protection_prompt(identity, key, holding, &self.app_context)
             }
         };
-        // Hand the resolved location over rather than letting the screen guess.
-        // Left to itself it re-derives the target from the key's purpose, which
-        // disagrees for a key filed on the voter identity whose purpose is not
-        // `VOTING` — it would name the key differently from the row just clicked
-        // and lose the private half on its own re-read.
-        AppAction::AddScreen(Screen::KeyInfoScreen(screen.with_target(filed_at)))
+        // No target is handed over: the screen resolves the placement itself, so
+        // there is nothing for this caller to get wrong or for the `ScreenType`
+        // round trip to drop.
+        AppAction::AddScreen(Screen::KeyInfoScreen(screen))
     }
 
     /// Render the collapsible DPNS voting section (collapsed by default,
@@ -1188,7 +1189,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let owner = IdentityPublicKey::random_key(1, Some(1), pv);
         let mut ks = KeyStorage::default();
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.id()),
             (
                 QualifiedIdentityPublicKey::from(owner),

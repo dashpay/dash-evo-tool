@@ -151,15 +151,13 @@ fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, 
         pv,
     )
     .expect("masternode identity with key");
-    let private_keys = KeyStorage {
-        private_keys: BTreeMap::from([(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
-            (
-                QualifiedIdentityPublicKey::from(key),
-                PrivateKeyData::Clear([byte; 32]),
-            ),
-        )]),
-    };
+    let private_keys = KeyStorage::from(BTreeMap::from([(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear([byte; 32]),
+        ),
+    )]));
     let node_qi = QualifiedIdentity {
         identity,
         associated_voter_identity: None,
@@ -1126,15 +1124,13 @@ fn seed_node_with_non_voting_purpose_voter_key(
         associated_owner_key_id: None,
         identity_type: IdentityType::Masternode,
         alias: Some(alias.to_string()),
-        private_keys: KeyStorage {
-            private_keys: BTreeMap::from([(
-                (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
-                (
-                    QualifiedIdentityPublicKey::from(voter_key),
-                    PrivateKeyData::Clear([byte; 32]),
-                ),
-            )]),
-        },
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voter_key),
+                PrivateKeyData::Clear([byte; 32]),
+            ),
+        )])),
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,
@@ -1265,16 +1261,14 @@ fn seed_node_with_purpose_filed_voting_key(app_context: &Arc<AppContext>, byte: 
         associated_owner_key_id: None,
         identity_type: IdentityType::Masternode,
         alias: Some(alias.to_string()),
-        private_keys: KeyStorage {
-            private_keys: BTreeMap::from([(
-                // Filed by purpose derivation, not structurally.
-                (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voting_key.id()),
-                (
-                    QualifiedIdentityPublicKey::from(voting_key),
-                    PrivateKeyData::Clear([byte; 32]),
-                ),
-            )]),
-        },
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            // Filed by purpose derivation, not structurally.
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voting_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voting_key),
+                PrivateKeyData::Clear([byte; 32]),
+            ),
+        )])),
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,

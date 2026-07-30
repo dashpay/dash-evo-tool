@@ -62,7 +62,7 @@ fn seed_identity(
         associated_owner_key_id: None,
         identity_type: IdentityType::User,
         alias: Some("Home test identity".to_string()),
-        private_keys: KeyStorage { private_keys },
+        private_keys: KeyStorage::from(private_keys),
         dpns_names: vec![],
         associated_wallets: BTreeMap::new(),
         secret_access: None,

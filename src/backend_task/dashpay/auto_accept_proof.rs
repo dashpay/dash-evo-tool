@@ -3,7 +3,6 @@ use crate::model::dashpay_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
@@ -153,10 +152,7 @@ pub async fn generate_auto_accept_proof(
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
     // parked-seed read.
     let wallet_seed = identity
-        .resolve_private_key_bytes(
-            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-            signing_key.id(),
-        )
+        .resolve_private_key_bytes(signing_key)
         .await?
         .map(|(_, private_key)| private_key)
         .ok_or(TaskError::WalletLocked)?;
@@ -296,10 +292,7 @@ pub async fn verify_auto_accept_proof(
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
     // parked-seed read.
     let wallet_seed = our_identity
-        .resolve_private_key_bytes(
-            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-            signing_key.id(),
-        )
+        .resolve_private_key_bytes(signing_key)
         .await
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)

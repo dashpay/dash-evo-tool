@@ -10,6 +10,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyID, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::platform::IdentityPublicKey;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -19,6 +20,54 @@ use zeroize::Zeroizing;
 /// are held in [`Zeroizing`] so they are wiped when the resolver's result is
 /// dropped.
 pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
+
+/// Whether a `stored` public half is the same key as the `live` one, ignoring
+/// only `disabled_at`.
+///
+/// Every field of an `IdentityPublicKey` is immutable once the key is added, with
+/// that single exception: disabling a key rewrites it. The stored copy is a
+/// snapshot taken when the private half was saved, so plain `==` stops matching
+/// as soon as a key is disabled or rotated, and a key this device demonstrably
+/// holds gets reported as missing.
+///
+/// Comparing only the id and the key material would fix that and open a worse
+/// hole the other way. A main identity's voting key and a linked voter identity's
+/// key can carry identical `data` under the same `id`, leaving `purpose` as the
+/// only thing telling them apart — and a lookup that conflates them can hand out,
+/// or delete, material the requested key does not own. So this excludes the one
+/// field that legitimately moves and nothing else.
+pub fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+
+    let IdentityPublicKey::V0(stored) = stored;
+    let IdentityPublicKey::V0(live) = live;
+    // Destructured exhaustively, and without `..`, on purpose: a field added
+    // upstream must break this build rather than be silently ignored. A new field
+    // that distinguishes two keys would otherwise leave this reporting a match
+    // where there is none — which is how one key's private material ends up
+    // attributed to another. Whoever adds it decides here whether it identifies a
+    // key or, like `disabled_at`, only describes its state.
+    let IdentityPublicKeyV0 {
+        id,
+        purpose,
+        security_level,
+        contract_bounds,
+        key_type,
+        read_only,
+        data,
+        // The one field Platform lets move after a key is added: disabling a key
+        // rewrites it, and the stored snapshot predates that.
+        disabled_at: _,
+    } = stored;
+
+    *id == live.id
+        && *purpose == live.purpose
+        && *security_level == live.security_level
+        && *contract_bounds == live.contract_bounds
+        && *key_type == live.key_type
+        && *read_only == live.read_only
+        && *data == live.data
+}
 
 /// A `(target, key_id)` map key paired with the raw 32-byte private key the
 /// migration must store in the vault — see
@@ -198,10 +247,19 @@ impl fmt::Display for PrivateKeyData {
     }
 }
 
+/// Every private half this install holds for one identity, keyed by the store it
+/// is filed under and the key's id.
+///
+/// The map is private on purpose. Which store a key is filed under is not
+/// something a caller should be deriving for itself — that is what produced a
+/// saved key no signing path could find — so reads go through
+/// [`candidates`](Self::candidates), which selects on key material. The
+/// remaining direct accessors exist for callers that legitimately name a
+/// placement: a loader that knows structurally where a key belongs, and legacy
+/// recovery, which is *about* specific stored placements.
 #[derive(Debug, Encode, Decode, Clone, PartialEq, Default)]
 pub struct KeyStorage {
-    pub private_keys:
-        BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
+    private_keys: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
 }
 
 impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>
@@ -413,9 +471,130 @@ impl KeyStorage {
         self.private_keys.contains_key(key)
     }
 
+    /// Every map key whose stored public half *is* `key`, in
+    /// [`PROBE_ORDER`](crate::model::qualified_identity::key_placement::PROBE_ORDER).
+    ///
+    /// This is how a read finds a private half. It probes each store at `key`'s
+    /// own id and keeps only entries [`same_key`] accepts, so it finds the key
+    /// wherever an older build filed it and never returns a different key that
+    /// merely shares the id — the voter and main id spaces overlap, so matching
+    /// on the id alone is what lets a delete land on the wrong key.
+    ///
+    /// Three `BTreeMap` probes, not a scan. Yields more than one entry only when
+    /// the same key is genuinely filed under several stores; a caller that needs
+    /// bytes should take the first that *resolves* rather than the first that
+    /// matches, since a match can name a vault placeholder whose secret is gone
+    /// (see
+    /// [`resolve_private_key_bytes`](crate::model::qualified_identity::QualifiedIdentity::resolve_private_key_bytes)).
+    pub fn candidates<'a>(
+        &'a self,
+        key: &'a IdentityPublicKey,
+    ) -> impl Iterator<Item = (PrivateKeyTarget, KeyID)> + 'a {
+        let key_id = key.id();
+        crate::model::qualified_identity::key_placement::PROBE_ORDER
+            .iter()
+            .filter_map(move |target| {
+                let map_key = (target.clone(), key_id);
+                let (stored, _) = self.private_keys.get(&map_key)?;
+                same_key(&stored.identity_public_key, key).then_some(map_key)
+            })
+    }
+
     /// Returns all stored key identifiers.
     pub fn keys_set(&self) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
         self.private_keys.keys().cloned().collect()
+    }
+
+    /// How many private halves are held.
+    pub fn len(&self) -> usize {
+        self.private_keys.len()
+    }
+
+    /// Whether no private half is held at all.
+    pub fn is_empty(&self) -> bool {
+        self.private_keys.is_empty()
+    }
+
+    /// Every entry, keyed by placement. Target-blind, for callers that need to
+    /// walk the whole store rather than find one key.
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &(PrivateKeyTarget, KeyID),
+            &(QualifiedIdentityPublicKey, PrivateKeyData),
+        ),
+    > {
+        self.private_keys.iter()
+    }
+
+    /// Every stored entry, without its placement. Target-blind, for callers
+    /// asking about the keys themselves rather than where they are filed.
+    pub fn values(&self) -> impl Iterator<Item = &(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.values()
+    }
+
+    /// The stored entry at exactly `key`, if any.
+    ///
+    /// Names a placement directly, so it answers "is *this* slot occupied", not
+    /// "where is this key". Prefer [`candidates`](Self::candidates) for the
+    /// latter: this cannot tell a key from a different one sharing its id.
+    pub fn entry_at(
+        &self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<&(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.get(key)
+    }
+
+    /// Store `value` at exactly `key`, replacing whatever was there.
+    ///
+    /// For callers that know a placement structurally — a loader walking the
+    /// identity list it read a key from, or legacy recovery restoring an entry
+    /// to the placement the old blob recorded. Anything choosing a placement for
+    /// *new* material should take it from
+    /// [`QualifiedIdentity::placement_of`](crate::model::qualified_identity::QualifiedIdentity::placement_of).
+    pub fn insert_at(
+        &mut self,
+        key: (PrivateKeyTarget, KeyID),
+        value: (QualifiedIdentityPublicKey, PrivateKeyData),
+    ) -> Option<(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.insert(key, value)
+    }
+
+    /// Store `value` at `key` only if nothing is there — the merge-preserving
+    /// write. Used when folding a previously-loaded record into a fresh one, so
+    /// a key the new load did not resupply is kept rather than dropped, and one
+    /// it did resupply is not overwritten with the stale copy.
+    pub fn insert_if_absent(
+        &mut self,
+        key: (PrivateKeyTarget, KeyID),
+        value: (QualifiedIdentityPublicKey, PrivateKeyData),
+    ) {
+        self.private_keys.entry(key).or_insert(value);
+    }
+
+    /// Consume the store, yielding every entry with its placement.
+    pub fn into_entries(
+        self,
+    ) -> impl Iterator<
+        Item = (
+            (PrivateKeyTarget, KeyID),
+            (QualifiedIdentityPublicKey, PrivateKeyData),
+        ),
+    > {
+        self.private_keys.into_iter()
+    }
+
+    /// Remove the entry at exactly `key`, returning it if it was there.
+    ///
+    /// Removing *a key* rather than a slot means removing every placement that
+    /// holds it — see [`candidates`](Self::candidates), which selects on key
+    /// material so a removal cannot land on a different key sharing the id.
+    pub fn remove_at(
+        &mut self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.remove(key)
     }
 
     pub fn identity_public_keys(&self) -> Vec<(&PrivateKeyTarget, &QualifiedIdentityPublicKey)> {

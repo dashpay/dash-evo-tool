@@ -1,7 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::model::grovestark_prover::{ProofDataOutput, ProofMetadata, PublicInputsData};
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
@@ -37,8 +37,16 @@ pub async fn run_grovestark_task(
             // read), then derive its ed25519 public key. EDDSA_25519_HASH160
             // stores only the 20-byte hash on Platform, so the verifying key is
             // recovered from the resolved private key rather than read back.
+            //
+            // The key id is resolved to the identity's own published key first,
+            // so a request naming a key this identity does not have fails here
+            // rather than reaching the vault.
+            let signing_key = identity
+                .identity
+                .get_public_key_by_id(key_id)
+                .ok_or(TaskError::WalletKeyLookupFailed)?;
             let (_, private_key) = identity
-                .resolve_private_key_bytes(PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+                .resolve_private_key_bytes(signing_key)
                 .await?
                 .ok_or(TaskError::WalletKeyLookupFailed)?;
 

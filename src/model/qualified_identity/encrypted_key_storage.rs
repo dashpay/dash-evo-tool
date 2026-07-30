@@ -10,6 +10,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyID, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::platform::IdentityPublicKey;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -411,6 +412,36 @@ impl KeyStorage {
 
     pub fn has(&self, key: &(PrivateKeyTarget, KeyID)) -> bool {
         self.private_keys.contains_key(key)
+    }
+
+    /// Every map key whose stored public half *is* `key`, in
+    /// [`PROBE_ORDER`](crate::model::qualified_identity::key_placement::PROBE_ORDER).
+    ///
+    /// This is how a read finds a private half. It probes each store at `key`'s
+    /// own id and keeps only entries whose stored public-key data matches, so it
+    /// finds the key wherever an older build filed it and never returns a
+    /// different key that merely shares the id — the voter and main id spaces
+    /// overlap, so matching on the id alone is what lets a delete land on the
+    /// wrong key.
+    ///
+    /// Three `BTreeMap` probes, not a scan. Yields more than one entry only when
+    /// the same material is genuinely filed under several stores; a caller that
+    /// needs bytes should take the first that *resolves* rather than the first
+    /// that matches, since a match can name a vault placeholder whose secret is
+    /// gone (see
+    /// [`resolve_private_key_bytes`](crate::model::qualified_identity::QualifiedIdentity::resolve_private_key_bytes)).
+    pub fn candidates<'a>(
+        &'a self,
+        key: &'a IdentityPublicKey,
+    ) -> impl Iterator<Item = (PrivateKeyTarget, KeyID)> + 'a {
+        let key_id = key.id();
+        crate::model::qualified_identity::key_placement::PROBE_ORDER
+            .iter()
+            .filter_map(move |target| {
+                let map_key = (target.clone(), key_id);
+                let (stored, _) = self.private_keys.get(&map_key)?;
+                (stored.identity_public_key.data() == key.data()).then_some(map_key)
+            })
     }
 
     /// Returns all stored key identifiers.

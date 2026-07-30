@@ -259,6 +259,8 @@ and the UI rows the screens that consume them.
 | `a_write_behind_the_screen_survives_a_paste` | Key Info screen | the paste is a locked read-modify-write — no concurrent writer's key is written away |
 | `a_write_behind_the_screen_survives_a_removal` | Key Info screen | the removal edits the record as stored now, same lost-update guard |
 | `a_show_request_that_cannot_resolve_speaks_through_the_typed_error` | Key Info screen | Show/Sign failures surface each variant's own remedy |
+| `the_placement_errors_advise_an_action_both_paths_can_perform` | Key Info screen | the placement errors' remedies fit the Show/Sign read path as well as the paste path |
+| `a_held_key_published_on_no_list_still_gets_a_row` | keys list | a held-but-unpublished key is reachable, so the occupied-slot remedy is performable from the add-key flow too |
 | `the_keys_popup_finds_a_main_key_an_older_build_filed_under_voter` | identities list | the Keys popup is placement-blind for main-identity keys |
 | `the_keys_popup_finds_a_voter_key_an_older_build_filed_under_main` | identities list | its voter-list mirror |
 | `removing_a_key_also_removes_its_vault_secret` | vault | §8's second bullet: confirmed RED against the map-only removal, which left the bytes on disk unreachable |

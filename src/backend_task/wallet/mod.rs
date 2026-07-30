@@ -149,12 +149,19 @@ impl AppContext {
         // probe-then-act shape `IdentityKeyView::store` documents, bounded by
         // the same store-level serialization.
         let named = (target, key_id);
-        let view =
-            crate::wallet_backend::IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        let view = crate::wallet_backend::IdentityKeyView::new(
+            backend.secret_store(),
+            identity_id.to_buffer(),
+        );
         let (target, key_id) = std::iter::once(named.clone())
-            .chain(identity.private_keys.candidates(&recorded).filter(|placement| {
-                *placement != named && identity.private_keys.is_in_vault(placement)
-            }))
+            .chain(
+                identity
+                    .private_keys
+                    .candidates(&recorded)
+                    .filter(|placement| {
+                        *placement != named && identity.private_keys.is_in_vault(placement)
+                    }),
+            )
             .find(|(target, key_id)| {
                 matches!(
                     view.scheme(target, *key_id),

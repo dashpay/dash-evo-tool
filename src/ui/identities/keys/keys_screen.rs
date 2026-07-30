@@ -223,13 +223,13 @@ impl KeysScreen {
                 .collect::<Vec<_>>(),
         );
         let unpublished_labels = labels.split_off(keys.len());
-        for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
+        for ((_, key), labelled) in keys.into_iter().zip(labels) {
             // Where this key's private half actually is, whichever store filed
             // it. A presence check rather than a fetch: cloning the entry copies
             // raw key bytes out of the vault unscrubbed, and this runs every
             // frame for every key.
             let held = self.identity.private_keys.candidates(&key).next().is_some();
-            action |= self.key_row(ui, dark_mode, expert, &key, label, tip, held);
+            action |= self.key_row(ui, dark_mode, expert, &key, labelled, held);
         }
 
         if !unpublished.is_empty() {
@@ -239,25 +239,27 @@ impl KeysScreen {
             ui.label(
                 RichText::new(UNPUBLISHED_EXPLAINER).color(DashColors::text_primary(dark_mode)),
             );
-            for ((_, key), (label, tip)) in unpublished.into_iter().zip(unpublished_labels) {
+            for ((_, key), labelled) in unpublished.into_iter().zip(unpublished_labels) {
                 // Held by construction — being held is what put the key here.
-                action |= self.key_row(ui, dark_mode, expert, &key, label, tip, true);
+                action |= self.key_row(ui, dark_mode, expert, &key, labelled, true);
             }
         }
         action
     }
 
     /// One key's row: the way into its page, and its held state in words.
+    /// `labelled` is the key's `manage_keys_labels` entry — its caption and
+    /// optional tooltip.
     fn key_row(
         &self,
         ui: &mut egui::Ui,
         dark_mode: bool,
         expert: bool,
         key: &IdentityPublicKey,
-        label: String,
-        tip: Option<&'static str>,
+        labelled: (String, Option<&'static str>),
         held: bool,
     ) -> AppAction {
+        let (label, tip) = labelled;
         let mut action = AppAction::None;
         let held_text = if held { HELD } else { NOT_HELD };
         ui.add_space(4.0);

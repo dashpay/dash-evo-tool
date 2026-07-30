@@ -19,7 +19,7 @@ use dash_evo_tool::model::qualified_identity::{
 use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::components::legacy_recovery_section::recovery_item_labels;
 use dash_evo_tool::ui::identities::keys::keys_screen::KeysScreen;
-use dash_evo_tool::ui::masternodes::manage_keys_labels;
+use dash_evo_tool::ui::masternodes::{KeyVocabulary, manage_keys_labels};
 use dash_evo_tool::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -34,9 +34,12 @@ use std::rc::Rc;
 
 /// The row control for an authentication key, in the shared role vocabulary.
 const AUTH_ROW: &str = "Authentication key ›";
-/// The row control for a `TRANSFER`-purpose key, which the shared vocabulary
-/// names for its DIP-3 counterpart rather than its Platform purpose.
-const PAYOUT_ROW: &str = "Payout address key ›";
+/// The row control for a `TRANSFER`-purpose key on a **user** identity. The
+/// same key on a masternode is its payout address; here it is how the user
+/// sends funds, and the words follow the identity.
+const TRANSFER_ROW: &str = "Transfer key ›";
+/// The crumb `KeyInfoScreen` shows for the keys list that opened it.
+const PARENT_CRUMB: &str = "Keys";
 /// The row control for a `VOTING`-purpose key.
 const VOTING_ROW: &str = "Voting key ›";
 /// The row control of the recovery offer.
@@ -355,11 +358,15 @@ fn the_offer_and_the_key_list_name_a_key_identically() {
     let owner = key(1, Purpose::OWNER);
     let payout = key(2, Purpose::TRANSFER);
 
-    let list_labels: Vec<String> = manage_keys_labels(&[
-        (PrivateKeyTarget::PrivateKeyOnMainIdentity, voting.clone()),
-        (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.clone()),
-        (PrivateKeyTarget::PrivateKeyOnMainIdentity, payout.clone()),
-    ])
+    let node = KeyVocabulary::Masternode;
+    let list_labels: Vec<String> = manage_keys_labels(
+        node,
+        &[
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, voting.clone()),
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.clone()),
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, payout.clone()),
+        ],
+    )
     .into_iter()
     .map(|(label, _)| label)
     .collect();
@@ -378,10 +385,11 @@ fn the_offer_and_the_key_list_name_a_key_identically() {
         purpose: Some(purpose),
     })
     .collect();
-    let offer_labels: Vec<String> = recovery_item_labels(&descriptors.iter().collect::<Vec<_>>())
-        .into_iter()
-        .map(|(label, _)| label)
-        .collect();
+    let offer_labels: Vec<String> =
+        recovery_item_labels(node, &descriptors.iter().collect::<Vec<_>>())
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
 
     assert_eq!(
         list_labels, offer_labels,
@@ -398,8 +406,9 @@ fn the_offer_and_the_key_list_name_a_key_identically() {
     );
 }
 
-/// Clicking Back on the keys list pops it off the screen stack, closing the
-/// dead-end lockout.
+/// Clicking Back on the keys list pops it off the screen stack — and refreshes
+/// what it reveals, since anything the user did above it may have changed the
+/// record underneath.
 #[test]
 fn manage_keys_back_button_pops_the_screen() {
     with_isolated_data_dir(|| {
@@ -417,8 +426,8 @@ fn manage_keys_back_button_pops_the_screen() {
 
         assert_eq!(
             *action.borrow(),
-            AppAction::PopScreen,
-            "clicking Back must pop the keys list off the stack"
+            AppAction::PopScreenAndRefresh,
+            "clicking Back must pop the keys list and refresh the screen it reveals"
         );
     });
 }
@@ -447,8 +456,12 @@ fn every_key_opens_key_info_even_when_the_device_holds_none() {
             "an authentication key must render a row control named in role words"
         );
         assert!(
-            harness.query_by_label(PAYOUT_ROW).is_some(),
-            "a transfer-purpose key must be named for its payout role"
+            harness.query_by_label(TRANSFER_ROW).is_some(),
+            "a user identity's transfer key must be named in plain language"
+        );
+        assert!(
+            harness.query_by_label("Payout address key ›").is_none(),
+            "and must not be given a masternode's payout-address framing"
         );
 
         harness.get_by_label(AUTH_ROW).click();
@@ -595,7 +608,7 @@ fn an_identity_with_no_keys_shows_an_empty_state() {
 
         assert!(
             harness
-                .query_by_label("No keys are listed for this identity yet.")
+                .query_by_label("No keys were found for this identity.")
                 .is_some(),
             "an empty key list must say what the user is looking at"
         );
@@ -778,6 +791,114 @@ fn raw_key_detail_is_expert_only() {
         assert!(
             expert.query_by_label_contains("AUTHENTICATION").is_some(),
             "the Expert view must show the raw purpose it was promised"
+        );
+    });
+}
+
+/// The return journey. Every other test in this suite walks *into* Key Info;
+/// this one comes back, which is where the stale-offer bug lives.
+///
+/// A restore dispatched from the pushed Key Info screen writes the record behind
+/// this screen's back. Coming back with only the record re-read shows the keys
+/// as held while still offering to restore them — and pressing Restore then
+/// reports there was nothing left to do. Both halves have to be re-read on the
+/// way back, which is what makes `refresh` the arrival hook that has to do both.
+#[test]
+fn returning_from_key_info_refreshes_both_the_keys_and_the_offer() {
+    use dash_evo_tool::ui::RootScreenType;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        harness.set_size(egui::vec2(1280.0, 1800.0));
+        let app_context = harness.state().current_app_context().clone();
+        let identity = stranded_identity(0x40, &[Purpose::AUTHENTICATION], "return-journey");
+        let identity_id = identity.identity.id();
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("seed the identity");
+        harness.run_steps(5);
+
+        harness
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Settings")
+            .find(|node| node.accesskit_node().toggled().is_none())
+            .expect("the hub must render a Settings tab")
+            .click();
+        harness.run_steps(3);
+        harness.get_by_label("Advanced").click();
+        harness.run_steps(3);
+        harness.get_by_label("Manage keys").click();
+        harness.run_steps(3);
+
+        // An offer is on the list, and the key is not held yet.
+        match harness.state_mut().visible_screen_mut() {
+            Screen::KeysScreen(screen) => {
+                screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCandidates {
+                    identity_id,
+                    plan: plan(),
+                });
+            }
+            _ => panic!("the keys list must be the visible screen"),
+        }
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label(RESTORE).is_some(),
+            "the premise: the list is offering to restore this identity's keys"
+        );
+
+        // Into Key Info, and restore from there.
+        harness.get_by_label(AUTH_ROW).click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::KeyInfoScreen(_))
+            ),
+            "the row must open Key Info"
+        );
+        // The restore lands: the key is now held, and nothing is left stranded.
+        let restored = identity_holding_key(
+            0x40,
+            Purpose::AUTHENTICATION,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        );
+        app_context
+            .update_local_qualified_identity(&restored)
+            .expect("the restore writes the record");
+        match harness.state_mut().visible_screen_mut() {
+            Screen::KeyInfoScreen(screen) => {
+                screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+                    identity_id,
+                    applied: plan().items,
+                    skipped_stale: vec![],
+                    excluded: vec![],
+                });
+            }
+            _ => panic!("Key Info must be the visible screen"),
+        }
+        harness.run_steps(3);
+
+        // Back to the list, via the breadcrumb crumb naming the screen it was
+        // opened from. Key Info has no Back control of its own.
+        harness.get_by_label(PARENT_CRUMB).click();
+        harness.run_steps(5);
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::KeysScreen(_))
+            ),
+            "Back must return to the keys list"
+        );
+
+        assert!(
+            harness.query_by_label(HELD).is_some(),
+            "the list must show the restored key as held"
+        );
+        assert!(
+            harness.query_by_label(RESTORE).is_none(),
+            "and must not still offer to restore a key it just reported as held"
         );
     });
 }

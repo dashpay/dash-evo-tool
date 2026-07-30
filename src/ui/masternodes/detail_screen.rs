@@ -41,7 +41,7 @@ use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
-use crate::ui::masternodes::{identity_keys, key_status_tokens, manage_keys_labels};
+use crate::ui::masternodes::{KeyVocabulary, identity_keys, key_status_tokens, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -637,7 +637,8 @@ impl MasternodeDetailView {
                 .color(DashColors::text_primary(dark_mode)),
         );
         let keys = identity_keys(&self.identity);
-        let labels = manage_keys_labels(&keys);
+        // This page only ever shows masternode and evonode identities.
+        let labels = manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
         for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
             let button = ui.button(format!("{label} ›"));
             let button = match tip {

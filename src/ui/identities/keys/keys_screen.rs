@@ -11,7 +11,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -20,15 +20,19 @@ use crate::ui::components::legacy_recovery_section::{LegacyRecoverySection, comp
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::masternodes::{identity_keys, manage_keys_labels};
+use crate::ui::masternodes::{KeyVocabulary, identity_keys, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, RichText, ScrollArea};
 use std::sync::Arc;
+
+/// The crumb this screen contributes to a pushed Key Info screen's breadcrumb.
+const PARENT_CRUMB: &str = "Keys";
 
 /// Shown for a key whose private half this install holds.
 const HELD: &str = "This key is saved on this device.";
@@ -49,13 +53,19 @@ pub struct KeysScreen {
 }
 
 impl ScreenLike for KeysScreen {
+    /// Re-read the record *and* re-arm detection.
+    ///
+    /// Both, or the offer goes stale: a restore run from the Key Info screen
+    /// pushed on top of this one writes the record behind this screen's back, so
+    /// returning to it with only `reload_identity` shows the restored keys as
+    /// held while still offering to restore them — and pressing Restore then
+    /// reports there was nothing left to do. Re-arming is cheap and self-guards
+    /// on an install with nothing to read.
+    ///
+    /// This is the only arrival hook that runs: the framework dispatches
+    /// `refresh_on_arrival` for root screens, and `refresh` for the screen a
+    /// `PopScreenAndRefresh` reveals — which is what this screen is.
     fn refresh(&mut self) {
-        self.reload_identity();
-    }
-
-    /// Re-read the record and re-arm detection, because a restore run from
-    /// another screen may have landed while this one sat in the stack.
-    fn refresh_on_arrival(&mut self) {
         self.reload_identity();
         self.recovery.completed();
     }
@@ -125,7 +135,7 @@ impl ScreenLike for KeysScreen {
                     .clickable_tooltip("Return to the identity you came from.")
                     .clicked()
                 {
-                    inner_action |= AppAction::PopScreen;
+                    inner_action |= AppAction::PopScreenAndRefresh;
                 }
                 ui.heading(
                     RichText::new("Identity Keys").color(DashColors::text_primary(dark_mode)),
@@ -206,11 +216,11 @@ impl KeysScreen {
 
         if keys.is_empty() {
             ui.add_space(8.0);
-            // Not "no keys saved on this device": that phrase means held=false
-            // in this screen's own per-key vocabulary, and an empty record is a
-            // different statement about a different thing.
+            // Not "no keys saved on this device": these rows come from the
+            // identity's on-chain public keys, and that phrase means held=false
+            // per-row on this same screen — a different statement entirely.
             ui.label(
-                RichText::new("No keys are listed for this identity yet.")
+                RichText::new("No keys were found for this identity.")
                     .color(DashColors::text_primary(dark_mode)),
             );
             ui.label(
@@ -222,17 +232,11 @@ impl KeysScreen {
         }
 
         let expert = self.app_context.user_role().at_least(UserRole::Power);
-        let labels = manage_keys_labels(&keys);
+        let vocabulary = KeyVocabulary::from(self.identity.identity_type);
+        let labels = manage_keys_labels(vocabulary, &keys);
         for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
-            let entry = (target.clone(), key.id());
-            // A presence check, not a read: cloning the entry copies the raw
-            // private key out of the vault, unscrubbed, and this renders every
-            // frame for every key — to answer whether the key is there at all.
-            let held = if self.identity.private_keys.has(&entry) {
-                HELD
-            } else {
-                NOT_HELD
-            };
+            let filed_at = self.filed_at(&target, key.id());
+            let held = if filed_at.is_some() { HELD } else { NOT_HELD };
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let button =
@@ -242,10 +246,14 @@ impl KeysScreen {
                     None => button,
                 };
                 if button.clicked() {
+                    let opened_at = filed_at.clone().unwrap_or_else(|| target.clone());
                     let holding = self
                         .identity
                         .private_keys
-                        .get_cloned_private_key_data_and_wallet_info(&entry);
+                        .get_cloned_private_key_data_and_wallet_info(&(
+                            opened_at.clone(),
+                            key.id(),
+                        ));
                     action |= AppAction::AddScreen(Screen::KeyInfoScreen(
                         KeyInfoScreen::new(
                             self.identity.clone(),
@@ -253,11 +261,10 @@ impl KeysScreen {
                             holding,
                             &self.app_context,
                         )
-                        // The target travels with the key: this screen resolved
-                        // it from the identity it walked, and deriving it again
-                        // from the purpose loses a voting key filed on the main
-                        // identity.
-                        .with_target(target.clone()),
+                        // Where the material actually is, so the screen's own
+                        // re-read finds the same key this row just reported.
+                        .with_target(opened_at)
+                        .with_parent(PARENT_CRUMB),
                     ));
                 }
                 ui.label(RichText::new(held).color(DashColors::text_secondary(dark_mode)));
@@ -267,6 +274,30 @@ impl KeysScreen {
             }
         }
         action
+    }
+
+    /// Which store this key's private half is actually in, or `None`.
+    ///
+    /// Checks the structural target first, then the purpose-derived one, because
+    /// both conventions are in use and real installs hold material written under
+    /// each. This is a read: looking in the second place can only find material
+    /// that is already there, so it corrects a false "not saved on this device"
+    /// without moving anything. Reconciling the two conventions is a migration,
+    /// tracked separately.
+    ///
+    /// A presence check per candidate, not a fetch: cloning the entry copies the
+    /// raw private key out of the vault unscrubbed, and this runs every frame for
+    /// every key.
+    fn filed_at(&self, structural: &PrivateKeyTarget, key_id: KeyID) -> Option<PrivateKeyTarget> {
+        let derived: PrivateKeyTarget = self
+            .identity
+            .identity
+            .public_keys()
+            .get(&key_id)
+            .map_or_else(|| structural.clone(), |key| key.purpose().into());
+        [structural.clone(), derived]
+            .into_iter()
+            .find(|candidate| self.identity.private_keys.has(&(candidate.clone(), key_id)))
     }
 
     /// The on-chain specifics of one key, for the Expert view. Everyday view
@@ -301,6 +332,7 @@ impl KeysScreen {
         // approved set has to be cloned out before the response is dropped.
         if let Some(approved) = LegacyRecoverySection::new(plan)
             .restoring(restoring)
+            .vocabulary(KeyVocabulary::from(self.identity.identity_type))
             .show(ui)
             .inner
             .changed_value()

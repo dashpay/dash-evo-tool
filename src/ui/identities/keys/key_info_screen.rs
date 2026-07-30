@@ -115,6 +115,8 @@ pub struct KeyInfoScreen {
     /// Which of the identity's key stores this key is filed under, when the
     /// caller knew. See [`Self::target`] for why that beats deriving it.
     target: Option<PrivateKeyTarget>,
+    /// The screen this key was opened from, for the breadcrumb back to it.
+    parent: Option<&'static str>,
 }
 
 /// At-rest protection posture of an identity's vault-stored keys.
@@ -275,15 +277,7 @@ impl ScreenLike for KeyInfoScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
-        let mut action = add_top_panel(
-            ui,
-            &self.app_context,
-            vec![
-                ("Identities", AppAction::GoToMainScreen),
-                ("Key Info", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action = add_top_panel(ui, &self.app_context, self.breadcrumb(), vec![]);
 
         action |= add_left_panel(
             ui,
@@ -869,6 +863,35 @@ impl KeyInfoScreen {
             recovery,
             pending_recovery_restore: None,
             target: None,
+            parent: None,
+        }
+    }
+
+    /// Name the screen this key was opened from, so the breadcrumb can lead back
+    /// to it.
+    ///
+    /// Unset leaves the two-level `Identities > Key Info` trail every other
+    /// caller has: the screen has nine parents, and naming one of them for all
+    /// of them would simply mislabel the other eight.
+    pub fn with_parent(mut self, label: &'static str) -> Self {
+        self.parent = Some(label);
+        self
+    }
+
+    /// The breadcrumb trail, with the parent screen in it when the caller named
+    /// one. The parent crumb pops back rather than clearing the stack, so the
+    /// screen underneath is the one the user actually came from.
+    fn breadcrumb(&self) -> Vec<(&'static str, AppAction)> {
+        match self.parent {
+            Some(parent) => vec![
+                ("Identities", AppAction::GoToMainScreen),
+                (parent, AppAction::PopScreenAndRefresh),
+                ("Key Info", AppAction::None),
+            ],
+            None => vec![
+                ("Identities", AppAction::GoToMainScreen),
+                ("Key Info", AppAction::None),
+            ],
         }
     }
 
@@ -884,8 +907,14 @@ impl KeyInfoScreen {
         self
     }
 
-    /// The key store this key is filed under: what the caller resolved, else
-    /// derived from the key's purpose.
+    /// The key store this key is filed under, for **reads**: what the caller
+    /// resolved, else derived from the key's purpose.
+    ///
+    /// Reads only, and deliberately. Looking somewhere else can only find
+    /// material that is already there, so it is safe today; *writing* somewhere
+    /// else would put material where `QualifiedIdentity::sign` never looks. The
+    /// write and remove paths therefore keep the derived target until every
+    /// reader is migrated together.
     ///
     /// The derivation is lossy and cannot be made otherwise:
     /// `impl From<Purpose> for PrivateKeyTarget` sends every `Purpose::VOTING`
@@ -1022,8 +1051,13 @@ impl KeyInfoScreen {
         } else if validation_result.expect("invariant: Err handled in the preceding branch") {
             // If valid, store the private key in the context and reset the input field
             self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
+            // Deliberately the purpose-derived target, not `self.target()`:
+            // `QualifiedIdentity::sign` and `can_sign_with` look the key up that
+            // way, so material stored anywhere else is material that can never
+            // sign. Writing the resolved target instead needs every reader
+            // migrated with it — see the reconciliation TODO.
             self.identity.private_keys.insert_non_encrypted(
-                (self.target(), self.key.id()),
+                (self.key.purpose().into(), self.key.id()),
                 (self.key.clone().into(), private_key_bytes),
             );
             if let Err(error) = self
@@ -1224,10 +1258,16 @@ impl KeyInfoScreen {
                 self.remove_private_key_dialog = None;
                 if result == ConfirmationStatus::Confirmed {
                     self.private_key_data = None;
+                    // The purpose-derived target for the same reason as the
+                    // write above: this has to remove the entry the rest of the
+                    // app would have used. That it can therefore remove a
+                    // different key's material, when a voter identity carries
+                    // the same key id, is the known residual of the split
+                    // conventions — the reconciliation TODO owns it.
                     self.identity
                         .private_keys
                         .private_keys
-                        .remove(&(self.target(), self.key.id()));
+                        .remove(&(self.key.purpose().into(), self.key.id()));
                     if let Err(error) = self
                         .app_context
                         .update_local_qualified_identity(&self.identity)

@@ -14,7 +14,7 @@ use crate::model::legacy_recovery::{
     ExclusionReason, RecoveryItem, RecoveryItemDescriptor, RecoveryPlan,
 };
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::masternodes::{disambiguate_role_labels, role_label_and_tip};
+use crate::ui::masternodes::{KeyVocabulary, disambiguate_role_labels, role_label_and_tip};
 use crate::ui::theme::DashColors;
 
 /// Section lead-in. Avoids "migration", "blob" and "vault" — the user knows
@@ -95,6 +95,7 @@ pub fn exclusion_explanation(reason: ExclusionReason) -> &'static str {
 /// item is named here exactly as the "Manage keys" list names the same key, and
 /// two rows that would otherwise read alike are told apart by their key id.
 pub fn recovery_item_labels(
+    vocabulary: KeyVocabulary,
     items: &[&RecoveryItemDescriptor],
 ) -> Vec<(String, Option<&'static str>)> {
     let mut labels: Vec<(String, Option<&'static str>)> = items
@@ -102,6 +103,7 @@ pub fn recovery_item_labels(
         .map(|item| match &item.item {
             RecoveryItem::Key { .. } => {
                 let (role, tip) = role_label_and_tip(
+                    vocabulary,
                     item.is_on_voter_identity(),
                     item.purpose.unwrap_or(Purpose::AUTHENTICATION),
                 );
@@ -155,6 +157,7 @@ impl ComponentResponse for LegacyRecoverySectionResponse {
 pub struct LegacyRecoverySection<'a> {
     plan: &'a RecoveryPlan,
     restoring: bool,
+    vocabulary: KeyVocabulary,
 }
 
 impl<'a> LegacyRecoverySection<'a> {
@@ -163,7 +166,19 @@ impl<'a> LegacyRecoverySection<'a> {
         Self {
             plan,
             restoring: false,
+            vocabulary: KeyVocabulary::Masternode,
         }
+    }
+
+    /// Name the keys in the vocabulary of the identity they belong to.
+    ///
+    /// Defaults to the masternode wording, which is where this offer first
+    /// appeared. A user identity must set this: naming its transfer key a
+    /// "payout address key" asserts it owns a masternode, and it would also
+    /// disagree with the keys list rendered directly below the offer.
+    pub fn vocabulary(mut self, vocabulary: KeyVocabulary) -> Self {
+        self.vocabulary = vocabulary;
+        self
     }
 
     /// Replace the button with a progress line while a restore is in flight,
@@ -196,7 +211,7 @@ impl Component for LegacyRecoverySection<'_> {
                 ui.label(RichText::new(intro).color(DashColors::warning_color(dark_mode)));
 
                 let previewed = self.plan.preview_items();
-                for (label, tip) in recovery_item_labels(&previewed) {
+                for (label, tip) in recovery_item_labels(self.vocabulary, &previewed) {
                     ui.horizontal(|ui| {
                         ui.add_space(12.0);
                         let row = ui
@@ -238,8 +253,9 @@ impl Component for LegacyRecoverySection<'_> {
                     let excluded: Vec<&RecoveryItemDescriptor> =
                         self.plan.excluded.iter().map(|(item, _)| item).collect();
                     let reasons = self.plan.excluded.iter().map(|(_, reason)| *reason);
-                    for ((label, _), reason) in
-                        recovery_item_labels(&excluded).into_iter().zip(reasons)
+                    for ((label, _), reason) in recovery_item_labels(self.vocabulary, &excluded)
+                        .into_iter()
+                        .zip(reasons)
                     {
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);

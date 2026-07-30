@@ -96,7 +96,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   at all. The offer to restore keys left behind by an earlier version now also
   appears on the keys list itself, above the keys, rather than only inside a
   key's page. Each key is named by its role and states whether it is saved on
-  this device.
+  this device. Keys are named for the identity they belong to: a user identity's
+  keys are described in plain language rather than in masternode registration
+  terms, which previously appeared on every identity. Leaving a key returns to
+  the list with both its keys and the restore offer brought up to date, so a
+  restore made from a key's page is reflected immediately instead of being
+  offered again.
+
+  One known limitation, for a voting key held against an identity directly rather
+  than against a separate voting identity: the list and the key's page now agree
+  on whether such a key is saved here, but *saving or removing* one by hand still
+  uses the older of the two places the app has recorded these keys, and removing
+  it can affect a key of the same number held on a linked voting identity.
+  Reconciling the two locations is tracked separately.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

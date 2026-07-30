@@ -104,7 +104,15 @@ pub(crate) fn append_concurrent_backend_tasks(
             tasks.append(&mut pending_tasks);
             AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
         }
-        other => other,
+        // Callers must gate on `can_append_concurrent_backend_tasks`; anything
+        // else cannot carry a batch, and the pending tasks are dropped.
+        other => {
+            tracing::warn!(
+                dropped_tasks = pending_tasks.len(),
+                "concurrent backend tasks were dropped: the frame action cannot carry a task batch"
+            );
+            other
+        }
     }
 }
 

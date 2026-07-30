@@ -35,7 +35,9 @@ use super::{
 // cannot reuse the real path's source.
 // TODO(upstream): export that default or expose an asset-lock ceiling quote primitive.
 const ASSET_LOCK_FEE_PER_KB: u64 = 1_000;
-/// Bounds how long the quote search may retain exclusive wallet access.
+/// Budget for the probe's builder work — composition observation plus quote
+/// search — measured from when the blocking task starts running, so total
+/// exclusive wallet access is bounded by this plus setup overhead.
 const ASSET_LOCK_PROBE_LOCK_HOLD_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_DRAIN_SEARCH_DOUBLINGS: u32 = 40;
 const P2PKH_CREDIT_OUTPUT_SCRIPT_LEN: usize = 25;
@@ -64,28 +66,27 @@ pub struct AssetLockMaxAmountQuote {
     pub is_partial: bool,
 }
 
-struct ProbeDeadline {
+pub(super) struct ProbeDeadline {
     expires_at: Option<Instant>,
     timed_out: std::cell::Cell<bool>,
 }
 
 impl ProbeDeadline {
-    fn after(duration: Duration) -> Self {
+    pub(super) fn after(duration: Duration) -> Self {
         Self {
             expires_at: Instant::now().checked_add(duration),
             timed_out: std::cell::Cell::new(false),
         }
     }
 
-    #[cfg(test)]
-    fn unbounded() -> Self {
+    pub(super) fn unbounded() -> Self {
         Self {
             expires_at: None,
             timed_out: std::cell::Cell::new(false),
         }
     }
 
-    fn expired(&self) -> bool {
+    pub(super) fn expired(&self) -> bool {
         let expired = self
             .expires_at
             .is_some_and(|expires_at| Instant::now() >= expires_at);
@@ -553,7 +554,6 @@ impl WalletBackend {
         // Every dry run performs one reservation read→reserve→release cycle.
         // Keep them all under the same exclusive boundary as real builds.
         let wallet_manager = Arc::clone(wallet.wallet_manager()).write_owned().await;
-        let deadline = ProbeDeadline::after(timeout);
         let (managed_account, account, current_height) = {
             let (key_wallet, info) = wallet_manager
                 .get_wallet_and_info(&wallet_id)
@@ -574,8 +574,28 @@ impl WalletBackend {
         };
 
         tokio::task::spawn_blocking(move || {
-            let observed_inputs =
-                asset_lock_final_input_state(&managed_account, &account, current_height)?;
+            // Started here — not on the async side — so blocking-pool queueing
+            // delay is not charged against the builder-work budget.
+            let deadline = ProbeDeadline::after(timeout);
+            let Some(observed_inputs) = asset_lock_final_input_state(
+                &managed_account,
+                &account,
+                current_height,
+                &deadline,
+            )?
+            else {
+                // The budget ran out before the composition was fully
+                // observed: return the provably-safe empty quote instead of
+                // continuing to hold the wallet-manager lock. The default
+                // (empty) key only matches a genuinely-empty composition, so
+                // validation stays fail-closed.
+                drop(wallet_manager);
+                return Ok(AssetLockMaxAmountQuote {
+                    amount_duffs: 0,
+                    observed_inputs: AssetLockInputState::default(),
+                    is_partial: true,
+                });
+            };
             let amount_duffs = asset_lock_max_amount_from_account_until(
                 &managed_account,
                 &account,
@@ -1259,5 +1279,111 @@ mod tests {
         )
         .await
         .expect("the expired probe must release its exclusive lock");
+    }
+
+    /// Companion to the search-phase deadline test above: the UTXO-composition
+    /// observation that runs before the search must obey the same budget, so a
+    /// wallet with many eligible UTXOs cannot hold the process-global
+    /// wallet-manager write lock through unbounded builder batches.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn asset_lock_probe_deadline_bounds_the_observation_phase() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::wallet_backend::AssetLockInputState;
+        use std::time::Duration;
+
+        // Two observation batches' worth of eligible UTXOs.
+        const UTXO_COUNT: u32 = 501;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(16);
+        app_context
+            .ensure_wallet_backend(SenderAsync::new(sender, app_context.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = app_context.wallet_backend().expect("wired backend");
+
+        let seed = [0x44; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("Observation deadline test".to_string()),
+            None,
+        )
+        .expect("DET wallet");
+        let seed_hash = wallet.seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet");
+        let platform_wallet = backend
+            .resolve_wallet(&seed_hash)
+            .await
+            .expect("platform wallet");
+        let wallet_id = platform_wallet.wallet_id();
+
+        {
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let account = manager
+                .get_wallet_and_info(&wallet_id)
+                .and_then(|(key_wallet, _)| key_wallet.get_bip44_account(0))
+                .expect("BIP44 account")
+                .clone();
+            let info = manager
+                .get_wallet_info_mut(&wallet_id)
+                .expect("wallet info");
+            info.core_wallet.update_last_processed_height(200);
+            let managed_account = info
+                .core_wallet
+                .accounts
+                .standard_bip44_accounts
+                .get_mut(&0)
+                .expect("managed account");
+            let funding_address = managed_account
+                .next_receive_address(Some(&account.account_xpub), true)
+                .expect("funding address");
+            for index in 0..UTXO_COUNT {
+                let outpoint = OutPoint::new(Txid::from_byte_array([index as u8; 32]), index);
+                let mut utxo = Utxo::new(
+                    outpoint,
+                    TxOut {
+                        value: 100_000,
+                        script_pubkey: funding_address.script_pubkey(),
+                    },
+                    funding_address.clone(),
+                    100,
+                    false,
+                );
+                utxo.is_confirmed = true;
+                managed_account.utxos.insert(outpoint, utxo);
+            }
+        }
+
+        let quote = backend
+            .asset_lock_max_amount_with_timeout(&seed_hash, Duration::ZERO)
+            .await
+            .expect("an exhausted budget still returns a conservative quote");
+        assert!(
+            quote.is_partial,
+            "an observation stopped by the deadline must be tagged as partial"
+        );
+        assert_eq!(
+            quote.amount_duffs, 0,
+            "no amount was proven buildable within the budget"
+        );
+        assert_eq!(
+            quote.observed_inputs,
+            AssetLockInputState::default(),
+            "an expired budget must abort the observation instead of running builder batches"
+        );
+
+        let _write_guard = tokio::time::timeout(
+            Duration::from_secs(1),
+            platform_wallet.wallet_manager().write(),
+        )
+        .await
+        .expect("the expired observation must release its exclusive lock");
     }
 }

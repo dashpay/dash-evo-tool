@@ -99,7 +99,7 @@ impl TopUpIdentityScreen {
             return action;
         };
         let failed = self.asset_lock_balance.is_failed(&seed_hash);
-        let loading = self.asset_lock_balance.get(&seed_hash).is_none();
+        let loading = self.asset_lock_quote_is_loading(&seed_hash);
         if failed || loading {
             ui.label(if failed {
                 "The available amount could not be checked."

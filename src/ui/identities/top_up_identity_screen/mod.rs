@@ -161,25 +161,19 @@ impl TopUpIdentityScreen {
             .is_none_or(|ceiling| spendable_covers_minimum(ceiling, minimum))
     }
 
-    /// Builder ceiling available to the selected funding method.
-    fn available_ceiling_duffs(&self, funding_method: FundingMethod) -> Option<u64> {
-        let wallet_ceiling_duffs = self
-            .wallet
-            .as_ref()
-            .and_then(|wallet| wallet.read().ok())
-            .and_then(|wallet| self.asset_lock_balance.get(&wallet.seed_hash()))?;
-
-        match funding_method {
-            FundingMethod::UseWalletBalance => Some(wallet_ceiling_duffs),
-            FundingMethod::ReceiveDeposit => Some(receive_deposit_ceiling_duffs(
-                wallet_ceiling_duffs,
-                self.funding_address_balance_duffs,
-            )),
-            _ => None,
-        }
+    /// Whether the builder ceiling for the wallet's current spendable inputs
+    /// is still being checked (no quote yet, or the quote predates an input
+    /// change and is being revalidated).
+    fn asset_lock_quote_is_loading(&self, seed_hash: &WalletSeedHash) -> bool {
+        let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(seed_hash);
+        self.asset_lock_balance
+            .get_current(seed_hash, &input_state)
+            .is_none()
     }
 
-    /// Builder ceiling for dispatch, only when it matches current wallet inputs.
+    /// Builder ceiling for Max and dispatch validation — one accessor for
+    /// both, valid only while the quote matches current wallet inputs, so Max
+    /// can never offer an amount validation would refuse.
     fn current_validation_ceiling_duffs(&self, funding_method: FundingMethod) -> Option<u64> {
         let seed_hash = self
             .wallet
@@ -585,7 +579,7 @@ impl TopUpIdentityScreen {
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = self.current_funding_method();
-        let available_ceiling_duffs = self.available_ceiling_duffs(funding_method);
+        let available_ceiling_duffs = self.current_validation_ceiling_duffs(funding_method);
 
         let (max_amount, show_max_button, fee_hint) =
             if let Some(available_ceiling_duffs) = available_ceiling_duffs {

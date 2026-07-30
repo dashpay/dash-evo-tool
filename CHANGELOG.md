@@ -101,8 +101,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   could suggest an amount larger than the wallet could actually send, so the
   transaction was rejected no matter how you adjusted it. Max and the amount
   check now ask the wallet directly what it can send instead of estimating from
-  an on-screen balance, so the two stay in agreement, and both reserve room for
-  the fee. The Advanced manual-input Platform-address flow remains governed by
+  an on-screen balance, and both reserve room for the fee. The two derive from
+  the same wallet answer: if your spendable funds change after that answer,
+  Max steps back to "Checking the available amount…" and the amount check
+  waits for a fresh answer instead of accepting an outdated ceiling. The
+  Advanced manual-input Platform-address flow remains governed by
   the Core inputs the user selects rather than this builder ceiling. Funding
   from a received deposit is also now capped by what actually arrived at that
   deposit address, never by unrelated funds elsewhere in the wallet. While the

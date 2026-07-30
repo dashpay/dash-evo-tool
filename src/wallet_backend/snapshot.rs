@@ -57,6 +57,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
 
+use super::payments::ProbeDeadline;
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
 use crate::model::wallet::{TransactionStatus, WalletSeedHash, WalletTransaction};
@@ -237,7 +238,8 @@ fn observe_asset_lock_inputs_locked(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
     current_height: u32,
-) -> Result<AssetLockInputState, BuilderError> {
+    deadline: &ProbeDeadline,
+) -> Result<Option<AssetLockInputState>, BuilderError> {
     let candidates: Vec<_> = managed_account
         .utxos
         .values()
@@ -251,9 +253,14 @@ fn observe_asset_lock_inputs_locked(
         .map(|utxo| (utxo.outpoint, utxo.value()))
         .collect();
     let mut observed = Vec::with_capacity(candidates.len());
+    // One account clone reused across batches: only `.utxos` varies per batch,
+    // and the live `ReservationSet` is `Arc`-shared by the clone anyway.
+    let mut dry_run_account = managed_account.clone();
 
     for batch in candidates.chunks(ASSET_LOCK_INPUT_OBSERVATION_BATCH_SIZE) {
-        let mut dry_run_account = managed_account.clone();
+        if deadline.expired() {
+            return Ok(None);
+        }
         dry_run_account.utxos = batch
             .iter()
             .cloned()
@@ -286,29 +293,36 @@ fn observe_asset_lock_inputs_locked(
         }
     }
 
-    Ok(AssetLockInputState::from_inputs(observed))
+    Ok(Some(AssetLockInputState::from_inputs(observed)))
 }
 
+/// Observe the exact final, unreserved input composition under the global
+/// observation lock. `Ok(None)` means the deadline expired before the whole
+/// composition was observed — a truncated set must never be used as a key.
 pub(super) fn asset_lock_final_input_state(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
     current_height: u32,
-) -> Result<AssetLockInputState, BuilderError> {
+    deadline: &ProbeDeadline,
+) -> Result<Option<AssetLockInputState>, BuilderError> {
     let _observation_guard = ASSET_LOCK_INPUT_OBSERVATION_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    observe_asset_lock_inputs_locked(managed_account, account, current_height)
+    observe_asset_lock_inputs_locked(managed_account, account, current_height, deadline)
 }
 
+/// Like [`asset_lock_final_input_state`], but `Ok(None)` also covers losing
+/// the observation try-lock, so the per-event recompute path never blocks.
 fn try_asset_lock_final_input_state(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
     current_height: u32,
+    deadline: &ProbeDeadline,
 ) -> Result<Option<AssetLockInputState>, BuilderError> {
     let Ok(_observation_guard) = ASSET_LOCK_INPUT_OBSERVATION_LOCK.try_lock() else {
         return Ok(None);
     };
-    observe_asset_lock_inputs_locked(managed_account, account, current_height).map(Some)
+    observe_asset_lock_inputs_locked(managed_account, account, current_height, deadline)
 }
 
 /// Map a finalized-or-pending upstream `TransactionContext` to DET's richer
@@ -763,7 +777,8 @@ impl SnapshotStore {
     /// Never blocks and never awaits: `try_state()` is a non-blocking try-lock
     /// that yields `None` under contention, in which case the *entire* prior
     /// snapshot is carried forward and a subsequent event recomputes once the
-    /// lock is free.
+    /// lock is free. Contention on the asset-lock observation alone carries
+    /// forward only the composition field — never the fresh balance/UTXOs.
     ///
     /// # Balance / breakdown consistency
     ///
@@ -800,7 +815,7 @@ impl SnapshotStore {
         // entire prior snapshot forward — balance included — so every field of
         // the published snapshot reflects one consistency point.
         let state = match wallet.try_state() {
-            Some(state) => (|| {
+            Some(state) => {
                 let core_balance = state.balance();
                 let current_height = state.last_processed_height();
                 let balance = DetWalletBalance {
@@ -808,6 +823,9 @@ impl SnapshotStore {
                     unconfirmed: core_balance.unconfirmed(),
                     total: core_balance.total(),
                 };
+                // Best-effort: on observation contention or failure only this
+                // field carries forward — the composition key is fail-closed
+                // by construction, so a stale key merely forces revalidation.
                 let asset_lock_inputs = match (
                     state
                         .wallet()
@@ -819,9 +837,29 @@ impl SnapshotStore {
                         .get(&super::DEFAULT_BIP44_ACCOUNT),
                 ) {
                     (Some(account), Some(managed_account)) => {
-                        try_asset_lock_final_input_state(managed_account, account, current_height)
-                            .ok()
-                            .flatten()?
+                        match try_asset_lock_final_input_state(
+                            managed_account,
+                            account,
+                            current_height,
+                            &ProbeDeadline::unbounded(),
+                        ) {
+                            Ok(Some(inputs)) => inputs,
+                            Ok(None) => {
+                                tracing::debug!(
+                                    wallet = ?&wallet_id[..4],
+                                    "asset-lock observation contended during snapshot recompute; carrying the prior composition forward"
+                                );
+                                self.snapshot(&seed_hash).asset_lock_inputs.clone()
+                            }
+                            Err(source) => {
+                                tracing::debug!(
+                                    wallet = ?&wallet_id[..4],
+                                    ?source,
+                                    "asset-lock observation failed during snapshot recompute; carrying the prior composition forward"
+                                );
+                                self.snapshot(&seed_hash).asset_lock_inputs.clone()
+                            }
+                        }
                     }
                     _ => AssetLockInputState::default(),
                 };
@@ -836,16 +874,15 @@ impl SnapshotStore {
                         address: u.address.clone(),
                     });
                 }
-                Some(SnapshotState {
+                SnapshotState {
                     balance,
                     asset_lock_inputs,
                     utxos,
                     address_balances,
                     monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
                     address_paths: address_paths_from_info(&state.core_wallet),
-                })
-            })()
-            .unwrap_or_else(|| carried_forward_state(&self.snapshot(&seed_hash))),
+                }
+            }
             // Accepted, self-healing edge case: if this is the very first
             // recompute for the wallet and it loses the try-lock, there is no
             // prior snapshot, so `snapshot()` returns the all-zero default and
@@ -1341,8 +1378,14 @@ mod tests {
         utxo.is_confirmed = true;
         managed_account.utxos.insert(outpoint, utxo);
 
-        let before = asset_lock_final_input_state(managed_account, account, CURRENT_HEIGHT)
-            .expect("initial input observation");
+        let before = asset_lock_final_input_state(
+            managed_account,
+            account,
+            CURRENT_HEIGHT,
+            &ProbeDeadline::unbounded(),
+        )
+        .expect("initial input observation")
+        .expect("unbounded observation completes");
         let store = SnapshotStore::new();
         store.publish(
             &seed(0x51),
@@ -1373,8 +1416,14 @@ mod tests {
             .build_unsigned()
             .expect("reservation-producing build");
 
-        let after = asset_lock_final_input_state(managed_account, account, CURRENT_HEIGHT)
-            .expect("reservation-aware input observation");
+        let after = asset_lock_final_input_state(
+            managed_account,
+            account,
+            CURRENT_HEIGHT,
+            &ProbeDeadline::unbounded(),
+        )
+        .expect("reservation-aware input observation")
+        .expect("unbounded observation completes");
         assert_eq!(after.final_funds_duffs, 0);
         store.publish(
             &seed(0x51),
@@ -1393,6 +1442,171 @@ mod tests {
             "taking a live reservation must advance the display-side input revision"
         );
         managed_account.release_reservation(&reserved_tx);
+    }
+
+    #[test]
+    fn asset_lock_observation_reports_incomplete_when_the_deadline_has_expired() {
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+        use std::time::Duration;
+
+        const CURRENT_HEIGHT: u32 = 200;
+        let wallet = UpstreamWallet::from_seed_bytes(
+            [0x53; 64],
+            Network::Testnet,
+            WalletAccountCreationOptions::Default,
+        )
+        .expect("upstream wallet");
+        let account = wallet.get_bip44_account(0).expect("BIP44 account");
+        let mut info = ManagedWalletInfo::from_wallet(&wallet, CURRENT_HEIGHT);
+        let managed_account = info
+            .accounts
+            .standard_bip44_accounts
+            .get_mut(&0)
+            .expect("managed account");
+        let funding_address = managed_account
+            .next_receive_address(Some(&account.account_xpub), true)
+            .expect("funding address");
+        let outpoint = OutPoint::new(Txid::from_byte_array([0x54; 32]), 0);
+        let mut utxo = Utxo::new(
+            outpoint,
+            TxOut {
+                value: 1_000_000,
+                script_pubkey: funding_address.script_pubkey(),
+            },
+            funding_address,
+            100,
+            false,
+        );
+        utxo.is_confirmed = true;
+        managed_account.utxos.insert(outpoint, utxo);
+
+        let expired = ProbeDeadline::after(Duration::ZERO);
+        assert_eq!(
+            asset_lock_final_input_state(managed_account, account, CURRENT_HEIGHT, &expired)
+                .expect("observation"),
+            None,
+            "an expired deadline must stop the observation before any builder batch runs"
+        );
+
+        let complete = asset_lock_final_input_state(
+            managed_account,
+            account,
+            CURRENT_HEIGHT,
+            &ProbeDeadline::unbounded(),
+        )
+        .expect("observation")
+        .expect("an unbounded observation must complete");
+        assert_eq!(complete.final_funds_duffs, 1_000_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contended_asset_lock_observation_keeps_the_fresh_balance_and_utxos() {
+        use crate::app::TaskResult;
+        use crate::context::test_support::test_app_context;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let (sender, _receiver) = tokio::sync::mpsc::channel::<TaskResult>(16);
+        app_context
+            .ensure_wallet_backend(SenderAsync::new(sender, app_context.egui_ctx().clone()))
+            .await
+            .expect("wallet backend");
+        let backend = app_context.wallet_backend().expect("wired backend");
+
+        let seed = [0x46; 64];
+        let det_wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("Observation contention test".to_string()),
+            None,
+        )
+        .expect("DET wallet");
+        let seed_hash = det_wallet.seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet");
+        let platform_wallet = backend
+            .resolve_wallet(&seed_hash)
+            .await
+            .expect("platform wallet");
+        let wallet_id = platform_wallet.wallet_id();
+
+        let outpoint = OutPoint::new(Txid::from_byte_array([0x47; 32]), 0);
+        {
+            let mut manager = platform_wallet.wallet_manager().write().await;
+            let account = manager
+                .get_wallet_and_info(&wallet_id)
+                .and_then(|(key_wallet, _)| key_wallet.get_bip44_account(0))
+                .expect("BIP44 account")
+                .clone();
+            let info = manager
+                .get_wallet_info_mut(&wallet_id)
+                .expect("wallet info");
+            info.core_wallet.update_last_processed_height(200);
+            let managed_account = info
+                .core_wallet
+                .accounts
+                .standard_bip44_accounts
+                .get_mut(&0)
+                .expect("managed account");
+            let funding_address = managed_account
+                .next_receive_address(Some(&account.account_xpub), true)
+                .expect("funding address");
+            let mut utxo = Utxo::new(
+                outpoint,
+                TxOut {
+                    value: 1_000_000,
+                    script_pubkey: funding_address.script_pubkey(),
+                },
+                funding_address,
+                100,
+                false,
+            );
+            utxo.is_confirmed = true;
+            managed_account.utxos.insert(outpoint, utxo);
+            info.core_wallet.update_balance();
+        }
+
+        let store = SnapshotStore::new();
+        store.register_wallet(seed_hash, wallet_id, Arc::clone(&platform_wallet));
+
+        {
+            let _observation_guard = ASSET_LOCK_INPUT_OBSERVATION_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            store.recompute(&wallet_id);
+        }
+        let contended = store.snapshot(&seed_hash);
+        assert!(
+            contended.utxos.iter().any(|utxo| utxo.outpoint == outpoint),
+            "an asset-lock observation miss must not discard the freshly computed UTXO set"
+        );
+        assert_eq!(
+            contended.asset_lock_inputs,
+            AssetLockInputState::default(),
+            "only the asset-lock composition may carry forward when its observation is contended"
+        );
+
+        // The backend's own event bridge shares the global observation lock,
+        // so an uncontended recompute may need a few attempts.
+        let mut observed = store.snapshot(&seed_hash);
+        for _ in 0..50 {
+            if observed.asset_lock_inputs.final_funds_duffs > 0 {
+                break;
+            }
+            store.recompute(&wallet_id);
+            observed = store.snapshot(&seed_hash);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            observed.asset_lock_inputs.final_funds_duffs, 1_000_000,
+            "an uncontended recompute must observe the eligible composition"
+        );
     }
 
     /// Crosses the `send_screen` "Max" seam: the Max a Core send reserves must

@@ -333,6 +333,29 @@ pub struct WalletSendScreen {
     wallet_open_attempted: bool,
 }
 
+/// Merge the confirmation dialog's action into the frame action. The dialog
+/// consumes the click and clears itself, so a confirmed send is one-shot:
+/// it appends to a compatible task batch, and otherwise takes the pre-existing
+/// `AppAction` `|=` precedence over a same-frame navigation action — it is
+/// never silently dropped.
+fn merge_confirmation_action(mut action: AppAction, confirmation_action: AppAction) -> AppAction {
+    if can_append_concurrent_backend_tasks(&action) {
+        match confirmation_action {
+            AppAction::BackendTask(task) => append_concurrent_backend_tasks(action, vec![task]),
+            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) => {
+                append_concurrent_backend_tasks(action, tasks)
+            }
+            other => {
+                action |= other;
+                action
+            }
+        }
+    } else {
+        action |= confirmation_action;
+        action
+    }
+}
+
 impl WalletSendScreen {
     pub fn new(app_context: &Arc<AppContext>, wallet: Arc<RwLock<Wallet>>) -> Self {
         let seed_hash = wallet.read().ok().map(|w| w.seed_hash());
@@ -679,7 +702,7 @@ impl WalletSendScreen {
         }
 
         let failed = self.asset_lock_balance.is_failed(&seed_hash);
-        let loading = self.asset_lock_balance.get(&seed_hash).is_none();
+        let loading = self.asset_lock_max_amount(&seed_hash).is_err();
         if failed {
             ui.label("The available amount could not be checked.");
         } else if loading {
@@ -2478,7 +2501,9 @@ impl WalletSendScreen {
                                     | AddressKind::Identity
                             )
                         ) {
-                            self.asset_lock_balance.get(&seed_hash)
+                            // Same current-composition accessor validation
+                            // uses, so Max can never offer a stale ceiling.
+                            self.asset_lock_max_amount(&seed_hash).ok()
                         } else {
                             Some(self.app_context.snapshot_balance(&seed_hash).spendable())
                         };
@@ -4324,18 +4349,7 @@ impl ScreenLike for WalletSendScreen {
         });
 
         let confirmation_action = self.render_send_confirmation(ui);
-        if can_append_concurrent_backend_tasks(&action) {
-            action = match confirmation_action {
-                AppAction::BackendTask(task) => append_concurrent_backend_tasks(action, vec![task]),
-                AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) => {
-                    append_concurrent_backend_tasks(action, tasks)
-                }
-                other => {
-                    action |= other;
-                    action
-                }
-            };
-        }
+        action = merge_confirmation_action(action, confirmation_action);
 
         if can_append_concurrent_backend_tasks(&action)
             && let Some(task) = self.request_asset_lock_max_amount()
@@ -4668,6 +4682,115 @@ mod tests {
         assert!(
             !crate::ui::can_append_concurrent_backend_tasks(&AppAction::PopScreen),
             "navigation must keep priority instead of being overwritten by a probe"
+        );
+    }
+
+    #[test]
+    fn confirmed_send_action_survives_same_frame_navigation() {
+        let seed_hash = [0x44; 32];
+        let confirmation = || {
+            AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress { seed_hash },
+            ))
+        };
+
+        let merged = merge_confirmation_action(AppAction::PopScreen, confirmation());
+        assert!(
+            matches!(
+                merged,
+                AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::GenerateReceiveAddress { .. }
+                ))
+            ),
+            "a confirmed send must outrank a same-frame navigation action, never be dropped"
+        );
+
+        let sequential = AppAction::BackendTasks(
+            vec![BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress {
+                    seed_hash: [0x45; 32],
+                },
+            )],
+            BackendTasksExecutionMode::Sequential,
+        );
+        let merged = merge_confirmation_action(sequential, confirmation());
+        assert!(
+            matches!(
+                merged,
+                AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::GenerateReceiveAddress { seed_hash: sh }
+                )) if sh == seed_hash
+            ),
+            "a confirmed send must take the pre-existing |= precedence over a sequential batch"
+        );
+
+        assert!(
+            matches!(
+                merge_confirmation_action(AppAction::PopScreen, AppAction::None),
+                AppAction::PopScreen
+            ),
+            "without a confirmation the navigation action must pass through unchanged"
+        );
+
+        let merged = merge_confirmation_action(AppAction::None, confirmation());
+        let AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent) = merged else {
+            panic!("an appendable frame action must batch the confirmation concurrently");
+        };
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[test]
+    fn max_button_offers_nothing_while_the_builder_quote_is_revalidating() {
+        const STALE_QUOTE_DUFFS: u64 = 900_000;
+
+        let (mut screen, _temp_dir) = send_screen();
+        let seed_hash = screen
+            .selected_wallet_seed_hash
+            .expect("selected wallet seed hash");
+        let (snapshot_generation, current_inputs, utxo_revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            snapshot_generation,
+            current_inputs.clone(),
+            utxo_revision,
+        ));
+        // The probe's reply observed a composition that no longer matches the
+        // wallet — the exact revalidation window behind issue #929.
+        screen.asset_lock_balance.store(
+            seed_hash,
+            snapshot_generation,
+            request_id,
+            STALE_QUOTE_DUFFS,
+            different_asset_lock_inputs(0x77),
+            false,
+        );
+        assert_eq!(
+            screen.asset_lock_balance.get(&seed_hash),
+            Some(STALE_QUOTE_DUFFS),
+            "sanity: the stale quote must stay displayable"
+        );
+        assert_eq!(
+            screen
+                .asset_lock_balance
+                .get_current(&seed_hash, &current_inputs),
+            None,
+            "sanity: validation must reject the stale quote"
+        );
+        screen.selected_source = Some(SourceSelection::CoreWallet);
+        screen.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+
+        let mut harness = Harness::builder().build_ui_state(
+            |ui, screen: &mut WalletSendScreen| screen.render_amount_input(ui),
+            screen,
+        );
+        harness.run();
+        harness.get_by_label("Max").click_accesskit();
+        harness.step();
+
+        assert!(
+            harness.state().amount.is_none(),
+            "Max must never offer an amount that same-composition validation would refuse"
         );
     }
 

@@ -116,12 +116,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   restore made from a key's page is reflected immediately instead of being
   offered again.
 
-  One known limitation, for a voting key held against an identity directly rather
-  than against a separate voting identity: the list and the key's page now agree
-  on whether such a key is saved here, but *saving or removing* one by hand still
-  uses the older of the two places the app has recorded these keys, and removing
-  it can affect a key of the same number held on a linked voting identity.
-  Reconciling the two locations is tracked separately.
+  A key opened from a masternode's page keeps its name too. A voting key is the
+  node's voting key however it is recorded, and its own page now says so instead
+  of describing it as another kind of key, which also means the page no longer
+  reports such a key as missing while the list it was opened from shows it as
+  saved on this device.
+
+  One known limitation, for a voting key stored on the identity itself rather
+  than on a separate voting identity: the keys list and the key's page now agree
+  on whether such a key is saved here, but saving or removing one by hand can
+  affect a voting key of the same number on a linked voting identity, and
+  removing it may leave the original in place. So until then, after saving or
+  removing a voting key on an identity like that, open the keys list and check
+  that each key still reads as you expect, and re-enter any key that should be
+  saved but no longer is. This will be closed by the in-progress key-placement
+  resolution fix.
 
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and

@@ -5,11 +5,14 @@
 //! a sibling root screen behind the Expert-Mode nav gate (FR-1); its identities
 //! are page-scoped and never leak into the everyday-user surfaces (FR-6, B1).
 //!
-//! The gate covers the screens, not this module's key vocabulary
+//! The gate covers the screens, not this module's shared key helpers
 //! ([`role_label_and_tip`], [`manage_keys_labels`], [`identity_keys`]): those
 //! name and enumerate the keys of any identity and are used from ungated
 //! surfaces — the identity keys list and the recovery-offer component — so that
-//! one key cannot be called two different things on two screens.
+//! one key cannot be called two different things on two screens. Whether a key
+//! is *held* is resolved by
+//! [`KeyStorage::candidates`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::candidates),
+//! shared for the same reason.
 
 pub mod card;
 pub mod detail_screen;
@@ -163,9 +166,13 @@ pub(crate) fn key_role_label(
 /// that scopes it.
 ///
 /// Shared so the masternode detail view and the identity keys list enumerate
-/// keys identically. The target is what pairs a public key with the private
-/// material the device may hold for it, so deriving it in one place is what
-/// keeps the two surfaces agreeing on which keys are held.
+/// keys identically. The target paired here is the *structural* one — which
+/// identity's key map the key came from — which is only half of pairing a public
+/// key with the private material the device may hold for it. Resolving that is
+/// [`KeyStorage::candidates`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::candidates),
+/// which every surface shares: enumerating alike while resolving differently is
+/// how the two surfaces came to disagree about whether one key was saved on this
+/// device.
 pub fn identity_keys(
     identity: &QualifiedIdentity,
 ) -> Vec<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {

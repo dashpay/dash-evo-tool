@@ -209,10 +209,9 @@ impl KeysScreen {
         let labels = manage_keys_labels(vocabulary, &keys);
         for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
             // Where this key's private half actually is, whichever store filed
-            // it. Selects on key material, so a voter identity carrying the same
-            // key id cannot make an unheld key read as held. A presence check
-            // rather than a fetch: cloning the entry copies raw key bytes out of
-            // the vault unscrubbed, and this runs every frame for every key.
+            // it. A presence check rather than a fetch: cloning the entry copies
+            // raw key bytes out of the vault unscrubbed, and this runs every
+            // frame for every key.
             let filed_at = self.identity.private_keys.candidates(&key).next();
             let held = if filed_at.is_some() { HELD } else { NOT_HELD };
             ui.add_space(4.0);
@@ -278,12 +277,12 @@ impl KeysScreen {
         ui.add_space(8.0);
         // `changed_value` hands back a reference into the response, so the
         // approved set has to be cloned out before the response is dropped.
-        if let Some(approved) = LegacyRecoverySection::new(plan)
-            .restoring(restoring)
-            .vocabulary(KeyVocabulary::from(self.identity.identity_type))
-            .show(ui)
-            .inner
-            .changed_value()
+        if let Some(approved) =
+            LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
+                .restoring(restoring)
+                .show(ui)
+                .inner
+                .changed_value()
         {
             self.pending_recovery_restore = Some(approved.clone());
         }

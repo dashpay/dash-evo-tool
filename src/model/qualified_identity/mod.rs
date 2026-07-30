@@ -1326,6 +1326,71 @@ mod key_placement_tests {
         );
     }
 
+    /// Two keys can share both `id` and `data` — a main identity's voting key
+    /// and a linked voter identity's key — leaving `purpose` as the only thing
+    /// telling them apart. Matching on material alone would report one as held
+    /// on the strength of the other's private half, and a delete aimed at one
+    /// would take the other with it.
+    #[test]
+    fn two_keys_sharing_id_and_material_are_told_apart_by_purpose() {
+        let voting = key(0, Purpose::VOTING, 0xAA);
+        let auth = key(0, Purpose::AUTHENTICATION, 0xAA);
+        assert_eq!(voting.data(), auth.data(), "the fixture shares material");
+
+        let identity = qi(
+            std::slice::from_ref(&voting),
+            None,
+            &[(VOTER, voting.clone(), clear(0x11))],
+        );
+
+        assert_eq!(
+            identity
+                .private_keys
+                .candidates(&voting)
+                .collect::<Vec<_>>(),
+            vec![(VOTER, 0)],
+        );
+        assert!(
+            identity.private_keys.candidates(&auth).next().is_none(),
+            "an occupied slot proves nothing about whose material is in it",
+        );
+    }
+
+    /// `disabled_at` is the one field Platform lets move after a key is added.
+    /// The stored copy is a snapshot from when the private half was saved, so a
+    /// key disabled on chain since then must still match — disabling a key does
+    /// not remove its private half from this device.
+    #[test]
+    fn a_key_disabled_since_it_was_saved_is_still_found() {
+        let active = key(1, Purpose::AUTHENTICATION, 0xBB);
+        let disabled = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 1,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: BinaryData::new(vec![0xBB; 20]),
+            disabled_at: Some(1),
+        });
+
+        // Stored while active; the live key is the disabled one.
+        let identity = qi(
+            std::slice::from_ref(&disabled),
+            None,
+            &[(MAIN, active, clear(0x22))],
+        );
+
+        assert_eq!(
+            identity
+                .private_keys
+                .candidates(&disabled)
+                .collect::<Vec<_>>(),
+            vec![(MAIN, 1)],
+            "a key this device holds stays held after being disabled on chain",
+        );
+    }
+
     /// T2 — the migration constraint. The same key filed under `Voter` by an
     /// older build must stay findable. This is what makes the change safe to
     /// ship without moving anyone's key material.

@@ -625,11 +625,11 @@ impl MasternodeDetailView {
         let tier = self.protection_tier();
         ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
 
-        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen` —
-        // the real, interactive per-key screen with view/sign/seal actions —
-        // not the static read-only `KeysScreen` table. This mirrors
-        // `identities_screen.rs`: one button per key, each pushing
-        // `Screen::KeyInfoScreen`.
+        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`,
+        // the interactive per-key screen with view/sign/seal actions. This
+        // mirrors `identities_screen.rs` and the identity keys list: one button
+        // per key, each pushing `Screen::KeyInfoScreen` with the target the row
+        // found the material at.
         ui.add_space(4.0);
         ui.label(
             RichText::new("Manage keys")
@@ -639,14 +639,14 @@ impl MasternodeDetailView {
         let keys = identity_keys(&self.identity);
         // This page only ever shows masternode and evonode identities.
         let labels = manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
-        for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
+        for ((_target, key), (label, tip)) in keys.into_iter().zip(labels) {
             let button = ui.button(format!("{label} ›"));
             let button = match tip {
                 Some(tip) => button.clickable_tooltip(tip),
                 None => button,
             };
             if button.clicked() {
-                action = Some(self.open_key_info(target, &key));
+                action = Some(self.open_key_info(&key));
             }
         }
 
@@ -655,10 +655,10 @@ impl MasternodeDetailView {
         // lives inside `KeyInfoScreen`. Open the first held key so the user
         // lands directly on the interactive seal flow.
         if tier.offers_add_protection()
-            && let Some((target, key)) = self.first_protectable_key()
+            && let Some((_target, key)) = self.first_protectable_key()
             && ui.button("Add password protection…").clicked()
         {
-            action = Some(self.open_key_info_with_protection_prompt(target, &key));
+            action = Some(self.open_key_info_with_protection_prompt(&key));
         }
 
         if let Some(approved) = self.render_recovery_section(ui)
@@ -677,7 +677,7 @@ impl MasternodeDetailView {
         let restoring = self.recovery.is_restoring();
         let plan = self.recovery.plan().filter(|plan| !plan.is_empty())?;
         ui.add_space(8.0);
-        LegacyRecoverySection::new(plan)
+        LegacyRecoverySection::new(plan, KeyVocabulary::from(self.identity.identity_type))
             .restoring(restoring)
             .show(ui)
             .inner
@@ -704,33 +704,38 @@ impl MasternodeDetailView {
     /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,
     /// carrying its held private-key data if any. Mirrors the
     /// per-key push in `identities_screen.rs`.
-    fn open_key_info(
-        &self,
-        target: PrivateKeyTarget,
-        key: &dash_sdk::platform::IdentityPublicKey,
-    ) -> AppAction {
-        self.open_key_info_with_mode(target, key, KeyInfoOpenMode::Normal)
+    fn open_key_info(&self, key: &dash_sdk::platform::IdentityPublicKey) -> AppAction {
+        self.open_key_info_with_mode(key, KeyInfoOpenMode::Normal)
     }
 
     /// Open `KeyInfoScreen` directly in the add-protection confirmation flow.
     fn open_key_info_with_protection_prompt(
         &self,
-        target: PrivateKeyTarget,
         key: &dash_sdk::platform::IdentityPublicKey,
     ) -> AppAction {
-        self.open_key_info_with_mode(target, key, KeyInfoOpenMode::WithProtectionPrompt)
+        self.open_key_info_with_mode(key, KeyInfoOpenMode::WithProtectionPrompt)
     }
 
     fn open_key_info_with_mode(
         &self,
-        target: PrivateKeyTarget,
         key: &dash_sdk::platform::IdentityPublicKey,
         mode: KeyInfoOpenMode,
     ) -> AppAction {
+        // Where this key's private half actually is, by the one rule every
+        // surface uses. A structural target alone would miss material filed under
+        // the retired purpose-derived convention — a main-identity voting key
+        // entered by hand — and report a key as unheld here while the identity
+        // keys list shows it as saved on this device.
         let holding = self
             .identity
             .private_keys
-            .get_cloned_private_key_data_and_wallet_info(&(target, key.id()));
+            .candidates(key)
+            .next()
+            .and_then(|placement| {
+                self.identity
+                    .private_keys
+                    .get_cloned_private_key_data_and_wallet_info(&placement)
+            });
         let identity = self.identity.clone();
         let key = key.clone();
         let screen = match mode {
@@ -741,6 +746,9 @@ impl MasternodeDetailView {
                 KeyInfoScreen::new_with_protection_prompt(identity, key, holding, &self.app_context)
             }
         };
+        // No target is handed over: the screen resolves the placement itself, so
+        // there is nothing for this caller to get wrong or for the `ScreenType`
+        // round trip to drop.
         AppAction::AddScreen(Screen::KeyInfoScreen(screen))
     }
 

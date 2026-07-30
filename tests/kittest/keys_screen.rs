@@ -900,3 +900,221 @@ fn returning_from_key_info_refreshes_both_the_keys_and_the_offer() {
         );
     });
 }
+
+/// The contested case both reviewers found in the two-candidate lookup: a main
+/// identity holding a `Purpose::VOTING` key at id N, and a linked voting
+/// identity holding its own, different key at the same id N.
+///
+/// An occupied slot proves nothing about whose material is in it. Falling back
+/// to the voter slot on key-id alone would report the main identity's key as
+/// held — on the strength of a different key's private half — and hand that
+/// material to Key Info. The row must be about the key the user clicked.
+#[test]
+fn a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+
+        // Main identity: a voting-purpose key at id 0, private half NOT held.
+        let main_key = key(0, Purpose::VOTING);
+        let identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x41u8; 32]),
+            BTreeMap::from([(main_key.id(), main_key.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("main identity");
+
+        // Voter identity: a *different* key, also at id 0, private half held.
+        let voter_key = key(0, Purpose::AUTHENTICATION);
+        let voter_identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x42u8; 32]),
+            BTreeMap::from([(voter_key.id(), voter_key.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("voter identity");
+
+        let qualified = QualifiedIdentity {
+            identity,
+            associated_voter_identity: Some((voter_identity, voter_key.clone())),
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: Some("id-collision".to_string()),
+            private_keys: KeyStorage::from(BTreeMap::from([(
+                (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(voter_key),
+                    PrivateKeyData::Clear([0x42; 32]),
+                ),
+            )])),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+
+        let (harness, _) = harness_for(KeysScreen::new(qualified, &app_context));
+
+        // Two rows: the main identity's voting key (not held) and the voter
+        // identity's own key (held). Exactly one of each disclosure.
+        assert_eq!(
+            harness.query_all_by_label(NOT_HELD).count(),
+            1,
+            "the main identity's voting key holds no private material of its own"
+        );
+        assert_eq!(
+            harness.query_all_by_label(HELD).count(),
+            1,
+            "only the voter identity's own key is actually held"
+        );
+    });
+}
+
+/// A key the device holds stays held after it is disabled on chain.
+///
+/// The stored copy of a public key is a snapshot taken when its private half was
+/// saved. Platform keys are immutable once added with exactly one exception —
+/// disabling rewrites `disabled_at` — so full-struct equality between the
+/// snapshot and the live key breaks the moment a key is rotated or disabled, and
+/// the row reports a key whose private half is demonstrably on this device as
+/// missing. Same symptom as SEC-001 from a different trigger.
+///
+/// This fails safe, understating possession rather than over-, and the guard
+/// against the unsafe direction is
+/// `a_same_numbered_key_on_the_voter_identity_is_not_mistaken_for_this_one`:
+/// the comparison has to survive `disabled_at` moving while still telling two
+/// same-numbered keys apart.
+#[test]
+fn a_disabled_key_whose_private_half_is_saved_is_still_reported_as_held() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+
+        // The live key, as Platform reports it after the user disabled it.
+        let mut live = key(0, Purpose::AUTHENTICATION);
+        let disabled_at = 1_700_000_000_u64;
+        match &mut live {
+            IdentityPublicKey::V0(v0) => v0.disabled_at = Some(disabled_at),
+        }
+        let identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x43u8; 32]),
+            BTreeMap::from([(live.id(), live.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity with one disabled key");
+
+        // The stored snapshot, written before it was disabled.
+        let snapshot = key(0, Purpose::AUTHENTICATION);
+        assert_eq!(
+            snapshot.disabled_at(),
+            None,
+            "the premise: the saved copy predates the key being disabled"
+        );
+
+        let qualified = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("disabled-but-held".to_string()),
+            private_keys: KeyStorage::from(BTreeMap::from([(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, snapshot.id()),
+                (
+                    QualifiedIdentityPublicKey::from(snapshot),
+                    PrivateKeyData::Clear([0x43; 32]),
+                ),
+            )])),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        };
+
+        let (harness, _) = harness_for(KeysScreen::new(qualified, &app_context));
+        assert!(
+            harness.query_by_label(HELD).is_some(),
+            "disabling a key on chain does not remove its private half from this \
+             device, so the row must still report it as saved here"
+        );
+        assert!(
+            harness.query_by_label(NOT_HELD).is_none(),
+            "and must not report it as missing"
+        );
+    });
+}
+
+/// QA-008: every screen hosting the offer must name a key as the identity it is
+/// showing would.
+///
+/// Three screens render the same offer — the keys list, Key Info, and masternode
+/// detail — and each passes its own vocabulary. Scoping two of them left a user
+/// identity's Key Info offer calling its transfer key a "Payout address key",
+/// asserting the user owns a masternode, and disagreeing with the keys list one
+/// screen away. A required constructor argument makes a *missing* vocabulary a
+/// compile error, but nothing in the type system catches a host passing the
+/// *wrong* one, so the host is where this has to be pinned: this drives Key Info
+/// through the route the user takes and reads the words off the rendered offer.
+#[test]
+fn key_info_names_a_users_transfer_key_as_the_keys_list_does() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let identity = identity_holding_key(
+            0x40,
+            Purpose::TRANSFER,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        );
+        let identity_id = identity.identity.id();
+        app_context
+            .insert_local_qualified_identity(&identity, &None)
+            .expect("store the identity so Key Info can re-read it");
+
+        // Arrive at Key Info the way the user does, from the list row.
+        let (mut list, action) = harness_for(KeysScreen::new(identity, &app_context));
+        list.get_by_label(TRANSFER_ROW).click();
+        list.run_steps(2);
+        let opened = std::mem::replace(&mut *action.borrow_mut(), AppAction::None);
+        let AppAction::AddScreen(Screen::KeyInfoScreen(mut key_info)) = opened else {
+            panic!("the row must open Key Info");
+        };
+
+        // Offer Key Info a restorable transfer key, as the check would.
+        key_info.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCandidates {
+            identity_id,
+            plan: RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::Key {
+                        target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                        key_id: 0,
+                    },
+                    purpose: Some(Purpose::TRANSFER),
+                }],
+                excluded: vec![],
+            },
+        });
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1100.0, 900.0))
+            .build_ui(move |ui| {
+                key_info.ui(ui);
+            });
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label(RESTORE).is_some(),
+            "the premise: Key Info is showing the offer"
+        );
+        assert!(
+            harness.query_by_label("Transfer key").is_some(),
+            "Key Info's offer must name the key as the keys list does"
+        );
+        assert!(
+            harness.query_by_label("Payout address key").is_none(),
+            "and must not tell a plain user their key is a masternode payout address"
+        );
+    });
+}

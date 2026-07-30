@@ -161,24 +161,20 @@ pub struct LegacyRecoverySection<'a> {
 }
 
 impl<'a> LegacyRecoverySection<'a> {
-    /// The offer for `plan`.
-    pub fn new(plan: &'a RecoveryPlan) -> Self {
+    /// The offer for `plan`, naming its keys in `vocabulary`.
+    ///
+    /// `vocabulary` is an argument rather than a builder option on purpose. This
+    /// offer is hosted by three separate screens, and a default would let a
+    /// fourth inherit the wrong wording silently: naming a user identity's
+    /// transfer key a "payout address key" asserts it owns a masternode, and
+    /// disagrees with the keys list rendered right below the offer. Required
+    /// here, every host has to answer for the identity it is showing.
+    pub fn new(plan: &'a RecoveryPlan, vocabulary: KeyVocabulary) -> Self {
         Self {
             plan,
             restoring: false,
-            vocabulary: KeyVocabulary::Masternode,
+            vocabulary,
         }
-    }
-
-    /// Name the keys in the vocabulary of the identity they belong to.
-    ///
-    /// Defaults to the masternode wording, which is where this offer first
-    /// appeared. A user identity must set this: naming its transfer key a
-    /// "payout address key" asserts it owns a masternode, and it would also
-    /// disagree with the keys list rendered directly below the offer.
-    pub fn vocabulary(mut self, vocabulary: KeyVocabulary) -> Self {
-        self.vocabulary = vocabulary;
-        self
     }
 
     /// Replace the button with a progress line while a restore is in flight,

@@ -21,6 +21,31 @@ use zeroize::Zeroizing;
 /// dropped.
 pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 
+/// Whether a `stored` public half is the same key as the `live` one, ignoring
+/// only `disabled_at`.
+///
+/// Every field of an `IdentityPublicKey` is immutable once the key is added, with
+/// that single exception: disabling a key rewrites it. The stored copy is a
+/// snapshot taken when the private half was saved, so plain `==` stops matching
+/// as soon as a key is disabled or rotated, and a key this device demonstrably
+/// holds gets reported as missing.
+///
+/// Comparing only the id and the key material would fix that and open a worse
+/// hole the other way. A main identity's voting key and a linked voter identity's
+/// key can carry identical `data` under the same `id`, leaving `purpose` as the
+/// only thing telling them apart — and a lookup that conflates them can hand out,
+/// or delete, material the requested key does not own. So this excludes the one
+/// field that legitimately moves and nothing else.
+pub fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
+    stored.id() == live.id()
+        && stored.key_type() == live.key_type()
+        && stored.purpose() == live.purpose()
+        && stored.security_level() == live.security_level()
+        && stored.read_only() == live.read_only()
+        && stored.contract_bounds() == live.contract_bounds()
+        && stored.data() == live.data()
+}
+
 /// A `(target, key_id)` map key paired with the raw 32-byte private key the
 /// migration must store in the vault — see
 /// [`KeyStorage::take_plaintext_for_vault`]. Bytes are [`Zeroizing`].
@@ -427,17 +452,16 @@ impl KeyStorage {
     /// [`PROBE_ORDER`](crate::model::qualified_identity::key_placement::PROBE_ORDER).
     ///
     /// This is how a read finds a private half. It probes each store at `key`'s
-    /// own id and keeps only entries whose stored public-key data matches, so it
-    /// finds the key wherever an older build filed it and never returns a
-    /// different key that merely shares the id — the voter and main id spaces
-    /// overlap, so matching on the id alone is what lets a delete land on the
-    /// wrong key.
+    /// own id and keeps only entries [`same_key`] accepts, so it finds the key
+    /// wherever an older build filed it and never returns a different key that
+    /// merely shares the id — the voter and main id spaces overlap, so matching
+    /// on the id alone is what lets a delete land on the wrong key.
     ///
     /// Three `BTreeMap` probes, not a scan. Yields more than one entry only when
-    /// the same material is genuinely filed under several stores; a caller that
-    /// needs bytes should take the first that *resolves* rather than the first
-    /// that matches, since a match can name a vault placeholder whose secret is
-    /// gone (see
+    /// the same key is genuinely filed under several stores; a caller that needs
+    /// bytes should take the first that *resolves* rather than the first that
+    /// matches, since a match can name a vault placeholder whose secret is gone
+    /// (see
     /// [`resolve_private_key_bytes`](crate::model::qualified_identity::QualifiedIdentity::resolve_private_key_bytes)).
     pub fn candidates<'a>(
         &'a self,
@@ -449,7 +473,7 @@ impl KeyStorage {
             .filter_map(move |target| {
                 let map_key = (target.clone(), key_id);
                 let (stored, _) = self.private_keys.get(&map_key)?;
-                (stored.identity_public_key.data() == key.data()).then_some(map_key)
+                same_key(&stored.identity_public_key, key).then_some(map_key)
             })
     }
 

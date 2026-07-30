@@ -42,9 +42,14 @@ The derivation conflated two questions that have different answers.
 | Where **should** a new private half go? | `QualifiedIdentity::placement_of` — reads the identity's own on-chain key lists | the write path only |
 
 `candidates` is three `BTreeMap` probes, not a scan, in a fixed
-[`PROBE_ORDER`] — so resolution never depends on map iteration order. Selecting
-on key material rather than the id is what keeps a lookup off a different key
-that shares the id.
+[`PROBE_ORDER`] — so resolution never depends on map iteration order. It accepts
+an entry only when `same_key` does: every field of the public half except
+`disabled_at`, which is the one field Platform lets move after a key is added, so
+a key disabled on chain since it was saved still matches its stored snapshot.
+Matching on key *material* alone would not be enough — a main identity's voting
+key and a linked voter identity's key can carry identical `data` under the same
+`id`, leaving `purpose` as the only thing telling them apart, and conflating them
+would hand out or delete material the requested key does not own.
 
 `placement_of` returns `Resolved` / `Ambiguous` / `Unknown`. `Unknown` is a real
 state, not a failure: `add_key_to_identity` inserts a key before broadcasting the
@@ -144,6 +149,9 @@ A crash cannot strand a key because nothing is ever in motion.
 | `a_voting_key_an_older_build_filed_under_voter_stays_findable` | the no-migration constraint |
 | `an_authentication_key_on_the_voter_identity_is_found` | the mirror defect |
 | `two_different_keys_sharing_an_id_are_never_confused` | the id collision |
+| `two_keys_sharing_id_and_material_are_told_apart_by_purpose` | the collision `data` alone cannot resolve |
+| `a_key_disabled_since_it_was_saved_is_still_found` | `disabled_at` is the one field that legitimately moves |
+| `removing_one_key_leaves_a_different_key_sharing_its_id_alone` | the delete path: confirmed RED against the purpose-derived removal, which left the key the user asked to delete in place and removed another |
 | `a_dead_vault_placeholder_falls_through_to_a_live_placement` | the fallthrough rule (§3) |
 | `a_lone_dead_placement_surfaces_its_error_rather_than_absence` | the other half of it |
 | `duplicate_placements_are_returned_in_probe_order` | determinism, not iteration order |

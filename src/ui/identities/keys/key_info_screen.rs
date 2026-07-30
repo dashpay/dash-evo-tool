@@ -1317,36 +1317,44 @@ impl KeyInfoScreen {
             let response = dialog.show(ui);
             if let Some(result) = response.inner.dialog_response {
                 self.remove_private_key_dialog = None;
-                if result == ConfirmationStatus::Confirmed {
-                    self.private_key_data = None;
-                    // Every placement holding *this* key, so a re-entered
-                    // duplicate cannot survive the removal the user asked for.
-                    // Selecting on key material is what keeps this off a
-                    // different key that merely shares the id, which the voter
-                    // and main id spaces make possible.
-                    for placement in self
-                        .identity
-                        .private_keys
-                        .candidates(&self.key)
-                        .collect::<Vec<_>>()
-                    {
-                        self.identity.private_keys.remove_at(&placement);
-                    }
-                    if let Err(error) = self
-                        .app_context
-                        .update_local_qualified_identity(&self.identity)
-                    {
-                        let handle = MessageBanner::set_global(
-                            ui.ctx(),
-                            "The private-key change could not be saved. Check available disk space and try again.",
-                            MessageType::Error,
-                        );
-                        handle.with_details(error);
-                        handle.disable_auto_dismiss();
-                    }
+                if result == ConfirmationStatus::Confirmed
+                    && let Err(error) = self.remove_held_private_key()
+                {
+                    let handle = MessageBanner::set_global(
+                        ui.ctx(),
+                        "The private-key change could not be saved. Check available disk space and try again.",
+                        MessageType::Error,
+                    );
+                    handle.with_details(error);
+                    handle.disable_auto_dismiss();
                 }
             }
         }
+    }
+
+    /// Drop this device's copy of the on-screen key's private half and persist
+    /// the record.
+    ///
+    /// Removes **every** placement holding *this* key, so a duplicate written
+    /// under another convention cannot survive the removal the user asked for.
+    /// The placements come from
+    /// [`candidates`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::candidates),
+    /// which selects on the public half — a removal keyed on the id alone lands
+    /// on whichever key happens to occupy the derived slot, and on a masternode
+    /// the voter and main id spaces overlap, so that can be a different key
+    /// entirely.
+    fn remove_held_private_key(&mut self) -> Result<(), TaskError> {
+        self.private_key_data = None;
+        for placement in self
+            .identity
+            .private_keys
+            .candidates(&self.key)
+            .collect::<Vec<_>>()
+        {
+            self.identity.private_keys.remove_at(&placement);
+        }
+        self.app_context
+            .update_local_qualified_identity(&self.identity)
     }
 
     // --- Identity key password protection (per-identity at-rest key encryption) ---
@@ -1693,6 +1701,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+    const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
 
     /// An offline, wired context on a throwaway data dir — the identity store
     /// refuses writes until the wallet backend is up.
@@ -1767,6 +1776,72 @@ mod tests {
             status: IdentityStatus::Active,
             network: dash_sdk::dpp::dashcore::Network::Testnet,
         }
+    }
+
+    /// Removing this device's copy of one key must not touch a *different* key
+    /// that happens to share its id.
+    ///
+    /// The shape this reaches needs two writers, which is how a real install gets
+    /// it: the structural loader files a main-identity `VOTING` key under `Main`
+    /// (`load_identity` files every main-identity key structurally, purpose
+    /// included), while an older build's paste path filed an unrelated key under
+    /// `Voter` at the same id — the voter and main id spaces overlap, so id 0
+    /// names two keys on a masternode. A removal that derived its slot from the
+    /// key's purpose would send this one to `Voter` and delete the wrong key's
+    /// private half, leaving the key the user asked about still on the device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_one_key_leaves_a_different_key_sharing_its_id_alone() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // Same id, different keys: purpose is what tells them apart.
+        let on_screen = public_key(0, Purpose::VOTING);
+        let other = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: BinaryData::new(vec![0xEE; 20]),
+            disabled_at: None,
+        });
+
+        let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
+        stored.private_keys.insert_at(
+            (VOTER, other.id()),
+            (
+                QualifiedIdentityPublicKey::from(other.clone()),
+                PrivateKeyData::Clear([0x22; 32]),
+            ),
+        );
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let mut screen =
+            KeyInfoScreen::new(stored, on_screen.clone(), None, &app_context).with_parent("Keys");
+        screen
+            .remove_held_private_key()
+            .expect("the removal must persist");
+
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&on_screen)
+                .next()
+                .is_none(),
+            "the key the user asked to remove must be gone",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&other)
+                .next()
+                .is_some(),
+            "a different key sharing the id must survive the removal",
+        );
     }
 
     /// Write `key` into `identity_id`'s stored record, the way a restore or any

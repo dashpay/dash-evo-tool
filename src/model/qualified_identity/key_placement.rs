@@ -9,6 +9,9 @@
 //!   [`QualifiedIdentity::placement_of`], which reads the identity's own
 //!   on-chain key lists. Only the write path asks this one.
 //!
+//! [`KeyStorage::candidates`]: super::encrypted_key_storage::KeyStorage::candidates
+//! [`QualifiedIdentity::placement_of`]: super::QualifiedIdentity::placement_of
+//!
 //! Deriving the store from a key's [`Purpose`](dash_sdk::dpp::identity::Purpose)
 //! answers neither: a voting-purpose key filed on the main identity is a
 //! supported shape, and no purpose distinguishes it from one on a voter

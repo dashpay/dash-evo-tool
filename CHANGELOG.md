@@ -46,6 +46,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checking that key against the chain instead is tracked as issue #942. The
   previous version's data is only ever read, so this is safe to repeat.
 
+- **Legacy key recovery: closed edge cases found during review**: a recovered
+  key is now checked against the exact key it's meant to replace, not just
+  matching key data found anywhere else on the identity, so a rotated-away or
+  mismatched key can no longer be reported as restored. Restoring no longer
+  races with other actions on the same identity happening at the same moment
+  (an edit, a refresh, a rename, or turning password protection on or off),
+  and a restore still waiting on your password can no longer be reset —
+  showing the Restore button again as if nothing had started — by an
+  unrelated error appearing on screen.
+
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.
   Failed attempts retry on later launches until fresh addresses are saved and

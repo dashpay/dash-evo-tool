@@ -41,6 +41,12 @@ pub async fn run_grovestark_task(
             // The key id is resolved to the identity's own published key first,
             // so a request naming a key this identity does not have fails here
             // rather than reaching the vault.
+            //
+            // TODO(grovestark-unpublished-key): resolve_private_key_bytes now
+            // requires the key be published on the main identity; a
+            // locally-added-but-not-yet-broadcast key (a normal state per
+            // docs/ai-design/2026-07-30-key-placement-resolution/design.md §2)
+            // fails here indistinguishably from "no such key".
             let signing_key = identity
                 .identity
                 .get_public_key_by_id(key_id)

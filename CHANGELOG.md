@@ -25,6 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Keys saved on this device but not on the identity's key lists are now
+  listed**: a key can be saved here while appearing on none of the identity's
+  key lists — for example when adding it to the network did not finish. The
+  identity's key list now shows such keys in their own section, so they can be
+  opened and their saved private key removed. Previously nothing could reach
+  them, even when a message asked exactly that.
+
 - **Restore keys an upgrade left behind**: an identity that was already in the
   app before the update — a masternode loaded from its ProTxHash, or one that
   held only some of its keys — kept its remaining keys in the previous
@@ -94,6 +101,75 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A key held in the clear is used without asking for a password**: for a key
+  an earlier version had saved in two places, one of them password-protected,
+  using the key could bring up a password prompt even though a copy needing no
+  password was on this device — and dismissing that prompt then refused the
+  key outright. The copy that needs no password is now used first, so the
+  prompt only appears when it is genuinely required.
+
+- **Show and Sign find a key whose first copy is unreadable**: for a key saved
+  in two places where only one copy's stored bytes were still present —
+  as after restoring the app's data without its key store — "Show private
+  key" and "Sign" could fail on the empty copy while the readable one sat
+  unused. Both now reach whichever copy is actually readable.
+
+- **Showing or signing with a key no longer advises saving it**: pressing
+  "Show private key" or "Sign" on a key whose place on the identity could not
+  be worked out answered with advice about saving the key again — about a key
+  the user never entered. Both messages now name a step either situation can
+  take: refresh the identity and open the key again.
+
+- **Cancelling a password request is taken as an answer**: for a key an earlier
+  version had saved in more than one place, dismissing the password prompt
+  brought up the same prompt again for the same key. Cancelling now ends the
+  attempt, and the message reflects the cancellation rather than an unrelated
+  earlier problem with another copy of the key.
+
+- **Messages about a key that cannot be used now say what to do**: being told a
+  key is not saved on this device, or cannot be saved here, left nowhere to go
+  next — or worse, named a step that could not work, such as freeing disk space
+  when the identity's keys are password-protected, or entering a key the same
+  screen would then refuse. Each of these messages now names the step that
+  actually resolves its situation.
+
+- **A key that could not be saved no longer looks saved**: when entering a
+  private key was refused — including when saving it to this device failed —
+  the key's page still showed it as saved until the page was left and reopened,
+  offering to reveal it, to sign with it, and to remove it, none of which could
+  work. The page now reports a refused key as not saved, which is what it is;
+  likewise, a removal that could not be saved no longer shows the key as
+  already gone.
+
+- **The identities list sees a key saved by an earlier version**: the Keys
+  popup on the identities list showed such a key as not saved on this device —
+  even though it is — and opened the key's page in the same wrong state. The
+  popup now finds a saved key wherever the version that saved it filed it, as
+  the rest of the app already does.
+
+- **A key's wallet is found even when the key is filed twice**: a key that an
+  earlier version had saved in two places, wallet-derived in only one of them,
+  was treated as belonging to no wallet at all — so the wallet was never offered
+  for unlocking and signing with that key could not proceed. The wallet that
+  derives a key is now found wherever the key is filed.
+
+- **A key two lists appear to share can be saved again**: when a masternode's
+  own record and its voting identity each carried a key with the same number and
+  the same public key, entering the private key of either was refused with a
+  message saying the key does not belong to this identity — although it plainly
+  does, and what the two keys are for is what tells them apart. Such a key is
+  now saved where it belongs. When a key really is on two lists at once, the
+  message now says so and what to do about it.
+
+- **Entering a key can no longer erase a different one**: keys of a masternode's
+  own record and of its voting identity are numbered separately, so two
+  different keys can carry the same number. Entering the private key of one of
+  them used to take the other's place without a word, and the replaced key's
+  private half was gone — with no copy to restore it from if it had been
+  imported by hand. Dash Evo Tool now refuses that and explains what happened,
+  leaving the saved key untouched. Re-entering a key you already saved still
+  replaces itself, as before.
+
 - **A saved voting key can now actually sign**: a voting key held on an
   identity's own record — rather than on a separate voting identity — was saved
   and shown as being on this device, but nothing could use it. Signing looked for
@@ -106,6 +182,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   voting identity numbers a key the same way as its main identity: removing one
   key could remove the other's private half, and a key could be reported as
   saved on the strength of an unrelated key being present.
+
+- **Removing a key now removes all of it**: "Remove private key" on a key's page
+  also erases the copy of that key held in this device's secure storage.
+  Previously only the entry naming it was cleared, so the key itself stayed
+  behind with nothing pointing at it — it could not be used or brought back, and
+  deleting the whole identity afterwards did not clear it either. If the secure
+  storage cannot be written to, the removal now stops and says so with the key
+  left exactly as it was, so it can simply be tried again.
+
+- **A key is checked before it is used**: showing a saved key or signing with it
+  now confirms the key held on this device really is the key on screen. Should
+  the two disagree — records an older version left inconsistent — the action
+  stops and says so, rather than signing with a key nobody would recognise as
+  this identity's.
 
 - **An identity's keys are reachable again**: the keys list under an identity's
   Settings → Advanced now opens each key's own page, so keys can be inspected

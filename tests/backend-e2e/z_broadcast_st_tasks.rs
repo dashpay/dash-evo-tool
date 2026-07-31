@@ -98,13 +98,15 @@ async fn step_broadcast_valid(
     // `try_from_identity_with_signer`.
     let mut qi = si.qualified_identity.clone();
     qi.identity = identity.clone();
-    qi.private_keys.insert_non_encrypted(
-        (PrivateKeyOnMainIdentity, new_ipk.id()),
-        (
-            QualifiedIdentityPublicKey::from(new_ipk.clone()),
-            new_private_key_bytes,
-        ),
-    );
+    qi.private_keys
+        .insert_non_encrypted(
+            (PrivateKeyOnMainIdentity, new_ipk.id()),
+            (
+                QualifiedIdentityPublicKey::from(new_ipk.clone()),
+                new_private_key_bytes,
+            ),
+        )
+        .expect("the freshly minted key's slot is free");
 
     let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
         &identity,
@@ -246,13 +248,16 @@ async fn step_broadcast_invalid(
     // Register the new key's private key in the signer so
     // try_from_identity_with_signer can sign it.
     let mut signer_qi = refreshed_qi.clone();
-    signer_qi.private_keys.insert_non_encrypted(
-        (PrivateKeyOnMainIdentity, new_ipk.id()),
-        (
-            QualifiedIdentityPublicKey::from(new_ipk.clone()),
-            new_private_key_bytes,
-        ),
-    );
+    signer_qi
+        .private_keys
+        .insert_non_encrypted(
+            (PrivateKeyOnMainIdentity, new_ipk.id()),
+            (
+                QualifiedIdentityPublicKey::from(new_ipk.clone()),
+                new_private_key_bytes,
+            ),
+        )
+        .expect("the freshly minted key's slot is free");
 
     let invalid_state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
         identity,

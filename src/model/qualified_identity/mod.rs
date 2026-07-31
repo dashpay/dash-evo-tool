@@ -8,7 +8,9 @@ pub mod qualified_identity_public_key;
 // requires making that secret-seam chokepoint generic over the closure error
 // type — a wallet_backend change out of scope here.
 use crate::backend_task::error::TaskError;
-use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, ResolvedPrivateKey};
+use crate::model::qualified_identity::encrypted_key_storage::{
+    KeyStorage, ResolvedPrivateKey, same_key,
+};
 use crate::model::qualified_identity::key_placement::KeyPlacement;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::user_role::UserRole;
@@ -607,8 +609,10 @@ impl QualifiedIdentity {
     ///
     /// Reads the identity's own on-chain records (main, voter, operator),
     /// matching on key id **and** public-key data, so a key id that appears on
-    /// two lists with different material cannot be confused. Used by the write
-    /// path only; a read asks
+    /// two lists with different material cannot be confused. Asked by the Key
+    /// Info paste path, to choose a store for a private half the user just
+    /// entered, and by role naming, to label a key by the list that publishes
+    /// it. A read asks
     /// [`KeyStorage::candidates`](encrypted_key_storage::KeyStorage::candidates)
     /// where the private half actually is, which is not always the same answer.
     ///
@@ -638,7 +642,11 @@ impl QualifiedIdentity {
             .into_iter()
             .filter_map(|(target, identity)| {
                 let published = identity?.public_keys().get(&key.id())?;
-                (published.data() == key.data()).then_some(target)
+                // The same rule `candidates` files a key by. Material alone
+                // cannot tell a main identity's voting key from a voter
+                // identity's — they can carry identical `data` under one id —
+                // so comparing it would call an unambiguous key ambiguous.
+                same_key(published, key).then_some(target)
             })
             .collect();
 
@@ -665,6 +673,13 @@ impl QualifiedIdentity {
     /// the first match would report such a key unusable while its bytes are one
     /// probe away.
     ///
+    /// The walk is resident-first: placements whose bytes are resident resolve
+    /// with no chokepoint access and are tried before vault-backed or
+    /// wallet-derived ones, so a sealed copy of a key never puts a password
+    /// prompt in front of a sibling placement holding the same bytes in the
+    /// clear — the same rule [`KeyStorage::first_live_candidate`] applies
+    /// synchronously. Within each group, probe order decides.
+    ///
     /// Because the placement is discovered rather than supplied, the vault scope
     /// is built from the store the bytes were **found** under. The map key and
     /// the vault label are one composite address, so a caller cannot be trusted
@@ -686,7 +701,11 @@ impl QualifiedIdentity {
     ///
     /// `Ok(None)` when no placement holds this key. When every candidate failed,
     /// the first failure is returned rather than `None`, so a lone dead entry
-    /// still surfaces its own typed error instead of a silent miss.
+    /// still surfaces its own typed error instead of a silent miss. A cancelled
+    /// prompt ([`TaskError::SecretPromptCancelled`]) ends the walk immediately
+    /// and is itself the error returned, outranking any earlier placement's
+    /// mechanical failure — it is the user's answer about this key, and asking
+    /// again for the next placement would be one dialog per store.
     ///
     /// [`PrivateKeyData::AtWalletDerivationPath`]: encrypted_key_storage::PrivateKeyData::AtWalletDerivationPath
     /// [`PrivateKeyData::InVault`]: encrypted_key_storage::PrivateKeyData::InVault
@@ -697,13 +716,36 @@ impl QualifiedIdentity {
     ) -> Result<Option<ResolvedPrivateKey>, TaskError> {
         let mut first_failure = None;
 
-        for (target, key_id) in self.private_keys.candidates(key).collect::<Vec<_>>() {
+        // Prompt-free placements first: an entry that is neither vault-backed
+        // nor wallet-derived carries its bytes resident and resolves with no
+        // chokepoint access, so a sealed copy of the key never puts a password
+        // prompt — or its cancellation — in front of a sibling holding the
+        // same bytes in the clear. The async mirror of `first_live_candidate`;
+        // within each group, probe order.
+        let (resident, prompting): (Vec<_>, Vec<_>) =
+            self.private_keys.candidates(key).partition(|placement| {
+                !self.private_keys.is_in_vault(placement)
+                    && self.private_keys.wallet_seed_hash_for(placement).is_none()
+            });
+
+        for (target, key_id) in resident.into_iter().chain(prompting) {
             match self.resolve_private_key_bytes_at(target, key_id).await {
                 Ok(Some(resolved)) => return Ok(Some(resolved)),
                 // This placement holds no usable bytes. Keep looking: another
                 // store may hold the same key's live material.
                 Ok(None) => {}
                 Err(failure) => {
+                    // A cancellation answers for the key, not for one store of
+                    // it: trying the next candidate would re-ask for what the
+                    // user just declined, one dialog per placement — and the
+                    // user's decision outranks an earlier placement's
+                    // mechanical failure, so it is returned as-is.
+                    // `SecretPromptUnavailable` is not a decision but a
+                    // property of the host (no window to ask in), so a sibling
+                    // placement that needs no prompt is still worth trying.
+                    if matches!(failure, TaskError::SecretPromptCancelled) {
+                        return Err(failure);
+                    }
                     if first_failure.is_none() {
                         first_failure = Some(failure);
                     }
@@ -804,7 +846,7 @@ impl QualifiedIdentity {
     /// `BTreeMap<WalletSeedHash, _>`, so the first key is the lowest seed
     /// hash — a stable, content-derived choice that does not depend on
     /// insertion order. Both sides call this one helper so the rule lives in
-    /// exactly one place (SEC-W-001).
+    /// exactly one place.
     pub fn dashpay_wallet_seed_hash(&self) -> Option<WalletSeedHash> {
         self.associated_wallets.keys().next().copied()
     }
@@ -1229,6 +1271,7 @@ mod key_placement_tests {
     use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use crate::model::qualified_identity::key_placement::{KeyPlacement, PROBE_ORDER};
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
     use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
@@ -1592,6 +1635,51 @@ mod key_placement_tests {
         assert_eq!(identity.placement_of(&fresh).resolved(), None);
     }
 
+    /// Two keys can share an id *and* their material and still be two keys —
+    /// `purpose` is what tells a main identity's voting key from a voter
+    /// identity's. Comparing material alone reports both lists as publishing
+    /// one key, so the paste path would refuse to file a key whose placement
+    /// was never in doubt.
+    #[test]
+    fn two_keys_sharing_id_and_material_are_placed_by_purpose() {
+        let on_main = key(0, Purpose::VOTING, 0xAA);
+        let on_voter = key(0, Purpose::AUTHENTICATION, 0xAA);
+        assert_eq!(
+            on_main.data(),
+            on_voter.data(),
+            "the fixture shares material"
+        );
+
+        let identity = qi(
+            std::slice::from_ref(&on_main),
+            Some(std::slice::from_ref(&on_voter)),
+            &[],
+        );
+
+        assert_eq!(
+            identity.placement_of(&on_main),
+            KeyPlacement::Resolved(MAIN),
+            "the main identity's voting key belongs to Main, not to both lists"
+        );
+        assert_eq!(
+            identity.placement_of(&on_voter),
+            KeyPlacement::Resolved(VOTER),
+        );
+    }
+
+    /// A key disabled on chain since its private half was saved is still the
+    /// same key, so its placement is still answerable — `disabled_at` is the
+    /// one field Platform lets move.
+    #[test]
+    fn a_key_disabled_since_it_was_saved_still_has_a_placement() {
+        let saved = key(2, Purpose::AUTHENTICATION, 0xAA);
+        let mut disabled = saved.clone();
+        disabled.set_disabled_at(1_700_000_000);
+        let identity = qi(std::slice::from_ref(&disabled), None, &[]);
+
+        assert_eq!(identity.placement_of(&saved), KeyPlacement::Resolved(MAIN));
+    }
+
     /// The same key published on two lists is `Ambiguous` — reported, never
     /// silently collapsed to one of them.
     #[test]
@@ -1764,6 +1852,187 @@ mod key_resolution_tests {
         assert!(
             matches!(error, TaskError::WalletLocked),
             "expected the vault-unavailable error, got {error:?}",
+        );
+    }
+
+    /// Cancelling the password prompt answers for the key, not for one of the
+    /// stores it happens to be filed under. Carrying on to the next candidate
+    /// re-asks for the key the user just declined to unlock — one dialog per
+    /// placement, each looking like the app ignored the last answer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_the_prompt_stops_asking_for_the_same_key() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::SecretSeam;
+        use crate::wallet_backend::single_key::open_secret_store;
+        use crate::wallet_backend::{SecretAccess, SecretScope};
+        use platform_wallet_storage::secrets::{
+            SecretBytes, SecretString, WalletId as SecretWalletId,
+        };
+
+        let key = voting_key(0);
+        // The id `masternode_with` builds its identity under.
+        let identity_id = [1u8; 32];
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
+        // Sealed Tier-2 under both placements: either one alone would prompt,
+        // so the prompt count is what tells stopping from carrying on.
+        for target in [MAIN, VOTER] {
+            SecretSeam::new(&store)
+                .put_secret_protected(
+                    &SecretWalletId::from(identity_id),
+                    &SecretScope::identity_key_label(&target, key.id()),
+                    &SecretBytes::from_slice(&[0x99; 32]),
+                    &SecretString::new("the-object-password"),
+                )
+                .expect("seal the identity key");
+        }
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::Cancel,
+            ScriptedAnswer::Cancel,
+        ]));
+        let mut identity = masternode_with(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::InVault),
+                (VOTER, PrivateKeyData::InVault),
+            ],
+        );
+        identity.secret_access = Some(SecretAccess::new(store, prompt.clone(), Network::Testnet));
+
+        let error = identity
+            .resolve_private_key_bytes(&key)
+            .await
+            .expect_err("a cancelled prompt resolves nothing");
+        assert!(
+            matches!(error, TaskError::SecretPromptCancelled),
+            "the user's refusal is what surfaces, got {error:?}",
+        );
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "one refusal ends the attempt; it must not open the next placement's prompt",
+        );
+    }
+
+    /// The cancellation is the answer that surfaces even when an earlier
+    /// placement already failed for a mechanical reason. A dead placeholder
+    /// probed ahead of a sealed placement must not have its failure reported
+    /// over the user's own refusal — the user dismissed a password prompt and
+    /// would otherwise be told the key is missing from this device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancellation_outranks_an_earlier_placements_failure() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::SecretSeam;
+        use crate::wallet_backend::single_key::open_secret_store;
+        use crate::wallet_backend::{SecretAccess, SecretScope};
+        use platform_wallet_storage::secrets::{
+            SecretBytes, SecretString, WalletId as SecretWalletId,
+        };
+
+        let key = voting_key(0);
+        // The id `masternode_with` builds its identity under.
+        let identity_id = [1u8; 32];
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
+        // Only the second-probed placement is sealed (Tier-2, so it prompts).
+        // The first-probed placement is a dead placeholder: an `InVault` entry
+        // with no vault secret behind it, which fails without a prompt.
+        SecretSeam::new(&store)
+            .put_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &SecretScope::identity_key_label(&VOTER, key.id()),
+                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretString::new("the-object-password"),
+            )
+            .expect("seal the identity key");
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::Cancel]));
+        let mut identity = masternode_with(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::InVault),
+                (VOTER, PrivateKeyData::InVault),
+            ],
+        );
+        identity.secret_access = Some(SecretAccess::new(store, prompt.clone(), Network::Testnet));
+
+        let error = identity
+            .resolve_private_key_bytes(&key)
+            .await
+            .expect_err("a cancelled prompt resolves nothing");
+        assert!(
+            matches!(error, TaskError::SecretPromptCancelled),
+            "the user's refusal outranks the dead placeholder's failure, got {error:?}",
+        );
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "only the sealed placement prompts; the dead placeholder must not",
+        );
+    }
+
+    /// A prompt belongs only to a sealed copy of a key. When a sibling
+    /// placement holds the same key's bytes in the clear, that copy resolves
+    /// with no vault access — so probing the sealed copy first would put a
+    /// password dialog, and its cancellation, in front of bytes the identity
+    /// already holds. The walk must take prompt-free placements first: the
+    /// resident-first rule `first_live_candidate` applies synchronously.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_resident_sibling_resolves_without_prompting_for_a_sealed_copy() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::SecretSeam;
+        use crate::wallet_backend::single_key::open_secret_store;
+        use crate::wallet_backend::{SecretAccess, SecretScope};
+        use platform_wallet_storage::secrets::{
+            SecretBytes, SecretString, WalletId as SecretWalletId,
+        };
+
+        let key = voting_key(0);
+        // The id `masternode_with` builds its identity under.
+        let identity_id = [1u8; 32];
+        let secret = [0x55; 32];
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store =
+            Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
+        // Main — probed first — is sealed Tier-2, so resolving it opens a
+        // password prompt. Voter carries the same key in the clear.
+        SecretSeam::new(&store)
+            .put_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &SecretScope::identity_key_label(&MAIN, key.id()),
+                &SecretBytes::from_slice(&[0x99; 32]),
+                &SecretString::new("the-object-password"),
+            )
+            .expect("seal the identity key");
+
+        // Scripted to cancel, so a walk that opens the sealed copy's prompt
+        // fails loudly instead of quietly answering it.
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::Cancel]));
+        let mut identity = masternode_with(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::InVault),
+                (VOTER, PrivateKeyData::Clear(secret)),
+            ],
+        );
+        identity.secret_access = Some(SecretAccess::new(store, prompt.clone(), Network::Testnet));
+
+        let (_, resolved) = identity
+            .resolve_private_key_bytes(&key)
+            .await
+            .expect("a prompt-free copy exists, so resolution must not fail")
+            .expect("the resident copy must be found");
+        assert_eq!(*resolved, secret, "the resident bytes are the ones served");
+        assert_eq!(
+            prompt.ask_count(),
+            0,
+            "a key held in the clear must resolve without any prompt",
         );
     }
 
@@ -2278,9 +2547,9 @@ mod withdrawal_key_tests {
     }
 }
 
-/// Regression coverage for the `from_bytes` decode-limit fix (SEC-001 from the
-/// PR #885 grumpy-review): a corrupted or length-inflated blob must decode to
-/// a graceful `Err`, never abort the process.
+/// Regression coverage for the `from_bytes` decode-limit fix (PR #885): a
+/// corrupted or length-inflated blob must decode to a graceful `Err`, never
+/// abort the process.
 ///
 /// This deliberately does NOT decode a full `QualifiedIdentity` blob. Crafting
 /// a byte-exact corruption of a real encoded identity is fragile — it would

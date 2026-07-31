@@ -57,13 +57,18 @@ impl AppContext {
         public_key_to_add
             .identity_public_key
             .set_id(qualified_identity.identity.get_public_key_max_id() + 1);
+        // `max_id` comes from the freshly published record, but the slot is
+        // checked against the LOCAL store: an entry saved here but never
+        // broadcast (e.g. restored from an old blob) can hold `max_id + 1`,
+        // and it may be a misfiled key's only private half — so refuse rather
+        // than overwrite.
         qualified_identity.private_keys.insert_non_encrypted(
             (
                 PrivateKeyOnMainIdentity,
                 public_key_to_add.identity_public_key.id(),
             ),
             (public_key_to_add.clone(), private_key),
-        );
+        )?;
         // Track balance before operation for fee calculation
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_identity_update();

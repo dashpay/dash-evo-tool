@@ -5,9 +5,12 @@
 //! * *Where is this key's private half filed?* — [`KeyStorage::candidates`],
 //!   which matches on the stored public-key material instead of trusting a
 //!   derived target. Every read and delete asks this one.
-//! * *Where should a private half we are about to store go?* —
-//!   [`QualifiedIdentity::placement_of`], which reads the identity's own
-//!   on-chain key lists. Only the write path asks this one.
+//! * *Where does a private half we are about to store belong, and which list
+//!   names this key?* — [`QualifiedIdentity::placement_of`], which reads the
+//!   identity's own on-chain key lists. The Key Info paste path asks it to
+//!   choose a store; role naming asks it to label a key. `add_key_to_identity`
+//!   does not ask at all: it mints its key at `max_id + 1` on the main
+//!   identity, so no other list can publish it.
 //!
 //! [`KeyStorage::candidates`]: super::encrypted_key_storage::KeyStorage::candidates
 //! [`QualifiedIdentity::placement_of`]: super::QualifiedIdentity::placement_of

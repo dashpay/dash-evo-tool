@@ -895,7 +895,7 @@ impl AppContext {
                 .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
                 .await?),
             IdentityTask::TopUpIdentity(top_up_info) => {
-                Ok(self.top_up_identity(top_up_info).await?)
+                Ok(self.top_up_identity(sdk, top_up_info).await?)
             }
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,

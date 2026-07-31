@@ -5,8 +5,9 @@
 //! [`SecretAccess`](super::SecretAccess) session so the HD seed is decrypted
 //! once, borrowed by the [`DetSigner`] for signing, and zeroized when the
 //! scope ends. `send_payment` builds and broadcasts a BIP-44 payment;
-//! `create_asset_lock_proof` builds a non-identity asset lock and returns its
-//! one-time credit-output key.
+//! `create_asset_lock_proof` builds an asset lock whose credit output DET
+//! spends itself and returns its one-time key, and
+//! `resume_unbound_topup_asset_lock` does the same for one already broadcast.
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
@@ -783,21 +784,23 @@ impl WalletBackend {
             .await
     }
 
-    /// Build, track, and broadcast a **non-identity** asset lock via the
-    /// upstream `AssetLockManager`. `funding_type` selects the funding
-    /// derivation; `identity_index` is the funding-account derivation index
-    /// (ignored for non-identity funding types). Returns the finalized
-    /// asset-lock proof, its one-time credit-output private key (derived
-    /// locally from the wallet seed at the path upstream selected), and the
-    /// txid.
+    /// Build, track, and broadcast an asset lock whose credit output DET itself
+    /// spends, via the upstream `AssetLockManager`. `funding_type` selects the
+    /// funding derivation; `identity_index` is the funding-account derivation
+    /// index (ignored by funding types that have no per-identity account).
+    /// Returns the finalized asset-lock proof, its one-time credit-output
+    /// private key (derived locally from the wallet seed at the path upstream
+    /// selected), and the txid.
     ///
-    /// For identity-funded asset locks
+    /// For the two index-bound identity funding types
     /// (`AssetLockFundingType::IdentityRegistration` /
     /// `AssetLockFundingType::IdentityTopUp`) the upstream
     /// `IdentityWallet::*_with_funding` orchestrators submit the
     /// Platform-side state transition themselves and never expose a
     /// credit-output `PrivateKey` — use [`Self::register_identity`] /
-    /// [`Self::top_up_identity`] instead.
+    /// [`Self::top_up_identity`] instead. `IdentityTopUpNotBound` has no such
+    /// orchestrator: it funds a top-up of an identity outside this wallet,
+    /// which the caller submits through the SDK itself.
     pub(crate) async fn create_asset_lock_proof(
         &self,
         seed_hash: &WalletSeedHash,
@@ -840,8 +843,15 @@ impl WalletBackend {
                         self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
                             .await?;
                     }
-                    AssetLockFundingType::IdentityTopUpNotBound
-                    | AssetLockFundingType::IdentityInvitation
+                    AssetLockFundingType::IdentityTopUpNotBound => {
+                        let plaintext = session.plaintext();
+                        let seed = plaintext
+                            .expose_hd_seed()
+                            .ok_or(TaskError::WalletStateInconsistent)?;
+                        self.ensure_unbound_topup_funding_account(seed_hash, seed)
+                            .await?;
+                    }
+                    AssetLockFundingType::IdentityInvitation
                     | AssetLockFundingType::AssetLockAddressTopUp
                     | AssetLockFundingType::AssetLockShieldedAddressTopUp => {}
                 }
@@ -866,14 +876,95 @@ impl WalletBackend {
             })
             .await
     }
+
+    /// Resume a tracked **index-less** top-up asset lock: its finalized proof
+    /// plus the one-time credit-output key that signs the transition consuming
+    /// it. The counterpart of [`Self::create_asset_lock_proof`] for a lock this
+    /// wallet already broadcast.
+    ///
+    /// Only an index-less lock is eligible — see
+    /// [`unbound_topup_lock_eligible`] for why the other kinds are refused.
+    ///
+    /// # Errors
+    /// [`TaskError::AssetLockAlreadyUsed`] when the lock was already spent,
+    /// [`TaskError::AssetLockNotEligibleForTopUp`] when it belongs to another
+    /// role or this wallet does not track it, and the generic
+    /// [`TaskError::WalletBackend`] envelope when upstream cannot resume it.
+    pub(crate) async fn resume_unbound_topup_asset_lock(
+        &self,
+        seed_hash: &WalletSeedHash,
+        out_point: dash_sdk::dpp::dashcore::OutPoint,
+    ) -> Result<
+        (
+            dash_sdk::dpp::prelude::AssetLockProof,
+            dash_sdk::dpp::dashcore::PrivateKey,
+        ),
+        TaskError,
+    > {
+        let tracked = self
+            .list_tracked_asset_locks(seed_hash)
+            .await?
+            .into_iter()
+            .find(|lock| lock.out_point == out_point);
+        unbound_topup_lock_eligible(
+            tracked
+                .as_ref()
+                .map(|lock| (lock.funding_type, &lock.status)),
+        )?;
+
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                let (proof, credit_output_path) = wallet
+                    .asset_locks()
+                    .resume_asset_lock(&out_point, None)
+                    .await
+                    .map_err(|e| TaskError::WalletBackend {
+                        source: Arc::new(e),
+                    })?;
+                let private_key =
+                    self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;
+                Ok((proof, private_key))
+            })
+            .await
+    }
+}
+
+/// Whether a tracked lock may fund a top-up of an identity this wallet does not
+/// own, given its `(funding_type, status)` — or `None` when this wallet tracks
+/// no such lock.
+///
+/// Only the index-less kind qualifies. A lock built for a registration index is
+/// reserved for this wallet's own identity at that index, and an invitation
+/// voucher's credit key was handed to the invitee, so spending either here
+/// would take funds earmarked elsewhere. Mirrors the role check the upstream
+/// orchestrator applies to its own resume path. Pure — no I/O — so it is
+/// unit-testable.
+fn unbound_topup_lock_eligible(
+    lock: Option<(
+        platform_wallet::AssetLockFundingType,
+        &platform_wallet::wallet::asset_lock::tracked::AssetLockStatus,
+    )>,
+) -> Result<(), TaskError> {
+    use platform_wallet::AssetLockFundingType;
+    use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+    match lock {
+        Some((_, AssetLockStatus::Consumed)) => Err(TaskError::AssetLockAlreadyUsed),
+        Some((AssetLockFundingType::IdentityTopUpNotBound, _)) => Ok(()),
+        Some(_) | None => Err(TaskError::AssetLockNotEligibleForTopUp),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         ASSET_LOCK_FEE_PER_KB, MAX_MONEY, asset_lock_builder_height,
-        asset_lock_max_amount_from_account,
+        asset_lock_max_amount_from_account, unbound_topup_lock_eligible,
     };
+    use crate::backend_task::error::TaskError;
     use crate::model::fee_estimation::core_max_send_amount_duffs;
     use crate::wallet_backend::snapshot::DetWalletBalance;
     use dash_sdk::dpp::dashcore::ScriptBuf;
@@ -1385,5 +1476,63 @@ mod tests {
         )
         .await
         .expect("the expired observation must release its exclusive lock");
+    }
+
+    /// Only an index-less lock may fund an identity outside this wallet: an
+    /// index-bound lock is reserved for this wallet's own identity at that
+    /// index, an invitation voucher's key is already in the invitee's hands,
+    /// and an untracked outpoint is not this wallet's to spend.
+    #[test]
+    fn only_an_index_less_lock_can_fund_a_foreign_identity_top_up() {
+        use platform_wallet::AssetLockFundingType as F;
+        use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+        unbound_topup_lock_eligible(Some((
+            F::IdentityTopUpNotBound,
+            &AssetLockStatus::InstantSendLocked,
+        )))
+        .expect("an index-less lock funds a foreign top-up");
+
+        for funding_type in [
+            F::IdentityTopUp,
+            F::IdentityRegistration,
+            F::IdentityInvitation,
+            F::AssetLockAddressTopUp,
+        ] {
+            let err = unbound_topup_lock_eligible(Some((
+                funding_type,
+                &AssetLockStatus::InstantSendLocked,
+            )))
+            .expect_err("a lock bound to another role must be refused");
+            assert!(
+                matches!(err, TaskError::AssetLockNotEligibleForTopUp),
+                "expected AssetLockNotEligibleForTopUp for {funding_type:?}, got: {err:?}"
+            );
+        }
+
+        let err = unbound_topup_lock_eligible(None)
+            .expect_err("an outpoint this wallet does not track must be refused");
+        assert!(
+            matches!(err, TaskError::AssetLockNotEligibleForTopUp),
+            "expected AssetLockNotEligibleForTopUp, got: {err:?}"
+        );
+    }
+
+    /// A spent lock is refused with its own message: retrying it would only
+    /// earn Platform's "already consumed" rejection.
+    #[test]
+    fn an_already_spent_lock_is_refused_before_submission() {
+        use platform_wallet::AssetLockFundingType as F;
+        use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+        let err = unbound_topup_lock_eligible(Some((
+            F::IdentityTopUpNotBound,
+            &AssetLockStatus::Consumed,
+        )))
+        .expect_err("a consumed lock must be refused");
+        assert!(
+            matches!(err, TaskError::AssetLockAlreadyUsed),
+            "expected AssetLockAlreadyUsed, got: {err:?}"
+        );
     }
 }

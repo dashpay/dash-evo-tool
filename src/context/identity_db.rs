@@ -838,10 +838,12 @@ impl AppContext {
     }
 
     /// The wallet link recorded for `id`, or `None` when the identity is not
-    /// stored or was never linked to a wallet. Test-only: the link lives beside
-    /// the blob rather than inside it, so only a direct read can prove an
-    /// update preserved it.
-    #[cfg(test)]
+    /// stored or was never linked to a wallet.
+    ///
+    /// This link — not [`QualifiedIdentity::associated_wallets`], which
+    /// hydration fills with every loaded wallet — is what "this wallet owns
+    /// this identity" means in DET. It lives beside the blob rather than inside
+    /// it, so only a direct read sees it.
     pub(crate) fn stored_identity_wallet_link(
         &self,
         id: &Identifier,

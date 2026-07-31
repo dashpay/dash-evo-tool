@@ -536,6 +536,8 @@ As a user, I want to add credits to my identity so that I can continue performin
 
 - Top up from wallet or Platform addresses.
 - Amount selection with credit cost display.
+- Any loaded wallet can pay, including for an identity another wallet owns; only the paying wallet's funds move and its own identity records are left untouched.
+- A saved funding transaction can only pay for an identity of the wallet it was created in; paying for another wallet's identity uses the wallet balance instead.
 
 ### IDN-005: Withdraw credits to Core address [Implemented]
 **Persona:** Priya, Jordan

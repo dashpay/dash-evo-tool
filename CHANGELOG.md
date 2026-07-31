@@ -101,6 +101,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **"Max" now matches what your Core wallet can actually send**: pressing
+  "Max" when shielding DASH, funding a Platform address through the Simple
+  builder-driven form, sending directly to an identity, or funding an identity
+  (creating or topping up, from your wallet balance or a received deposit)
+  could suggest an amount larger than the wallet could actually send, so the
+  transaction was rejected no matter how you adjusted it. Max and the amount
+  check now ask the wallet directly what it can send instead of estimating from
+  an on-screen balance, and both reserve room for the fee. The two derive from
+  the same wallet answer: if your spendable funds change after that answer,
+  Max steps back to "Checking the available amount…" and the amount check
+  waits for a fresh answer instead of accepting an outdated ceiling. The
+  Advanced manual-input Platform-address flow remains governed by
+  the Core inputs the user selects rather than this builder ceiling. Funding
+  from a received deposit is also now capped by what actually arrived at that
+  deposit address, never by unrelated funds elsewhere in the wallet. While the
+  check is running, the amount field shows "Checking the available amount…";
+  if it fails, "The available amount could not be checked." appears with a
+  "Retry available amount check" button, and you can still switch to a
+  different funding method at any point.
+
 - **A key held in the clear is used without asking for a password**: for a key
   an earlier version had saved in two places, one of them password-protected,
   using the key could bring up a password prompt even though a copy needing no

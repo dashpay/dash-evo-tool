@@ -331,6 +331,12 @@ pub enum BackendTaskContext {
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
+    /// Live asset-lock builder ceiling query for one wallet.
+    AssetLockMaxAmount {
+        seed_hash: WalletSeedHash,
+        snapshot_generation: u64,
+        request_id: u64,
+    },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
     /// The detection pass for one identity's legacy-recovery offer.
@@ -387,6 +393,17 @@ impl BackendTaskContext {
     pub(crate) fn generated_receive_address_wallet(&self) -> Option<WalletSeedHash> {
         match self.operation() {
             Self::GenerateReceiveAddress { seed_hash } => Some(*seed_hash),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn asset_lock_max_amount_request(&self) -> Option<(WalletSeedHash, u64, u64)> {
+        match self.operation() {
+            Self::AssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+                request_id,
+            } => Some((*seed_hash, *snapshot_generation, *request_id)),
             _ => None,
         }
     }
@@ -458,6 +475,15 @@ impl From<&BackendTask> for BackendTaskContext {
                     seed_hash: *seed_hash,
                 }
             }
+            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+                request_id,
+            }) => Self::AssetLockMaxAmount {
+                seed_hash: *seed_hash,
+                snapshot_generation: *snapshot_generation,
+                request_id: *request_id,
+            },
             BackendTask::WalletTask(
                 task @ (WalletTask::RenameHdWallet { .. }
                 | WalletTask::RenameSingleKeyWallet { .. }),
@@ -624,6 +650,15 @@ pub enum BackendTaskSuccessResult {
     TrackedAssetLocks {
         seed_hash: WalletSeedHash,
         locks: Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock>,
+    },
+    /// Largest asset-lock credit output the live upstream builder accepts.
+    AssetLockMaxAmount {
+        seed_hash: WalletSeedHash,
+        snapshot_generation: u64,
+        request_id: u64,
+        amount_duffs: u64,
+        observed_inputs: crate::wallet_backend::AssetLockInputState,
+        is_partial: bool,
     },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
@@ -1291,6 +1326,21 @@ impl AppContext {
                 .list_tracked_asset_locks(&seed_hash)
                 .await
                 .map(|locks| BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks }),
+            WalletTask::GetAssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+                request_id,
+            } => backend
+                .asset_lock_max_amount(&seed_hash)
+                .await
+                .map(|quote| BackendTaskSuccessResult::AssetLockMaxAmount {
+                    seed_hash,
+                    snapshot_generation,
+                    request_id,
+                    amount_duffs: quote.amount_duffs,
+                    observed_inputs: quote.observed_inputs,
+                    is_partial: quote.is_partial,
+                }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }
@@ -1713,6 +1763,21 @@ mod tests {
         assert_eq!(
             BackendTaskContext::from(&task),
             BackendTaskContext::TokenRewardEstimate(identity_token_id)
+        );
+    }
+
+    #[test]
+    fn backend_task_context_preserves_asset_lock_request_identity() {
+        let seed_hash = [0x39; 32];
+        let task = BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+            seed_hash,
+            snapshot_generation: 7,
+            request_id: 42,
+        });
+
+        assert_eq!(
+            BackendTaskContext::from(&task).asset_lock_max_amount_request(),
+            Some((seed_hash, 7, 42))
         );
     }
 

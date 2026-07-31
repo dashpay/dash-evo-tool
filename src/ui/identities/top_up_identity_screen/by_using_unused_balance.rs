@@ -17,10 +17,11 @@ impl TopUpIdentityScreen {
                 }
             };
 
-            let spendable_balance: u64 = self
-                .app_context
-                .snapshot_balance(&wallet.seed_hash())
-                .spendable();
+            let seed_hash = wallet.seed_hash();
+            let spendable_balance = self
+                .asset_lock_balance
+                .get(&seed_hash)
+                .unwrap_or_else(|| self.app_context.snapshot_balance(&seed_hash).spendable());
 
             let dash_balance = spendable_balance as f64 * 1e-8; // Convert to DASH units
 
@@ -41,10 +42,7 @@ impl TopUpIdentityScreen {
     fn render_insufficient_wallet_balance_banner(&self, ui: &mut egui::Ui) -> Option<AppAction> {
         let selected_wallet = self.wallet.as_ref()?;
         let spendable_duffs = match selected_wallet.read() {
-            Ok(w) => self
-                .app_context
-                .snapshot_balance(&w.seed_hash())
-                .spendable(),
+            Ok(w) => self.asset_lock_balance.get(&w.seed_hash())?,
             Err(_) => {
                 ui.label("Wallet is busy. Try again in a moment.");
                 return Some(AppAction::None);
@@ -93,8 +91,38 @@ impl TopUpIdentityScreen {
         self.show_wallet_balance(ui);
         ui.add_space(5.0);
 
+        let seed_hash = self
+            .wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
+        let Some(seed_hash) = seed_hash else {
+            return action;
+        };
+        let failed = self.asset_lock_balance.is_failed(&seed_hash);
+        let loading = self.asset_lock_quote_is_loading(&seed_hash);
+        if failed || loading {
+            ui.label(if failed {
+                "The available amount could not be checked."
+            } else {
+                "Checking the available amount…"
+            });
+            if self.asset_lock_balance.should_offer_retry(&seed_hash)
+                && ui.button("Retry available amount check").clicked()
+            {
+                self.asset_lock_balance.invalidate_one(&seed_hash);
+            }
+            return action;
+        }
+        if self.asset_lock_balance.should_offer_retry(&seed_hash) {
+            ui.label("The amount shown is safe but may be lower than your full available amount.");
+            if ui.button("Retry available amount check").clicked() {
+                self.asset_lock_balance.invalidate_one(&seed_hash);
+            }
+        }
+
         if let Some(insufficient_action) = self.render_insufficient_wallet_balance_banner(ui) {
-            return insufficient_action;
+            action |= insufficient_action;
+            return action;
         }
 
         self.top_up_funding_amount_input(ui);

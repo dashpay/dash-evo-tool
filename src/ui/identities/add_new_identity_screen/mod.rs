@@ -4,7 +4,7 @@ mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod success_screen;
 
-use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{
@@ -14,7 +14,8 @@ use crate::backend_task::identity::{
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::asset_lock::{AssetLockAmountError, validate_asset_lock_amount};
+use crate::model::fee_estimation::{format_credits_as_dash, format_duffs_as_dash};
 use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::MessageBanner;
@@ -27,12 +28,14 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
-    funding_method_after_switch, max_amount_after_fee_reserve, spendable_covers_minimum,
-    step_after_task_failure, wallet_selection_combo,
+    funding_method_after_switch, max_amount_after_fee_reserve, receive_deposit_ceiling_duffs,
+    spendable_covers_minimum, step_after_task_failure, wallet_selection_combo,
 };
-use crate::ui::state::TrackedAssetLockCache;
+use crate::ui::state::{AssetLockBalanceCache, TrackedAssetLockCache};
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, ScreenLike};
+use crate::ui::{
+    MessageType, ScreenLike, append_concurrent_backend_tasks, can_append_concurrent_backend_tasks,
+};
 use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -143,6 +146,7 @@ pub struct AddNewIdentityScreen {
     /// via the App Task System. Backs both the funding-method gate and the
     /// asset-lock picker.
     asset_lock_cache: TrackedAssetLockCache,
+    asset_lock_balance: AssetLockBalanceCache,
 }
 
 impl AddNewIdentityScreen {
@@ -211,6 +215,7 @@ impl AddNewIdentityScreen {
             show_advanced_options: false,
             completed_fee_result: None,
             asset_lock_cache: TrackedAssetLockCache::default(),
+            asset_lock_balance: AssetLockBalanceCache::default(),
         };
 
         if let Some(wallet) = selected_wallet {
@@ -460,21 +465,54 @@ impl AddNewIdentityScreen {
         rendered
     }
 
-    /// Whether `wallet` can cover the estimated identity-creation fee out of its
-    /// spendable balance — the same sufficiency check as the "not enough Dash"
-    /// banner in `by_using_unused_balance.rs`, so a dust balance (positive but
-    /// below the fee) is never treated as fundable. Poison-tolerant: a busy
-    /// wallet lock reads as "cannot afford" rather than panicking.
-    fn wallet_can_afford_creation(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> bool {
+    /// Whether the loaded builder ceiling covers the same minimum as the
+    /// "not enough Dash" banner. An unloaded quote does not block the option.
+    fn wallet_can_afford_creation(&self, wallet: &Arc<RwLock<Wallet>>) -> bool {
         let Ok(w) = wallet.read() else {
             return false;
         };
-        let spendable_duffs = app_context.snapshot_balance(&w.seed_hash()).spendable();
-        let key_count = default_identity_key_specs(app_context.dashpay_contract.id()).len() + 1;
-        let minimum_credits = app_context
+        let key_count = self.identity_keys.others.len() + 1;
+        let minimum_credits = self
+            .app_context
             .fee_estimator()
             .estimate_identity_create(key_count);
-        spendable_covers_minimum(spendable_duffs, minimum_credits)
+        self.asset_lock_balance
+            .get(&w.seed_hash())
+            .is_none_or(|ceiling| spendable_covers_minimum(ceiling, minimum_credits))
+    }
+
+    /// Whether the builder ceiling for the wallet's current spendable inputs
+    /// is still being checked (no quote yet, or the quote predates an input
+    /// change and is being revalidated).
+    fn asset_lock_quote_is_loading(&self, seed_hash: &WalletSeedHash) -> bool {
+        let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(seed_hash);
+        self.asset_lock_balance
+            .get_current(seed_hash, &input_state)
+            .is_none()
+    }
+
+    /// Builder ceiling for Max and dispatch validation — one accessor for
+    /// both, valid only while the quote matches current wallet inputs, so Max
+    /// can never offer an amount validation would refuse.
+    fn current_validation_ceiling_duffs(&self, funding_method: FundingMethod) -> Option<u64> {
+        let seed_hash = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok())
+            .map(|wallet| wallet.seed_hash())?;
+        let (_, input_state, _) = self.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let wallet_ceiling_duffs = self
+            .asset_lock_balance
+            .get_current(&seed_hash, &input_state)?;
+
+        match funding_method {
+            FundingMethod::UseWalletBalance => Some(wallet_ceiling_duffs),
+            FundingMethod::ReceiveDeposit => Some(receive_deposit_ceiling_duffs(
+                wallet_ceiling_duffs,
+                self.funding_address_balance_duffs,
+            )),
+            _ => None,
+        }
     }
 
     /// Update selected wallet and trigger all dependent actions, like updating
@@ -488,13 +526,14 @@ impl AddNewIdentityScreen {
         let is_open = wallet.read().is_ok_and(|w| w.is_open());
 
         self.selected_wallet = Some(wallet);
+        self.asset_lock_balance.invalidate();
         self.wallet_open_attempted = false;
         self.identity_id_number = self.next_identity_id();
 
         let can_afford = self
             .selected_wallet
             .as_ref()
-            .is_some_and(|wallet| Self::wallet_can_afford_creation(&self.app_context, wallet));
+            .is_some_and(|wallet| self.wallet_can_afford_creation(wallet));
         let current = (
             self.funding_method
                 .read()
@@ -579,7 +618,16 @@ impl AddNewIdentityScreen {
                     (
                         self.asset_lock_cache.has_unused(&seed_hash)
                             || self.asset_lock_cache.is_failed(&seed_hash),
-                        self.app_context.snapshot_has_balance(&seed_hash),
+                        self.asset_lock_balance
+                            .get(&seed_hash)
+                            .is_none_or(|ceiling| {
+                                let key_count = self.identity_keys.others.len() + 1;
+                                let minimum = self
+                                    .app_context
+                                    .fee_estimator()
+                                    .estimate_identity_create(key_count);
+                                spendable_covers_minimum(ceiling, minimum)
+                            }),
                     )
                 };
 
@@ -690,6 +738,30 @@ impl AddNewIdentityScreen {
         self.prefill_funding_amount = false;
         self.funding_amount = None;
         self.funding_amount_input = None;
+    }
+
+    /// Reset wallet- and network-bound state after changing contexts.
+    pub(crate) fn reset_for_network_switch(&mut self) {
+        self.selected_wallet = None;
+        self.identity_id_number = 0;
+        self.funding_asset_lock = None;
+        self.reset_to_choose_funding();
+        self.identity_keys = IdentityKeySpecs::empty();
+        self.warming_identity_keys = false;
+        self.pending_warm_request = None;
+        self.revealed_wifs.clear();
+        self.pending_wif_request = None;
+        self.wallet_unlock_popup = WalletUnlockPopup::new();
+        self.wallet_open_attempted = false;
+        self.copied_to_clipboard = None;
+        self.show_pop_up_info = None;
+        self.successful_qualified_identity_id = None;
+        self.selected_platform_address_for_funding = None;
+        self.platform_funding_amount = None;
+        self.platform_funding_amount_input = None;
+        self.completed_fee_result = None;
+        self.asset_lock_cache.invalidate();
+        self.asset_lock_balance.invalidate();
     }
 
     // Function to render the key selection mode (Default or Advanced)
@@ -1054,24 +1126,40 @@ impl AddNewIdentityScreen {
                 if amount == 0 {
                     return AppAction::None;
                 }
-                if funding_method == FundingMethod::ReceiveDeposit {
-                    let key_count = self.identity_keys.others.len() + 1;
-                    let fee_credits = self
-                        .app_context
-                        .fee_estimator()
-                        .estimate_identity_create(key_count);
-                    let available_credits = max_amount_after_fee_reserve(
-                        self.funding_address_balance_duffs,
-                        fee_credits,
+                let Some(max_amount) = self.current_validation_ceiling_duffs(funding_method) else {
+                    let seed_hash = selected_wallet.read_recover().seed_hash();
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        self.asset_lock_balance
+                            .validation_unavailable_message(&seed_hash),
+                        MessageType::Warning,
                     );
-                    if amount.saturating_mul(CREDITS_PER_DUFF) > available_credits {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            "That deposit cannot cover this amount. Wait for more funds or choose a smaller amount.",
-                            MessageType::Warning,
-                        );
-                        return AppAction::None;
-                    }
+                    return AppAction::None;
+                };
+                let key_count = self.identity_keys.others.len() + 1;
+                let identity_fee_duffs = self
+                    .app_context
+                    .fee_estimator()
+                    .estimate_identity_create(key_count)
+                    .div_ceil(CREDITS_PER_DUFF);
+                if let Err(error) =
+                    validate_asset_lock_amount(amount, identity_fee_duffs, max_amount)
+                {
+                    let maximum_amount_duffs = match error {
+                        AssetLockAmountError::Overflow => max_amount,
+                        AssetLockAmountError::ExceedsMaximum {
+                            maximum_amount_duffs,
+                        } => maximum_amount_duffs,
+                    };
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!(
+                            "You can transfer up to {} right now. Choose a smaller amount or wait for more funds.",
+                            format_duffs_as_dash(maximum_amount_duffs)
+                        ),
+                        MessageType::Warning,
+                    );
+                    return AppAction::None;
                 }
 
                 let wallet_seed_hash = hex::encode(selected_wallet.read_recover().seed_hash());
@@ -1146,46 +1234,29 @@ impl AddNewIdentityScreen {
 
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = *self.funding_method.read_recover();
+        let available_ceiling_duffs = self.current_validation_ceiling_duffs(funding_method);
 
-        // Apply the max-amount restriction for both wallet-balance funding and a
-        // received deposit (which also spends from the wallet balance); reserve
-        // the estimated identity-creation fee out of the spendable balance so
-        // "Max" never offers more than the coin selector can actually use.
-        let (max_amount_credits, show_max_button, fee_hint) = if matches!(
-            funding_method,
-            FundingMethod::UseWalletBalance | FundingMethod::ReceiveDeposit
-        ) {
-            let spendable_duffs = if funding_method == FundingMethod::ReceiveDeposit {
-                self.funding_address_balance_duffs
+        // Reserve the estimated identity-creation fee from the relevant ceiling.
+        let (max_amount_credits, show_max_button, fee_hint) =
+            if let Some(available_ceiling_duffs) = available_ceiling_duffs {
+                let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+                let estimated_fee = self
+                    .app_context
+                    .fee_estimator()
+                    .estimate_identity_create(key_count);
+                let max_with_fee_reserved =
+                    max_amount_after_fee_reserve(available_ceiling_duffs, estimated_fee);
+                (
+                    Some(max_with_fee_reserved),
+                    true,
+                    Some(format!(
+                        "The estimated fee reserves about {}.",
+                        format_credits_as_dash(estimated_fee),
+                    )),
+                )
             } else {
-                self.selected_wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok())
-                    .map(|wallet| {
-                        self.app_context
-                            .snapshot_balance(&wallet.seed_hash())
-                            .spendable()
-                    })
-                    .unwrap_or(0)
+                (None, false, None)
             };
-            let key_count = self.identity_keys.others.len() + 1; // +1 for master key
-            let estimated_fee = self
-                .app_context
-                .fee_estimator()
-                .estimate_identity_create(key_count);
-            let max_with_fee_reserved =
-                max_amount_after_fee_reserve(spendable_duffs, estimated_fee);
-            (
-                Some(max_with_fee_reserved),
-                true,
-                Some(format!(
-                    "The estimated fee reserves about {}.",
-                    format_credits_as_dash(estimated_fee),
-                )),
-            )
-        } else {
-            (None, false, None)
-        };
 
         let should_prefill = self.prefill_funding_amount;
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {
@@ -1326,6 +1397,14 @@ impl AddNewIdentityScreen {
 }
 
 impl ScreenLike for AddNewIdentityScreen {
+    fn refresh_on_arrival(&mut self) {
+        self.asset_lock_balance.invalidate();
+    }
+
+    fn refresh(&mut self) {
+        self.asset_lock_balance.invalidate();
+    }
+
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             let mut step = self.step.write_recover();
@@ -1334,6 +1413,15 @@ impl ScreenLike for AddNewIdentityScreen {
     }
 
     fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if let Some((seed_hash, snapshot_generation, request_id)) =
+            context.asset_lock_max_amount_request()
+        {
+            self.asset_lock_balance.mark_loading_failed(
+                &seed_hash,
+                snapshot_generation,
+                request_id,
+            );
+        }
         let selected_seed_hash = self
             .selected_wallet
             .as_ref()
@@ -1345,6 +1433,15 @@ impl ScreenLike for AddNewIdentityScreen {
             self.funding_address_request_failed = true;
         }
     }
+
+    fn should_suppress_backend_task_error(
+        &self,
+        context: &BackendTaskContext,
+        _error: &TaskError,
+    ) -> bool {
+        context.asset_lock_max_amount_request().is_some()
+    }
+
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match &backend_task_success_result {
             BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { .. } => {
@@ -1366,6 +1463,24 @@ impl ScreenLike for AddNewIdentityScreen {
             }
             BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } => {
                 self.asset_lock_cache.store(*seed_hash, locks.clone());
+                return;
+            }
+            BackendTaskSuccessResult::AssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+                request_id,
+                amount_duffs,
+                observed_inputs,
+                is_partial,
+            } => {
+                self.asset_lock_balance.store(
+                    *seed_hash,
+                    *snapshot_generation,
+                    *request_id,
+                    *amount_duffs,
+                    observed_inputs.clone(),
+                    *is_partial,
+                );
                 return;
             }
             BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
@@ -1495,6 +1610,7 @@ impl ScreenLike for AddNewIdentityScreen {
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
+        let mut request_asset_lock_balance = false;
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
@@ -1667,12 +1783,14 @@ impl ScreenLike for AddNewIdentityScreen {
                         inner_action |= self.render_ui_by_using_unused_asset_lock(ui, step_number);
                     },
                     FundingMethod::UseWalletBalance => {
+                        request_asset_lock_balance = true;
                         inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
                     },
                     FundingMethod::UsePlatformAddress => {
                         inner_action |= self.render_ui_by_platform_address(ui, step_number);
                     },
                     FundingMethod::ReceiveDeposit => {
+                        request_asset_lock_balance = true;
                         inner_action |= self.render_ui_by_receive_deposit(ui, step_number);
                     },
                 }
@@ -1709,66 +1827,77 @@ impl ScreenLike for AddNewIdentityScreen {
             }
         }
 
-        // Drain the queued end-of-frame backend reads into one concurrent batch
-        // so none clobbers another (`AppAction`'s `|=` keeps only the last
-        // value).
-        let mut pending_tasks: Vec<BackendTask> = Vec::new();
+        if can_append_concurrent_backend_tasks(&action) {
+            // Drain the queued end-of-frame backend reads into one concurrent
+            // batch so none clobbers another.
+            let mut pending_tasks: Vec<BackendTask> = Vec::new();
 
-        // Auth-pubkey cache warm (cold-cache cover for the chooser, RK-2). One
-        // in-flight at a time via `warming_identity_keys`.
-        if let Some((seed_hash, identity_index)) = self.pending_warm_request.take() {
-            // Warm at least the default range, plus a margin for any
-            // advanced-mode keys already added beyond it.
-            let key_count = self
-                .default_key_count()
-                .max(self.identity_keys.others.len() as u32 + 2);
-            pending_tasks.push(BackendTask::WalletTask(
-                WalletTask::WarmIdentityAuthPubkeys {
+            // Auth-pubkey cache warm (cold-cache cover for the chooser, RK-2). One
+            // in-flight at a time via `warming_identity_keys`.
+            if let Some((seed_hash, identity_index)) = self.pending_warm_request.take() {
+                // Warm at least the default range, plus a margin for any
+                // advanced-mode keys already added beyond it.
+                let key_count = self
+                    .default_key_count()
+                    .max(self.identity_keys.others.len() as u32 + 2);
+                pending_tasks.push(BackendTask::WalletTask(
+                    WalletTask::WarmIdentityAuthPubkeys {
+                        seed_hash,
+                        identity_index,
+                        key_count,
+                    },
+                ));
+            }
+
+            // "Show WIF" derivation (advanced mode); the seed is fetched
+            // just-in-time in the backend and only the WIF returns.
+            if let Some((_key_id, derivation_path)) = self.pending_wif_request.take()
+                && let Some(wallet) = &self.selected_wallet
+            {
+                let seed_hash = wallet.read_recover().seed_hash();
+                pending_tasks.push(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
                     seed_hash,
-                    identity_index,
-                    key_count,
-                },
-            ));
-        }
-
-        // "Show WIF" derivation (advanced mode); the seed is fetched
-        // just-in-time in the backend and only the WIF returns.
-        if let Some((_key_id, derivation_path)) = self.pending_wif_request.take()
-            && let Some(wallet) = &self.selected_wallet
-        {
-            let seed_hash = wallet.read_recover().seed_hash();
-            pending_tasks.push(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
-                seed_hash,
-                derivation_path,
-            }));
-        }
-
-        // Fetch the selected wallet's tracked asset locks once (off the UI
-        // thread) so the funding-method gate and the picker can read them.
-        if let Some(wallet) = &self.selected_wallet {
-            let seed_hash = wallet.read_recover().seed_hash();
-            if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
-                pending_tasks.push(task);
+                    derivation_path,
+                }));
             }
-        }
 
-        // Derive the "Receive a new deposit" address off the UI thread; the QR
-        // view queues this when it has no address yet.
-        if let Some(seed_hash) = self.pending_funding_address_request.take() {
-            self.funding_address_request_in_flight = true;
-            pending_tasks.push(BackendTask::WalletTask(
-                WalletTask::GenerateReceiveAddress { seed_hash },
-            ));
-        }
-
-        match pending_tasks.pop() {
-            None => {}
-            Some(task) if pending_tasks.is_empty() => action |= AppAction::BackendTask(task),
-            Some(task) => {
-                pending_tasks.push(task);
-                action |=
-                    AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+            // Fetch the selected wallet's tracked asset locks once (off the UI
+            // thread) so the funding-method gate and the picker can read them.
+            if let Some(wallet) = &self.selected_wallet {
+                let seed_hash = wallet.read_recover().seed_hash();
+                if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
+                    pending_tasks.push(task);
+                }
             }
+
+            if request_asset_lock_balance
+                && let Some(seed_hash) = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
+            {
+                let (snapshot_generation, input_state, utxo_revision) =
+                    self.app_context.asset_lock_probe_snapshot(&seed_hash);
+                if let Some(task) = self.asset_lock_balance.ensure_requested(
+                    seed_hash,
+                    snapshot_generation,
+                    input_state,
+                    utxo_revision,
+                ) {
+                    pending_tasks.push(task);
+                }
+            }
+
+            // Derive the "Receive a new deposit" address off the UI thread; the QR
+            // view queues this when it has no address yet.
+            if let Some(seed_hash) = self.pending_funding_address_request.take() {
+                self.funding_address_request_in_flight = true;
+                pending_tasks.push(BackendTask::WalletTask(
+                    WalletTask::GenerateReceiveAddress { seed_hash },
+                ));
+            }
+
+            action = append_concurrent_backend_tasks(action, pending_tasks);
         }
 
         action
@@ -1777,7 +1906,57 @@ impl ScreenLike for AddNewIdentityScreen {
 
 #[cfg(test)]
 mod funding_method_tests {
-    use super::format_wallet_picker_label;
+    use super::*;
+    use crate::context::test_support::{test_app_context, test_app_context_for_network};
+    use crate::model::amount::DASH_DECIMAL_PLACES;
+    use crate::ui::Screen;
+    use crate::wallet_backend::AssetLockInputState;
+    use dash_sdk::dpp::dashcore::{Network, OutPoint, Txid, hashes::Hash};
+
+    fn different_asset_lock_inputs(seed_byte: u8) -> AssetLockInputState {
+        AssetLockInputState::from_inputs([(
+            OutPoint::new(Txid::from_byte_array([seed_byte; 32]), 0),
+            1,
+        )])
+    }
+
+    fn wallet_balance_screen(
+        seed_byte: u8,
+    ) -> (AddNewIdentityScreen, WalletSeedHash, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let seed = [seed_byte; 64];
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet"),
+        ));
+        let seed_hash = wallet.read_recover().seed_hash();
+        let master = IdentityKeyEntry::from_seed(
+            &wallet.read_recover(),
+            &seed,
+            Network::Testnet,
+            0,
+            0,
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            None,
+        )
+        .expect("master identity key");
+        let mut screen = AddNewIdentityScreen::new(&app_context);
+        screen.selected_wallet = Some(wallet);
+        screen.identity_keys = IdentityKeySpecs::new(Some(master), Vec::new());
+        screen.funding_amount = Some(Amount::new(CREDITS_PER_DUFF, DASH_DECIMAL_PLACES));
+        (screen, seed_hash, temp_dir)
+    }
+
+    fn asset_lock_request_id(task: Option<BackendTask>) -> u64 {
+        match task {
+            Some(BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                request_id, ..
+            })) => request_id,
+            other => panic!("expected asset-lock maximum request, got {other:?}"),
+        }
+    }
 
     /// The picker label pairs the wallet alias with its spendable balance,
     /// rendered in DASH, so the user can compare wallets before choosing one.
@@ -1805,5 +1984,212 @@ mod funding_method_tests {
         assert!(label.starts_with("Savings"), "keeps the alias: {label}");
         assert!(label.contains(" — "), "uses an em-dash separator: {label}");
         assert!(label.ends_with(" DASH"), "shows the DASH unit: {label}");
+    }
+
+    #[test]
+    fn receive_deposit_dispatch_rejects_amount_above_deposit_address_balance() {
+        const DEPOSIT_ADDRESS_DUFFS: u64 = 10_000_000;
+        const REQUESTED_DUFFS: u64 = 20_000_000;
+        const WALLET_CEILING_DUFFS: u64 = 100_000_000;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let app_context = test_app_context(temp_dir.path());
+        let seed = [0x31; 64];
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("wallet"),
+        ));
+        let seed_hash = wallet.read_recover().seed_hash();
+        let master = IdentityKeyEntry::from_seed(
+            &wallet.read_recover(),
+            &seed,
+            Network::Testnet,
+            0,
+            0,
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            None,
+        )
+        .expect("master identity key");
+        let mut screen = AddNewIdentityScreen::new(&app_context);
+        screen.selected_wallet = Some(wallet);
+        screen.identity_keys = IdentityKeySpecs::new(Some(master), Vec::new());
+        screen.funding_address_balance_duffs = DEPOSIT_ADDRESS_DUFFS;
+        screen.funding_amount = Some(Amount::new(
+            REQUESTED_DUFFS * CREDITS_PER_DUFF,
+            DASH_DECIMAL_PLACES,
+        ));
+        let (generation, final_funds, revision) = app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            generation,
+            final_funds.clone(),
+            revision,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            generation,
+            request_id,
+            WALLET_CEILING_DUFFS,
+            final_funds,
+            false,
+        );
+
+        assert!(matches!(
+            screen.register_identity_clicked(FundingMethod::ReceiveDeposit),
+            AppAction::None
+        ));
+    }
+
+    #[test]
+    fn register_identity_dispatch_rejects_quote_for_stale_utxo_composition() {
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x35);
+        let (_, current_final_funds, current_revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let stale_inputs = different_asset_lock_inputs(0x35);
+
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            7,
+            current_final_funds,
+            current_revision,
+        ));
+        screen
+            .asset_lock_balance
+            .store(seed_hash, 7, request_id, 10_000_000, stale_inputs, false);
+
+        assert!(matches!(
+            screen.register_identity_clicked(FundingMethod::UseWalletBalance),
+            AppAction::None
+        ));
+        let ctx = screen.app_context.egui_ctx();
+        assert!(MessageBanner::has_global(ctx));
+        MessageBanner::clear_global_message(
+            ctx,
+            "Your wallet's available amount is still being checked. Wait a moment and try again.",
+        );
+        assert!(
+            !MessageBanner::has_global(ctx),
+            "stale composition must surface the loading warning rather than dispatch"
+        );
+    }
+
+    #[test]
+    fn register_identity_dispatch_distinguishes_failed_probe_from_loading() {
+        let (mut screen, seed_hash, _temp_dir) = wallet_balance_screen(0x36);
+        let ctx = screen.app_context.egui_ctx().clone();
+        let (generation, final_funds, revision) =
+            screen.app_context.asset_lock_probe_snapshot(&seed_hash);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            generation,
+            final_funds,
+            revision,
+        ));
+
+        assert!(matches!(
+            screen.register_identity_clicked(FundingMethod::UseWalletBalance),
+            AppAction::None
+        ));
+        assert!(MessageBanner::has_global(&ctx));
+        MessageBanner::clear_global_message(
+            &ctx,
+            "Your wallet's available amount is still being checked. Wait a moment and try again.",
+        );
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "loading dispatch must use the loading-specific warning"
+        );
+
+        screen
+            .asset_lock_balance
+            .mark_loading_failed(&seed_hash, generation, request_id);
+        assert!(screen.asset_lock_balance.is_failed(&seed_hash));
+
+        assert!(matches!(
+            screen.register_identity_clicked(FundingMethod::UseWalletBalance),
+            AppAction::None
+        ));
+        assert!(MessageBanner::has_global(&ctx));
+        MessageBanner::clear_global_message(
+            &ctx,
+            "The available amount could not be checked. Use Retry and try again.",
+        );
+        assert!(
+            !MessageBanner::has_global(&ctx),
+            "failed dispatch must use the failed-specific retry warning"
+        );
+    }
+
+    #[test]
+    fn network_switch_and_refresh_invalidate_asset_lock_balance() {
+        let old_dir = tempfile::tempdir().expect("old context dir");
+        let new_dir = tempfile::tempdir().expect("new context dir");
+        let old_context = test_app_context(old_dir.path());
+        let new_context = test_app_context_for_network(new_dir.path(), Network::Mainnet);
+        let wallet = Arc::new(RwLock::new(
+            Wallet::new_from_seed([0x33; 64], Network::Testnet, None, None).expect("wallet"),
+        ));
+        let seed_hash = wallet.read_recover().seed_hash();
+        let mut screen = AddNewIdentityScreen::new(&old_context);
+        screen.selected_wallet = Some(wallet);
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            7,
+            AssetLockInputState::default(),
+            1,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            7,
+            request_id,
+            900,
+            AssetLockInputState::default(),
+            false,
+        );
+
+        let mut screen = Screen::AddNewIdentityScreen(screen);
+        screen.change_context(new_context.clone());
+        let Screen::AddNewIdentityScreen(mut screen) = screen else {
+            panic!("screen variant changed");
+        };
+        assert!(Arc::ptr_eq(&screen.app_context, &new_context));
+        assert_eq!(screen.app_context.network(), Network::Mainnet);
+        assert!(screen.selected_wallet.is_none());
+        assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
+
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            8,
+            AssetLockInputState::default(),
+            1,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            8,
+            request_id,
+            800,
+            AssetLockInputState::default(),
+            false,
+        );
+        screen.refresh_on_arrival();
+        assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
+
+        let request_id = asset_lock_request_id(screen.asset_lock_balance.ensure_requested(
+            seed_hash,
+            9,
+            AssetLockInputState::default(),
+            1,
+        ));
+        screen.asset_lock_balance.store(
+            seed_hash,
+            9,
+            request_id,
+            700,
+            AssetLockInputState::default(),
+            false,
+        );
+        screen.refresh();
+        assert_eq!(screen.asset_lock_balance.get(&seed_hash), None);
     }
 }

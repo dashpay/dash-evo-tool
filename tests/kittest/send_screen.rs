@@ -7,7 +7,7 @@ use dash_evo_tool::model::address::{ValidatedAddress, encode_shielded_address};
 use dash_evo_tool::model::amount::Amount;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::model::wallet::Wallet;
+use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_evo_tool::ui::wallets::send_screen::{SourceSelection, WalletSendScreen};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -48,7 +48,7 @@ fn shielded_address() -> String {
         .expect("shielded address")
 }
 
-fn send_screen() -> (tokio::runtime::Runtime, WalletSendScreen) {
+fn send_screen() -> (tokio::runtime::Runtime, WalletSendScreen, WalletSeedHash) {
     let (runtime, app_context) = fresh_app_context();
     let wallet = Wallet::new_from_seed(
         rand::random(),
@@ -57,9 +57,11 @@ fn send_screen() -> (tokio::runtime::Runtime, WalletSendScreen) {
         None,
     )
     .expect("wallet fixture");
+    let seed_hash = wallet.seed_hash();
     (
         runtime,
         WalletSendScreen::new(&app_context, Arc::new(RwLock::new(wallet))),
+        seed_hash,
     )
 }
 
@@ -102,9 +104,13 @@ fn assert_route(
     source: SourceSelection,
     destination: ValidatedAddress,
     button_label: &str,
+    asset_lock_max_amount: Option<u64>,
 ) -> Result<AppAction, String> {
     with_isolated_data_dir(|| {
-        let (_runtime, mut screen) = send_screen();
+        let (_runtime, mut screen, seed_hash) = send_screen();
+        if let Some(amount_duffs) = asset_lock_max_amount {
+            screen.seed_asset_lock_max_amount_for_test(seed_hash, amount_duffs);
+        }
         screen.set_simple_send_input_for_test(
             Some(source),
             Some(destination),
@@ -134,7 +140,7 @@ fn assert_validation_error(
     expected: &str,
 ) {
     with_isolated_data_dir(|| {
-        let (_runtime, mut screen) = send_screen();
+        let (_runtime, mut screen, _) = send_screen();
         screen.set_simple_send_input_for_test(source, destination, amount);
 
         let mut harness = Harness::builder().build_ui_state(
@@ -161,6 +167,7 @@ fn routes_core_wallet_to_core_address() {
         SourceSelection::CoreWallet,
         ValidatedAddress::Core(core_address()),
         "Send DASH",
+        None,
     )
     .expect_err("offline Core wallet has no spendable snapshot balance");
     assert!(error.starts_with("Insufficient balance. Need "), "{error}");
@@ -177,10 +184,17 @@ fn routes_core_wallet_to_platform_address() {
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
         "Fund Platform Address",
+        Some(0),
     )
     .expect_err("offline Core wallet has no spendable snapshot balance");
-    assert!(error.starts_with("Insufficient balance. Need "), "{error}");
-    assert!(error.contains("including fee"), "{error}");
+    assert!(
+        error.starts_with("You can transfer up to 0 DASH right now."),
+        "{error}"
+    );
+    assert!(
+        error.contains("Choose a smaller amount or wait for more funds."),
+        "{error}"
+    );
 }
 
 #[test]
@@ -194,6 +208,7 @@ fn routes_platform_addresses_to_platform_address() {
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
         "Transfer Credits",
+        None,
     )
     .expect("Platform transfer task");
     let AppAction::BackendTask(BackendTask::WalletTask(WalletTask::TransferPlatformCredits {
@@ -215,6 +230,7 @@ fn routes_platform_addresses_to_core_address() {
         SourceSelection::PlatformAddresses(source),
         ValidatedAddress::Core(destination),
         "Withdraw to Wallet",
+        None,
     )
     .expect("Platform withdrawal task");
     let AppAction::BackendTask(BackendTask::WalletTask(WalletTask::WithdrawFromPlatformAddress {
@@ -238,6 +254,7 @@ fn routes_shielded_pool_to_shielded_address() {
         SourceSelection::Shielded(seed_hash, 3 * ONE_DASH_CREDITS),
         ValidatedAddress::Shielded(destination),
         "Private Send",
+        None,
     )
     .expect("shielded transfer task");
     let AppAction::BackendTask(BackendTask::ShieldedTask(ShieldedTask::ShieldedTransfer {
@@ -264,6 +281,7 @@ fn routes_shielded_pool_to_platform_address() {
             bech32m: address.to_bech32m_string(Network::Testnet),
         },
         "Unshield Credits",
+        None,
     )
     .expect("unshield task");
     let AppAction::BackendTask(BackendTask::ShieldedTask(ShieldedTask::UnshieldCredits {

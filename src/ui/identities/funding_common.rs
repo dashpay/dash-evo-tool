@@ -158,6 +158,11 @@ pub fn max_amount_after_fee_reserve(spendable_duffs: u64, fee_credits: u64) -> u
         .saturating_sub(fee_credits)
 }
 
+/// Bound a received deposit by both its address balance and the wallet ceiling.
+pub fn receive_deposit_ceiling_duffs(wallet_ceiling_duffs: u64, address_balance_duffs: u64) -> u64 {
+    wallet_ceiling_duffs.min(address_balance_duffs)
+}
+
 /// Round a DASH amount up to 4 decimal places — the precision of the `dash:`
 /// payment URI. Rounding up (never to nearest) guarantees the amount shown in
 /// the hint and encoded in the QR never understates the true minimum needed.
@@ -473,6 +478,12 @@ mod tests {
     #[test]
     fn max_amount_does_not_overflow_on_extreme_values() {
         assert_eq!(max_amount_after_fee_reserve(u64::MAX, 0), u64::MAX);
+    }
+
+    #[test]
+    fn receive_deposit_ceiling_uses_the_lower_available_balance() {
+        assert_eq!(receive_deposit_ceiling_duffs(10_000, 4_000), 4_000);
+        assert_eq!(receive_deposit_ceiling_duffs(4_000, 10_000), 4_000);
     }
 
     /// A wallet with spendable balance defaults to the recommended path,

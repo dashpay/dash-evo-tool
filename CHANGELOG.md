@@ -101,6 +101,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **One damaged payment record no longer makes every wallet unopenable**: all
+  wallets are kept in a single file, and one unreadable payment record in it
+  stopped that whole file from opening — every wallet it held, funded ones
+  included, reported "Saved wallet data appears damaged and cannot be loaded."
+  Such a record is now skipped so the remaining wallets open normally, and the
+  records that caused it are no longer written in the first place. Wallets
+  already affected open again after updating, with their funds intact and no
+  need to restore from a recovery phrase. Amounts are still checked strictly:
+  a damaged record that carries a balance continues to stop the file from
+  opening rather than show a total that is quietly too low.
+
 - **"Max" now matches what your Core wallet can actually send**: pressing
   "Max" when shielding DASH, funding a Platform address through the Simple
   builder-driven form, sending directly to an identity, or funding an identity

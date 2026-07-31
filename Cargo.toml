@@ -20,7 +20,7 @@ eframe = { version = "0.35.0", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
 # TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
 # dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml). Re-check when these pins move.
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "a18bd1586858ef680124e150caad6a7dc21d0b64", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "762c66cf7716b9b3264868a49e8d29991c643c7e", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -30,12 +30,12 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "a18bd1586858ef6
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "a18bd1586858ef680124e150caad6a7dc21d0b64" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "a18bd1586858ef680124e150caad6a7dc21d0b64", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "762c66cf7716b9b3264868a49e8d29991c643c7e" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "762c66cf7716b9b3264868a49e8d29991c643c7e", features = [
     "serde",
     "shielded",
 ] }
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "a18bd1586858ef680124e150caad6a7dc21d0b64", features = [
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "762c66cf7716b9b3264868a49e8d29991c643c7e", features = [
     "shielded",
 ] }
 zip32 = "0.2.0"

@@ -308,6 +308,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stay unavailable and the app keeps retrying, instead of assuming the version
   the app was built with.
 
+- **Fewer connection failures during unrelated actions**: the app kept asking
+  the network for epoch details through a request every server currently
+  refuses. Each attempt consumed part of the app's shared request allowance, so
+  other actions — adding funds to an identity, for example — could fail with a
+  connection error. That request is now paused until the upstream fix is
+  released. The send-fee rate it was meant to refresh is the standard rate every
+  network charges today, so fees are unchanged, and the Platform Info screen now
+  says plainly that the rate shown is fixed rather than read from the network.
+
 ### Changed
 
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:

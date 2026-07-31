@@ -408,33 +408,22 @@ pub(crate) fn qualified_identity(
 mod tests {
     use super::*;
     use dash_sdk::Sdk;
-    use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
-    use dash_sdk::dpp::block::extended_epoch_info::v0::ExtendedEpochInfoV0;
-    use dash_sdk::platform::LimitQuery;
-    use dash_sdk::platform::types::epoch::EpochQuery;
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::version::LATEST_VERSION;
+    use dash_sdk::platform::DataContract;
 
-    async fn mock_sdk_with_current_epoch(protocol_version: u32) -> Sdk {
-        let epoch_info = ExtendedEpochInfo::V0(ExtendedEpochInfoV0 {
-            index: 42,
-            first_block_time: 1,
-            first_block_height: 2,
-            first_core_block_height: 3,
-            fee_multiplier_permille: 1_000,
-            protocol_version,
-        });
-        let current_epoch_query = LimitQuery {
-            query: EpochQuery {
-                start: None,
-                ascending: false,
-            },
-            limit: Some(1),
-            start_info: None,
-        };
+    /// Mocks the proved DPNS-contract fetch that drives the protocol-version
+    /// ratchet — the only network read the epoch task still performs while
+    /// dashpay/platform#4231 is unresolved. The mock reports `LATEST_VERSION` in
+    /// the response metadata, so a successful fetch ratchets the SDK exactly as a
+    /// live network would; a failed one leaves the version unconfirmed.
+    async fn mock_sdk_with_dpns_contract(ctx: &Arc<AppContext>) -> Sdk {
+        let contract = DataContract::clone(&ctx.dpns_contract);
         let mut sdk = Sdk::new_mock();
         sdk.mock()
-            .expect_fetch(current_epoch_query, Some(epoch_info))
+            .expect_fetch(contract.id(), Some(contract))
             .await
-            .expect("register current epoch response");
+            .expect("register DPNS contract response");
         sdk
     }
 
@@ -442,10 +431,8 @@ mod tests {
     async fn headless_sync_populates_protocol_version_after_spv_is_running() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        let protocol_version = 12;
-        ctx.sdk.store(Arc::new(
-            mock_sdk_with_current_epoch(protocol_version).await,
-        ));
+        ctx.sdk
+            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
         ctx.connection_status().set_spv_status(SpvStatus::Running);
 
         assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
@@ -454,23 +441,26 @@ mod tests {
             .await
             .expect("headless sync completion");
 
-        assert_eq!(ctx.platform_protocol_version(), protocol_version);
-        assert_eq!(ctx.fee_multiplier_permille(), 1_000);
+        assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
+        assert_eq!(
+            ctx.fee_multiplier_permille(),
+            crate::model::fee_estimation::PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
+        );
     }
 
     #[tokio::test]
     async fn protocol_refresh_observes_activation_after_a_pre_activation_epoch() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
-        ctx.set_platform_protocol_version(11);
+        ctx.set_platform_protocol_version(LATEST_VERSION - 1);
         ctx.sdk
-            .store(Arc::new(mock_sdk_with_current_epoch(12).await));
+            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
 
         refresh_platform_protocol_version(&ctx)
             .await
-            .expect("refresh current epoch");
+            .expect("refresh platform metadata");
 
-        assert_eq!(ctx.platform_protocol_version(), 12);
+        assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
     }
 
     #[tokio::test]
@@ -486,12 +476,12 @@ mod tests {
         assert_eq!(ctx.platform_protocol_version(), 0);
 
         ctx.sdk
-            .store(Arc::new(mock_sdk_with_current_epoch(12).await));
+            .store(Arc::new(mock_sdk_with_dpns_contract(&ctx).await));
         wait_for_spv_and_refresh_platform_info(&ctx, ProtocolRefresh::BestEffortIfUnpopulated)
             .await
             .expect("SPV readiness retries Platform metadata");
 
-        assert_eq!(ctx.platform_protocol_version(), 12);
+        assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
     }
 
     #[tokio::test]

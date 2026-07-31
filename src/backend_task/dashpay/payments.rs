@@ -164,10 +164,7 @@ pub async fn derive_contact_payment_address(
 
     // Resolve our private key through the JIT chokepoint (no parked-seed read).
     let our_private_key = our_identity
-        .resolve_private_key_bytes(
-            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-            our_key.id(),
-        )
+        .resolve_private_key_bytes(our_key)
         .await
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)

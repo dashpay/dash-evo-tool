@@ -4,9 +4,6 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::PendingUsername;
-use crate::model::qualified_identity::PrivateKeyTarget::{
-    PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
-};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
@@ -809,12 +806,17 @@ impl IdentitiesScreen {
 
                                                             // Main Identity Keys
                                                             if !public_keys.is_empty() {
-                                                                for (key_id, key) in public_keys.iter() {
-                                                                    let holding_private_key = qualified_identity.private_keys
-                                                                        .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, *key_id));
+                                                                for key in public_keys.values() {
+                                                                    // Placement-blind: the private half may be filed
+                                                                    // under a store an older build chose. A presence
+                                                                    // check rather than a fetch: cloning the entry
+                                                                    // copies raw key bytes, and this runs every frame
+                                                                    // for every key.
+                                                                    let held = qualified_identity.private_keys
+                                                                        .candidates(key).next().is_some();
 
                                                                     let key_label = self.format_key_name(key);
-                                                                    let button = if holding_private_key.is_some() {
+                                                                    let button = if held {
                                                                         egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                     } else {
                                                                         egui::Button::new(&key_label)
@@ -824,7 +826,7 @@ impl IdentitiesScreen {
                                                                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                                                             qualified_identity.clone(),
                                                                             key.clone(),
-                                                                            holding_private_key,
+                                                                            qualified_identity.private_keys.held_private_key_data(key),
                                                                             &self.app_context,
                                                                         )));
                                                                        ui.close_kind(egui::UiKind::Menu);
@@ -840,12 +842,14 @@ impl IdentitiesScreen {
                                                                         ui.add_space(5.0);
                                                                     }
 
-                                                                    for (key_id, key) in voter_public_keys.iter() {
-                                                                        let holding_private_key = qualified_identity.private_keys
-                                                                            .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnVoterIdentity, *key_id));
+                                                                    for key in voter_public_keys.values() {
+                                                                        // A presence check, as above — material is
+                                                                        // fetched only on the click that needs it.
+                                                                        let held = qualified_identity.private_keys
+                                                                            .candidates(key).next().is_some();
 
                                                                         let key_label = self.format_key_name(key);
-                                                                        let button = if holding_private_key.is_some() {
+                                                                        let button = if held {
                                                                             egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                         } else {
                                                                             egui::Button::new(&key_label)
@@ -855,7 +859,7 @@ impl IdentitiesScreen {
                                                                             action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
                                                                                 qualified_identity.clone(),
                                                                                 key.clone(),
-                                                                                holding_private_key,
+                                                                                qualified_identity.private_keys.held_private_key_data(key),
                                                                                 &self.app_context,
                                                                             )));
                                                                            ui.close_kind(egui::UiKind::Menu);

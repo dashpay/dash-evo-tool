@@ -336,8 +336,18 @@ pub enum BackendTaskContext {
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
     GenerateReceiveAddress { seed_hash: WalletSeedHash },
+    /// Live asset-lock builder ceiling query for one wallet.
+    AssetLockMaxAmount {
+        seed_hash: WalletSeedHash,
+        snapshot_generation: u64,
+        request_id: u64,
+    },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
+    /// The detection pass for one identity's legacy-recovery offer.
+    LegacyRecoveryCheck(Identifier),
+    /// The restore of one identity's approved legacy-recovery items.
+    LegacyRecoveryRestore(Identifier),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -392,9 +402,33 @@ impl BackendTaskContext {
         }
     }
 
+    pub(crate) fn asset_lock_max_amount_request(&self) -> Option<(WalletSeedHash, u64, u64)> {
+        match self.operation() {
+            Self::AssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+                request_id,
+            } => Some((*seed_hash, *snapshot_generation, *request_id)),
+            _ => None,
+        }
+    }
+
     pub(crate) fn wallet_rename_task(&self) -> Option<&WalletTask> {
         match self.operation() {
             Self::WalletRename(task) => Some(task),
+            _ => None,
+        }
+    }
+
+    /// The identity whose legacy-recovery offer this operation belongs to, or
+    /// `None` for anything else. A screen showing the recovery affordance uses
+    /// it to tell its own failed check or restore from any other task's error
+    /// that happened to arrive while the screen was visible.
+    pub(crate) fn legacy_recovery_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::LegacyRecoveryCheck(identity_id) | Self::LegacyRecoveryRestore(identity_id) => {
+                Some(*identity_id)
+            }
             _ => None,
         }
     }
@@ -433,6 +467,13 @@ impl From<&BackendTask> for BackendTaskContext {
                 }
                 _ => Self::Other,
             },
+            BackendTask::IdentityTask(IdentityTask::CheckLegacyRecovery { identity_id }) => {
+                Self::LegacyRecoveryCheck(*identity_id)
+            }
+            BackendTask::IdentityTask(IdentityTask::RecoverLegacyIdentityData {
+                identity_id,
+                ..
+            }) => Self::LegacyRecoveryRestore(*identity_id),
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::ContestedResourceTask(ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
@@ -454,6 +495,15 @@ impl From<&BackendTask> for BackendTaskContext {
                     seed_hash: *seed_hash,
                 }
             }
+            BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+                request_id,
+            }) => Self::AssetLockMaxAmount {
+                seed_hash: *seed_hash,
+                snapshot_generation: *snapshot_generation,
+                request_id: *request_id,
+            },
             BackendTask::WalletTask(
                 task @ (WalletTask::RenameHdWallet { .. }
                 | WalletTask::RenameSingleKeyWallet { .. }),
@@ -624,6 +674,15 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         locks: Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock>,
     },
+    /// Largest asset-lock credit output the live upstream builder accepts.
+    AssetLockMaxAmount {
+        seed_hash: WalletSeedHash,
+        snapshot_generation: u64,
+        request_id: u64,
+        amount_duffs: u64,
+        observed_inputs: crate::wallet_backend::AssetLockInputState,
+        is_partial: bool,
+    },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
         seed_hash: WalletSeedHash,
@@ -758,6 +817,30 @@ pub enum BackendTaskSuccessResult {
     IdentityKeysUnprotected {
         /// The identity whose key protection was removed.
         identity_id: Identifier,
+    },
+    /// What the preserved legacy database could restore for this identity.
+    /// Descriptors only — public key metadata, never key bytes. An empty plan
+    /// means there is nothing to offer and the recovery affordance stays hidden.
+    LegacyRecoveryCandidates {
+        /// The identity the plan was computed for.
+        identity_id: Identifier,
+        /// Restorable candidates plus the items this flow cannot restore.
+        plan: crate::model::legacy_recovery::RecoveryPlan,
+    },
+    /// A legacy-recovery run finished. `applied` empty means the approved items
+    /// were all already back in place, so nothing was written.
+    LegacyRecoveryCompleted {
+        /// The identity that was recovered into.
+        identity_id: Identifier,
+        /// Items restored into the stored record.
+        applied: Vec<crate::model::legacy_recovery::RecoveryItemDescriptor>,
+        /// Approved items that were no longer missing when the run executed.
+        skipped_stale: Vec<crate::model::legacy_recovery::RecoveryItemDescriptor>,
+        /// Legacy items this flow cannot restore, each with its reason.
+        excluded: Vec<(
+            crate::model::legacy_recovery::RecoveryItemDescriptor,
+            crate::model::legacy_recovery::ExclusionReason,
+        )>,
     },
 
     // Document operation results (replacing string messages)
@@ -1250,6 +1333,21 @@ impl AppContext {
                 .list_tracked_asset_locks(&seed_hash)
                 .await
                 .map(|locks| BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks }),
+            WalletTask::GetAssetLockMaxAmount {
+                seed_hash,
+                snapshot_generation,
+                request_id,
+            } => backend
+                .asset_lock_max_amount(&seed_hash)
+                .await
+                .map(|quote| BackendTaskSuccessResult::AssetLockMaxAmount {
+                    seed_hash,
+                    snapshot_generation,
+                    request_id,
+                    amount_duffs: quote.amount_duffs,
+                    observed_inputs: quote.observed_inputs,
+                    is_partial: quote.is_partial,
+                }),
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await
             }
@@ -1649,6 +1747,21 @@ mod tests {
         assert_eq!(
             BackendTaskContext::from(&task),
             BackendTaskContext::TokenRewardEstimate(identity_token_id)
+        );
+    }
+
+    #[test]
+    fn backend_task_context_preserves_asset_lock_request_identity() {
+        let seed_hash = [0x39; 32];
+        let task = BackendTask::WalletTask(WalletTask::GetAssetLockMaxAmount {
+            seed_hash,
+            snapshot_generation: 7,
+            request_id: 42,
+        });
+
+        assert_eq!(
+            BackendTaskContext::from(&task).asset_lock_max_amount_request(),
+            Some((seed_hash, 7, 42))
         );
     }
 

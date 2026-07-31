@@ -145,6 +145,10 @@ impl AddNewIdentityScreen {
         let mut action = AppAction::None;
         self.reconcile_funding_deposit();
         let step = *self.step.read_recover();
+        let seed_hash = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
 
         if step == WalletFundedScreenStep::WaitingOnFunds {
             ui.heading(format!(
@@ -171,6 +175,38 @@ impl AddNewIdentityScreen {
         // committed to the pending transaction, so the input's max recomputes to
         // 0 and would show a stale "exceeds maximum" error over a succeeding op.
         if step == WalletFundedScreenStep::FundsReceived {
+            let Some(seed_hash) = seed_hash else {
+                if ui.button("Choose a different funding method").clicked() {
+                    self.reset_to_choose_funding();
+                }
+                return action;
+            };
+            let failed = self.asset_lock_balance.is_failed(&seed_hash);
+            let loading = self.asset_lock_quote_is_loading(&seed_hash);
+            if failed || loading {
+                ui.label(if failed {
+                    "The available amount could not be checked."
+                } else {
+                    "Checking the available amount…"
+                });
+                if self.asset_lock_balance.should_offer_retry(&seed_hash)
+                    && ui.button("Retry available amount check").clicked()
+                {
+                    self.asset_lock_balance.invalidate_one(&seed_hash);
+                }
+                if ui.button("Choose a different funding method").clicked() {
+                    self.reset_to_choose_funding();
+                }
+                return action;
+            }
+            if self.asset_lock_balance.should_offer_retry(&seed_hash) {
+                ui.label(
+                    "The amount shown is safe but may be lower than your full available amount.",
+                );
+                if ui.button("Retry available amount check").clicked() {
+                    self.asset_lock_balance.invalidate_one(&seed_hash);
+                }
+            }
             self.render_funding_amount_input(ui);
 
             let has_valid_amount = self

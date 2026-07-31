@@ -74,7 +74,7 @@ impl TokensScreen {
                         // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
-                            Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
+                            Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.is_empty()).collect::<Vec<_>>(),
                             Err(error) => {
                                 tracing::error!(?error, "Token-creator identity loading failed");
                                 ui.colored_label(

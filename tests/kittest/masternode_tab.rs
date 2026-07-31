@@ -151,15 +151,13 @@ fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, 
         pv,
     )
     .expect("masternode identity with key");
-    let private_keys = KeyStorage {
-        private_keys: BTreeMap::from([(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
-            (
-                QualifiedIdentityPublicKey::from(key),
-                PrivateKeyData::Clear([byte; 32]),
-            ),
-        )]),
-    };
+    let private_keys = KeyStorage::from(BTreeMap::from([(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear([byte; 32]),
+        ),
+    )]));
     let node_qi = QualifiedIdentity {
         identity,
         associated_voter_identity: None,
@@ -1142,5 +1140,239 @@ fn go_to_main_screen_from_key_info_preserves_masternode_detail() {
             "returning from Key Info must preserve the open detail view"
         );
         assert!(harness.query_by_label("Open mn-nav-back-01").is_none());
+    });
+}
+
+/// Seed a masternode whose voter identity carries a key whose purpose is **not**
+/// `VOTING`, with its private half filed structurally on the voter identity.
+///
+/// This is the shape where the two target conventions disagree: the structural
+/// target is the voter identity, while `impl From<Purpose> for PrivateKeyTarget`
+/// sends anything that is not `VOTING` to the main identity. It is the shape
+/// `role_label_and_tip`'s voter-identity override exists for — a key on a voter
+/// identity is the voting key whatever its purpose field says.
+fn seed_node_with_non_voting_purpose_voter_key(
+    app_context: &Arc<AppContext>,
+    byte: u8,
+    alias: &str,
+) {
+    let pv = PlatformVersion::latest();
+    // Purpose::AUTHENTICATION (0), not VOTING.
+    let voter_key = IdentityPublicKey::random_key(1, Some(1), pv);
+    assert_eq!(
+        voter_key.purpose(),
+        dash_sdk::dpp::identity::Purpose::AUTHENTICATION,
+        "the premise: this key's purpose derives to the MAIN identity, while it \
+         actually sits on the voter identity"
+    );
+
+    let mut voter_identity =
+        Identity::create_basic_identity(Identifier::from([byte ^ 0xFF; 32]), pv)
+            .expect("voter basic identity");
+    voter_identity.add_public_key(voter_key.clone());
+
+    let node_identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
+        .expect("node basic identity");
+    let node_qi = QualifiedIdentity {
+        identity: node_identity,
+        associated_voter_identity: Some((voter_identity, voter_key.clone())),
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some(alias.to_string()),
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voter_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voter_key),
+                PrivateKeyData::Clear([byte; 32]),
+            ),
+        )])),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::PendingCreation,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&node_qi, &None)
+        .expect("seed node-with-non-voting-voter-key insert");
+}
+
+/// AC-6 on the masternode path: the detail view's key list and the Key Info page
+/// it opens must call the same key the same thing.
+///
+/// The row knows where the material is because it looked there. The page it
+/// opens, left to itself, re-derives that location from the key's purpose — which
+/// disagrees for a voter-identity key whose purpose is not `VOTING`. The list
+/// says "Voting key" (correct: a key on a voter identity is the voting key) and
+/// the page said "Authentication key", one click apart, about one key. The same
+/// wrong target also drives the page's own re-read, so it loses the private half
+/// of a key the device holds.
+#[test]
+fn key_info_names_a_voter_key_as_the_masternode_key_list_does() {
+    use dash_evo_tool::ui::Screen;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_non_voting_purpose_voter_key(&app_context, 0x9a, "mn-voter-label-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-voter-label-01").click();
+        harness.run_steps(3);
+
+        // What the list calls it: the voter-identity override, from the
+        // structural target.
+        assert!(
+            harness.query_by_label("Voting key \u{203a}").is_some(),
+            "a key on the voter identity is the node's voting key, whatever its \
+             purpose field says"
+        );
+
+        harness.get_by_label("Voting key \u{203a}").click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::KeyInfoScreen(_))
+            ),
+            "the row must open Key Info"
+        );
+
+        // What the page one click later calls it — the same whole caption, with
+        // nothing spliced into it.
+        assert!(
+            harness.query_by_label("Voting key").is_some(),
+            "Key Info must name the key as the list that opened it does"
+        );
+        assert!(
+            harness.query_by_label("Authentication key").is_none(),
+            "and must not rename it by re-deriving its location from its purpose"
+        );
+        // The masternode surface is Expert-gated, so the raw purpose shows in a
+        // labelled field of its own — which is what keeps the disagreement this
+        // test guards against legible: purpose AUTHENTICATION, role Voting.
+        assert!(
+            harness.query_by_label("Platform purpose:").is_some(),
+            "the Expert view must still show the raw purpose it was promised"
+        );
+        assert!(
+            harness.query_by_label("AUTHENTICATION").is_some(),
+            "and that field must carry this key's actual purpose"
+        );
+
+        // The same wrong target would also lose the held private half on the
+        // page's own re-read.
+        let Some(Screen::KeyInfoScreen(key_info)) = harness.state().screen_stack.last() else {
+            panic!("Key Info must be the open screen");
+        };
+        assert!(
+            key_info.private_key_data.is_some(),
+            "Key Info must keep the private half the row found for it"
+        );
+    });
+}
+
+/// Seed a masternode holding a `VOTING`-purpose key on its **main** identity,
+/// with the private half filed under the purpose-derived convention
+/// (`PrivateKeyOnVoterIdentity`) rather than where the key structurally sits.
+///
+/// This is what the paste path produces: `impl From<Purpose> for
+/// PrivateKeyTarget` sends every voting key to the voter identity regardless of
+/// which identity it actually belongs to.
+fn seed_node_with_purpose_filed_voting_key(app_context: &Arc<AppContext>, byte: u8, alias: &str) {
+    let pv = PlatformVersion::latest();
+    let voting_key: IdentityPublicKey = {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+        use dash_sdk::dpp::platform_value::BinaryData;
+        IdentityPublicKeyV0 {
+            id: 0,
+            key_type: KeyType::ECDSA_HASH160,
+            purpose: Purpose::VOTING,
+            security_level: SecurityLevel::HIGH,
+            read_only: false,
+            data: BinaryData::new(vec![byte; 20]),
+            disabled_at: None,
+            contract_bounds: None,
+        }
+        .into()
+    };
+
+    let node_identity = Identity::new_with_id_and_keys(
+        Identifier::from([byte; 32]),
+        BTreeMap::from([(voting_key.id(), voting_key.clone())]),
+        pv,
+    )
+    .expect("node identity with a voting key");
+
+    let node_qi = QualifiedIdentity {
+        identity: node_identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some(alias.to_string()),
+        private_keys: KeyStorage::from(BTreeMap::from([(
+            // Filed by purpose derivation, not structurally.
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, voting_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(voting_key),
+                PrivateKeyData::Clear([byte; 32]),
+            ),
+        )])),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::PendingCreation,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&node_qi, &None)
+        .expect("seed node-with-purpose-filed-voting-key insert");
+}
+
+/// The masternode detail view and the identity keys list must agree on whether a
+/// key is saved on this device.
+///
+/// `identity_keys()` is shared between the two surfaces precisely so they cannot
+/// disagree about which keys exist and where their material is. Enumeration alone
+/// is not enough: resolving *where* the private half sits has to be shared too.
+/// The keys list tries both filing conventions; the masternode page used only the
+/// structural one, so a voting key held on the main identity but filed by purpose
+/// derivation — what entering one by hand produces — read as saved on one screen
+/// and missing on the other.
+#[test]
+fn the_masternode_page_resolves_held_keys_the_way_the_keys_list_does() {
+    use dash_evo_tool::ui::Screen;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_purpose_filed_voting_key(&app_context, 0x9b, "mn-filed-by-purpose-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-filed-by-purpose-01").click();
+        harness.run_steps(3);
+
+        harness.get_by_label("Voting key \u{203a}").click();
+        harness.run_steps(3);
+
+        let Some(Screen::KeyInfoScreen(key_info)) = harness.state().screen_stack.last() else {
+            panic!("the key row must open Key Info");
+        };
+        assert!(
+            key_info.private_key_data.is_some(),
+            "the node's page must find the private half wherever it is filed, as \
+             the identity keys list does — not only under the structural target"
+        );
     });
 }

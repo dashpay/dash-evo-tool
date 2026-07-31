@@ -3,11 +3,12 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::DpnsScheduledVoteKey;
 use crate::model::qualified_identity::{
-    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+    DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
@@ -550,6 +551,41 @@ pub(super) fn delete_scheduled_vote_in(
 }
 
 impl AppContext {
+    /// Whether the previous version's preserved `data.db` holds any identity of
+    /// this network.
+    ///
+    /// The gate on the stranded-key recovery offer, and the only condition
+    /// under which that offer can ever find something. A fresh install answers
+    /// `false` — its `data.db` either does not exist or was created without the
+    /// legacy `identity` table — while an upgraded one answers `true` for as
+    /// long as the rows are there, which is forever: recovery never deletes
+    /// them.
+    ///
+    /// Probed at most once per context: the file is a read-only artifact, so
+    /// the answer cannot change under the session. A probe that fails arms the
+    /// offer rather than retiring it — the detection task reports its own typed
+    /// error, whereas a silent `false` would withdraw a recovery the user's
+    /// data still supports.
+    pub(crate) fn has_legacy_identities(&self) -> bool {
+        *self.legacy_identities_present.get_or_init(|| {
+            match crate::database::legacy_import::local_identities_exist(
+                &self.db.locked_conn(),
+                self.network,
+            ) {
+                Ok(found) => found,
+                Err(error) => {
+                    tracing::warn!(
+                        target = "context::identity_db",
+                        network = %self.network,
+                        error = ?error,
+                        "Could not tell whether the previous version's data holds identities; offering key recovery anyway",
+                    );
+                    true
+                }
+            }
+        })
+    }
+
     /// Insert (or replace) a local qualified identity in the per-network
     /// wallet k/v store under [`DetScope::Identity`]. Mirrors pre-C7
     /// `INSERT OR REPLACE` semantics — wallet association is overwritten
@@ -564,11 +600,18 @@ impl AppContext {
     /// `continue` on a missing blob), and the next successful insert fills it
     /// in. The reverse order would instead hide a written identity — and its
     /// keys and balances — until an unrelated update happened to re-index it.
+    ///
+    /// Serialized against every other whole-record writer of this identity by
+    /// [`Self::identity_record_lock`].
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
     ) -> std::result::Result<(), TaskError> {
+        let lock = self.identity_record_lock(qualified_identity.identity.id());
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         let (wallet_hash, wallet_index) = match wallet_and_identity_id_info {
             Some((seed, idx)) => (Some(*seed), Some(*idx)),
@@ -615,7 +658,61 @@ impl AppContext {
     /// (`wallet_hash` / `wallet_index`) is preserved from the existing
     /// record — pre-C7 `update_local_qualified_identity` had the same
     /// behaviour by virtue of omitting those columns from its `UPDATE`.
+    ///
+    /// Takes [`Self::identity_record_lock`] for the write, so a caller whose
+    /// snapshot came from an earlier read cannot interleave with another
+    /// writer's read-modify-write. A caller that must keep its own read and
+    /// this write atomic holds that guard itself and calls
+    /// [`Self::write_local_qualified_identity_locked`] instead.
     pub fn update_local_qualified_identity(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> std::result::Result<(), TaskError> {
+        let lock = self.identity_record_lock(qualified_identity.identity.id());
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.write_local_qualified_identity_locked(qualified_identity)
+    }
+
+    /// Read-modify-write one stored identity under its record guard.
+    ///
+    /// Re-reads the record inside [`Self::identity_record_lock`], hands the
+    /// fresh copy to `edit`, and persists the result through
+    /// [`Self::write_local_qualified_identity_locked`] — so the edit applies
+    /// to what is on disk *now*, never to a caller's earlier snapshot, and a
+    /// concurrent writer's change cannot be silently written away. Returns
+    /// the persisted record for the caller to adopt in place of any clone it
+    /// holds.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::IdentityNotFoundLocally`] when nothing is stored under
+    /// `identity_id`, and whatever `edit` returns — in both cases nothing is
+    /// persisted.
+    pub fn edit_local_qualified_identity(
+        &self,
+        identity_id: &Identifier,
+        edit: impl FnOnce(&mut QualifiedIdentity) -> std::result::Result<(), TaskError>,
+    ) -> std::result::Result<QualifiedIdentity, TaskError> {
+        let lock = self.identity_record_lock(*identity_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut fresh = self
+            .get_local_qualified_identity(identity_id)?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        edit(&mut fresh)?;
+        self.write_local_qualified_identity_locked(&fresh)?;
+        Ok(fresh)
+    }
+
+    /// The write half of [`Self::update_local_qualified_identity`], for a
+    /// caller that already holds this identity's
+    /// [`identity_record_lock`](Self::identity_record_lock) across a wider
+    /// read-modify-write span. Calling it without that guard reopens the
+    /// lost-update race the guard exists to close.
+    pub(crate) fn write_local_qualified_identity_locked(
         &self,
         qualified_identity: &QualifiedIdentity,
     ) -> std::result::Result<(), TaskError> {
@@ -648,11 +745,18 @@ impl AppContext {
     /// Update only the user-facing alias on a stored identity. Returns
     /// `Ok(())` when the identity is unknown — alias is metadata, not a
     /// load-bearing identifier.
+    ///
+    /// Read-modify-writes the whole blob, so it holds
+    /// [`Self::identity_record_lock`] across both halves.
     pub fn set_identity_alias(
         &self,
         identifier: &Identifier,
         new_alias: Option<&str>,
     ) -> std::result::Result<(), TaskError> {
+        let lock = self.identity_record_lock(*identifier);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         let scope = DetScope::Identity(&id);
@@ -767,6 +871,38 @@ impl AppContext {
         qi.top_ups = BTreeMap::new();
         self.migrate_identity_keys_to_vault(&kv, &id_buf, &mut qi);
         Ok(Some(qi))
+    }
+
+    /// The encoded identity blob stored under `id`, exactly as it sits at
+    /// rest. Test-only: it is how an assertion proves what a write actually
+    /// landed on disk (that no plaintext key survived, or that a re-run changed
+    /// nothing), which the hydrated [`QualifiedIdentity`] cannot show.
+    #[cfg(test)]
+    pub(crate) fn stored_identity_blob(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<Vec<u8>>, TaskError> {
+        Ok(self
+            .det_kv()?
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id.to_buffer()), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .map(|stored| stored.qi_bytes))
+    }
+
+    /// The wallet link recorded for `id`, or `None` when the identity is not
+    /// stored or was never linked to a wallet. Test-only: the link lives beside
+    /// the blob rather than inside it, so only a direct read can prove an
+    /// update preserved it.
+    #[cfg(test)]
+    pub(crate) fn stored_identity_wallet_link(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<(WalletSeedHash, u32)>, TaskError> {
+        Ok(self
+            .det_kv()?
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id.to_buffer()), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .and_then(|stored| Some((stored.wallet_hash?, stored.wallet_index?))))
     }
 
     /// Returns whether an identity blob is stored under `id` without decoding it.
@@ -984,6 +1120,12 @@ impl AppContext {
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
         }
+        // Lock order: the storage-migration mutex above, then this identity's
+        // record guard — the same order the legacy-recovery write takes.
+        let lock = self.identity_record_lock(*identifier);
+        let _record_guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         crate::backend_task::migration::finish_unwire::record_identity_deletion(self, id).map_err(
@@ -1020,6 +1162,17 @@ impl AppContext {
 
     /// Re-persist `qi`'s blob in place, preserving the stored wallet
     /// association and status. Used by the eager identity-key migration.
+    ///
+    /// The one whole-record write that does NOT take
+    /// [`Self::identity_record_lock`]: it runs inside the *read* path
+    /// ([`Self::hydrate_stored_identity`]), which a caller already holding that
+    /// guard calls, so taking it here would self-deadlock. The write is
+    /// idempotent — it rewrites the blob this call just read, replacing
+    /// plaintext keys with vault placeholders — so a concurrent whole-record
+    /// writer loses only the placeholder rewrite, and the next read redoes it.
+    // TODO(#889 follow-up): fold this rewrite into the guarded write path (e.g.
+    // by having the read return the migration for the caller to persist) so
+    // every blob write is serialized, not merely every deliberate one.
     fn persist_identity_blob(
         &self,
         kv: &DetKv,
@@ -1059,6 +1212,26 @@ impl AppContext {
         let qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
         let view = crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id);
         view.delete_all(qi.private_keys.keys_set())
+    }
+
+    /// Delete the vault secrets filed at `placements` for `identity_id`, leaving
+    /// the identity's other keys in place.
+    ///
+    /// The per-key counterpart of the whole-identity sweep
+    /// [`Self::clear_identity_vault_keys`], for a caller dropping this device's
+    /// copy of a single key. Call it *before* the placement leaves the stored
+    /// key map: that map is where the sweep reads its delete set, so a secret
+    /// orphaned by an earlier map eviction is reachable by nothing afterwards.
+    ///
+    /// Idempotent — a placement whose vault label is already absent is not an
+    /// error, so a caller need not know whether the key was vault-backed.
+    pub fn delete_identity_key_secrets(
+        &self,
+        identity_id: &Identifier,
+        placements: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+    ) -> std::result::Result<(), TaskError> {
+        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, identity_id.to_buffer())
+            .delete_all(placements)
     }
 
     /// Devnet-only sweep: drop every locally-stored identity for the
@@ -2040,7 +2213,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let high = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
             (
                 QualifiedIdentityPublicKey::from(high),
@@ -2048,7 +2221,7 @@ mod tests {
             ),
         );
         let medium = IdentityPublicKey::random_key(2, Some(2), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, medium.id()),
             (
                 QualifiedIdentityPublicKey::from(medium),
@@ -2056,7 +2229,7 @@ mod tests {
             ),
         );
         let derived = IdentityPublicKey::random_key(3, Some(3), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived.id()),
             (
                 QualifiedIdentityPublicKey::from(derived),
@@ -2112,14 +2285,10 @@ mod tests {
             );
             // And the in-memory blob being persisted is already InVault-only.
             assert!(
-                migrated
-                    .private_keys
-                    .private_keys
-                    .values()
-                    .all(|(_, d)| !matches!(
-                        d,
-                        PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)
-                    )),
+                migrated.private_keys.values().all(|(_, d)| !matches!(
+                    d,
+                    PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)
+                )),
                 "persisted blob must carry no plaintext"
             );
             persisted = true;
@@ -2152,7 +2321,7 @@ mod tests {
         );
         // KeyStorage now has zero Clear/AlwaysClear; the derived key remains.
         let mut derived = 0;
-        for (_, d) in qi.private_keys.private_keys.values() {
+        for (_, d) in qi.private_keys.values() {
             match d {
                 PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_) => {
                     panic!("plaintext survived migration")
@@ -2293,7 +2462,7 @@ mod tests {
         let pv = PlatformVersion::latest();
         let mut ks = KeyStorage::default();
         let existing = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, existing.id()),
             (
                 QualifiedIdentityPublicKey::from(existing),
@@ -2302,7 +2471,7 @@ mod tests {
         );
         let added = IdentityPublicKey::random_key(2, Some(2), pv);
         let added_id = added.id();
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, added_id),
             (
                 QualifiedIdentityPublicKey::from(added),
@@ -2436,7 +2605,7 @@ mod tests {
 
         // Decoding the stored blob yields no plaintext key variant at all.
         let decoded = QualifiedIdentity::from_bytes(&blob).expect("decode");
-        for (_, d) in decoded.private_keys.private_keys.values() {
+        for (_, d) in decoded.private_keys.values() {
             assert!(
                 !matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)),
                 "persisted write-path blob must carry no plaintext key",
@@ -2463,7 +2632,6 @@ mod tests {
         // The caller's in-memory identity keeps its resident keys (signing still
         // works this session) — the encoder operates on a clone.
         let clear_in_caller = qi
-            .private_keys
             .private_keys
             .values()
             .filter(|(_, d)| matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)))
@@ -2540,7 +2708,7 @@ mod tests {
         let mut ks = KeyStorage::default();
         let pv = PlatformVersion::latest();
         let pk = IdentityPublicKey::random_key(0, Some(0), pv);
-        ks.private_keys.insert(
+        ks.insert_at(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
             (
                 QualifiedIdentityPublicKey::from(pk),
@@ -2566,5 +2734,80 @@ mod tests {
             [0x02; 32],
             "a different identity's vault key must be untouched (isolation)"
         );
+    }
+
+    /// An offline `AppContext` over a throwaway data dir, plus the very vault it
+    /// was built on so a test can probe what the context wrote.
+    async fn ctx_with_vault() -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+    ) {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            Arc::clone(&secret_store),
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, secret_store, temp_dir)
+    }
+
+    /// Per-key vault deletion drops the placements it is given and nothing else.
+    /// That is what separates it from `clear_identity_vault_keys`, which empties
+    /// the identity: dropping one key must leave the identity's remaining keys —
+    /// and every other identity's — exactly where they were. Idempotent, because
+    /// the remove path calls it without first knowing whether the label is there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_identity_key_secrets_drops_only_the_named_placement() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+        let (ctx, store, _dir) = ctx_with_vault().await;
+        let victim = Identifier::from(id(0x61));
+        let bystander = Identifier::from(id(0x62));
+        for owner in [victim, bystander] {
+            let view = IdentityKeyView::new(&store, owner.to_buffer());
+            view.store(&MAIN, 0, &[0x01; 32]).unwrap();
+            view.store(&MAIN, 1, &[0x02; 32]).unwrap();
+        }
+
+        ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
+            .expect("delete the named placement");
+
+        let victim_view = IdentityKeyView::new(&store, victim.to_buffer());
+        assert!(
+            victim_view.get(&MAIN, 0).unwrap().is_none(),
+            "the named placement's secret must be gone",
+        );
+        assert!(
+            victim_view.get(&MAIN, 1).unwrap().is_some(),
+            "the identity's other key must survive a single-key removal",
+        );
+        assert!(
+            IdentityKeyView::new(&store, bystander.to_buffer())
+                .get(&MAIN, 0)
+                .unwrap()
+                .is_some(),
+            "another identity's key at the same placement must be untouched",
+        );
+
+        ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
+            .expect("deleting an already-gone placement is not an error");
     }
 }

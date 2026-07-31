@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -10,6 +11,7 @@ use dash_sdk::dpp::block::extended_epoch_info::{
 use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contracts::SystemDataContract;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::v1::document_types::withdrawal::properties::{
@@ -28,7 +30,9 @@ use dash_sdk::drive::query::{SelectProjection, OrderClause, WhereClause, WhereOp
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{DocumentQuery, FetchMany, FetchUnproved, Identifier};
+use dash_sdk::platform::{
+    DataContract, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier,
+};
 use dash_sdk::query_types::{
     AddressInfo, CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
@@ -184,6 +188,9 @@ pub enum WithdrawalParseError {
 }
 
 // Helper functions for formatting platform data
+/// Kept for the restore path of the disabled live epoch fetch; see the
+/// `TODO(platform#4231)` in the `CurrentEpochInfo` arm.
+#[allow(dead_code)]
 fn format_extended_epoch_info(
     epoch_info: ExtendedEpochInfo,
     network: Network,
@@ -245,6 +252,34 @@ fn format_extended_epoch_info(
         readable_epoch_end_time,
         epoch_info.fee_multiplier_permille(),
     )
+}
+
+/// `protocol_version` is `None` while the connected network has not confirmed one.
+/// The fee multiplier is a fixed value, not a network reading — see the
+/// `TODO(platform#4231)` in the `CurrentEpochInfo` arm.
+fn format_hardcoded_current_epoch_info(
+    protocol_version: Option<u32>,
+    fee_multiplier_permille: u64,
+) -> String {
+    let fee_multiplier = fee_multiplier_permille as f64 / 1000.0;
+    match protocol_version {
+        Some(protocol_version) => format!(
+            "Current Epoch Information:\n\
+             • Protocol Version: {protocol_version}\n\
+             • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
+             Epoch details cannot be read while dashpay/platform#4231 is unresolved. The fee \
+             multiplier shown is the one every network charges today, and it will be read live \
+             again once that fix is released."
+        ),
+        None => format!(
+            "Current Epoch Information:\n\
+             • Protocol Version: the connected network has not confirmed one yet.\n\
+             • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
+             Epoch details cannot be read while dashpay/platform#4231 is unresolved. The fee \
+             multiplier shown is the one every network charges today, and it will be read live \
+             again once that fix is released."
+        ),
+    }
 }
 
 fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> String {
@@ -550,21 +585,68 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
-                    .await
-                    .map_err(TaskError::from)?;
+                // dashpay/platform#4231 breaks `ExtendedEpochInfo::fetch_current`, so the
+                // network's version is learned from the ratchet a proved DPNS fetch drives.
+                // Only a successful fetch proves it came from the network, not the local seed.
+                match DataContract::fetch(sdk, self.dpns_contract.id()).await {
+                    Ok(_) => self.set_platform_protocol_version(sdk.protocol_version_number()),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
+                         the network's protocol version stays unconfirmed"
+                    ),
+                }
 
-                let fee_multiplier = epoch_info.fee_multiplier_permille();
+                // TODO(platform#4231): restore the commented-out live fetch below and drop the
+                // hardcoded multiplier once https://github.com/dashpay/platform/pull/4231 merges
+                // and this repo's platform pin (Cargo.toml/Cargo.lock rev a18bd158…) advances past
+                // it. The proof verifier in that pin rejects the descending-epoch-without-start
+                // query shape `fetch_current` sends, so the call fails identically on every DAPI
+                // node: each attempt cycles the SDK's whole address pool and burns the shared
+                // per-client request budget, which surfaced as `DapiAllAddressesExhausted` in
+                // unrelated flows such as identity top-up. This task also runs automatically on
+                // every SPV Syncing→Synced transition, so the cost is not user-paced.
+                //
+                // 1000 permille (1.0x) is what the network actually stores, not a placeholder: an
+                // epoch's multiplier is written from
+                // `platform_version.fee_version.uses_version_fee_multiplier_permille`
+                // (rs-drive-abci/src/execution/platform_events/block_processing_end_events/
+                // add_process_epoch_change_operations/v0/mod.rs:107) and both fee schedules in the
+                // pinned crate declare `Some(1000)` — rs-platform-version/src/version/fee/v1.rs:13
+                // and v2.rs:14, checked 2026-07-31 at rev a18bd158.
+                //
+                // match ExtendedEpochInfo::fetch_current(sdk).await {
+                //     Ok(epoch_info) => {
+                //         let fee_multiplier = epoch_info.fee_multiplier_permille();
+                //         self.set_fee_multiplier_permille(fee_multiplier);
+                //         self.set_platform_protocol_version(epoch_info.protocol_version());
+                //
+                //         let mut formatted =
+                //             format_extended_epoch_info(epoch_info, self.network, true);
+                //         formatted.push_str(&format!(
+                //             "\n\n(Fee multiplier cache updated: {}x)",
+                //             fee_multiplier as f64 / 1000.0
+                //         ));
+                //         Ok(BackendTaskSuccessResult::PlatformInfo(
+                //             PlatformInfoTaskResult::TextResult(formatted),
+                //         ))
+                //     }
+                //     // Restoring keeps a degraded arm here: log, then fall back to
+                //     // `format_hardcoded_current_epoch_info` with the cached multiplier.
+                //     Err(error) => { ... }
+                // }
+                let fee_multiplier = PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE;
                 self.set_fee_multiplier_permille(fee_multiplier);
-                self.set_platform_protocol_version(epoch_info.protocol_version());
 
-                let mut formatted = format_extended_epoch_info(epoch_info, self.network, true);
-                formatted.push_str(&format!(
-                    "\n\n(Fee multiplier cache updated: {}x)",
-                    fee_multiplier as f64 / 1000.0
-                ));
+                let confirmed = match self.platform_protocol_version() {
+                    0 => None,
+                    version => Some(version),
+                };
                 Ok(BackendTaskSuccessResult::PlatformInfo(
-                    PlatformInfoTaskResult::TextResult(formatted),
+                    PlatformInfoTaskResult::TextResult(format_hardcoded_current_epoch_info(
+                        confirmed,
+                        fee_multiplier,
+                    )),
                 ))
             }
             PlatformInfoTaskRequestType::TotalCreditsOnPlatform => {
@@ -880,5 +962,98 @@ impl AppContext {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoch_workaround_reports_protocol_version_and_the_hardcoded_fee_multiplier() {
+        assert_eq!(
+            format_hardcoded_current_epoch_info(Some(12), 1000),
+            "Current Epoch Information:\n\
+             • Protocol Version: 12\n\
+             • Fee Multiplier: 1x (a fixed value, not read from the network)\n\n\
+             Epoch details cannot be read while dashpay/platform#4231 is unresolved. The fee \
+             multiplier shown is the one every network charges today, and it will be read live \
+             again once that fix is released."
+        );
+    }
+
+    /// The multiplier is presented as fixed, never as a live reading: a user
+    /// comparing it against a network that raised its fees must be able to see
+    /// which of the two the app is charging by.
+    #[test]
+    fn epoch_workaround_never_presents_the_fee_multiplier_as_a_network_reading() {
+        for protocol_version in [None, Some(12)] {
+            let formatted = format_hardcoded_current_epoch_info(protocol_version, 1500);
+            assert!(
+                formatted
+                    .contains("• Fee Multiplier: 1.5x (a fixed value, not read from the network)"),
+                "the multiplier must be shown as fixed, got: {formatted}"
+            );
+        }
+    }
+
+    #[test]
+    fn epoch_workaround_never_reports_an_unconfirmed_protocol_version_as_a_number() {
+        let formatted = format_hardcoded_current_epoch_info(None, 1000);
+        assert!(
+            formatted
+                .contains("• Protocol Version: the connected network has not confirmed one yet."),
+            "an unconfirmed version must be named as such, got: {formatted}"
+        );
+    }
+
+    /// Fee estimates must not keep running on whatever multiplier a previous
+    /// refresh happened to leave behind: the task republishes the hardcoded one.
+    #[tokio::test]
+    async fn epoch_workaround_republishes_the_hardcoded_fee_multiplier() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = dash_sdk::Sdk::new_mock();
+        ctx.set_fee_multiplier_permille(7_777);
+
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("the epoch workaround degrades to a text result");
+
+        assert_eq!(
+            ctx.fee_multiplier_permille(),
+            PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
+        );
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("the epoch workaround returns a text result");
+        };
+        assert!(
+            text.contains("• Fee Multiplier: 1x"),
+            "the reported multiplier must match the cached one, got: {text}"
+        );
+    }
+
+    /// A failed ratchet trigger leaves the SDK reporting its local seed, which is
+    /// not a network observation: caching it would open the shielded capability
+    /// gate and defeat the `0` retry sentinel `mcp::resolve` polls.
+    #[tokio::test]
+    async fn a_failed_ratchet_trigger_leaves_the_protocol_version_unconfirmed() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = dash_sdk::Sdk::new_mock();
+        assert_ne!(
+            sdk.protocol_version_number(),
+            0,
+            "precondition: the mock SDK seeds a local version of its own"
+        );
+
+        ctx.run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("the epoch workaround degrades to a text result");
+
+        assert_eq!(ctx.platform_protocol_version(), 0);
     }
 }

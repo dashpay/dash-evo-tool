@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -10,6 +11,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyID, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::platform::IdentityPublicKey;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, RwLock};
@@ -19,6 +21,54 @@ use zeroize::Zeroizing;
 /// are held in [`Zeroizing`] so they are wiped when the resolver's result is
 /// dropped.
 pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
+
+/// Whether a `stored` public half is the same key as the `live` one, ignoring
+/// only `disabled_at`.
+///
+/// Every field of an `IdentityPublicKey` is immutable once the key is added, with
+/// that single exception: disabling a key rewrites it. The stored copy is a
+/// snapshot taken when the private half was saved, so plain `==` stops matching
+/// as soon as a key is disabled or rotated, and a key this device demonstrably
+/// holds gets reported as missing.
+///
+/// Comparing only the id and the key material would fix that and open a worse
+/// hole the other way. A main identity's voting key and a linked voter identity's
+/// key can carry identical `data` under the same `id`, leaving `purpose` as the
+/// only thing telling them apart — and a lookup that conflates them can hand out,
+/// or delete, material the requested key does not own. So this excludes the one
+/// field that legitimately moves and nothing else.
+pub(crate) fn same_key(stored: &IdentityPublicKey, live: &IdentityPublicKey) -> bool {
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+
+    let IdentityPublicKey::V0(stored) = stored;
+    let IdentityPublicKey::V0(live) = live;
+    // Destructured exhaustively, and without `..`, on purpose: a field added
+    // upstream must break this build rather than be silently ignored. A new field
+    // that distinguishes two keys would otherwise leave this reporting a match
+    // where there is none — which is how one key's private material ends up
+    // attributed to another. Whoever adds it decides here whether it identifies a
+    // key or, like `disabled_at`, only describes its state.
+    let IdentityPublicKeyV0 {
+        id,
+        purpose,
+        security_level,
+        contract_bounds,
+        key_type,
+        read_only,
+        data,
+        // The one field Platform lets move after a key is added: disabling a key
+        // rewrites it, and the stored snapshot predates that.
+        disabled_at: _,
+    } = stored;
+
+    *id == live.id
+        && *purpose == live.purpose
+        && *security_level == live.security_level
+        && *contract_bounds == live.contract_bounds
+        && *key_type == live.key_type
+        && *read_only == live.read_only
+        && *data == live.data
+}
 
 /// A `(target, key_id)` map key paired with the raw 32-byte private key the
 /// migration must store in the vault — see
@@ -198,10 +248,33 @@ impl fmt::Display for PrivateKeyData {
     }
 }
 
+/// Every private half this install holds for one identity, keyed by the store it
+/// is filed under and the key's id.
+///
+/// The map is private on purpose. Which store a key is filed under is not
+/// something a caller should be deriving for itself — that is what produced a
+/// saved key no signing path could find — so reads go through
+/// [`candidates`](Self::candidates), which selects on key material.
+///
+/// Every accessor that *names* a placement is `pub(crate)`, so the callers that
+/// legitimately know one stay enumerable: the loader folding a previously-loaded
+/// record into a fresh one, and legacy recovery, which is *about* the placements
+/// an old blob recorded. [`insert_at`](Self::insert_at) and
+/// [`entry_at`](Self::entry_at) have no production caller left at all and are
+/// `#[cfg(test)]`. What stays `pub` cannot quietly file a key wrongly: the
+/// target-blind enumerators, [`insert_non_encrypted`](Self::insert_non_encrypted),
+/// which refuses an occupied slot, and the whole-map `From` conversions, where
+/// the map's own keys are the placements.
+// TODO(placement-named-pub-surface): the narrowing above is overstated — several
+// pub methods still take a caller-named placement (get_resolve_local,
+// get_resolve_with_seed, get_cloned_private_key_data_and_wallet_info,
+// mark_in_vault, is_in_vault, public_key_for, wallet_seed_hash_for), and
+// mark_in_vault zeroizes the occupant with no same_key guard. Narrow them to
+// pub(crate) or guard them, then align this rustdoc and restore design.md §7's
+// stronger claim (§8 tracks this residual).
 #[derive(Debug, Encode, Decode, Clone, PartialEq, Default)]
 pub struct KeyStorage {
-    pub private_keys:
-        BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
+    private_keys: BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>,
 }
 
 impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, PrivateKeyData)>>
@@ -409,13 +482,188 @@ impl KeyStorage {
             .map(|(public_key, _)| public_key)
     }
 
-    pub fn has(&self, key: &(PrivateKeyTarget, KeyID)) -> bool {
+    pub(crate) fn has(&self, key: &(PrivateKeyTarget, KeyID)) -> bool {
         self.private_keys.contains_key(key)
+    }
+
+    /// Every map key whose stored public half *is* `key`, in
+    /// [`PROBE_ORDER`](crate::model::qualified_identity::key_placement::PROBE_ORDER).
+    ///
+    /// This is how a read finds a private half. It probes each store at `key`'s
+    /// own id and keeps only entries [`same_key`] accepts, so it finds the key
+    /// wherever an older build filed it and never returns a different key that
+    /// merely shares the id — the voter and main id spaces overlap, so matching
+    /// on the id alone is what lets a delete land on the wrong key.
+    ///
+    /// Three `BTreeMap` probes, not a scan. Yields more than one entry only when
+    /// the same key is genuinely filed under several stores; a caller that needs
+    /// bytes should take the first that *resolves* rather than the first that
+    /// matches, since a match can name a vault placeholder whose secret is gone
+    /// (see
+    /// [`resolve_private_key_bytes`](crate::model::qualified_identity::QualifiedIdentity::resolve_private_key_bytes)).
+    pub fn candidates<'a>(
+        &'a self,
+        key: &'a IdentityPublicKey,
+    ) -> impl Iterator<Item = (PrivateKeyTarget, KeyID)> + 'a {
+        let key_id = key.id();
+        crate::model::qualified_identity::key_placement::PROBE_ORDER
+            .iter()
+            .filter_map(move |target| {
+                let map_key = (target.clone(), key_id);
+                let (stored, _) = self.private_keys.get(&map_key)?;
+                same_key(&stored.identity_public_key, key).then_some(map_key)
+            })
+    }
+
+    /// The placement a synchronous caller should name for `key`: the first
+    /// candidate whose bytes are resident, or the first candidate at all.
+    ///
+    /// [`candidates`](Self::candidates) can name a [`PrivateKeyData::InVault`]
+    /// placeholder ahead of an entry that carries its own material. Resolving
+    /// bytes is the honest way to choose between them, but that is async and a
+    /// UI frame cannot await, so this picks the placement whose material is
+    /// visible without opening the vault and falls back to the first match when
+    /// none is. Every synchronous site shares this one rule, so the placement a
+    /// screen names and the material it displays can never come from two
+    /// different stores.
+    pub fn first_live_candidate(
+        &self,
+        key: &IdentityPublicKey,
+    ) -> Option<(PrivateKeyTarget, KeyID)> {
+        // Two lazy passes rather than one collected Vec: this runs per key per
+        // frame, and the fallback re-probe costs at most three map reads.
+        self.candidates(key)
+            .find(|placement| !self.is_in_vault(placement))
+            .or_else(|| self.candidates(key).next())
+    }
+
+    /// What this identity holds for `key` — its stored [`PrivateKeyData`] and
+    /// the wallet derivation info recorded with it — taken from the placement
+    /// [`first_live_candidate`](Self::first_live_candidate) names.
+    ///
+    /// Clones the entry, so it copies raw key bytes for a plaintext-carrying
+    /// key: call it when the material is actually needed, not to answer whether
+    /// a key is held.
+    pub fn held_private_key_data(
+        &self,
+        key: &IdentityPublicKey,
+    ) -> Option<(PrivateKeyData, Option<WalletDerivationPath>)> {
+        let placement = self.first_live_candidate(key)?;
+        self.get_cloned_private_key_data_and_wallet_info(&placement)
+    }
+
+    /// The wallet derivation path `key` is filed at, under any placement.
+    ///
+    /// A typed probe, not a liveness one: it answers "is this a wallet-derived
+    /// key, and from which wallet", so a key filed under two placements where
+    /// the first is not wallet-derived still finds its wallet.
+    pub fn wallet_derived_at(&self, key: &IdentityPublicKey) -> Option<&WalletDerivationPath> {
+        self.candidates(key)
+            .find_map(|placement| match self.private_keys.get(&placement) {
+                Some((_, PrivateKeyData::AtWalletDerivationPath(path))) => Some(path),
+                _ => None,
+            })
     }
 
     /// Returns all stored key identifiers.
     pub fn keys_set(&self) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
         self.private_keys.keys().cloned().collect()
+    }
+
+    /// How many private halves are held.
+    pub fn len(&self) -> usize {
+        self.private_keys.len()
+    }
+
+    /// Whether no private half is held at all.
+    pub fn is_empty(&self) -> bool {
+        self.private_keys.is_empty()
+    }
+
+    /// Every entry, keyed by placement. Target-blind, for callers that need to
+    /// walk the whole store rather than find one key.
+    pub fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &(PrivateKeyTarget, KeyID),
+            &(QualifiedIdentityPublicKey, PrivateKeyData),
+        ),
+    > {
+        self.private_keys.iter()
+    }
+
+    /// Every stored entry, without its placement. Target-blind, for callers
+    /// asking about the keys themselves rather than where they are filed.
+    pub fn values(&self) -> impl Iterator<Item = &(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.values()
+    }
+
+    /// The stored entry at exactly `key`, if any.
+    ///
+    /// Names a placement directly, so it answers "is *this* slot occupied", not
+    /// "where is this key". Prefer [`candidates`](Self::candidates) for the
+    /// latter: this cannot tell a key from a different one sharing its id.
+    #[cfg(test)]
+    pub(crate) fn entry_at(
+        &self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<&(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.get(key)
+    }
+
+    /// Store `value` at exactly `key`, replacing whatever was there.
+    ///
+    /// For callers that know a placement structurally — a loader walking the
+    /// identity list it read a key from, or legacy recovery restoring an entry
+    /// to the placement the old blob recorded. A caller that has to *choose* one
+    /// for new material asks
+    /// [`QualifiedIdentity::placement_of`](crate::model::qualified_identity::QualifiedIdentity::placement_of),
+    /// unless construction already fixes it: `add_key_to_identity` mints its key
+    /// at `max_id + 1` on the main identity, so only the main store can hold it.
+    #[cfg(test)]
+    pub(crate) fn insert_at(
+        &mut self,
+        key: (PrivateKeyTarget, KeyID),
+        value: (QualifiedIdentityPublicKey, PrivateKeyData),
+    ) -> Option<(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.insert(key, value)
+    }
+
+    /// Store `value` at `key` only if nothing is there — the merge-preserving
+    /// write. Used when folding a previously-loaded record into a fresh one, so
+    /// a key the new load did not resupply is kept rather than dropped, and one
+    /// it did resupply is not overwritten with the stale copy.
+    pub(crate) fn insert_if_absent(
+        &mut self,
+        key: (PrivateKeyTarget, KeyID),
+        value: (QualifiedIdentityPublicKey, PrivateKeyData),
+    ) {
+        self.private_keys.entry(key).or_insert(value);
+    }
+
+    /// Consume the store, yielding every entry with its placement.
+    pub fn into_entries(
+        self,
+    ) -> impl Iterator<
+        Item = (
+            (PrivateKeyTarget, KeyID),
+            (QualifiedIdentityPublicKey, PrivateKeyData),
+        ),
+    > {
+        self.private_keys.into_iter()
+    }
+
+    /// Remove the entry at exactly `key`, returning it if it was there.
+    ///
+    /// Removing *a key* rather than a slot means removing every placement that
+    /// holds it — see [`candidates`](Self::candidates), which selects on key
+    /// material so a removal cannot land on a different key sharing the id.
+    pub(crate) fn remove_at(
+        &mut self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<(QualifiedIdentityPublicKey, PrivateKeyData)> {
+        self.private_keys.remove(key)
     }
 
     pub fn identity_public_keys(&self) -> Vec<(&PrivateKeyTarget, &QualifiedIdentityPublicKey)> {
@@ -425,22 +673,39 @@ impl KeyStorage {
             .collect()
     }
 
-    /// Inserts an unencrypted key into `ClearKeyStorage`. Returns an error if the storage is closed.
+    /// File a key's plaintext private half at exactly `key`, replacing that
+    /// key's own earlier entry if it has one.
+    ///
+    /// A `MEDIUM`-security key is stored as [`PrivateKeyData::AlwaysClear`],
+    /// anything else as [`PrivateKeyData::Clear`].
+    ///
+    /// # Errors
+    ///
+    /// [`TaskError::IdentityKeySlotOccupied`] when the slot holds a *different*
+    /// key — one [`same_key`] rejects. The voter and main id spaces overlap, so
+    /// a slot can legitimately belong to another key, whose private half is
+    /// often the only copy there is; taking the slot would destroy it silently.
     pub fn insert_non_encrypted(
         &mut self,
         key: (PrivateKeyTarget, KeyID),
         value: (QualifiedIdentityPublicKey, [u8; 32]),
-    ) {
-        match value.0.identity_public_key.security_level() {
-            SecurityLevel::MEDIUM => {
-                self.private_keys
-                    .insert(key, (value.0, PrivateKeyData::AlwaysClear(value.1)));
-            }
-            _ => {
-                self.private_keys
-                    .insert(key, (value.0, PrivateKeyData::Clear(value.1)));
-            }
+    ) -> Result<(), TaskError> {
+        let (public_key, private_key_bytes) = value;
+        if let Some((occupant, _)) = self.private_keys.get(&key)
+            && !same_key(
+                &occupant.identity_public_key,
+                &public_key.identity_public_key,
+            )
+        {
+            return Err(TaskError::IdentityKeySlotOccupied);
         }
+
+        let data = match public_key.identity_public_key.security_level() {
+            SecurityLevel::MEDIUM => PrivateKeyData::AlwaysClear(private_key_bytes),
+            _ => PrivateKeyData::Clear(private_key_bytes),
+        };
+        self.private_keys.insert(key, (public_key, data));
+        Ok(())
     }
 
     /// Mark `key` as a vault placeholder ([`PrivateKeyData::InVault`]), wiping
@@ -732,6 +997,242 @@ mod tests {
         let rendered = format!("{blob:?}");
         assert_no_leak_bytes(&rendered, &high, "migrated KeyStorage blob (high)");
         assert_no_leak_bytes(&rendered, &medium, "migrated KeyStorage blob (medium)");
+    }
+
+    const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+    /// A slot already holding a *different* key is not free. The voter and main
+    /// id spaces overlap, so two keys sharing an id is an ordinary masternode
+    /// shape — and overwriting the occupant destroys the only copy of its
+    /// private half, in this map and in the vault it is the sole pointer to.
+    #[test]
+    fn a_different_key_cannot_take_an_occupied_slot() {
+        let pv = PlatformVersion::latest();
+        let occupant = IdentityPublicKey::random_key(0, Some(1), pv);
+        let intruder = IdentityPublicKey::random_key(0, Some(2), pv);
+        assert_ne!(
+            occupant.data(),
+            intruder.data(),
+            "the fixture holds two distinct keys under one id"
+        );
+
+        let mut ks = KeyStorage::default();
+        ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(occupant), [0x11; 32]),
+        )
+        .expect("an empty slot accepts the first key");
+        let before = ks.entry_at(&(MAIN, 0)).cloned().expect("occupant stored");
+
+        let refused = ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(intruder), [0x22; 32]),
+        );
+
+        assert!(
+            matches!(refused, Err(TaskError::IdentityKeySlotOccupied)),
+            "a foreign occupant must refuse the write, got {refused:?}"
+        );
+        assert_eq!(
+            ks.entry_at(&(MAIN, 0)),
+            Some(&before),
+            "the occupant's entry survives the refused write unchanged"
+        );
+    }
+
+    /// The refusal's remedy must be one the user can actually perform. The
+    /// occupant is a *locally saved* private half, so removing it is the exit;
+    /// a refresh updates published keys but evicts no local private half — and
+    /// the backend add path has refetched the identity moments before this
+    /// refusal fires, so advising a refresh there sends the user around a loop
+    /// that recomputes the identical collision.
+    #[test]
+    fn the_occupied_slot_refusal_names_a_performable_remedy() {
+        let message = TaskError::IdentityKeySlotOccupied.to_string();
+        assert!(
+            message.contains("remove its saved private key"),
+            "the remedy is removing the occupant's local private half, got: {message}"
+        );
+        assert!(
+            !message.contains("Refresh"),
+            "refreshing cannot evict the occupying private half, got: {message}"
+        );
+    }
+
+    /// Re-entering the same key at its own slot replaces it. The paste path
+    /// relies on this to let a user correct a key already saved, rather than
+    /// growing a second copy under another store.
+    #[test]
+    fn the_same_key_still_overwrites_itself() {
+        let pv = PlatformVersion::latest();
+        let key = IdentityPublicKey::random_key(0, Some(1), pv);
+        let mut ks = KeyStorage::default();
+        ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(key.clone()), [0x11; 32]),
+        )
+        .expect("an empty slot accepts the key");
+
+        ks.insert_non_encrypted(
+            (MAIN, 0),
+            (QualifiedIdentityPublicKey::from(key), [0x22; 32]),
+        )
+        .expect("a key may replace itself at its own slot");
+
+        assert_eq!(ks.len(), 1, "replacing in place adds no second entry");
+        match ks.entry_at(&(MAIN, 0)).expect("entry present") {
+            (_, PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes)) => {
+                assert_eq!(bytes, &[0x22; 32], "the re-entered bytes replaced the old")
+            }
+            (_, other) => panic!("expected plaintext bytes, got {other:?}"),
+        }
+    }
+
+    const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    /// `disabled_at` is the one field Platform lets move after a key is added,
+    /// so a key disabled on chain since its private half was saved must still
+    /// match the stored snapshot — otherwise a key the device demonstrably
+    /// holds is reported missing the moment it is retired.
+    #[test]
+    fn same_key_ignores_a_key_being_disabled() {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let stored = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let mut disabled_since = stored.clone();
+        disabled_since.set_disabled_at(1_700_000_000);
+
+        assert!(
+            same_key(&stored, &disabled_since),
+            "a snapshot taken before the key was disabled still names that key"
+        );
+        assert!(
+            same_key(&disabled_since, &stored),
+            "and the comparison does not depend on which side moved"
+        );
+    }
+
+    /// Every other field identifies the key. `read_only` stands for the six:
+    /// disagreeing on any of them makes this a different key, and treating it
+    /// as the same one hands out or deletes material it does not own.
+    #[test]
+    fn same_key_rejects_a_disagreement_anywhere_else() {
+        let stored = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let IdentityPublicKey::V0(mut altered) = stored.clone();
+        altered.read_only = !altered.read_only;
+
+        assert!(
+            !same_key(&stored, &IdentityPublicKey::V0(altered)),
+            "a key differing outside disabled_at is not this key"
+        );
+    }
+
+    /// A storage filing one key under several placements, each with the given
+    /// stored data.
+    fn filed_under(
+        key: &IdentityPublicKey,
+        placements: &[(PrivateKeyTarget, PrivateKeyData)],
+    ) -> KeyStorage {
+        let mut ks = KeyStorage::default();
+        for (target, data) in placements {
+            ks.insert_at(
+                (target.clone(), key.id()),
+                (QualifiedIdentityPublicKey::from(key.clone()), data.clone()),
+            );
+        }
+        ks
+    }
+
+    fn derivation_path(seed_hash: u8) -> WalletDerivationPath {
+        WalletDerivationPath {
+            wallet_seed_hash: [seed_hash; 32],
+            derivation_path: DerivationPath::from(vec![]),
+        }
+    }
+
+    /// A vault placeholder probed first must not hide resident material for the
+    /// same key under a later placement — a screen that named the placeholder
+    /// would show a key it holds as unusable, and would send the vault a label
+    /// its bytes were never stored under.
+    #[test]
+    fn a_resident_placement_wins_over_a_vault_placeholder() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let ks = filed_under(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::InVault),
+                (VOTER, PrivateKeyData::Clear([0x33; 32])),
+            ],
+        );
+
+        assert_eq!(
+            ks.first_live_candidate(&key),
+            Some((VOTER, key.id())),
+            "the resident placement is the one to name"
+        );
+        assert!(
+            matches!(
+                ks.held_private_key_data(&key),
+                Some((PrivateKeyData::Clear(bytes), None)) if bytes == [0x33; 32]
+            ),
+            "the material comes from the placement that was named"
+        );
+    }
+
+    /// With one placement there is nothing to prefer: it is named whether its
+    /// bytes are resident or in the vault, so a vault-backed key stays usable.
+    #[test]
+    fn a_lone_placement_is_named_whatever_it_holds() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+
+        for data in [PrivateKeyData::InVault, PrivateKeyData::Clear([0x44; 32])] {
+            let ks = filed_under(&key, &[(MAIN, data.clone())]);
+            assert_eq!(
+                ks.first_live_candidate(&key),
+                Some((MAIN, key.id())),
+                "a lone {data:?} placement is still the answer"
+            );
+        }
+    }
+
+    /// A key nothing is filed for has no placement to name and no material.
+    #[test]
+    fn an_unheld_key_has_no_placement_and_no_material() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let ks = KeyStorage::default();
+
+        assert_eq!(ks.first_live_candidate(&key), None);
+        assert!(ks.held_private_key_data(&key).is_none());
+    }
+
+    /// `wallet_derived_at` asks a typed question, not a liveness one: a key
+    /// whose first placement carries its own plaintext still finds the wallet
+    /// it is derived from under a later placement.
+    #[test]
+    fn wallet_derived_at_looks_past_a_placement_that_is_not_derived() {
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+        let ks = filed_under(
+            &key,
+            &[
+                (MAIN, PrivateKeyData::Clear([0x55; 32])),
+                (
+                    VOTER,
+                    PrivateKeyData::AtWalletDerivationPath(derivation_path(0x66)),
+                ),
+            ],
+        );
+
+        assert_eq!(
+            ks.wallet_derived_at(&key).map(|path| path.wallet_seed_hash),
+            Some([0x66; 32]),
+            "the wallet is found under the placement that names it"
+        );
+
+        let plaintext_only = filed_under(&key, &[(MAIN, PrivateKeyData::Clear([0x55; 32]))]);
+        assert!(
+            plaintext_only.wallet_derived_at(&key).is_none(),
+            "a key no placement derives has no wallet"
+        );
     }
 
     /// `is_in_vault` and `public_key_for` probes: a vault placeholder reports

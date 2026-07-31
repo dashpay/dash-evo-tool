@@ -6,7 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
+  the lock file moves from 0.11.14 to 0.11.15, which fixes a remote
+  memory-exhaustion issue in out-of-order stream reassembly. The crate is an
+  inert optional entry that no build of this app actually links, so this is
+  dependency hygiene rather than a fix for reachable behavior.
+
+- **Dependency advisory GHSA-7gcf-g7xr-8hxj still open** (`serde_with` below
+  3.21.0, a panic when serializing empty key-value map entries): it cannot be
+  resolved in this repository. `serde_with` 2.x is required by
+  `dashcore-rpc-json`, which arrives through pinned revisions of
+  `dashpay/platform` and `dashpay/rust-dashcore`; both still declare
+  `serde_with = "2.1.0"` at their current development heads as of 2026-07-27.
+  Allowing 3.x needs an upstream change in `dashpay/rust-dashcore` first. A TODO
+  in `Cargo.toml` marks the re-check.
+
 ### Added
+
+- **Keys saved on this device but not on the identity's key lists are now
+  listed**: a key can be saved here while appearing on none of the identity's
+  key lists — for example when adding it to the network did not finish. The
+  identity's key list now shows such keys in their own section, so they can be
+  opened and their saved private key removed. Previously nothing could reach
+  them, even when a message asked exactly that.
+
+- **Restore keys an upgrade left behind**: an identity that was already in the
+  app before the update — a masternode loaded from its ProTxHash, or one that
+  held only some of its keys — kept its remaining keys in the previous
+  version's data with no way to reach them. Its page now offers to bring them
+  across: the node detail page and the Key Info screen list what can be
+  restored, named by role, and restore only what you press Restore on. Nothing
+  happens at launch or during the update, keys already saved are never replaced
+  or removed, and on a password-protected identity the identity password is
+  asked for first — cancelling or mistyping it leaves everything as it was. A
+  saved key that no longer matches one this identity uses — a key rotated or
+  retired since the previous version saved it — is listed with an explanation
+  instead of being restored, so a key that could not sign can never make the app
+  report a role as held. The same applies to a key held on a separate voting or
+  operator identity that this identity does not currently link to: nothing
+  outside the old data says that key is still in use, so it is listed with its
+  explanation and entering it by hand stays the way to bring it back. A
+  masternode loaded from its ProTxHash alone is exactly that case — its owner
+  and payout keys come back, its voting key is listed as one that cannot be, and
+  checking that key against the chain instead is tracked as issue #942. The
+  previous version's data is only ever read, so this is safe to repeat.
+
+- **Legacy key recovery: closed edge cases found during review**: a recovered
+  key is now checked against the exact key it's meant to replace, not just
+  matching key data found anywhere else on the identity, so a rotated-away or
+  mismatched key can no longer be reported as restored. Restoring no longer
+  races with other actions on the same identity happening at the same moment
+  (an edit, a refresh, a rename, or turning password protection on or off),
+  and a restore still waiting on your password can no longer be reset —
+  showing the Restore button again as if nothing had started — by an
+  unrelated error appearing on screen.
 
 - **Automatic Platform node refresh during upgrades**: migrating a pre-1.0
   installation now triggers a best-effort Mainnet or Testnet node refresh.
@@ -55,6 +110,181 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **One damaged payment record no longer makes every wallet unopenable**: all
+  wallets are kept in a single file, and one unreadable payment record in it
+  stopped that whole file from opening — every wallet it held, funded ones
+  included, reported "Saved wallet data appears damaged and cannot be loaded."
+  Such a record is now skipped so the remaining wallets open normally, and the
+  records that caused it are no longer written in the first place. Wallets
+  already affected open again after updating, with their funds intact and no
+  need to restore from a recovery phrase. Amounts are still checked strictly:
+  a damaged record that carries a balance continues to stop the file from
+  opening rather than show a total that is quietly too low.
+
+- **"Max" now matches what your Core wallet can actually send**: pressing
+  "Max" when shielding DASH, funding a Platform address through the Simple
+  builder-driven form, sending directly to an identity, or funding an identity
+  (creating or topping up, from your wallet balance or a received deposit)
+  could suggest an amount larger than the wallet could actually send, so the
+  transaction was rejected no matter how you adjusted it. Max and the amount
+  check now ask the wallet directly what it can send instead of estimating from
+  an on-screen balance, and both reserve room for the fee. The two derive from
+  the same wallet answer: if your spendable funds change after that answer,
+  Max steps back to "Checking the available amount…" and the amount check
+  waits for a fresh answer instead of accepting an outdated ceiling. The
+  Advanced manual-input Platform-address flow remains governed by
+  the Core inputs the user selects rather than this builder ceiling. Funding
+  from a received deposit is also now capped by what actually arrived at that
+  deposit address, never by unrelated funds elsewhere in the wallet. While the
+  check is running, the amount field shows "Checking the available amount…";
+  if it fails, "The available amount could not be checked." appears with a
+  "Retry available amount check" button, and you can still switch to a
+  different funding method at any point.
+
+- **A key held in the clear is used without asking for a password**: for a key
+  an earlier version had saved in two places, one of them password-protected,
+  using the key could bring up a password prompt even though a copy needing no
+  password was on this device — and dismissing that prompt then refused the
+  key outright. The copy that needs no password is now used first, so the
+  prompt only appears when it is genuinely required.
+
+- **Show and Sign find a key whose first copy is unreadable**: for a key saved
+  in two places where only one copy's stored bytes were still present —
+  as after restoring the app's data without its key store — "Show private
+  key" and "Sign" could fail on the empty copy while the readable one sat
+  unused. Both now reach whichever copy is actually readable.
+
+- **Showing or signing with a key no longer advises saving it**: pressing
+  "Show private key" or "Sign" on a key whose place on the identity could not
+  be worked out answered with advice about saving the key again — about a key
+  the user never entered. Both messages now name a step either situation can
+  take: refresh the identity and open the key again.
+
+- **Cancelling a password request is taken as an answer**: for a key an earlier
+  version had saved in more than one place, dismissing the password prompt
+  brought up the same prompt again for the same key. Cancelling now ends the
+  attempt, and the message reflects the cancellation rather than an unrelated
+  earlier problem with another copy of the key.
+
+- **Messages about a key that cannot be used now say what to do**: being told a
+  key is not saved on this device, or cannot be saved here, left nowhere to go
+  next — or worse, named a step that could not work, such as freeing disk space
+  when the identity's keys are password-protected, or entering a key the same
+  screen would then refuse. Each of these messages now names the step that
+  actually resolves its situation.
+
+- **A key that could not be saved no longer looks saved**: when entering a
+  private key was refused — including when saving it to this device failed —
+  the key's page still showed it as saved until the page was left and reopened,
+  offering to reveal it, to sign with it, and to remove it, none of which could
+  work. The page now reports a refused key as not saved, which is what it is;
+  likewise, a removal that could not be saved no longer shows the key as
+  already gone.
+
+- **The identities list sees a key saved by an earlier version**: the Keys
+  popup on the identities list showed such a key as not saved on this device —
+  even though it is — and opened the key's page in the same wrong state. The
+  popup now finds a saved key wherever the version that saved it filed it, as
+  the rest of the app already does.
+
+- **A key's wallet is found even when the key is filed twice**: a key that an
+  earlier version had saved in two places, wallet-derived in only one of them,
+  was treated as belonging to no wallet at all — so the wallet was never offered
+  for unlocking and signing with that key could not proceed. The wallet that
+  derives a key is now found wherever the key is filed.
+
+- **A key two lists appear to share can be saved again**: when a masternode's
+  own record and its voting identity each carried a key with the same number and
+  the same public key, entering the private key of either was refused with a
+  message saying the key does not belong to this identity — although it plainly
+  does, and what the two keys are for is what tells them apart. Such a key is
+  now saved where it belongs. When a key really is on two lists at once, the
+  message now says so and what to do about it.
+
+- **Entering a key can no longer erase a different one**: keys of a masternode's
+  own record and of its voting identity are numbered separately, so two
+  different keys can carry the same number. Entering the private key of one of
+  them used to take the other's place without a word, and the replaced key's
+  private half was gone — with no copy to restore it from if it had been
+  imported by hand. Dash Evo Tool now refuses that and explains what happened,
+  leaving the saved key untouched. Re-entering a key you already saved still
+  replaces itself, as before.
+
+- **A saved voting key can now actually sign**: a voting key held on an
+  identity's own record — rather than on a separate voting identity — was saved
+  and shown as being on this device, but nothing could use it. Signing looked for
+  it in the wrong place, so voting with it failed and the key's page reported it
+  missing, on the screen whose job is to answer that question. Dash Evo Tool now
+  finds a key by matching it against the key itself, wherever it is filed, so it
+  is found whichever version of the app saved it and no key material has to be
+  moved to fix this. This also means a key is no longer confused with a different
+  key that happens to share its number, which a masternode has whenever its
+  voting identity numbers a key the same way as its main identity: removing one
+  key could remove the other's private half, and a key could be reported as
+  saved on the strength of an unrelated key being present.
+
+- **Removing a key now removes all of it**: "Remove private key" on a key's page
+  also erases the copy of that key held in this device's secure storage.
+  Previously only the entry naming it was cleared, so the key itself stayed
+  behind with nothing pointing at it — it could not be used or brought back, and
+  deleting the whole identity afterwards did not clear it either. If the secure
+  storage cannot be written to, the removal now stops and says so with the key
+  left exactly as it was, so it can simply be tried again.
+
+- **A key is checked before it is used**: showing a saved key or signing with it
+  now confirms the key held on this device really is the key on screen. Should
+  the two disagree — records an older version left inconsistent — the action
+  stops and says so, rather than signing with a key nobody would recognise as
+  this identity's.
+
+- **An identity's keys are reachable again**: the keys list under an identity's
+  Settings → Advanced now opens each key's own page, so keys can be inspected
+  and restored — and, once a key is on this device, signed with or
+  password-protected — without changing the interface mode and without starting
+  a payment. Previously that list was a read-only table with no way onward, and
+  every route to a key's page ran through an action screen — sending,
+  withdrawing, a token operation — each of which offers it only when the
+  identity already holds a key of the kind that action needs. So an identity
+  missing its keys, the one case where this matters most, could not get to them
+  at all. The offer to restore keys left behind by an earlier version now also
+  appears on the keys list itself, above the keys, rather than only inside a
+  key's page. Each key is named by its role and states whether it is saved on
+  this device. Keys are named for the identity they belong to: a user identity's
+  keys are described in plain language rather than in masternode registration
+  terms, which previously appeared on every identity. Leaving a key returns to
+  the list with both its keys and the restore offer brought up to date, so a
+  restore made from a key's page is reflected immediately instead of being
+  offered again.
+
+  A key opened from a masternode's page keeps its name too. A voting key is the
+  node's voting key however it is recorded, and its own page now says so instead
+  of describing it as another kind of key, which also means the page no longer
+  reports such a key as missing while the list it was opened from shows it as
+  saved on this device.
+
+  One known limitation, for a voting key stored on the identity itself rather
+  than on a separate voting identity: the keys list and the key's page now agree
+  on whether such a key is saved here, but saving or removing one by hand can
+  affect a voting key of the same number on a linked voting identity, and
+  removing it may leave the original in place. So until then, after saving or
+  removing a voting key on an identity like that, open the keys list and check
+  that each key still reads as you expect, and re-enter any key that should be
+  saved but no longer is. This will be closed by the in-progress key-placement
+  resolution fix.
+
+- **A key's page now catches up on changes made while it was open**: previously,
+  if something else updated your identity while a key's page was open — most
+  relevantly, a restore that finished from a different screen — the next key
+  edit made on that page could silently overwrite the change. The page now
+  picks up such changes as they arrive.
+
+- **Key role names are complete, consistent phrases everywhere**: a key's role
+  (owner, voting, payout, and so on) now reads the same complete phrase across
+  the keys list, a masternode's page, and the key's own page, instead of a
+  partly-assembled label that could vary by screen. The on-chain purpose value
+  itself remains available as its own line in Expert view for anyone who wants
+  it verbatim.
+
 - **Wallet rename consistency**: renaming a wallet no longer overwrites other
   saved wallet details when metadata cannot be read. Overlapping renames and
   wallet removals also keep displayed aliases and deleted-wallet metadata
@@ -84,6 +314,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already consumed by another operation now tells you directly to choose a
   different deposit or start a new one, instead of the generic rejection
   message that suggested retrying the same one.
+
+- **Shielded features now detect network support correctly**: the app's
+  live check of the connected network's protocol version — used to enable
+  shielded sending, receiving, and transfers — no longer gets stuck at its
+  startup default. It was silently keeping shielded operations unavailable
+  regardless of what the connected network actually supports, and also kept
+  the send-fee estimate from picking up the network's current rate. A
+  temporary workaround is in place while the underlying issue is fixed
+  upstream; the send-fee estimate will keep using its last known rate until
+  that lands. The check only accepts a protocol version the connected network
+  actually confirms: when the network cannot be reached, shielded operations
+  stay unavailable and the app keeps retrying, instead of assuming the version
+  the app was built with.
+
+- **Fewer connection failures during unrelated actions**: the app kept asking
+  the network for epoch details through a request every server currently
+  refuses. Each attempt consumed part of the app's shared request allowance, so
+  other actions — adding funds to an identity, for example — could fail with a
+  connection error. That request is now paused until the upstream fix is
+  released. The send-fee rate it was meant to refresh is the standard rate every
+  network charges today, so fees are unchanged, and the Platform Info screen now
+  says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
 

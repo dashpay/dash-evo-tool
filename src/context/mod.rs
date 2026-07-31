@@ -44,7 +44,7 @@ use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
-use dash_sdk::dpp::version::v11::PLATFORM_V11;
+use dash_sdk::dpp::version::v12::PLATFORM_V12;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
@@ -174,6 +174,9 @@ pub struct AppContext {
     /// Per-wallet guards covering the complete wallet-meta alias update.
     /// Different wallets remain independent while same-wallet renames serialize.
     hd_wallet_rename_locks: Mutex<HashMap<WalletSeedHash, Arc<Mutex<()>>>>,
+    /// Per-identity guards covering every whole-record mutation of one stored
+    /// identity. See [`AppContext::identity_record_lock`].
+    identity_record_locks: Mutex<HashMap<Identifier, Arc<Mutex<()>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
     /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
@@ -328,6 +331,11 @@ pub struct AppContext {
     /// after `AppContext::new` but before the backend reads it; contention is
     /// nil (touched only at install and backend construction).
     secret_prompt: SecretPromptSlot,
+    /// Whether the preserved legacy `data.db` holds any identity of this
+    /// network — the gate on the stranded-key recovery offer, probed at most
+    /// once per context by [`Self::has_legacy_identities`]. The legacy file is
+    /// a read-only artifact, so one answer holds for the session.
+    legacy_identities_present: std::sync::OnceLock<bool>,
 }
 
 /// Mutex-guarded slot for the installable secret-prompt host, with an opaque
@@ -347,6 +355,40 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(seed_hash)
+            .or_default()
+            .clone()
+    }
+
+    /// The guard serializing every whole-record mutation of `identity_id`:
+    /// storing the record, deleting it, and changing its key-protection tier.
+    ///
+    /// The stored record is written as one whole snapshot, so any two writers
+    /// of the same identity are a read-modify-write race — the loser's snapshot
+    /// silently reverts the winner's. A multi-step mutation (read → merge →
+    /// seal → write) must therefore hold this guard for its whole span; single
+    /// writers take it for the write alone, inside
+    /// [`insert_local_qualified_identity`](Self::insert_local_qualified_identity),
+    /// [`update_local_qualified_identity`](Self::update_local_qualified_identity),
+    /// [`set_identity_alias`](Self::set_identity_alias) and
+    /// [`delete_local_qualified_identity`](Self::delete_local_qualified_identity),
+    /// so coverage does not depend on remembering it at ~20 call sites.
+    ///
+    /// Lock order is `migration_run` → this guard, never the reverse: the
+    /// delete and legacy-recovery paths both take the storage-migration mutex
+    /// first. Nothing may be held across an `.await`.
+    ///
+    /// A few UI paths write a record straight from the frame loop (a key add or
+    /// remove, an alias rename, removing a node), so they can wait here. That
+    /// wait is bounded and cannot deadlock: no holder needs the UI thread to
+    /// make progress — the one flow that opens a modal, legacy recovery, takes
+    /// this guard only *after* its password prompt has closed — and the longest
+    /// holder is a key-protection tier change, whose per-key derivation runs in
+    /// the low hundreds of milliseconds. Different identities never contend.
+    pub(crate) fn identity_record_lock(&self, identity_id: Identifier) -> Arc<Mutex<()>> {
+        self.identity_record_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(identity_id)
             .or_default()
             .clone()
     }
@@ -507,6 +549,7 @@ impl AppContext {
             identity_loads: Default::default(),
             wallets: RwLock::new(wallets),
             hd_wallet_rename_locks: Mutex::new(HashMap::new()),
+            identity_record_locks: Mutex::new(HashMap::new()),
             single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
@@ -545,6 +588,7 @@ impl AppContext {
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
+            legacy_identities_present: std::sync::OnceLock::new(),
         };
 
         let app_context = Arc::new(app_context);
@@ -1553,6 +1597,23 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Monotonic generation of the event-pushed snapshot for one wallet.
+    pub fn snapshot_generation(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.wallet_backend()
+            .map(|wb| wb.wallet_snapshot_generation(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// Snapshot generation, exact builder-input composition, and its revision.
+    pub fn asset_lock_probe_snapshot(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> (u64, crate::wallet_backend::AssetLockInputState, u64) {
+        self.wallet_backend()
+            .map(|wallet_backend| wallet_backend.asset_lock_probe_snapshot(seed_hash))
+            .unwrap_or_default()
+    }
+
     /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
     /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
     ///
@@ -1624,15 +1685,34 @@ impl AppContext {
 }
 
 /// Returns the default platform version for the given network.
-// TODO: Ideally use sdk.load().version() but this is a free function with no sdk access.
-// Every network currently pins the same version.
+// TODO(platform#4231): Seeded at v12 (not pinned) so `Sdk`'s protocol-version
+// ratchet stays active. See `PlatformInfoTaskRequestType::CurrentEpochInfo` for
+// why `ExtendedEpochInfo::fetch_current` can't be used directly right now.
+// Revert to `.with_version()` (a hard pin) or otherwise reconsider this once
+// https://github.com/dashpay/platform/pull/4231 merges and this repo's platform
+// pin advances past it.
 pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
-    &PLATFORM_V11
+    &PLATFORM_V12
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn epoch_workaround_uses_v12_for_every_network() {
+        for network in [
+            Network::Mainnet,
+            Network::Testnet,
+            Network::Devnet,
+            Network::Regtest,
+        ] {
+            assert_eq!(
+                default_platform_version(&network).protocol_version,
+                PLATFORM_V12.protocol_version
+            );
+        }
+    }
 
     #[test]
     fn install_secret_prompt_recovers_poisoned_slot() {

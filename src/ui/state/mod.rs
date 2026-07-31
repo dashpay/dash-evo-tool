@@ -6,6 +6,7 @@
 //! `ui/components/`, which is reserved for renderable widget types.
 
 pub mod account_summary;
+pub mod asset_lock_balance;
 pub mod avatar_cache;
 pub mod contacts_view;
 pub mod dpns_contests;
@@ -13,8 +14,10 @@ pub mod dpns_vote_operations;
 pub mod dpns_vote_state;
 pub mod global_nav;
 pub mod hub_selection;
+pub mod legacy_recovery;
 pub mod masternodes_view;
 pub mod tracked_asset_lock_cache;
 
+pub use asset_lock_balance::AssetLockBalanceCache;
 pub use avatar_cache::AvatarCache;
 pub use tracked_asset_lock_cache::TrackedAssetLockCache;

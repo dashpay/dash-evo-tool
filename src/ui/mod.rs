@@ -1,4 +1,5 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
+use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -47,7 +48,6 @@ use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
-use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
@@ -74,6 +74,47 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
+
+pub(crate) fn can_append_concurrent_backend_tasks(action: &AppAction) -> bool {
+    matches!(
+        action,
+        AppAction::None
+            | AppAction::BackendTask(_)
+            | AppAction::BackendTasks(_, BackendTasksExecutionMode::Concurrent)
+    )
+}
+
+pub(crate) fn append_concurrent_backend_tasks(
+    action: AppAction,
+    mut pending_tasks: Vec<BackendTask>,
+) -> AppAction {
+    if pending_tasks.is_empty() {
+        return action;
+    }
+
+    match action {
+        AppAction::None => {
+            AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+        }
+        AppAction::BackendTask(task) => {
+            pending_tasks.insert(0, task);
+            AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+        }
+        AppAction::BackendTasks(mut tasks, BackendTasksExecutionMode::Concurrent) => {
+            tasks.append(&mut pending_tasks);
+            AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
+        }
+        // Callers must gate on `can_append_concurrent_backend_tasks`; anything
+        // else cannot carry a batch, and the pending tasks are dropped.
+        other => {
+            tracing::warn!(
+                dropped_tasks = pending_tasks.len(),
+                "concurrent backend tasks were dropped: the frame action cannot carry a task batch"
+            );
+            other
+        }
+    }
+}
 
 pub mod components;
 pub mod contracts_documents;
@@ -154,7 +195,10 @@ pub enum ScreenType {
         IdentityPublicKey,
         Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
     ),
-    Keys(Identity),
+    /// The identity keys list. Carries the qualified record, not the bare
+    /// `Identity`: the screen has to say which keys this device actually holds
+    /// and open `KeyInfo` with that key's private material.
+    Keys(QualifiedIdentity),
     DocumentQuery,
     NetworkChooser,
     RegisterDpnsName(RegisterDpnsNameSource),
@@ -637,6 +681,16 @@ impl Screen {
                 screen.app_context = app_context;
                 return;
             }
+            Screen::AddNewIdentityScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_for_network_switch();
+                return;
+            }
+            Screen::TopUpIdentityScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_for_network_switch();
+                return;
+            }
             Screen::WalletSendScreen(screen) => {
                 screen.app_context = app_context;
                 // Drop all state bound to the old network's wallet (wallet, seed
@@ -704,13 +758,11 @@ impl Screen {
             ContractVisualizerScreen,
             AddKeyScreen,
             DocumentQueryScreen,
-            AddNewIdentityScreen,
             RegisterDpnsNameScreen,
             RegisterDataContractScreen,
             UpdateDataContractScreen,
             DocumentActionScreen,
             GroupActionsScreen,
-            TopUpIdentityScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
@@ -746,6 +798,8 @@ impl Screen {
             TransferScreen,
             WalletsBalancesScreen,
             ImportMnemonicScreen,
+            AddNewIdentityScreen,
+            TopUpIdentityScreen,
             WalletSendScreen,
             SingleKeyWalletSendScreen,
             CreateAssetLockScreen,

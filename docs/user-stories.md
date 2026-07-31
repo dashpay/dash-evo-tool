@@ -457,6 +457,16 @@ As a developer, I want to transfer credits privately from my shielded pool to an
 - Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
 - Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
+### SND-017: "Max" is verified against what the wallet can actually build [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want "Max" (and the amount check behind it) to reflect what my Core wallet can genuinely send when shielding DASH, funding a Platform address through the Simple builder-driven form, sending directly to an identity, or funding an identity from my wallet balance, so that the amount I'm offered — or type in myself — is not rejected for exceeding what the wallet can build.
+
+- "Max" and amount validation both ask the wallet directly for its actual sendable ceiling, reserving the relevant operation's fee, instead of estimating from the on-screen balance — both derive from the same builder quote, including for an amount typed in by hand rather than produced by the Max button. When the wallet's spendable inputs change after a quote, Max steps back to "Checking the available amount…" and validation waits for a fresh quote rather than accepting a stale ceiling.
+- While the check is running, the amount field shows "Checking the available amount…"; if it fails, "The available amount could not be checked." appears with a "Retry available amount check" button.
+- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
+- The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
+
 ---
 
 ## Asset Locks (ALK)
@@ -570,12 +580,17 @@ As a power user, I want to add a new key to my identity so that I can authorize 
 - Key is added via state transition.
 
 ### IDN-008: View identity keys and details [Implemented]
-**Persona:** Priya, Jordan
+**Persona:** Alex, Priya, Jordan
 
 As a user, I want to view all keys associated with my identity so that I can audit access and verify key configuration.
 
-- Lists all keys with type, purpose, and status.
-- View individual key details.
+- The list is reachable from the identity's own Settings tab, under the Advanced section, without changing the interface mode and without starting a payment.
+- Every key on the identity gets a row, and every row opens that key's own page — whether or not this device holds the key's private half. A key the device is missing is exactly the one a user comes here about, so it is never hidden or unopenable.
+- Each row names the key by its role in words that suit the identity — a user identity's keys in plain language, a masternode's in its registration terms — and says whether the key is saved on this device, in words rather than by colour alone. A key the network has retired says so in its name.
+- The on-chain specifics — key id, Platform purpose, security level, key type, read-only — are Expert-view detail, on both the list and the key's own page. The Everyday view gets the role and the held state, which is what it can act on.
+- A key's own page shows its public key, hash and address, and offers to view the private half, sign a message with it, or add and remove it.
+- A key saved on this device that is on none of the identity's key lists — a saved key whose publication never happened — is listed in its own section below the published keys, so its saved private half can still be opened and removed. The section appears only when such a key exists.
+- The offer to restore keys an upgrade left behind also appears here; its criteria are IDN-020's.
 
 ### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]
 **Persona:** Priya, Jordan
@@ -664,6 +679,24 @@ As a user, I want the identities I loaded before an upgrade — and the keys the
 - The report of unreadable identities returns on every launch until it is explicitly acknowledged, so a user who stepped away cannot lose the only notice that some of their keys were not carried over.
 - When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
 - An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
+
+### IDN-020: Restore keys an upgrade left behind, without re-entering them [Implemented]
+**Persona:** Alex, Priya
+
+As a user whose identity was already in the app before the upgrade — a masternode loaded from its ProTxHash, or an identity holding only some of its keys — I want to bring across the keys that stayed behind in the previous version's data, so that I do not have to re-enter private keys I no longer have on hand.
+
+- The offer appears on the identity's own page — the node detail page, the identity's keys list, and the Key Info screen — only when the previous version's data actually holds keys this identity does not, and it disappears once there is nothing left to restore.
+- The keys list is reachable without changing the interface mode and without starting a payment: an identity's keys are listed under Settings, and every key opens its own page whether or not this device holds that key. Keys that are missing are exactly the ones a user comes here about, so a key the device does not hold is never hidden or unopenable.
+- The offer sits above the key list, so a user whose keys are missing finds it without opening a key first.
+- Each key is named by its role and says whether it is saved on this device, in words rather than by colour alone. The role words match the identity: a user identity's keys are named in plain language, not in masternode registration terms, and the restore offer above the list uses the same words as the list itself.
+- Leaving a key returns to the keys list with both the keys and the restore offer up to date, so a restore made from a key's page is never offered a second time.
+- The restore offer lists each key by its role, and that list is exactly what gets restored. Nothing is restored without pressing Restore, and nothing happens automatically at launch or during the upgrade.
+- Keys already saved for the identity are never replaced or removed — only missing ones are added. An identity the user deleted is never brought back.
+- On a password-protected identity the identity password is asked for first; cancelling, or getting it wrong, leaves everything exactly as it was.
+- An owner or payout key that is genuinely missing comes back this way. A voting key held on a separate voting identity does not, unless the identity's own record already links to that voting identity: otherwise nothing but the previous version's data says the node still uses that key, so it is listed as one that cannot be brought back and entering it by hand stays the remedy. Checking such a key against the chain, which would let it be restored safely, is tracked as issue #942.
+- A key saved in a format this version cannot read, or one that no longer matches a key the identity uses, is listed with its own explanation rather than dropped silently — and never restored, so a key that could not sign can never make the app report a role as held.
+- The previous version's data is never modified, so restoring can be repeated safely; repeating it reports that there was nothing left to restore and changes nothing.
+- Restoring keeps the app usable while it waits for the identity password: other identities can still be removed, and anything else saved for this identity while the password prompt is open survives the restore.
 
 ---
 

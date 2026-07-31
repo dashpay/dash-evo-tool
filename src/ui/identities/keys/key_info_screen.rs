@@ -1,11 +1,14 @@
 use crate::app::AppAction;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::qualified_identity::key_placement::KeyPlacement;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
@@ -14,12 +17,15 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::masternodes::{KeyVocabulary, key_role_label};
+use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::IdentityKeyView;
@@ -102,6 +108,15 @@ pub struct KeyInfoScreen {
     pending_protect: Option<(Secret, Option<String>)>,
     /// A queued opt-out dispatch (current password), drained in `ui()`.
     pending_unprotect: Option<Secret>,
+    /// The offer to restore keys this identity left behind in the previous
+    /// version's saved data (issue #889). Scoped to the identity, not to the
+    /// key on screen, so it appears wherever a key of a partially-restored
+    /// identity is opened.
+    recovery: LegacyRecoveryState,
+    /// A queued restore (the approved items), drained in `ui()`.
+    pending_recovery_restore: Option<Vec<RecoveryItem>>,
+    /// The screen this key was opened from, for the breadcrumb back to it.
+    parent: Option<&'static str>,
 }
 
 /// At-rest protection posture of an identity's vault-stored keys.
@@ -136,7 +151,27 @@ enum ProtectionStage {
 }
 
 impl ScreenLike for KeyInfoScreen {
-    fn refresh(&mut self) {}
+    /// Re-read the record this screen persists, because another writer may have
+    /// changed it while the screen sat in the stack.
+    ///
+    /// A restore run from the node page — or any backend task whose result
+    /// reached whichever screen was visible at the time — writes this identity
+    /// behind this screen's back. Its key add and remove paths persist the whole
+    /// clone taken when it opened, so a clone that missed a write puts the
+    /// pre-write record back on the next key edit. The masternode detail view
+    /// re-reads on arrival for the same reason.
+    ///
+    /// This is the hook that has to carry it: `AppState` dispatches
+    /// `refresh_on_arrival` only to root screens, and this screen is always
+    /// pushed onto the screen stack. What reaches a pushed screen is `refresh` —
+    /// from `TaskResult::Refresh`, from `AppAction::Refresh`, and from the
+    /// `PopScreenAndRefresh` that reveals it. `refresh_on_arrival` defaults to
+    /// delegating here, so both hooks run this.
+    fn refresh(&mut self) {
+        self.reload_identity();
+        self.protection_status = None;
+        self.recovery.completed();
+    }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
@@ -197,7 +232,20 @@ impl ScreenLike for KeyInfoScreen {
                     MessageType::Success,
                 );
             }
-            _ => {}
+            ref result => {
+                // The offer attributes the result, re-arms itself and reports
+                // the outcome; what is left is this screen's own. The clone it
+                // persists on every key edit is now stale — writing it back
+                // would erase the keys just restored — and restored keys land
+                // in the vault, so the protection line has to re-read it.
+                if self
+                    .recovery
+                    .absorb_result(self.app_context.egui_ctx(), result)
+                {
+                    self.reload_identity();
+                    self.protection_status = None;
+                }
+            }
         }
     }
 
@@ -211,18 +259,14 @@ impl ScreenLike for KeyInfoScreen {
         }
     }
 
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        self.recovery.absorb_error(context);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
-        let mut action = add_top_panel(
-            ui,
-            &self.app_context,
-            vec![
-                ("Identities", AppAction::GoToMainScreen),
-                ("Key Info", AppAction::None),
-            ],
-            vec![],
-        );
+        let mut action = add_top_panel(ui, &self.app_context, self.breadcrumb(), vec![]);
 
         action |= add_left_panel(
             ui,
@@ -248,12 +292,41 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(RichText::new(format!("{}", self.key.id())).color(text_primary));
                         ui.end_row();
 
-                        // Purpose
+                        // Purpose, in the same words the keys list and the
+                        // restore offer use for this key — one key cannot be
+                        // called three things across three screens.
                         ui.label(RichText::new("Purpose:").strong().color(text_primary));
-                        ui.label(
-                            RichText::new(format!("{:?}", self.key.purpose())).color(text_primary),
+                        let (role, role_tip) = key_role_label(
+                            KeyVocabulary::from(self.identity.identity_type),
+                            &self.published_on(),
+                            &self.key,
                         );
+                        let purpose_label = ui.label(RichText::new(role).color(text_primary));
+                        if let Some(tip) = role_tip {
+                            purpose_label.on_hover_text(tip);
+                        }
                         ui.end_row();
+
+                        // The raw Platform purpose is Expert diagnostics, so it
+                        // gets a labelled field of its own beside Security Level
+                        // and Type rather than being spliced into the caption
+                        // above, which has to stay one translatable phrase.
+                        if self
+                            .app_context
+                            .user_role()
+                            .at_least(crate::model::user_role::UserRole::Power)
+                        {
+                            ui.label(
+                                RichText::new("Platform purpose:")
+                                    .strong()
+                                    .color(text_primary),
+                            );
+                            ui.label(
+                                RichText::new(format!("{:?}", self.key.purpose()))
+                                    .color(text_primary),
+                            );
+                            ui.end_row();
+                        }
 
                         // Security Level
                         ui.label(
@@ -619,6 +692,11 @@ impl ScreenLike for KeyInfoScreen {
                     self.show_remove_private_key_dialog(ui);
                 }
 
+                // Identity-scoped, so it renders whatever this key's own state
+                // is: the keys it offers are precisely the ones this identity
+                // does not hold.
+                self.render_recovery_section(ui);
+
                 ui.add_space(10.0);
             });
 
@@ -680,27 +758,42 @@ impl ScreenLike for KeyInfoScreen {
         // Vault-backed (InVault) identity-key requests: the raw key is fetched
         // JIT in the backend and only the public WIF / signature returns.
         let identity_id = self.identity.identity.id();
-        let target: PrivateKeyTarget = self.key.purpose().into();
         let key_id = self.key.id();
-        if std::mem::take(&mut self.pending_identity_key_display) {
-            action |= AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::DeriveIdentityKeyForDisplay {
-                    identity_id,
-                    target: target.clone(),
-                    key_id,
-                },
-            ));
-        }
-        if std::mem::take(&mut self.pending_identity_sign) {
-            action |= AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::SignMessageWithIdentityKey {
-                    identity_id,
-                    target,
-                    key_id,
-                    message: self.message_input.clone(),
-                    key_type: self.key.key_type(),
-                },
-            ));
+        let wants_display = std::mem::take(&mut self.pending_identity_key_display);
+        let wants_sign = std::mem::take(&mut self.pending_identity_sign);
+        if wants_display || wants_sign {
+            // The request names the placement this screen sees; the backend
+            // chokepoint verifies that label is live and falls through to a
+            // sibling placement filing the same key when it is not.
+            match self.filed_at() {
+                Ok(target) => {
+                    if wants_display {
+                        action |= AppAction::BackendTask(BackendTask::WalletTask(
+                            WalletTask::DeriveIdentityKeyForDisplay {
+                                identity_id,
+                                target: target.clone(),
+                                key_id,
+                            },
+                        ));
+                    }
+                    if wants_sign {
+                        action |= AppAction::BackendTask(BackendTask::WalletTask(
+                            WalletTask::SignMessageWithIdentityKey {
+                                identity_id,
+                                target,
+                                key_id,
+                                message: self.message_input.clone(),
+                                key_type: self.key.key_type(),
+                            },
+                        ));
+                    }
+                }
+                Err(error) => {
+                    // Each failure mode speaks its own typed message and
+                    // remedy, worded for this read path as much as the paste.
+                    MessageBanner::set_global_with_error(ctx, error);
+                }
+            }
         }
 
         // Drain a queued identity-key protection opt-in / opt-out.
@@ -732,6 +825,18 @@ impl ScreenLike for KeyInfoScreen {
             ));
         }
 
+        // Legacy recovery: the passive check goes out once per opened screen,
+        // and a restore only after the user pressed Restore — so the two can
+        // never contend for `action`, which keeps only its most recent value.
+        if let Some(task) = self.recovery.ensure_checked() {
+            action |= AppAction::BackendTask(task);
+        }
+        if let Some(approved) = self.pending_recovery_restore.take()
+            && let Some(task) = self.recovery.restore(approved)
+        {
+            action |= AppAction::BackendTask(task);
+        }
+
         action
     }
 }
@@ -752,6 +857,7 @@ impl KeyInfoScreen {
             } else {
                 None
             };
+        let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());
         Self {
             identity,
             key,
@@ -787,7 +893,146 @@ impl KeyInfoScreen {
             protection_in_flight: false,
             pending_protect: None,
             pending_unprotect: None,
+            recovery,
+            pending_recovery_restore: None,
+            parent: None,
         }
+    }
+
+    /// The store this key is *published* under, for naming it.
+    ///
+    /// Deliberately the structural answer rather than [`Self::filed_at`]'s: a key's
+    /// name follows the identity list it belongs to — which is what
+    /// `identity_keys` pairs it with on every list that shows it — not wherever
+    /// its private half happens to be filed. Naming it from the material's
+    /// location would let one key be called two things depending on which build
+    /// saved it. `Unknown` names the main identity, which is where a key not yet
+    /// on any list is being added.
+    fn published_on(&self) -> PrivateKeyTarget {
+        self.identity
+            .placement_of(&self.key)
+            .resolved()
+            .unwrap_or(PrivateKeyTarget::PrivateKeyOnMainIdentity)
+    }
+
+    /// Name the screen this key was opened from, so the breadcrumb can lead back
+    /// to it.
+    ///
+    /// Unset leaves the two-level `Identities > Key Info` trail every other
+    /// caller has: the screen has nine parents, and naming one of them for all
+    /// of them would simply mislabel the other eight.
+    pub fn with_parent(mut self, label: &'static str) -> Self {
+        self.parent = Some(label);
+        self
+    }
+
+    /// The breadcrumb trail, with the parent screen in it when the caller named
+    /// one. The parent crumb pops back rather than clearing the stack, so the
+    /// screen underneath is the one the user actually came from.
+    fn breadcrumb(&self) -> Vec<(&'static str, AppAction)> {
+        match self.parent {
+            Some(parent) => vec![
+                ("Identities", AppAction::GoToMainScreen),
+                (parent, AppAction::PopScreenAndRefresh),
+                ("Key Info", AppAction::None),
+            ],
+            None => vec![
+                ("Identities", AppAction::GoToMainScreen),
+                ("Key Info", AppAction::None),
+            ],
+        }
+    }
+
+    /// The key store this screen's key is filed under.
+    ///
+    /// Resolved from the identity's own records every time it is asked, so no
+    /// caller has to supply it and none can supply a wrong one. An existing
+    /// placement wins — that is where the material actually is — and only when
+    /// nothing is held does the identity's on-chain lists decide where a new
+    /// private half would go.
+    ///
+    /// The placement is picked by
+    /// [`first_live_candidate`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::first_live_candidate),
+    /// the same rule that produced the `private_key_data` this screen displays.
+    /// The two must agree: the vault reads the label this names, so a screen
+    /// naming one store while showing material from another asks the vault for
+    /// a key it never stored.
+    ///
+    /// # Errors
+    ///
+    /// With nothing held for the key, the identity's own lists decide, and both
+    /// their failure modes are distinct answers the user can act on:
+    /// [`TaskError::IdentityKeyPlacementAmbiguous`] when several lists publish
+    /// it, [`TaskError::IdentityKeyNotOnIdentityRecord`] when none does.
+    fn filed_at(&self) -> Result<PrivateKeyTarget, TaskError> {
+        Self::filed_at_in(&self.identity, &self.key)
+    }
+
+    /// [`Self::filed_at`]'s rule against a caller-supplied record. The paste
+    /// path applies it to the record freshly re-read inside its locked
+    /// read-modify-write, where `self.identity` would be the stale clone.
+    fn filed_at_in(
+        identity: &QualifiedIdentity,
+        key: &IdentityPublicKey,
+    ) -> Result<PrivateKeyTarget, TaskError> {
+        if let Some((target, _)) = identity.private_keys.first_live_candidate(key) {
+            return Ok(target);
+        }
+        match identity.placement_of(key) {
+            KeyPlacement::Resolved(target) => Ok(target),
+            KeyPlacement::Ambiguous(_) => Err(TaskError::IdentityKeyPlacementAmbiguous),
+            KeyPlacement::Unknown => Err(TaskError::IdentityKeyNotOnIdentityRecord),
+        }
+    }
+
+    /// Re-read this screen's identity from the store, after a backend task
+    /// wrote it.
+    ///
+    /// The screen keeps a clone taken when it opened. Its key add / remove
+    /// paths persist through a locked read-modify-write of the record and
+    /// adopt the result, so a stale clone cannot write another writer's change
+    /// away — but everything the screen *shows* between edits comes from the
+    /// clone, so a change another writer makes still has to be picked up here.
+    /// The key on screen is refreshed from the same record. A read failure
+    /// leaves the clone alone and says so — the change landed, this screen
+    /// just cannot show it.
+    fn reload_identity(&mut self) {
+        let identity_id = self.identity.identity.id();
+        match self.app_context.get_local_qualified_identity(&identity_id) {
+            Ok(Some(fresh)) => {
+                // Resolved against the record just read, not the stale clone:
+                // the write being picked up here may be the one that filed this
+                // key in the first place.
+                self.private_key_data = fresh.private_keys.held_private_key_data(&self.key);
+                self.identity = fresh;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This identity's keys could not be reloaded. Close this key and open it again to see them.",
+                    MessageType::Error,
+                )
+                .with_details(error);
+            }
+        }
+    }
+
+    /// Render the offer, queueing the approved items for dispatch. The rule
+    /// above it is this screen's own: the offer arrives after the key's details
+    /// and has to be told apart from them.
+    fn render_recovery_section(&mut self, ui: &mut egui::Ui) {
+        if !self.recovery.has_offer() {
+            return;
+        }
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+        self.pending_recovery_restore = host_offer(
+            &self.recovery,
+            KeyVocabulary::from(self.identity.identity_type),
+            ui,
+        );
     }
 
     /// Build a key-info screen with the add-protection confirmation already open
@@ -856,23 +1101,50 @@ impl KeyInfoScreen {
             )
             .with_details(error);
         } else if validation_result.expect("invariant: Err handled in the preceding branch") {
-            // If valid, store the private key in the context and reset the input field
-            self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
-            self.identity.private_keys.insert_non_encrypted(
-                (self.key.purpose().into(), self.key.id()),
-                (self.key.clone().into(), private_key_bytes),
-            );
-            if let Err(error) = self
+            // Every reason the key might not be storable is settled before the
+            // screen calls it held: a key shown as held offers to sign, to be
+            // revealed and to be removed, none of which a refused key can do.
+            //
+            // The whole edit is a locked read-modify-write of the record on
+            // disk, so both the placement decision and the occupied-slot check
+            // see what is stored *now* — a key another writer landed while
+            // this screen was open survives the paste instead of being written
+            // away with the screen's stale clone. An existing placement is
+            // reused so a re-entered key overwrites itself rather than growing
+            // a second copy under another store; otherwise the identity's own
+            // lists say where it belongs.
+            let identity_id = self.identity.identity.id();
+            let updated = self
                 .app_context
-                .update_local_qualified_identity(&self.identity)
-            {
-                let handle = MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "The private key could not be saved. Check available disk space and try again.",
-                    MessageType::Error,
-                );
-                handle.with_details(error);
-                handle.disable_auto_dismiss();
+                .edit_local_qualified_identity(&identity_id, |fresh| {
+                    let target = Self::filed_at_in(fresh, &self.key)?;
+                    fresh.private_keys.insert_non_encrypted(
+                        (target, self.key.id()),
+                        (self.key.clone().into(), private_key_bytes),
+                    )
+                });
+            match updated {
+                Ok(fresh) => {
+                    // Resolved from the record just persisted, so the screen
+                    // shows exactly what was filed.
+                    self.private_key_data = fresh.private_keys.held_private_key_data(&self.key);
+                    self.identity = fresh;
+                }
+                Err(error) => {
+                    // An input refusal dismisses on its own; a record that
+                    // could not be persisted stays up until acknowledged.
+                    let refused_input = matches!(
+                        error,
+                        TaskError::IdentityKeySlotOccupied
+                            | TaskError::IdentityKeyPlacementAmbiguous
+                            | TaskError::IdentityKeyNotOnIdentityRecord
+                    );
+                    let banner =
+                        MessageBanner::set_global_with_error(self.app_context.egui_ctx(), error);
+                    if !refused_input {
+                        banner.disable_auto_dismiss();
+                    }
+                }
             }
         } else {
             MessageBanner::set_global(
@@ -1058,27 +1330,59 @@ impl KeyInfoScreen {
             let response = dialog.show(ui);
             if let Some(result) = response.inner.dialog_response {
                 self.remove_private_key_dialog = None;
-                if result == ConfirmationStatus::Confirmed {
-                    self.private_key_data = None;
-                    self.identity
-                        .private_keys
-                        .private_keys
-                        .remove(&(self.key.purpose().into(), self.key.id()));
-                    if let Err(error) = self
-                        .app_context
-                        .update_local_qualified_identity(&self.identity)
-                    {
-                        let handle = MessageBanner::set_global(
-                            ui.ctx(),
-                            "The private-key change could not be saved. Check available disk space and try again.",
-                            MessageType::Error,
-                        );
-                        handle.with_details(error);
-                        handle.disable_auto_dismiss();
-                    }
+                if result == ConfirmationStatus::Confirmed
+                    && let Err(error) = self.remove_held_private_key()
+                {
+                    MessageBanner::set_global_with_error(ui.ctx(), error).disable_auto_dismiss();
                 }
             }
         }
+    }
+
+    /// Drop this device's copy of the on-screen key's private half — its vault
+    /// secret and its record entry both — and persist the result.
+    ///
+    /// Removes **every** placement holding *this* key, so a duplicate written
+    /// under another convention cannot survive the removal the user asked for.
+    /// The placements come from
+    /// [`candidates`](crate::model::qualified_identity::encrypted_key_storage::KeyStorage::candidates),
+    /// which selects on the public half — a removal keyed on the id alone lands
+    /// on whichever key happens to occupy the derived slot, and on a masternode
+    /// the voter and main id spaces overlap, so that can be a different key
+    /// entirely.
+    ///
+    /// Vault first, then the record: the stored placement is the only thing
+    /// that makes a vault label enumerable, so bytes outliving their entry are
+    /// bytes nothing can reach or delete afterwards. A vault-secret failure
+    /// aborts with the record, the screen, and the vault as they were,
+    /// leaving a removal the user can simply repeat.
+    ///
+    /// The whole removal is a locked read-modify-write of the record on disk,
+    /// so the placements deleted are the ones stored *now* — a key another
+    /// writer landed while this screen was open survives, instead of being
+    /// written away with the screen's stale clone — and the screen's own
+    /// state changes only after the persist succeeds, so it never reports a
+    /// key as gone that the record on disk still holds. A persist refusal
+    /// reached *after* the vault secrets are already gone leaves the stored
+    /// map entry as the only remaining place tracking the key as held;
+    /// retrying the removal finds an already-empty vault and simply finishes
+    /// the job.
+    fn remove_held_private_key(&mut self) -> Result<(), TaskError> {
+        let identity_id = self.identity.identity.id();
+        let updated = self
+            .app_context
+            .edit_local_qualified_identity(&identity_id, |fresh| {
+                let placements: Vec<_> = fresh.private_keys.candidates(&self.key).collect();
+                self.app_context
+                    .delete_identity_key_secrets(&identity_id, placements.clone())?;
+                for placement in &placements {
+                    fresh.private_keys.remove_at(placement);
+                }
+                Ok(())
+            })?;
+        self.private_key_data = None;
+        self.identity = updated;
+        Ok(())
     }
 
     // --- Identity key password protection (per-identity at-rest key encryption) ---
@@ -1400,4 +1704,804 @@ fn render_password_strength(ui: &mut egui::Ui, password: &str) {
                 .fill(fill),
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::legacy_recovery::RecoveryPlan;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    use std::collections::BTreeMap;
+
+    const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+    const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    /// An offline, wired context on a throwaway data dir — the identity store
+    /// refuses writes until the wallet backend is up.
+    async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        (ctx, temp_dir)
+    }
+
+    fn public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: BinaryData::new(vec![id as u8; 20]),
+            disabled_at: None,
+        })
+    }
+
+    fn identity_with(id: u8, keys: &[(IdentityPublicKey, [u8; 32])]) -> QualifiedIdentity {
+        let mut private_keys = KeyStorage::default();
+        for (key, secret) in keys {
+            private_keys.insert_at(
+                (MAIN, key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(key.clone()),
+                    PrivateKeyData::Clear(*secret),
+                ),
+            );
+        }
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([id; 32]),
+                PlatformVersion::latest(),
+            )
+            .expect("basic identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    /// Removing this device's copy of one key must not touch a *different* key
+    /// that happens to share its id.
+    ///
+    /// The shape this reaches needs two writers, which is how a real install gets
+    /// it: the structural loader files a main-identity `VOTING` key under `Main`
+    /// (`load_identity` files every main-identity key structurally, purpose
+    /// included), while an older build's paste path filed an unrelated key under
+    /// `Voter` at the same id — the voter and main id spaces overlap, so id 0
+    /// names two keys on a masternode. A removal that derived its slot from the
+    /// key's purpose would send this one to `Voter` and delete the wrong key's
+    /// private half, leaving the key the user asked about still on the device.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_one_key_leaves_a_different_key_sharing_its_id_alone() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // Same id, different keys: purpose is what tells them apart.
+        let on_screen = public_key(0, Purpose::VOTING);
+        let other = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0,
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: BinaryData::new(vec![0xEE; 20]),
+            disabled_at: None,
+        });
+
+        let mut stored = identity_with(0x5A, &[(on_screen.clone(), [0x11; 32])]);
+        stored.private_keys.insert_at(
+            (VOTER, other.id()),
+            (
+                QualifiedIdentityPublicKey::from(other.clone()),
+                PrivateKeyData::Clear([0x22; 32]),
+            ),
+        );
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let mut screen =
+            KeyInfoScreen::new(stored, on_screen.clone(), None, &app_context).with_parent("Keys");
+        screen
+            .remove_held_private_key()
+            .expect("the removal must persist");
+
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&on_screen)
+                .next()
+                .is_none(),
+            "the key the user asked to remove must be gone",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&other)
+                .next()
+                .is_some(),
+            "a different key sharing the id must survive the removal",
+        );
+    }
+
+    /// The bytes behind a saved key live in the vault, addressed by the same
+    /// placement the stored map files the key under. Removing this device's copy
+    /// has to take those bytes with it: the map entry is what makes the vault
+    /// label enumerable, so a secret left behind once the entry is gone is
+    /// reachable by nothing — not even the whole-identity delete sweep, which
+    /// reads its delete set from that same map.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_a_key_also_removes_its_vault_secret() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen = public_key(3, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x7C, &[(on_screen.clone(), [0x33; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let backend = app_context.wallet_backend().expect("backend");
+        let vault = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert_eq!(
+            vault
+                .get(&MAIN, on_screen.id())
+                .expect("vault read")
+                .as_deref()
+                .copied(),
+            Some([0x33; 32]),
+            "saving the key put its bytes in the vault",
+        );
+
+        let mut screen = KeyInfoScreen::new(stored, on_screen.clone(), None, &app_context);
+        screen
+            .remove_held_private_key()
+            .expect("the removal must persist");
+
+        assert!(
+            vault
+                .get(&MAIN, on_screen.id())
+                .expect("vault read")
+                .is_none(),
+            "the removed key's bytes must not outlive the record that points at them",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// Write `key` into `identity_id`'s stored record, the way a restore or any
+    /// other backend writer does — behind whatever screen holds a clone of it.
+    fn write_key_behind_the_screen(
+        app_context: &Arc<AppContext>,
+        identity_id: Identifier,
+        key: &IdentityPublicKey,
+        secret: [u8; 32],
+    ) {
+        let mut record = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read the record")
+            .expect("record stored");
+        record.private_keys.insert_at(
+            (MAIN, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key.clone()),
+                PrivateKeyData::Clear(secret),
+            ),
+        );
+        app_context
+            .update_local_qualified_identity(&record)
+            .expect("the other writer's write");
+    }
+
+    /// This screen persists the identity clone it was opened with on every key
+    /// add or remove. A restore writes that same record behind its back, so the
+    /// completion has to refresh the clone — otherwise the next ordinary key
+    /// edit writes the pre-restore copy back and the restored keys vanish,
+    /// right after a banner said they were back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_restore_refreshes_the_identity_this_screen_writes_back() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let mut screen = KeyInfoScreen::new(stored, on_screen_key, None, &app_context);
+
+        // What the restore writes: the record gains the stranded key.
+        let restored_key = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, identity_id, &restored_key, [0x22; 32]);
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id,
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+
+        assert!(
+            screen.identity.private_keys.has(&(MAIN, restored_key.id())),
+            "the screen must hold the restored record, not the clone it opened with",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A restore that lands while this screen is off-screen never reaches its
+    /// `display_task_result` — results go only to the visible screen. Returning
+    /// to it must re-read the record, or the clone it opened with is written
+    /// back over the restored keys by the next ordinary key edit, silently and
+    /// with no error to show for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_restore_that_landed_off_screen_survives_the_next_key_edit() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x4E, &[(on_screen_key.clone(), [0x11; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, on_screen_key, None, &app_context);
+
+        // The restore lands while another screen is the visible one, so this
+        // screen is never told about it.
+        let restored_key = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, identity_id, &restored_key, [0x22; 32]);
+
+        screen.refresh_on_arrival();
+
+        // What every key add and remove on this screen does with its clone.
+        app_context
+            .update_local_qualified_identity(&screen.identity)
+            .expect("the next key edit's write");
+
+        assert!(
+            app_context
+                .get_local_qualified_identity(&identity_id)
+                .expect("read back")
+                .expect("still stored")
+                .private_keys
+                .has(&(MAIN, restored_key.id())),
+            "a key edit on this screen must not erase keys restored while it was away",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// The paste persists through a locked read-modify-write of the record on
+    /// disk — never by writing out the clone this screen opened with. A key
+    /// another writer lands while the screen is open must survive the next
+    /// paste, with no refresh delivered in between; nothing at runtime
+    /// guarantees one arrives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_behind_the_screen_survives_a_paste() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let (pasted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let mut stored = identity_with(0x51, &[]);
+        stored.identity = Identity::new_with_id_and_keys(
+            Identifier::from([0x51; 32]),
+            BTreeMap::from([(pasted.id(), pasted.clone())]),
+            PlatformVersion::latest(),
+        )
+        .expect("identity publishing the pasted key");
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, pasted.clone(), None, &app_context);
+
+        // Another writer lands a key after the screen took its clone.
+        let concurrent = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, identity_id, &concurrent, [0x22; 32]);
+
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        let on_disk = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert!(
+            on_disk.private_keys.has(&(MAIN, concurrent.id())),
+            "the concurrent writer's key must survive the paste",
+        );
+        assert!(
+            on_disk.private_keys.candidates(&pasted).next().is_some(),
+            "and the pasted key was saved alongside it",
+        );
+        assert!(
+            screen.identity.private_keys.has(&(MAIN, concurrent.id())),
+            "the screen must adopt the record it persisted, not keep its stale clone",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// The removal's mirror of `a_write_behind_the_screen_survives_a_paste`:
+    /// removing one key must not write away a key another writer landed while
+    /// the screen was open — for a private key, silently and irreversibly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_behind_the_screen_survives_a_removal() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen = public_key(1, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x52, &[(on_screen.clone(), [0x11; 32])]);
+        let identity_id = stored.identity.id();
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(stored, on_screen.clone(), None, &app_context);
+
+        let concurrent = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, identity_id, &concurrent, [0x22; 32]);
+
+        screen
+            .remove_held_private_key()
+            .expect("the removal must persist");
+
+        let on_disk = app_context
+            .get_local_qualified_identity(&identity_id)
+            .expect("read back")
+            .expect("still stored");
+        assert!(
+            on_disk.private_keys.has(&(MAIN, concurrent.id())),
+            "the concurrent writer's key must survive the removal",
+        );
+        assert!(
+            on_disk.private_keys.candidates(&on_screen).next().is_none(),
+            "while the key the user asked to remove is gone",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A key and the private key that opens it, so the paste path's validation
+    /// passes and the placement check is what decides the outcome.
+    fn keypair(id: KeyID, purpose: Purpose) -> (IdentityPublicKey, [u8; 32]) {
+        let secret_bytes = [0x2A; 32];
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_byte_array(&secret_bytes).expect("a valid secret key");
+        let data = PrivateKey::new(secret, Network::Testnet)
+            .public_key(&secp)
+            .to_bytes();
+        (
+            IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id,
+                purpose,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_SECP256K1,
+                read_only: false,
+                data: BinaryData::new(data),
+                disabled_at: None,
+            }),
+            secret_bytes,
+        )
+    }
+
+    /// A key on none of this identity's lists has no store to be filed under,
+    /// so the paste is refused. The screen must not report it as held anyway:
+    /// a key the app just rejected would otherwise offer to sign, to be shown,
+    /// and to be removed — none of which it can do, since nothing was saved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_that_cannot_be_placed_is_not_reported_as_held() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // The record publishes no keys at all, so this one is on no list.
+        let (unlisted, secret) = keypair(7, Purpose::AUTHENTICATION);
+        let stored = identity_with(0x6B, &[]);
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("insert the record");
+
+        let mut screen = KeyInfoScreen::new(stored, unlisted.clone(), None, &app_context);
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        assert!(
+            screen.private_key_data.is_none(),
+            "a refused key must not be left on screen as held",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&unlisted)
+                .next()
+                .is_none(),
+            "and nothing was filed for it either",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// A password-protected identity for `app_context`'s vault: `sealed` is
+    /// published, held as an `InVault` placeholder, and its secret is sealed
+    /// Tier-2 — so any keyless persist of new resident plaintext is refused
+    /// with [`TaskError::IdentityKeyProtectionDowngrade`]. The cheapest real
+    /// persist refusal there is: no I/O fault injection needed.
+    fn protected_identity(
+        app_context: &Arc<AppContext>,
+        id_byte: u8,
+        sealed: &IdentityPublicKey,
+        also_published: &[IdentityPublicKey],
+    ) -> QualifiedIdentity {
+        let identifier = Identifier::from([id_byte; 32]);
+        crate::wallet_backend::SecretSeam::new(&app_context.secret_store())
+            .put_secret_protected(
+                &platform_wallet_storage::secrets::WalletId::from(identifier.to_buffer()),
+                &crate::wallet_backend::SecretScope::identity_key_label(&MAIN, sealed.id()),
+                &platform_wallet_storage::secrets::SecretBytes::from_slice(&[0x31; 32]),
+                &platform_wallet_storage::secrets::SecretString::new("identity-object-password"),
+            )
+            .expect("seal the existing key Tier-2");
+
+        let mut private_keys = KeyStorage::default();
+        private_keys.insert_at(
+            (MAIN, sealed.id()),
+            (
+                QualifiedIdentityPublicKey::from(sealed.clone()),
+                PrivateKeyData::InVault,
+            ),
+        );
+        let mut identity = identity_with(id_byte, &[]);
+        identity.identity = Identity::new_with_id_and_keys(
+            identifier,
+            std::iter::once(sealed)
+                .chain(also_published)
+                .map(|key| (key.id(), key.clone()))
+                .collect(),
+            PlatformVersion::latest(),
+        )
+        .expect("identity publishing its keys");
+        identity.private_keys = private_keys;
+        identity
+    }
+
+    /// A key whose persist is refused must not be reported as held, and the
+    /// refusal must be explained by the refusal itself. On a password-protected
+    /// identity the keyless paste persist is refused every time; leaving the
+    /// key on screen as held offers sign/reveal/remove for material the record
+    /// never accepted, and blaming disk space names a remedy that cannot work
+    /// while the real one — remove the protection first — goes unsaid.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_the_persist_refuses_is_not_reported_as_held() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let sealed = public_key(0, Purpose::AUTHENTICATION);
+        let (pasted, secret) = keypair(1, Purpose::AUTHENTICATION);
+        let stored = protected_identity(&app_context, 0x7C, &sealed, std::slice::from_ref(&pasted));
+        app_context
+            .insert_local_qualified_identity(&stored, &None)
+            .expect("a record with no resident plaintext inserts cleanly");
+
+        let mut screen = KeyInfoScreen::new(stored, pasted.clone(), None, &app_context);
+        screen.private_key_input.set_text(hex::encode(secret));
+        screen.validate_and_store_private_key();
+
+        assert!(
+            screen.private_key_data.is_none(),
+            "a key the persist refused must not be left on screen as held",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&pasted)
+                .next()
+                .is_none(),
+            "the in-memory record must stay what is on disk",
+        );
+        let banner_texts =
+            crate::ui::components::message_banner::global_banner_texts(app_context.egui_ctx());
+        assert!(
+            banner_texts.contains(&TaskError::IdentityKeyProtectionDowngrade.to_string()),
+            "the refusal must speak through its own typed message, got {banner_texts:?}",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// The mirror of the paste refusal: a removal that cannot persist must not
+    /// leave the screen claiming the key is gone. The locked read-modify-write
+    /// edits the record as stored, so a record that vanished while this screen
+    /// was open — the identity removed from another screen — refuses the
+    /// removal with its own typed error, and the screen keeps reporting what
+    /// it still holds rather than declaring anything removed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_removal_that_cannot_persist_keeps_the_key_held() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // Deliberately never inserted: the record is gone by the time the
+        // removal runs, the way another screen's identity removal leaves it.
+        let on_screen = public_key(1, Purpose::AUTHENTICATION);
+        let identity = identity_with(0x7D, &[(on_screen.clone(), [0x22; 32])]);
+
+        let mut screen = KeyInfoScreen::new(
+            identity,
+            on_screen.clone(),
+            Some((PrivateKeyData::Clear([0x22; 32]), None)),
+            &app_context,
+        );
+        let error = screen
+            .remove_held_private_key()
+            .expect_err("with no stored record there is nothing to remove from");
+        assert!(
+            matches!(error, TaskError::IdentityNotFoundLocally),
+            "expected the missing-record refusal, got {error:?}",
+        );
+        assert!(
+            screen
+                .identity
+                .private_keys
+                .candidates(&on_screen)
+                .next()
+                .is_some(),
+            "a removal that did not persist must leave the in-memory record alone",
+        );
+        assert!(
+            screen.private_key_data.is_some(),
+            "and the screen must keep reporting the key as held",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Pressing Show or Sign on a key whose placement cannot be resolved must
+    /// surface the typed error's own message. The two failure modes carry
+    /// different remedies, and for a key on two lists at once "enter its
+    /// private key on this page" is the one instruction guaranteed to be
+    /// refused — by the same ambiguity, one screen interaction later.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_show_request_that_cannot_resolve_speaks_through_the_typed_error() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        // The key published on both the main and the voter list — ambiguous —
+        // and held nowhere.
+        let key = public_key(0, Purpose::VOTING);
+        let published = |id_byte: u8| {
+            Identity::new_with_id_and_keys(
+                Identifier::from([id_byte; 32]),
+                BTreeMap::from([(key.id(), key.clone())]),
+                PlatformVersion::latest(),
+            )
+            .expect("identity publishing the key")
+        };
+        let mut identity = identity_with(0x7E, &[]);
+        identity.identity = published(0x7E);
+        identity.associated_voter_identity = Some((published(0x7F), key.clone()));
+        identity.identity_type = IdentityType::Masternode;
+
+        let mut screen = KeyInfoScreen::new(identity, key, None, &app_context);
+        screen.pending_identity_key_display = true;
+
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1100.0, 900.0))
+            .build_ui(move |ui| {
+                screen.ui(ui);
+            });
+        harness.run_steps(2);
+
+        let banner_texts = crate::ui::components::message_banner::global_banner_texts(&harness.ctx);
+        assert!(
+            banner_texts.contains(&TaskError::IdentityKeyPlacementAmbiguous.to_string()),
+            "the ambiguity's own message and remedy must reach the user, got {banner_texts:?}",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Both placement errors surface on the Show/Sign read path as well as the
+    /// paste path — `filed_at` is one function serving both — so neither
+    /// remedy may presume the user was saving a key: a user who pressed Show
+    /// entered nothing and asked to save nothing.
+    #[test]
+    fn the_placement_errors_advise_an_action_both_paths_can_perform() {
+        for error in [
+            TaskError::IdentityKeyPlacementAmbiguous,
+            TaskError::IdentityKeyNotOnIdentityRecord,
+        ] {
+            let message = error.to_string();
+            for save_word in ["sav", "enter"] {
+                assert!(
+                    !message.to_lowercase().contains(save_word),
+                    "a remedy shown for a Show or Sign press must not presume a save: {message}",
+                );
+            }
+            assert!(
+                message.contains("Refresh this identity"),
+                "the remedy both paths share is refreshing the identity: {message}",
+            );
+        }
+    }
+
+    /// A restore dispatched from one identity's Key Info screen can complete
+    /// after the user has opened another's, and results reach whichever screen
+    /// is visible. The stray completion must touch nothing here: not the clone,
+    /// not this identity's own recovery offer, not the banner — it says
+    /// "restored to this identity" about an identity that is not on screen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_completion_for_another_identity_is_ignored() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let on_screen = identity_with(0xB0, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen_id = on_screen.identity.id();
+        app_context
+            .insert_local_qualified_identity(&on_screen, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(on_screen, on_screen_key, None, &app_context);
+
+        // This identity has a restore of its own running.
+        screen
+            .recovery
+            .offered(on_screen_id, RecoveryPlan::default());
+        screen.recovery.restore(vec![]).expect("dispatch a restore");
+
+        // A change to this identity's record that only a reload would pick up,
+        // so a wrongly-attributed reload is observable.
+        let other_writer_key = public_key(2, Purpose::TRANSFER);
+        write_key_behind_the_screen(&app_context, on_screen_id, &other_writer_key, [0x22; 32]);
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id: Identifier::from([0xA0; 32]),
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+
+        assert!(
+            screen.recovery.is_restoring(),
+            "another identity's completion must not end this identity's restore",
+        );
+        assert!(
+            !screen
+                .identity
+                .private_keys
+                .has(&(MAIN, other_writer_key.id())),
+            "another identity's completion must not be acted on here at all",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
+
+    /// Regression: every failing backend task routed to the visible screen used
+    /// to end the restore, so an unrelated failure re-enabled the Restore button
+    /// while the original task still held the identity — pressing it again only
+    /// reported that a load was already in progress. Only this restore's own
+    /// failure may return the offer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_this_restores_own_failure_returns_it_to_its_offer() {
+        let (app_context, _dir) = offline_ctx().await;
+
+        let on_screen_key = public_key(1, Purpose::AUTHENTICATION);
+        let on_screen = identity_with(0xB4, &[(on_screen_key.clone(), [0x11; 32])]);
+        let on_screen_id = on_screen.identity.id();
+        app_context
+            .insert_local_qualified_identity(&on_screen, &None)
+            .expect("insert the record");
+        let mut screen = KeyInfoScreen::new(on_screen, on_screen_key, None, &app_context);
+        screen
+            .recovery
+            .offered(on_screen_id, RecoveryPlan::default());
+        screen.recovery.restore(vec![]).expect("dispatch a restore");
+
+        let error = TaskError::IdentityNotFoundLocally;
+        for unrelated in [
+            BackendTaskContext::Other,
+            BackendTaskContext::TokenBalanceRefresh,
+            BackendTaskContext::LegacyRecoveryRestore(Identifier::from([0xA0; 32])),
+        ] {
+            screen.display_backend_task_error(&unrelated, &error);
+            screen.display_message("something else failed", MessageType::Error);
+            assert!(
+                screen.recovery.is_restoring(),
+                "{unrelated:?} is not this restore, so it must stay in flight",
+            );
+        }
+
+        screen.display_backend_task_error(
+            &BackendTaskContext::LegacyRecoveryRestore(on_screen_id),
+            &error,
+        );
+        assert!(
+            !screen.recovery.is_restoring(),
+            "this restore's own failure must return the offer so it can be retried",
+        );
+
+        app_context
+            .wallet_backend()
+            .expect("backend")
+            .shutdown()
+            .await;
+    }
 }

@@ -11,7 +11,9 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::legacy_recovery::RecoveryItem;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::encrypted_key_storage::same_key;
+use crate::model::qualified_identity::key_placement::KeyPlacement;
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
@@ -38,6 +40,11 @@ const HELD: &str = "This key is saved on this device.";
 /// user with stranded keys came here to find, so it is stated in words rather
 /// than signalled by colour alone.
 const NOT_HELD: &str = "This key is not saved on this device.";
+/// Heads the section of held keys no on-chain list publishes. Their rows are
+/// what makes the occupied-slot refusal's remedy performable — such a key is
+/// reachable from nowhere else.
+const UNPUBLISHED_EXPLAINER: &str =
+    "These keys are saved on this device but are not on this identity's key lists.";
 
 pub struct KeysScreen {
     pub identity: QualifiedIdentity,
@@ -154,14 +161,39 @@ impl KeysScreen {
         }
     }
 
+    /// The held keys no on-chain list publishes: a locally saved entry whose
+    /// broadcast never happened, or one restored from an older version's
+    /// data. One entry per key — a key filed under two placements is still
+    /// one key.
+    fn unpublished_held_keys(&self) -> Vec<(PrivateKeyTarget, IdentityPublicKey)> {
+        let mut keys: Vec<(PrivateKeyTarget, IdentityPublicKey)> = Vec::new();
+        for ((target, _), (stored, _)) in self.identity.private_keys.iter() {
+            let key = &stored.identity_public_key;
+            if !matches!(self.identity.placement_of(key), KeyPlacement::Unknown) {
+                continue;
+            }
+            if keys.iter().any(|(_, listed)| same_key(listed, key)) {
+                continue;
+            }
+            keys.push((target.clone(), key.clone()));
+        }
+        keys
+    }
+
     /// One row per key: what it is for, whether this device holds it, and the
     /// way into its own page. Ungated — a key the device does not hold is
     /// exactly the key a user comes here to do something about.
+    ///
+    /// Below the published keys, a section lists held keys that are on none
+    /// of the identity's lists. Those appear nowhere else, and one of them is
+    /// exactly what the occupied-slot refusal asks the user to open and
+    /// remove — the section only exists when there is such a key to show.
     fn render_key_list(&self, ui: &mut egui::Ui, dark_mode: bool) -> AppAction {
         let mut action = AppAction::None;
         let keys = identity_keys(&self.identity);
+        let unpublished = self.unpublished_held_keys();
 
-        if keys.is_empty() {
+        if keys.is_empty() && unpublished.is_empty() {
             ui.add_space(8.0);
             // Not "no keys saved on this device": these rows come from the
             // identity's on-chain public keys, and that phrase means held=false
@@ -180,43 +212,79 @@ impl KeysScreen {
 
         let expert = self.app_context.user_role().at_least(UserRole::Power);
         let vocabulary = KeyVocabulary::from(self.identity.identity_type);
-        let labels = manage_keys_labels(vocabulary, &keys);
-        for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
+        // One labelling pass over both sections, so a role they share is
+        // still disambiguated by key id.
+        let mut labels = manage_keys_labels(
+            vocabulary,
+            &keys
+                .iter()
+                .cloned()
+                .chain(unpublished.iter().cloned())
+                .collect::<Vec<_>>(),
+        );
+        let unpublished_labels = labels.split_off(keys.len());
+        for ((_, key), labelled) in keys.into_iter().zip(labels) {
             // Where this key's private half actually is, whichever store filed
             // it. A presence check rather than a fetch: cloning the entry copies
             // raw key bytes out of the vault unscrubbed, and this runs every
             // frame for every key.
-            let filed_at = self.identity.private_keys.candidates(&key).next();
-            let held = if filed_at.is_some() { HELD } else { NOT_HELD };
+            let held = self.identity.private_keys.candidates(&key).next().is_some();
+            action |= self.key_row(ui, dark_mode, expert, &key, labelled, held);
+        }
+
+        if !unpublished.is_empty() {
+            ui.add_space(10.0);
+            ui.separator();
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let button =
-                    ComponentStyles::add_secondary_button(ui, format!("{label} ›"), dark_mode);
-                let button = match tip {
-                    Some(tip) => button.clickable_tooltip(tip),
-                    None => button,
-                };
-                if button.clicked() {
-                    let holding = filed_at.as_ref().and_then(|placement| {
-                        self.identity
-                            .private_keys
-                            .get_cloned_private_key_data_and_wallet_info(placement)
-                    });
-                    action |= AppAction::AddScreen(Screen::KeyInfoScreen(
-                        KeyInfoScreen::new(
-                            self.identity.clone(),
-                            key.clone(),
-                            holding,
-                            &self.app_context,
-                        )
-                        .with_parent(PARENT_CRUMB),
-                    ));
-                }
-                ui.label(RichText::new(held).color(DashColors::text_secondary(dark_mode)));
-            });
-            if expert {
-                Self::render_expert_detail(ui, &key, dark_mode);
+            ui.label(
+                RichText::new(UNPUBLISHED_EXPLAINER).color(DashColors::text_primary(dark_mode)),
+            );
+            for ((_, key), labelled) in unpublished.into_iter().zip(unpublished_labels) {
+                // Held by construction — being held is what put the key here.
+                action |= self.key_row(ui, dark_mode, expert, &key, labelled, true);
             }
+        }
+        action
+    }
+
+    /// One key's row: the way into its page, and its held state in words.
+    /// `labelled` is the key's `manage_keys_labels` entry — its caption and
+    /// optional tooltip.
+    fn key_row(
+        &self,
+        ui: &mut egui::Ui,
+        dark_mode: bool,
+        expert: bool,
+        key: &IdentityPublicKey,
+        labelled: (String, Option<&'static str>),
+        held: bool,
+    ) -> AppAction {
+        let (label, tip) = labelled;
+        let mut action = AppAction::None;
+        let held_text = if held { HELD } else { NOT_HELD };
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let button = ComponentStyles::add_secondary_button(ui, format!("{label} ›"), dark_mode);
+            let button = match tip {
+                Some(tip) => button.clickable_tooltip(tip),
+                None => button,
+            };
+            if button.clicked() {
+                let holding = self.identity.private_keys.held_private_key_data(key);
+                action |= AppAction::AddScreen(Screen::KeyInfoScreen(
+                    KeyInfoScreen::new(
+                        self.identity.clone(),
+                        key.clone(),
+                        holding,
+                        &self.app_context,
+                    )
+                    .with_parent(PARENT_CRUMB),
+                ));
+            }
+            ui.label(RichText::new(held_text).color(DashColors::text_secondary(dark_mode)));
+        });
+        if expert {
+            Self::render_expert_detail(ui, key, dark_mode);
         }
         action
     }

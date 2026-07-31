@@ -589,6 +589,7 @@ As a user, I want to view all keys associated with my identity so that I can aud
 - Each row names the key by its role in words that suit the identity — a user identity's keys in plain language, a masternode's in its registration terms — and says whether the key is saved on this device, in words rather than by colour alone. A key the network has retired says so in its name.
 - The on-chain specifics — key id, Platform purpose, security level, key type, read-only — are Expert-view detail, on both the list and the key's own page. The Everyday view gets the role and the held state, which is what it can act on.
 - A key's own page shows its public key, hash and address, and offers to view the private half, sign a message with it, or add and remove it.
+- A key saved on this device that is on none of the identity's key lists — a saved key whose publication never happened — is listed in its own section below the published keys, so its saved private half can still be opened and removed. The section appears only when such a key exists.
 - The offer to restore keys an upgrade left behind also appears here; its criteria are IDN-020's.
 
 ### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]

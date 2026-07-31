@@ -12,7 +12,7 @@
 
 use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::app::TaskResult;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
@@ -142,13 +142,16 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
             .expect("read the record")
             .expect("record stored");
         record.identity.add_public_key(restored.clone());
-        record.private_keys.insert_at(
-            (MAIN, restored.id()),
-            (
-                QualifiedIdentityPublicKey::from(restored.clone()),
-                PrivateKeyData::Clear([0x22; 32]),
-            ),
-        );
+        record
+            .private_keys
+            .insert_non_encrypted(
+                (MAIN, restored.id()),
+                (
+                    QualifiedIdentityPublicKey::from(restored.clone()),
+                    [0x22; 32],
+                ),
+            )
+            .expect("the restored slot is free");
         app_context
             .update_local_qualified_identity(&record)
             .expect("the other writer's write");
@@ -160,7 +163,8 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
             .expect("queue the refresh the app dispatches");
         harness.run_steps(3);
 
-        // What every key add and remove on this screen does with its clone.
+        // The clone is what the screen displays; writing it out whole proves
+        // the refresh actually made it current.
         let Some(Screen::KeyInfoScreen(screen)) = harness.state().screen_stack.last() else {
             panic!("Key Info must still be the open screen");
         };
@@ -174,7 +178,9 @@ fn a_write_that_lands_while_key_info_is_open_survives_the_next_key_edit() {
                 .expect("read back")
                 .expect("still stored")
                 .private_keys
-                .has(&(MAIN, restored.id())),
+                .candidates(&restored)
+                .next()
+                .is_some(),
             "a key edit on this screen must not erase a key written while it was open",
         );
     });

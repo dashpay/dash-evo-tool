@@ -568,6 +568,68 @@ fn key_info_agrees_with_the_list_about_a_voting_key_held_on_the_main_identity() 
     });
 }
 
+/// A key saved on this device but published on no list — the state a local
+/// save whose broadcast never happened leaves behind, and the occupant the
+/// occupied-slot refusal points at — must still get a row: it appears in no
+/// on-chain key list, so without one, nothing can reach it and the refusal's
+/// remedy ("open that key in this identity's key list, remove its saved
+/// private key") names an entry that does not exist.
+#[test]
+fn a_held_key_published_on_no_list_still_gets_a_row() {
+    const UNPUBLISHED_EXPLAINER: &str =
+        "These keys are saved on this device but are not on this identity's key lists.";
+
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+
+        // The identity publishes one authentication key; the device also
+        // holds a transfer key no list publishes.
+        let mut identity = stranded_identity(0x44, &[Purpose::AUTHENTICATION], "unpublished");
+        let orphan = key(5, Purpose::TRANSFER);
+        identity.private_keys = KeyStorage::from(BTreeMap::from([(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, orphan.id()),
+            (
+                QualifiedIdentityPublicKey::from(orphan.clone()),
+                PrivateKeyData::Clear([0x44; 32]),
+            ),
+        )]));
+
+        let (mut harness, action) = harness_for(KeysScreen::new(identity, &app_context));
+        assert!(
+            harness.query_by_label(UNPUBLISHED_EXPLAINER).is_some(),
+            "the section must say what these keys are"
+        );
+        assert!(
+            harness.query_by_label(TRANSFER_ROW).is_some(),
+            "the unpublished key must get a row of its own"
+        );
+
+        harness.get_by_label(TRANSFER_ROW).click();
+        harness.run_steps(2);
+        let opened = std::mem::replace(&mut *action.borrow_mut(), AppAction::None);
+        let AppAction::AddScreen(Screen::KeyInfoScreen(key_info)) = opened else {
+            panic!("the unpublished key's row must open Key Info");
+        };
+        assert!(
+            key_info.private_key_data.is_some(),
+            "Key Info must receive the held material, so its saved private key \
+             can be removed from there"
+        );
+
+        // An identity whose held keys are all published shows no such section.
+        let plain = identity_holding_key(
+            0x45,
+            Purpose::AUTHENTICATION,
+            PrivateKeyTarget::PrivateKeyOnMainIdentity,
+        );
+        let (plain, _) = harness_for(KeysScreen::new(plain, &app_context));
+        assert!(
+            plain.query_by_label(UNPUBLISHED_EXPLAINER).is_none(),
+            "the section only appears when there is something to show"
+        );
+    });
+}
+
 /// AC-3: the offer is identity-scoped, so it must be visible without opening
 /// any individual key, and it must sit above the key list — a user who arrived
 /// because their keys are missing must not have to read past the keys they do

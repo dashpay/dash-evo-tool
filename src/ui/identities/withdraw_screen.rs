@@ -4,7 +4,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::{format_credits_as_dash, max_spendable_credits};
-use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
@@ -493,12 +492,8 @@ impl ScreenLike for WithdrawalScreen {
                 // Render wallet unlock component if needed
                 if let Some(selected_key) = self.selected_key.as_ref() {
                     // If there is an associated wallet then render the wallet unlock component for it if its locked
-                    let filed_at = self.identity.private_keys.candidates(selected_key).next();
-                    if let Some((
-                        _,
-                        PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path),
-                    )) = filed_at
-                        .and_then(|placement| self.identity.private_keys.entry_at(&placement))
+                    if let Some(wallet_derivation_path) =
+                        self.identity.private_keys.wallet_derived_at(selected_key)
                     {
                         let new_wallet = self
                             .identity

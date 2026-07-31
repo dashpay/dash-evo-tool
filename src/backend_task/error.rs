@@ -461,6 +461,38 @@ pub enum TaskError {
     )]
     IdentityKeyMissing,
 
+    /// More than one of an identity's key lists publishes the key, so nothing
+    /// may guess which list the private half belongs to. A stale local record
+    /// is the usual cause. Surfaces on Key Info's paste path and its Show/Sign
+    /// path alike, so the remedy presumes neither. Fieldless: no upstream
+    /// error and, by design, never any secret.
+    #[error(
+        "This key appears on more than one of this identity's key lists, so where it belongs is unclear. Refresh this identity and open this key again."
+    )]
+    IdentityKeyPlacementAmbiguous,
+
+    /// None of an identity's key lists publishes the key, and nothing is held
+    /// for it either, so there is no store to file it under or read it from.
+    /// Surfaces on Key Info's paste path and its Show/Sign path alike, so the
+    /// remedy presumes neither. Fieldless: no upstream error and, by design,
+    /// never any secret.
+    #[error(
+        "This key is not on any of this identity's key lists. Refresh this identity and open this key again; if it still does not appear, it belongs to a different identity."
+    )]
+    IdentityKeyNotOnIdentityRecord,
+
+    /// The `(placement, key id)` slot a write would take is already held by a
+    /// *different* key. The voter and main id spaces overlap, so two keys can
+    /// share an id; the write is refused because the occupant's private half is
+    /// frequently the only copy in existence. The remedy is removing that
+    /// locally saved half — a refresh updates published keys but evicts no
+    /// local private half. Fieldless: no upstream error and, by design, never
+    /// any secret.
+    #[error(
+        "A different key of this identity is already saved on this device under the number this key would use. Open that key in this identity's key list, remove its saved private key from this device, then try again."
+    )]
+    IdentityKeySlotOccupied,
+
     /// An identity private key was found in the vault but its bytes are not a
     /// usable signing key (vault corruption or a truncated write). Distinct
     /// from [`Self::IdentityKeyMissing`] (genuinely absent) so the user gets
@@ -470,6 +502,19 @@ pub enum TaskError {
         "This identity's signing key is stored but unreadable on this device. Re-import the identity to refresh it."
     )]
     IdentityKeyMalformed,
+
+    /// The private key stored at a placement does not derive the public key the
+    /// identity records there — the vault and the stored key map disagree about
+    /// which key that slot holds. Distinct from [`Self::IdentityKeyMalformed`]
+    /// (bytes present but unusable) and [`Self::IdentityKeyMissing`] (nothing
+    /// there at all): these bytes are a perfectly usable key, just not this one,
+    /// so signing with them would produce a signature no verifier attributes to
+    /// this identity. Fieldless: the callsite logs the placement; no key
+    /// material or raw error string is stored here.
+    #[error(
+        "This identity's signing key does not match the key it is saved for on this device. Re-import the identity to refresh its keys."
+    )]
+    IdentityKeyMismatch,
 
     /// The password supplied for a password-protected identity key does not
     /// unseal it. The just-in-time chokepoint catches this inside its re-ask

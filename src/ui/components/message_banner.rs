@@ -837,6 +837,13 @@ fn get_banners(ctx: &egui::Context) -> Vec<BannerState> {
         .unwrap_or_default()
 }
 
+/// The texts of every global banner currently set, oldest first. Test-only:
+/// lets a unit test assert which message a screen surfaced.
+#[cfg(test)]
+pub(crate) fn global_banner_texts(ctx: &egui::Context) -> Vec<String> {
+    get_banners(ctx).into_iter().map(|b| b.text).collect()
+}
+
 /// Writes the global banner list to egui context data.
 /// Removes the entry entirely when the list is empty.
 fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {

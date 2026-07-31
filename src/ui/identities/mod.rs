@@ -6,10 +6,7 @@ use dash_sdk::{
 
 use crate::{
     context::AppContext,
-    model::{
-        qualified_identity::{QualifiedIdentity, encrypted_key_storage::PrivateKeyData},
-        wallet::Wallet,
-    },
+    model::{qualified_identity::QualifiedIdentity, wallet::Wallet},
 };
 
 pub mod add_existing_identity_screen;
@@ -80,21 +77,113 @@ pub fn get_selected_wallet(
         selected_key.ok_or_else(|| "No key provided when getting selected wallet".to_string())?
     };
 
-    // Once we have the public key (either from DPNS or directly), look up
-    // the matching private key data wherever it is filed.
-    let filed_at = qualified_identity
+    // Once we have the public key (either from DPNS or directly), ask which
+    // wallet derives it — under any placement, since a key filed under two
+    // stores need not be wallet-derived under the first one probed.
+    match qualified_identity
         .private_keys
-        .candidates(public_key)
-        .next();
-    if let Some((_, PrivateKeyData::AtWalletDerivationPath(wallet_derivation_path))) =
-        filed_at.and_then(|placement| qualified_identity.private_keys.entry_at(&placement))
+        .wallet_derived_at(public_key)
     {
-        // If found, return the associated wallet (cloned to preserve Arc).
-        Ok(qualified_identity
+        Some(wallet_derivation_path) => Ok(qualified_identity
             .associated_wallets
             .get(&wallet_derivation_path.wallet_seed_hash)
-            .cloned())
-    } else {
-        Ok(None)
+            .cloned()),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    use super::*;
+    use crate::model::qualified_identity::encrypted_key_storage::{
+        KeyStorage, PrivateKeyData, WalletDerivationPath,
+    };
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+
+    /// An identity publishing `key`, holding `private_keys`, linked to
+    /// `wallets` — the three things a test here varies; every other field is
+    /// an inert default.
+    fn identity_with(
+        key: &IdentityPublicKey,
+        private_keys: KeyStorage,
+        wallets: BTreeMap<crate::model::wallet::WalletSeedHash, Arc<RwLock<Wallet>>>,
+    ) -> QualifiedIdentity {
+        QualifiedIdentity {
+            identity: Identity::new_with_id_and_keys(
+                Identifier::from([1u8; 32]),
+                BTreeMap::from([(key.id(), key.clone())]),
+                PlatformVersion::latest(),
+            )
+            .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys,
+            dpns_names: vec![],
+            associated_wallets: wallets,
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// A key filed under two placements, wallet-derived only under the second.
+    /// Taking whichever placement is probed first answers "no wallet" — the
+    /// same answer as an identity with no wallet at all — and the screen then
+    /// offers no unlock for a wallet it needs.
+    #[test]
+    fn a_wallet_is_found_under_a_later_placement_too() {
+        let seed_hash = [0x66; 32];
+        let wallet = Wallet::new_from_seed([0x11; 64], Network::Testnet, None, None)
+            .expect("build a test wallet");
+        let key = IdentityPublicKey::random_key(0, Some(1), PlatformVersion::latest());
+
+        let mut private_keys = KeyStorage::default();
+        private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key.clone()),
+                PrivateKeyData::Clear([0x22; 32]),
+            ),
+        );
+        private_keys.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnVoterIdentity, key.id()),
+            (
+                QualifiedIdentityPublicKey::from(key.clone()),
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: seed_hash,
+                    derivation_path: DerivationPath::from(vec![]),
+                }),
+            ),
+        );
+
+        let qualified_identity = identity_with(
+            &key,
+            private_keys,
+            BTreeMap::from([(seed_hash, Arc::new(RwLock::new(wallet)))]),
+        );
+
+        let selected = get_selected_wallet(&qualified_identity, None, Some(&key))
+            .expect("a key given directly needs no DPNS contract");
+        assert!(
+            selected.is_some(),
+            "the wallet deriving this key must be found whichever placement names it"
+        );
     }
 }

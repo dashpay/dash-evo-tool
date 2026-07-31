@@ -14,8 +14,9 @@ exercise the worker-thread stack-size fix, and real visual confirmation of
 button count/labels/layout that a no-display harness can assert on logic but
 not on what actually renders.
 
-**Run against BOTH builds with this identical procedure** (baseline
-`v1.0.0-weekly.20260721`, then HEAD `origin/v1.0-dev`).
+**Run against BOTH builds with this identical procedure** — the baseline and
+development binaries selected for the current campaign (record their exact
+SHAs in that campaign's own artifacts, not here).
 
 ## Prerequisites
 
@@ -35,7 +36,7 @@ DATADIR=$(mktemp -d)
 cp .env.example "$DATADIR/.env"
 pgrep -af dash-evo-tool
 
-BIN=<path to the build under test — baseline or HEAD worktree binary>
+BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/identity-home-actions.log"
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
@@ -65,11 +66,15 @@ DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
    in a row (fund an identity via deposit two or three times). Record
    whether the app crashes, and check `det-stderr.log`/`det.log` for a
    panic marker (`location=...`) even if the UI appeared fine.
-7. **Format-validation consistency.** Trigger a format-validation error the
-   same way in two different places that should share the same rule (e.g.
-   an overlong DPNS name in registration, and the same length rule via a
-   keyword/label field elsewhere). Record whether both reject at the same
-   limit.
+7. **Format-validation consistency.** DPNS names, contract keywords, and
+   DashPay account labels each have their own documented length limit (they
+   are different fields with different rules by design — do not expect them
+   to reject at the same length). Instead, pick ONE of these fields and
+   trigger its format-validation error through two different entry points
+   that both accept it (e.g. the same overlong DPNS name attempted through
+   registration and, if another screen also accepts a DPNS name, through
+   that screen too). Record whether both entry points reject at the same
+   limit with the same message, for that one field.
 8. **Error banner wording.** Trigger a database/parsing-style error if
    possible (e.g. an interrupted operation). Record whether the banner text
    is plain and actionable, or contains raw error strings/stack

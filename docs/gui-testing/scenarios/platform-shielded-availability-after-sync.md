@@ -11,8 +11,9 @@ proof-verification call succeeding or failing against the actual connected
 testnet — it cannot be simulated without a real SPV sync and a real
 protocol-version-detection round trip.
 
-**Run against BOTH builds with this identical procedure** (baseline
-`v1.0.0-weekly.20260721`, then HEAD `origin/v1.0-dev`).
+**Run against BOTH builds with this identical procedure** — the baseline and
+development binaries selected for the current campaign (record their exact
+SHAs in that campaign's own artifacts, not here).
 
 ## Prerequisites
 
@@ -29,7 +30,7 @@ DATADIR=$(mktemp -d)
 cp .env.example "$DATADIR/.env"
 pgrep -af dash-evo-tool
 
-BIN=<path to the build under test — baseline or HEAD worktree binary>
+BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/shielded-availability.log"
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &

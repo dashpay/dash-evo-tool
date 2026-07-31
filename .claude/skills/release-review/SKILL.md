@@ -53,12 +53,21 @@ a § Handling a Fixture/Infra Blocker pause. Don't rebuild from scratch:
 ## Phase 0 — Fixture preflight (do this FIRST, cheaply)
 
 Before committing to a real GUI run, verify the end-to-end test fixtures are actually usable *now*
-— testnet masternodes deregister and test wallets drain between runs. Check the repo's `.env.example`
-for the exact variable names in current use; as of this writing they include:
+— testnet masternodes deregister and test wallets drain between runs.
 
-- `E2E_MN_PROTX_HASH`: confirm it's a currently-registered masternode/evonode. A stale hash surfaces
-  as a typed `MasternodeNotFound` error the first time something touches it — don't wait for that;
-  check via an SDK/CLI lookup or a quick platform-explorer query first.
+**These fixture variable names are a scenario-doc naming convention, not app config the GUI reads
+automatically.** `.env.example` does not define them, and the GUI binary itself doesn't consume any
+of them directly — confirm this hasn't changed before relying on it (`grep -rn "E2E_" src/` from a
+repo checkout; as of this writing it returns nothing). They exist purely so scenario files and
+operators refer to the same fixture by the same name, matching the naming already used by
+`tests/backend-e2e/` (which *does* read `E2E_WALLET_MNEMONIC` for its own harness, but that's a
+separate test binary, not this GUI). As of this writing, the scenarios under
+`docs/gui-testing/scenarios/` use:
+
+- `E2E_MN_PROTX_HASH`: confirm the value you intend to use is a currently-registered
+  masternode/evonode before relying on it in a scenario — a stale hash surfaces as a typed
+  `MasternodeNotFound` error the first time something touches it in the GUI. Check via an SDK/CLI
+  lookup or a quick platform-explorer query first, since nothing enforces this automatically.
 - `E2E_WALLET_MNEMONIC`: confirm the wallet is actually funded on testnet *right now* (a live balance
   check, not "it was funded last time"). If empty, get a faucet drop (a testnet faucet — web, CLI,
   or whatever this project's e2e docs point at) or a fresh funded fixture BEFORE starting Phase 4 —
@@ -69,46 +78,72 @@ Fixture/Infra Blocker below), and don't burn hours running non-fund-dependent ch
 with the user whether a partial (navigation-only) pass is worth doing now or the whole campaign
 should wait.
 
-**Confirmed false-alarm trap**: before concluding a fixture is dead, verify the app's **network
-selector** is actually set to Testnet. The dropdown has no explicit default after seeding a fresh
-data directory from `.env.example` — a prior run spent real time diagnosing a "dead masternode" and
-"unfunded wallet" that were both fine; the app was just sitting on Mainnet the whole time. Check the
-network selector FIRST, before treating a zero balance or a `MasternodeNotFound` as a real fixture
-problem.
+**A fresh data directory does not start in a usable state for these scenarios — provisioning it is a
+real, non-optional GUI setup sequence, not a formality.** Confirmed: a fresh install's default
+settings select **Mainnet**, not Testnet, and a fresh data directory has no imported wallet, no
+identities, and no masternode linkage. Before running any scenario against a freshly-seeded data
+directory, drive the GUI itself through: selecting Testnet in the network selector, importing/
+restoring the wallet from the mnemonic fixture, discovering or importing the identities the scenario
+needs, and — if the scenario needs it — linking a masternode or seeding legacy-migration state. Do
+this explicitly and record it as setup, not as part of the scenario's own measured procedure.
+
+**Confirmed false-alarm trap**: precisely because the network selector has no reliable default,
+double-check it's actually on Testnet before concluding a fixture is dead — a prior run spent real
+time diagnosing a "dead masternode" and "unfunded wallet" that were both fine; the app was just
+sitting on Mainnet the whole time. Check the network selector FIRST, before treating a zero balance
+or a `MasternodeNotFound` as a real fixture problem.
 
 ## Phase 1 — Baseline identification + verified changelog
 
-1. **Find the baseline release**: `gh release list --repo dashpay/dash-evo-tool` filtered to
+1. **Resolve the canonical remote before running any remote-qualified git command.** In a fork-based
+   checkout, `origin` commonly points at a contributor's fork, not the canonical repo — using it
+   unconditionally can silently sync tags/branches from the wrong place with no error (confirmed: in
+   one checkout, `origin` resolved the development branch to a materially different commit than the
+   canonical repo did). Find the remote whose fetch URL actually matches the canonical repo, e.g.
+   `git remote -v | grep dashpay/dash-evo-tool`; if none exists, add one
+   (`git remote add upstream https://github.com/dashpay/dash-evo-tool.git`) or fetch directly by URL.
+   Call this `<canonical-remote>` below and use it consistently for every step in this skill — never
+   assume `origin` is it, and don't re-derive it more than once per run.
+2. **Find the baseline release**: `gh release list --repo dashpay/dash-evo-tool` filtered to
    `draft:false && prerelease:true`, most recent. Automated builds are commonly cut as drafts first
    and can be deleted before undrafting (check `.github/workflows/` for the exact release-cutting
    workflow and tag-naming scheme currently in use) — a newer *local* tag with no matching GitHub
    release is not a valid baseline.
-2. **Force-sync the tag from origin before trusting it**:
-   `git fetch origin "+refs/tags/<tag>:refs/tags/<tag>"`, then `git rev-parse <tag>^{commit}`.
-   **Confirmed gotcha**: a local tag ref can silently diverge from origin (stale from an earlier
-   fetch/session) and point at an *ancestor* commit, producing a diff range that's wrong (larger than
-   reality) without any error. Always re-verify against `git ls-remote --tags origin <tag>` before
-   computing any diff range from a tag.
-3. **Determine the active development branch** — check the repo's own contribution docs (e.g.
+3. **Force-sync the tag from `<canonical-remote>` before trusting it**:
+   `git fetch <canonical-remote> "+refs/tags/<tag>:refs/tags/<tag>"`, then
+   `git rev-parse <tag>^{commit}`. **Confirmed gotcha**: a local tag ref can silently diverge from the
+   remote (stale from an earlier fetch/session) and point at an *ancestor* commit, producing a diff
+   range that's wrong (larger than reality) without any error. Always re-verify against
+   `git ls-remote --tags <canonical-remote> <tag>` before computing any diff range from a tag.
+4. **Determine the active development branch and resolve it to a commit SHA — record that SHA, don't
+   carry a branch name or bare `HEAD` forward.** Check the repo's own contribution docs (e.g.
    `CLAUDE.md`, `CONTRIBUTING.md`) rather than assuming `main`/`master`; this project may use a
-   dedicated long-lived dev branch instead. Compute the range against `origin/<that branch>` (never
-   a possibly-stale local branch ref, and never the invoking session's own feature branch):
-   `git log <tag>..origin/<base-branch> --oneline`.
-4. **Don't trust `CHANGELOG.md` alone.** Its unreleased section can contain stale/premature entries
+   dedicated long-lived dev branch instead. Resolve it once:
+   `git rev-parse <canonical-remote>/<base-branch>`, and treat that output as **the development SHA**
+   for the rest of this run — every later phase (the diff range, Phase 2b's second worktree,
+   screenshots, the final report) uses this exact SHA. Never substitute a bare `HEAD` for it (that's
+   the invoking checkout's HEAD, not necessarily the development branch's — wrong whenever this
+   procedure is run from a feature/PR checkout, which is common) and never re-resolve the branch ref
+   later in the run, since it can move while you're still working. Compute the range:
+   `git log <tag>..<development-sha> --oneline`.
+5. **Don't trust `CHANGELOG.md` alone.** Its unreleased section can contain stale/premature entries
    or miss real changes. For every commit in range, resolve its PR number and read the actual PR body
    (`gh pr view <n>`) — not just the commit subject, which can undersell what a PR really changed
    (confirmed: one PR's CHANGELOG entry omitted two of its own later review-round fixes). Cross-check
    both directions: CHANGELOG claims with no backing PR, and merged PRs with no CHANGELOG entry.
-5. **Confirm things are actually in-range, not pre-existing**: `git merge-base --is-ancestor <sha>
+6. **Confirm things are actually in-range, not pre-existing**: `git merge-base --is-ancestor <sha>
    <baseline-tag>` for anything you suspect might already be shipped — don't regression-test
-   pre-existing behavior as if it were new.
-6. Produce a verified changelog grouped by theme, each entry citing commit SHA + PR number, tagged
+   pre-existing behavior as if it were new. This one check is necessary but not sufficient on its
+   own — see the fuller treatment in the blocker-classification section of Phase 4, which this same
+   caveat also applies to.
+7. Produce a verified changelog grouped by theme, each entry citing commit SHA + PR number, tagged
    user-visible (GUI-relevant) vs internal-only (tests/CI/deps), plus a regression risk map by
    functional area. Save under your artifacts location for this run (see § Artifact Conventions).
 
 ## Phase 2 — Scoped code review
 
-Review the diff `<baseline-tag>...origin/<base-branch>` (three-dot range) thoroughly: security,
+Review the diff `<baseline-tag>...<development-sha>` (three-dot range, using the exact SHA resolved
+in Phase 1) thoroughly: security,
 project/structural consistency, code quality, dependency risk, documentation accuracy. Run it from
 an isolated worktree, never the invoking session's active checkout — a plain `git diff`/`git log`
 between two refs doesn't need a checkout of either at all, but reviewing from a clean worktree
@@ -137,9 +172,11 @@ argument for the new score.
 ## Phase 2b — Build both binaries for A/B comparison
 
 Create two isolated `git worktree`s under your scratch root — one at the baseline tag's commit, one
-at HEAD — never inside the repo's own tracked working tree, and never let a spawned sub-agent create
-worktrees on its own initiative if you're coordinating multiple agents (create them yourself first,
-hand the paths out). Build each with:
+at **the development SHA resolved in Phase 1** (never a bare `HEAD` — if this procedure is running
+from a feature/PR checkout, `HEAD` there is that checkout, not the development branch you diffed and
+wrote the changelog against) — never inside the repo's own tracked working tree, and never let a
+spawned sub-agent create worktrees on its own initiative if you're coordinating multiple agents
+(create them yourself first, hand the paths out). Build each with:
 
 ```
 CARGO_TARGET_DIR=<scratch-root>/<name>-target cargo build --bin dash-evo-tool --manifest-path <worktree>/Cargo.toml
@@ -207,6 +244,19 @@ one real window/display target at a time, and it keeps screenshot provenance una
 app's log output for both runs (with an isolated data directory, verify where logs actually landed
 for this run rather than assuming a fixed default path).
 
+**Isolated data directories give the two builds separate local state, but not separate live-network
+state — plan for that separately.** A scenario that spends a UTXO, consumes a deposit, registers a
+DPNS name, or moves credits mutates shared on-chain/live-network fixture state; running the baseline
+binary through it and then the development binary through the identical flow means the second run
+starts from state the first run already changed (an already-consumed deposit, a spent UTXO set, a
+name that's no longer available), which can produce a false regression or a false pass. For any
+scenario step that mutates fund-moving or name-registering state, do one of: give each build its
+own independently-funded/equivalent fixture (separate wallet or identity per side) rather than
+sharing one; or explicitly record each side's starting balances/UTXOs/deposits/identities/DPNS names
+before that step and account for the difference when judging the result. Steps that only read state
+(navigation, display checks) aren't affected — reserve this for anything that actually spends or
+registers something.
+
 **Blocker rule** (confirm with the user for each run — the default below is a starting point, not a
 universal constant):
 - **Blocking**: new version worse than old from the user's perspective **in the happy flow**, or a
@@ -221,10 +271,16 @@ universal constant):
 
 **Blocking classification must say pre-existing vs diff-introduced, not just "blocking."** A defect
 can be blocking-worthy on its own severity (real data loss) while NOT being a regression this diff
-caused. Before asserting "this release introduced X," check: `git log <baseline>..<head> --
-<suspect-file>` — zero commits touching the file means it's pre-existing, not diff-introduced. Frame
-the finding as "we are choosing to hold/flag a pre-existing defect," not "this release broke X" — the
-second is a factual claim that can be wrong and, if wrong, undermines the whole report's credibility.
+caused. But don't let a single check decide this either way: `git log <baseline>..<development-sha>
+-- <suspect-file>` returning zero commits proves only that the file wasn't *directly* edited — a
+changed caller, a shared model type, a persisted-data format change, a feature gate, or a bumped
+dependency can still cause a regression that surfaces in an otherwise-untouched file. Treat old-vs-new
+reproduction as the primary evidence (does the exact same trigger actually behave differently on the
+two builds?), and use the git-log check as one corroborating signal, not proof by itself — if the
+file is untouched but you suspect the behavior still changed, trace the transitive callers/
+dependencies of the code path before concluding "pre-existing." Frame the finding as "we are choosing
+to hold/flag a pre-existing defect," not "this release broke X" — the second is a factual claim that
+can be wrong and, if wrong, undermines the whole report's credibility.
 
 Emit confirmed findings in whatever findings format the rest of this campaign's report uses (see
 Phase 2/5) — at minimum: title, severity, a location reference (a file:line if one applies, otherwise

@@ -13,8 +13,9 @@ cannot be simulated in `kittest` (no network) or isolated to a single
 `backend_task` call (the bug is about a background task's cumulative effect
 across transitions, not any single call's return value).
 
-**Run against BOTH builds with this identical procedure** (baseline
-`v1.0.0-weekly.20260721`, then HEAD `origin/v1.0-dev`).
+**Run against BOTH builds with this identical procedure** — the baseline and
+development binaries selected for the current campaign (record their exact
+SHAs in that campaign's own artifacts, not here).
 
 ## Prerequisites
 
@@ -32,7 +33,7 @@ DATADIR=$(mktemp -d)
 cp .env.example "$DATADIR/.env"
 pgrep -af dash-evo-tool
 
-BIN=<path to the build under test — baseline or HEAD worktree binary>
+BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/dapi-budget-resilience.log"
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &

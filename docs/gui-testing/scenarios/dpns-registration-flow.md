@@ -15,8 +15,9 @@ from actual identity data, and real async save timing (a save in flight
 when the user switches identity) — none of which a no-display harness can
 drive with a live contest clock and real background-task scheduling.
 
-**Run against BOTH builds with this identical procedure** (baseline
-`v1.0.0-weekly.20260721`, then HEAD `origin/v1.0-dev`).
+**Run against BOTH builds with this identical procedure** — the baseline and
+development binaries selected for the current campaign (record their exact
+SHAs in that campaign's own artifacts, not here).
 
 ## Prerequisites
 
@@ -37,7 +38,7 @@ DATADIR=$(mktemp -d)
 cp .env.example "$DATADIR/.env"
 pgrep -af dash-evo-tool
 
-BIN=<path to the build under test — baseline or HEAD worktree binary>
+BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/dpns-registration.log"
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &

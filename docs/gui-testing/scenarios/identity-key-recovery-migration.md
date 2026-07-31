@@ -13,9 +13,10 @@ identity/masternode fixture, real password-prompt cancel timing, and
 cross-screen navigation (masternode detail page ↔ Key Info ↔ identities keys
 list) that a no-display harness can't drive end-to-end.
 
-**Run against BOTH builds with this identical procedure** (baseline
-`v1.0.0-weekly.20260721`, then HEAD `origin/v1.0-dev`) — do not skip or
-alter steps between runs. Record what actually happens on each build; do not
+**Run against BOTH builds with this identical procedure** — the baseline and
+development binaries selected for the current campaign (record their exact
+SHAs in that campaign's own artifacts, not here) — do not skip or alter
+steps between runs. Record what actually happens on each build; do not
 presuppose which behaviors are "the fix."
 
 ## Prerequisites
@@ -41,7 +42,7 @@ DATADIR=$(mktemp -d)
 cp .env.example "$DATADIR/.env"
 pgrep -af dash-evo-tool
 
-BIN=<path to the build under test — baseline or HEAD worktree binary>
+BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/identity-key-recovery.log"
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &

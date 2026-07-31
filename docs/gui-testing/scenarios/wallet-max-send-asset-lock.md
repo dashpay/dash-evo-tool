@@ -15,9 +15,10 @@ actually sends on the first try — the ceiling query and the fee-reserve
 estimator both depend on genuine wallet/network state a no-display harness
 can't fake.
 
-**Run against BOTH builds with this identical procedure** (baseline
-`v1.0.0-weekly.20260721`, then HEAD `origin/v1.0-dev`). Describe what you
-observe on each build without assuming which one is "correct."
+**Run against BOTH builds with this identical procedure** — the baseline and
+development binaries selected for the current campaign (record their exact
+SHAs in that campaign's own artifacts, not here). Describe what you observe
+on each build without assuming which one is "correct."
 
 ## Prerequisites
 
@@ -39,7 +40,7 @@ DATADIR=$(mktemp -d)
 cp .env.example "$DATADIR/.env"
 pgrep -af dash-evo-tool
 
-BIN=<path to the build under test — baseline or HEAD worktree binary>
+BIN=<path to the build under test — baseline or development worktree binary>
 test -x "$BIN"
 LOG="$DATADIR/wallet-max-send.log"
 DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &

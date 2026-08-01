@@ -362,7 +362,11 @@ struct Inner {
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
     network: Network,
+    /// Disposable per-network chain cache: `<data_dir>/spv/<network>/`.
     spv_storage_dir: std::path::PathBuf,
+    /// The durable wallet database this backend's persister opened. See
+    /// [`wallet_database_path`].
+    wallet_database_path: std::path::PathBuf,
     /// Serializes DashPay address-index increments across the process. The
     /// `DetKv` adapter has no atomic read-modify-write primitive, so the
     /// `dashpay_increment_send_index` path takes this mutex around its
@@ -435,6 +439,23 @@ impl std::fmt::Debug for WalletBackend {
     }
 }
 
+/// The durable per-network wallet database: `<data_dir>/det-<network>.sqlite`.
+///
+/// A sibling of `det-app.sqlite`, deliberately outside `<data_dir>/spv/<network>/`
+/// — that directory holds the disposable, resyncable chain cache, while this file
+/// holds irreplaceable wallet, identity, and asset-lock state. `data_dir` is
+/// created and locked down at boot, so no directory work happens here.
+pub(crate) fn wallet_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
+    data_dir.join(format!("det-{}.sqlite", network_prefix(network)))
+}
+
+/// The upstream shielded coordinator's store,
+/// `<data_dir>/det-<network>-shielded.sqlite` — the sibling of
+/// [`wallet_database_path`] holding all Orchard state.
+pub(crate) fn shielded_database_path(data_dir: &Path, network: Network) -> std::path::PathBuf {
+    data_dir.join(format!("det-{}-shielded.sqlite", network_prefix(network)))
+}
+
 impl WalletBackend {
     pub(crate) fn sdk(&self) -> &Sdk {
         self.inner.pwm.sdk()
@@ -457,9 +478,9 @@ impl WalletBackend {
     ) -> Result<Self, TaskError> {
         let network = ctx.network;
         let spv_storage_dir = Self::resolve_spv_storage_dir(ctx.data_dir(), network)?;
+        let wallet_database_path = wallet_database_path(ctx.data_dir(), network);
 
-        let persister_config =
-            SqlitePersisterConfig::new(spv_storage_dir.join("platform-wallet.sqlite"));
+        let persister_config = SqlitePersisterConfig::new(wallet_database_path.clone());
         let persister = Arc::new(
             SqlitePersister::open(persister_config)
                 .map_err(TaskError::from_wallet_storage_open_error)?,
@@ -495,12 +516,12 @@ impl WalletBackend {
 
         // Wire the upstream shielded coordinator into the manager.
         //
-        // Uses a dedicated SQLite file (`platform-wallet-shielded.sqlite`) owned
+        // Uses a dedicated SQLite file (`det-<network>-shielded.sqlite`) owned
         // entirely by the upstream coordinator — the single source of truth for
         // all Orchard state. The coordinator starts empty — no wallets are bound
         // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
         // calls with the same path are idempotent (upstream no-ops).
-        pwm.configure_shielded(spv_storage_dir.join("platform-wallet-shielded.sqlite"))
+        pwm.configure_shielded(shielded_database_path(ctx.data_dir(), network))
             .await
             .map_err(|e| TaskError::WalletBackend {
                 source: Arc::new(e),
@@ -539,6 +560,7 @@ impl WalletBackend {
                 peer,
                 network,
                 spv_storage_dir,
+                wallet_database_path,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -840,7 +862,7 @@ impl WalletBackend {
     /// (W1 — create/import write path; regression fix).
     ///
     /// The upstream `create_wallet_from_seed_bytes` is the only writer to the
-    /// `platform-wallet.sqlite` persistor; the seedless cold-boot loader only
+    /// `det-<network>.sqlite` persistor; the seedless cold-boot loader only
     /// reads it. Without this call nothing ever populates the persistor, so a
     /// fresh / reset / migrated install never watches the wallet and received
     /// funds stay invisible at 100% sync.
@@ -1179,9 +1201,8 @@ impl WalletBackend {
                 source: WalletStorageError::Sqlite(source).into(),
             },
         };
-        let database_path = self.inner.spv_storage_dir.join("platform-wallet.sqlite");
         let connection = rusqlite::Connection::open_with_flags(
-            database_path,
+            &self.inner.wallet_database_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .map_err(&storage_error)?;
@@ -1398,7 +1419,7 @@ impl WalletBackend {
             })
     }
 
-    /// Remove a wallet from the upstream `platform-wallet.sqlite` persistor
+    /// Remove a wallet from the upstream `det-<network>.sqlite` persistor
     /// (also detaches the shielded coordinator). The watch-only persistor row
     /// carries no seed, so this is safe to drive asynchronously after the sync
     /// secret-bearing cleanup has already run. A `WalletNotFound` race is
@@ -1999,9 +2020,10 @@ impl WalletBackend {
 
     /// Per-network storage directory under `<data_dir>/spv/<network>/`.
     ///
-    /// Hosts the upstream `platform-wallet.sqlite` persister file and any
-    /// other per-network sidecar databases DET maintains (e.g. the shielded
-    /// commitment tree at `shielded-commitment-tree.sqlite`).
+    /// Hosts only the disposable `dash-spv` chain cache (headers, filters,
+    /// blocks, masternode state, peers) and DET's two retired legacy shielded
+    /// files — everything here is resyncable. The durable wallet databases are
+    /// deliberately elsewhere: see [`wallet_database_path`].
     pub fn spv_storage_dir(&self) -> &std::path::Path {
         &self.inner.spv_storage_dir
     }
@@ -3001,6 +3023,20 @@ fn map_identity_top_up_error(
     }
 }
 
+/// Classify an SDK error from a directly-submitted identity top-up — the path a
+/// foreign identity takes, which has no upstream orchestrator to translate for
+/// it. Shares [`map_identity_top_up_error`]'s classifier, so both paths report
+/// the same typed error for the same Platform rejection.
+pub(crate) fn map_identity_top_up_sdk_error(
+    identity_id: dash_sdk::platform::Identifier,
+    error: dash_sdk::Error,
+) -> TaskError {
+    classify_sdk_error_or(error, |e| TaskError::IdentityTopUpRejected {
+        identity_id,
+        source: Box::new(e),
+    })
+}
+
 /// Shape persisted platform-address state into per-wallet warm-start seed data.
 ///
 /// Resolves each upstream wallet id to its DET [`WalletSeedHash`] via `resolve`
@@ -3299,6 +3335,39 @@ mod tests {
             .collect::<Vec<_>>();
         revisions.sort_unstable();
         assert_eq!(revisions, [1, 1]);
+    }
+
+    /// The durable wallet databases are siblings of `det-app.sqlite` in the
+    /// data directory — never inside the disposable `spv/<network>/` chain
+    /// cache, which a user (or a cache-clearing feature) may delete.
+    #[test]
+    fn wallet_databases_live_outside_the_disposable_spv_cache() {
+        let data_dir = Path::new("/app-data");
+
+        assert_eq!(
+            wallet_database_path(data_dir, Network::Testnet),
+            data_dir.join("det-testnet.sqlite")
+        );
+        assert_eq!(
+            shielded_database_path(data_dir, Network::Testnet),
+            data_dir.join("det-testnet-shielded.sqlite")
+        );
+        assert_eq!(
+            wallet_database_path(data_dir, Network::Mainnet),
+            data_dir.join("det-mainnet.sqlite")
+        );
+
+        let spv_dir = data_dir.join("spv");
+        for path in [
+            wallet_database_path(data_dir, Network::Testnet),
+            shielded_database_path(data_dir, Network::Testnet),
+        ] {
+            assert!(
+                !path.starts_with(&spv_dir),
+                "{} must not live under the disposable SPV cache",
+                path.display()
+            );
+        }
     }
 
     #[cfg(unix)]

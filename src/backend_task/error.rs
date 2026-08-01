@@ -314,6 +314,22 @@ pub enum TaskError {
         identity_id: dash_sdk::platform::Identifier,
     },
 
+    /// A resumed funding lock was already spent by an earlier operation, so it
+    /// cannot fund this top-up.
+    #[error(
+        "This saved funding transaction has already been used. Choose a different one, or fund the top-up from your wallet balance instead."
+    )]
+    AssetLockAlreadyUsed,
+
+    /// A resumed funding lock is bound to a role that cannot pay for an
+    /// identity outside this wallet — a registration slot of this wallet's own
+    /// identity, an invitation voucher whose key the invitee holds, or a lock
+    /// this wallet does not track at all.
+    #[error(
+        "This saved funding transaction cannot pay for an identity outside this wallet. Fund the top-up from your wallet balance instead."
+    )]
+    AssetLockNotEligibleForTopUp,
+
     /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
     /// timed out without producing a usable proof for Platform.
     #[error(

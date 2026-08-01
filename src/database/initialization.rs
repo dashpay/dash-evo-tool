@@ -138,7 +138,7 @@ fn fix_devnet_network_name_in_legacy_tables(conn: &Connection) -> rusqlite::Resu
 /// exists and contains at least one row. Truly-fresh installs — empty
 /// `data.db` or DB without those tables — return false, so the gated
 /// CREATE TABLE statements in [`Database::create_tables`] are skipped
-/// and the wallet state lives entirely in `platform-wallet.sqlite`.
+/// and the wallet state lives entirely in `det-<network>.sqlite`.
 ///
 /// The check is best-effort: any sqlite read error is treated as
 /// "no legacy detected" so a malformed/locked DB does not accidentally
@@ -197,7 +197,7 @@ impl Database {
             // Detect legacy DET wallet state on the same DB file. Truly-fresh
             // installs skip the wallet/utxos/single_key_wallet/wallet_transactions/
             // shielded_notes/shielded_wallet_meta CREATE TABLE statements — that
-            // state now lives in `platform-wallet.sqlite`. Pre-existing installs
+            // state now lives in `det-<network>.sqlite`. Pre-existing installs
             // (settings row missing but wallet rows present, an unusual but
             // possible recovery shape) still get the legacy tables so the
             // migration ladder has something to upgrade.
@@ -2006,7 +2006,7 @@ mod test {
         assert_eq!(version, DEFAULT_DB_VERSION);
 
         // Post-T-DEV-01: truly-fresh installs no longer create the
-        // wallet-family tables — those live in `platform-wallet.sqlite`
+        // wallet-family tables — those live in `det-<network>.sqlite`
         // now. `assert_v33_schema` only applies to upgrade-replay DBs,
         // so it has moved to `test_v33_migration_from_v27`. Here we
         // only need to confirm the settings row is in place.
@@ -3144,7 +3144,7 @@ mod test {
     /// The gated targets (`wallet`, `wallet_addresses`, `utxos`,
     /// `single_key_wallet`, `wallet_transactions`, `shielded_notes`,
     /// `shielded_wallet_meta`, `identity`) are legacy schema that lives in
-    /// `platform-wallet.sqlite` or the per-network k/v store now. Only
+    /// `det-<network>.sqlite` or the per-network k/v store now. Only
     /// `settings` (the migration version counter) is always created.
     #[test]
     fn tc_dev_006_fresh_install_omits_legacy_tables() {

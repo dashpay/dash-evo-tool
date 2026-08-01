@@ -3,7 +3,7 @@
 //!
 //! Background: commit `e6c6c017` replaced the seed-based re-registration
 //! loader with a read-only seedless loader, leaving NO code that ever
-//! populated the upstream `platform-wallet.sqlite` persistor. An empty
+//! populated the upstream `det-<network>.sqlite` persistor. An empty
 //! persistor means an empty SPV watch set, so received Core funds stayed
 //! invisible at 100% sync. The fix re-introduces the persistor write at the
 //! create/import (W1) and cold-boot (W2) seed-bearing moments, with a

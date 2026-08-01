@@ -2,8 +2,41 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::wallet::WalletSeedHash;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::platform::Identifier;
+
+/// How a top-up must be funded, decided by which wallet owns the identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopUpRoute {
+    /// The paying wallet owns the identity: fund from its HD slot, through the
+    /// upstream orchestrator that requires the identity to be registered here.
+    OwnIdentity,
+    /// The identity belongs to another wallet: fund from the index-less
+    /// account, since no slot in this wallet describes that identity.
+    ForeignIdentity,
+}
+
+/// Resolve the funding route from the identity's recorded wallet link and the
+/// paying wallet's seed hash.
+///
+/// The stored link — not `QualifiedIdentity::associated_wallets`, which
+/// hydration fills with every loaded wallet — is what ownership means here. An
+/// identity linked to no wallet keeps the existing fail-closed rejection: it
+/// has no HD slot anywhere, and the callers pass a sentinel index for it.
+/// Pure — no I/O — so it is unit-testable.
+fn resolve_top_up_route(
+    identity_id: Identifier,
+    linked_wallet: Option<WalletSeedHash>,
+    paying_wallet: &WalletSeedHash,
+) -> Result<TopUpRoute, TaskError> {
+    match linked_wallet {
+        Some(owner) if owner == *paying_wallet => Ok(TopUpRoute::OwnIdentity),
+        Some(_) => Ok(TopUpRoute::ForeignIdentity),
+        None => Err(TaskError::IdentityNotWalletOwned { identity_id }),
+    }
+}
 
 /// Validate a wallet-funded top-up's HD index against the identity's recorded
 /// wallet position, fail-secure.
@@ -33,6 +66,7 @@ fn validate_topup_index(
 impl AppContext {
     pub(super) async fn top_up_identity(
         &self,
+        sdk: &Sdk,
         input: IdentityTopUpInfo,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let IdentityTopUpInfo {
@@ -86,25 +120,31 @@ impl AppContext {
 
         let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
         let identity_id = qualified_identity.identity.id();
-        // Fail-secure: a wallet-funded top-up derives its asset-lock account
-        // from this wallet's HD tree at the identity's index, so the op index
-        // must equal the identity's recorded `wallet_index` AND the identity
-        // must be wallet-owned at all. Reject before any funds move — a foreign
-        // identity has no HD slot here (the UI/MCP pass a sentinel index for
-        // `None`, which must never reach the funding derivation). Verified:
-        // `wallet_index == None` iff the identity is not wallet-owned, so every
-        // valid target carries `Some(index)`.
-        validate_topup_index(identity_id, qualified_identity.wallet_index, identity_index)?;
-        let backend = self.wallet_backend()?;
-        let new_balance = backend
-            .top_up_identity(
-                &seed_hash,
-                &qualified_identity.identity,
-                funding,
-                identity_index,
-                None,
-            )
-            .await?;
+        let linked_wallet = self
+            .stored_identity_wallet_link(&identity_id)?
+            .map(|(owner, _)| owner);
+        let new_balance = match resolve_top_up_route(identity_id, linked_wallet, &seed_hash)? {
+            TopUpRoute::OwnIdentity => {
+                // Fail-secure: a wallet-funded top-up of an own identity derives
+                // its asset-lock account from this wallet's HD tree at the
+                // identity's index, so the op index must equal the identity's
+                // recorded `wallet_index`. Reject before any funds move.
+                validate_topup_index(identity_id, qualified_identity.wallet_index, identity_index)?;
+                self.wallet_backend()?
+                    .top_up_identity(
+                        &seed_hash,
+                        &qualified_identity.identity,
+                        funding,
+                        identity_index,
+                        None,
+                    )
+                    .await?
+            }
+            TopUpRoute::ForeignIdentity => {
+                self.top_up_foreign_identity(sdk, &qualified_identity.identity, &seed_hash, funding)
+                    .await?
+            }
+        };
         qualified_identity.identity.set_balance(new_balance);
 
         let actual_fee = match amount_duffs_for_fee {
@@ -135,6 +175,64 @@ impl AppContext {
             qualified_identity,
             fee_result,
         ))
+    }
+
+    /// Top up an identity that belongs to another wallet, paying from this one.
+    /// Returns the identity's post-top-up balance (credits).
+    ///
+    /// The upstream orchestrator can only top up identities registered in the
+    /// paying wallet's own manager, and registering one there files another
+    /// wallet's identity — and its keys — under this wallet, state its next
+    /// load cannot resolve. So this path funds an index-less asset lock and
+    /// submits the transition through the SDK directly, exactly as the
+    /// platform-address funding fallback does, leaving the paying wallet's
+    /// identity state untouched. The credit output is derived in the paying
+    /// wallet's own tree, so only its funds move.
+    ///
+    /// Two recovery steps the orchestrated path performs are unavailable here,
+    /// because upstream keeps both `pub(crate)`: a Platform-rejected InstantSend
+    /// proof is not retried under a ChainLock, and the spent lock is not marked
+    /// consumed — it keeps its pre-consumption status in the funding list.
+    async fn top_up_foreign_identity(
+        &self,
+        sdk: &Sdk,
+        identity: &dash_sdk::platform::Identity,
+        seed_hash: &WalletSeedHash,
+        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
+    ) -> Result<u64, TaskError> {
+        use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
+        use platform_wallet::AssetLockFundingType;
+        use platform_wallet::wallet::asset_lock::AssetLockFunding;
+
+        // TODO(upstream): restore the two recovery steps this path cannot run
+        //   while `AssetLockManager::upgrade_to_chain_lock_proof` and
+        //   `consume_asset_lock` stay `pub(crate)` — the IS→ChainLock retry on a
+        //   rejected InstantSend proof, and marking the spent lock consumed so
+        //   it leaves the resumable-funding list.
+        let backend = self.wallet_backend()?;
+        let (proof, credit_output_key) = match funding {
+            AssetLockFunding::FromWalletBalance { amount_duffs, .. } => {
+                let (proof, key, _txid) = backend
+                    .create_asset_lock_proof(
+                        seed_hash,
+                        amount_duffs,
+                        AssetLockFundingType::IdentityTopUpNotBound,
+                        0,
+                    )
+                    .await?;
+                (proof, key)
+            }
+            AssetLockFunding::FromExistingAssetLock { out_point, .. } => {
+                backend
+                    .resume_unbound_topup_asset_lock(seed_hash, out_point)
+                    .await?
+            }
+        };
+
+        identity
+            .top_up_identity_with_private_key(sdk, proof, &credit_output_key, None)
+            .await
+            .map_err(|e| crate::wallet_backend::map_identity_top_up_sdk_error(identity.id(), e))
     }
 }
 
@@ -168,6 +266,45 @@ mod tests {
             }
             other => panic!("expected IdentityIndexMismatch, got: {other:?}"),
         }
+    }
+
+    /// The paying wallet's own identity takes the orchestrated HD-slot route.
+    #[test]
+    fn resolve_top_up_route_sends_an_own_identity_through_the_hd_slot() {
+        let paying: WalletSeedHash = [0x11u8; 32];
+        assert_eq!(
+            resolve_top_up_route(Identifier::random(), Some(paying), &paying)
+                .expect("an own identity is routable"),
+            TopUpRoute::OwnIdentity
+        );
+    }
+
+    /// An identity linked to a different wallet must NOT take the orchestrated
+    /// route: that route registers the identity under the payer, filing another
+    /// wallet's identity — and its keys — where the payer's next load cannot
+    /// resolve them, which fails the whole wallet load.
+    #[test]
+    fn resolve_top_up_route_sends_another_wallets_identity_through_the_foreign_path() {
+        let owner: WalletSeedHash = [0x22u8; 32];
+        let paying: WalletSeedHash = [0x33u8; 32];
+        assert_eq!(
+            resolve_top_up_route(Identifier::random(), Some(owner), &paying)
+                .expect("another wallet's identity is routable"),
+            TopUpRoute::ForeignIdentity
+        );
+    }
+
+    /// An identity linked to no wallet keeps failing closed — it has no HD slot
+    /// anywhere, and the callers pass a sentinel index for it.
+    #[test]
+    fn resolve_top_up_route_rejects_an_identity_linked_to_no_wallet() {
+        let id = Identifier::random();
+        let err = resolve_top_up_route(id, None, &[0x44u8; 32])
+            .expect_err("an unlinked identity must reject");
+        assert!(
+            matches!(err, TaskError::IdentityNotWalletOwned { identity_id } if identity_id == id),
+            "expected IdentityNotWalletOwned, got: {err:?}"
+        );
     }
 
     /// A non-wallet-owned identity (`wallet_index == None`) fails closed even

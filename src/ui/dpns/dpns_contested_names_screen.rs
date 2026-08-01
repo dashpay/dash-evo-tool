@@ -255,11 +255,6 @@ impl ReviewPlan {
         self.effective()
             .any(|entry| matches!(entry.target.timing, VoteTiming::Scheduled(_)))
     }
-
-    fn changes_an_existing_vote(&self) -> bool {
-        self.effective()
-            .any(|entry| entry.target.current_choice.is_some())
-    }
 }
 
 fn review_headline(effective_count: usize, node_count: usize) -> String {
@@ -1729,12 +1724,6 @@ impl DPNSScreen {
                     if plan.no_op_count() > 0 {
                         ui.label(review_skipped_line(plan.no_op_count()));
                     }
-                    if plan.changes_an_existing_vote() {
-                        ui.colored_label(
-                            DashColors::warning_color(dark_mode),
-                            "Changing a vote uses one of the node's limited vote changes.",
-                        );
-                    }
                     if plan.effective_count() == 0 {
                         ui.colored_label(
                             DashColors::warning_color(dark_mode),
@@ -3129,7 +3118,6 @@ mod tests {
         assert_eq!(plan.node_count(), 2);
         assert!(plan.has_immediate());
         assert!(plan.has_scheduled());
-        assert!(!plan.changes_an_existing_vote());
         let retained = plan
             .effective()
             .map(|entry| {
@@ -3184,10 +3172,10 @@ mod tests {
         assert_eq!(plan.node_count(), 0);
     }
 
-    /// A node that already voted differently is a vote change, and the review
-    /// must be able to say so.
+    /// A node that already voted differently keeps its proved choice on the
+    /// review line, so the operator sees what the vote replaces.
     #[test]
-    fn review_plan_flags_a_change_to_an_existing_vote() {
+    fn review_plan_carries_the_proved_choice_a_target_replaces() {
         let (ctx, _temp_dir) = kv_ctx();
         let alpha = ctx.dpns_vote_poll_id("alpha").expect("alpha poll id");
         let node = masternode_identity(4, "node-four", true, ctx.network());
@@ -3208,12 +3196,15 @@ mod tests {
         let plan = screen.build_review_plan().expect("review plan");
 
         assert_eq!(plan.effective_count(), 1);
-        assert!(plan.changes_an_existing_vote());
         assert_eq!(
             plan.effective()
                 .next()
                 .map(|entry| entry.target.current_choice),
             Some(Some(ResourceVoteChoice::Lock))
+        );
+        assert_eq!(
+            review_current_choice_label(Some(ResourceVoteChoice::Lock), None),
+            "Lock"
         );
     }
 

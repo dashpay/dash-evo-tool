@@ -579,6 +579,18 @@ impl QualifiedIdentity {
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
+    /// Whether a masternode vote signed by this identity can reach Platform.
+    ///
+    /// True only with a loaded voter identity and its public key — the exact
+    /// precondition the vote submission path enforces. Stricter than
+    /// [`Self::masternode_key_presence`]'s `voting` flag, which also reports a
+    /// bare [`Purpose::VOTING`] main key that the vote path cannot sign with.
+    /// Voting surfaces must gate on this, so a read-only node is refused before
+    /// the operator composes a vote rather than at submission time.
+    pub fn can_cast_masternode_vote(&self) -> bool {
+        self.associated_voter_identity.is_some()
+    }
+
     /// Which masternode/evonode key roles are loaded for this identity.
     ///
     /// Voting presence is signalled by a loaded voter identity
@@ -2170,6 +2182,16 @@ mod masternode_key_presence_tests {
     fn read_only_node_has_no_keys() {
         let presence = qi_with(false, &[]).masternode_key_presence();
         assert_eq!(presence, MasternodeKeyPresence::default());
+    }
+
+    /// VOTE-TC-013: only a loaded voter identity satisfies the vote submission
+    /// path. A read-only node, and a node carrying nothing but a `VOTING`-purpose
+    /// main key, must both be refused before a vote is composed.
+    #[test]
+    fn only_a_loaded_voter_identity_can_cast_a_masternode_vote() {
+        assert!(qi_with(true, &[]).can_cast_masternode_vote());
+        assert!(!qi_with(false, &[]).can_cast_masternode_vote());
+        assert!(!qi_with(false, &[Purpose::VOTING]).can_cast_masternode_vote());
     }
 }
 

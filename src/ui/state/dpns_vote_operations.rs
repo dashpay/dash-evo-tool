@@ -97,9 +97,13 @@ impl DpnsVoteOperationSnapshot {
         }
 
         let journal_pairs = journal_rows.keys().cloned().collect::<BTreeSet<_>>();
+        // A cancelled target is a dismissed schedule. Its pair stays in
+        // `journal_pairs` so a mirror row that outlived a best-effort delete
+        // cannot bring the dismissed schedule back.
         let mut rows = journal_rows
             .into_values()
             .map(|(_, row)| row)
+            .filter(|row| row.status != DpnsVoteTargetStatus::Cancelled)
             .collect::<Vec<_>>();
         rows.extend(
             legacy_votes
@@ -264,7 +268,7 @@ mod tests {
         );
         let second = scheduled_operation(
             10,
-            DpnsVoteTargetStatus::Cancelled,
+            DpnsVoteTargetStatus::NotApplied,
             ResourceVoteChoice::Abstain,
             200,
         );
@@ -279,8 +283,79 @@ mod tests {
             rows[0].journal_target.as_ref().map(|(id, _)| *id),
             Some(expected_id)
         );
-        assert_eq!(rows[0].status, DpnsVoteTargetStatus::Cancelled);
+        assert_eq!(rows[0].status, DpnsVoteTargetStatus::NotApplied);
         assert_eq!(rows[0].vote.unix_timestamp, 200);
+    }
+
+    /// Removing a scheduled vote cancels its journal target. The row must then
+    /// disappear instead of returning with a Remove button that does nothing.
+    #[test]
+    fn cancelled_scheduled_targets_stop_projecting_a_row() {
+        let cancelled = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Cancelled,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![cancelled]);
+
+        assert!(snapshot.scheduled_vote_rows(&[]).is_empty());
+    }
+
+    /// The compatibility-mirror delete is best effort, so a cancelled target
+    /// must keep suppressing its legacy row even when the mirror survived.
+    #[test]
+    fn cancelled_targets_still_suppress_their_legacy_mirror_row() {
+        let cancelled = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Cancelled,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let voter_id = cancelled.targets[0].target.key.voter_id;
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![cancelled]);
+        let legacy = [
+            legacy_vote(voter_id, "alice", ResourceVoteChoice::Lock, 100, false),
+            legacy_vote(
+                Identifier::from([11; 32]),
+                "unrelated",
+                ResourceVoteChoice::Abstain,
+                300,
+                false,
+            ),
+        ];
+
+        let rows = snapshot.scheduled_vote_rows(&legacy);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].vote.contested_name, "unrelated");
+    }
+
+    /// A bulk schedule is one operation with many targets, so cancelling one of
+    /// them leaves the operation live. Only the cancelled row may disappear.
+    #[test]
+    fn cancelling_one_target_keeps_the_other_rows_of_its_operation() {
+        let mut operation = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Cancelled,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let mut surviving = operation.targets[0].clone();
+        surviving.target.key.vote_poll_id = Identifier::from([12; 32]);
+        surviving.target.contested_name = "bob".to_owned();
+        surviving.status = DpnsVoteTargetStatus::Scheduled;
+        operation.targets.push(surviving);
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![operation]);
+
+        let rows = snapshot.scheduled_vote_rows(&[]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].vote.contested_name, "bob");
+        assert_eq!(rows[0].status, DpnsVoteTargetStatus::Scheduled);
     }
 
     #[test]

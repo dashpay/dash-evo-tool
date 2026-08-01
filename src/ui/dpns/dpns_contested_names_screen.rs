@@ -190,6 +190,106 @@ fn scheduled_vote_removal_task(row: &ScheduledDpnsVoteRow) -> ContestedResourceT
     }
 }
 
+/// The loaded nodes that can actually cast a vote.
+///
+/// A masternode loaded read-only passes the identity-type filter but has no
+/// voting key, so the DPNS surfaces must drop it here — otherwise it reaches the
+/// composer and only fails once the vote is submitted.
+fn loaded_voting_identities(app_context: &AppContext) -> Vec<QualifiedIdentity> {
+    app_context
+        .load_local_voting_identities()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(QualifiedIdentity::can_cast_masternode_vote)
+        .collect()
+}
+
+/// One reviewed node × contest line, carrying the timing text the operator chose.
+struct ReviewEntry {
+    target: DpnsVoteTarget,
+    timing_label: String,
+}
+
+impl ReviewEntry {
+    fn node_label(&self) -> String {
+        self.target
+            .voter_alias
+            .clone()
+            .unwrap_or_else(|| short_identifier(self.target.key.voter_id))
+    }
+}
+
+/// Exactly what a submit click would send, resolved before the review is shown.
+struct ReviewPlan {
+    entries: Vec<ReviewEntry>,
+    voters: Vec<QualifiedIdentity>,
+}
+
+impl ReviewPlan {
+    /// The targets that will really be submitted, no-op targets removed.
+    fn effective(&self) -> impl Iterator<Item = &ReviewEntry> {
+        self.entries.iter().filter(|entry| !entry.target.is_no_op())
+    }
+
+    fn effective_count(&self) -> usize {
+        self.effective().count()
+    }
+
+    fn no_op_count(&self) -> usize {
+        self.entries.len() - self.effective_count()
+    }
+
+    fn node_count(&self) -> usize {
+        self.effective()
+            .map(|entry| entry.target.key.voter_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn has_immediate(&self) -> bool {
+        self.effective()
+            .any(|entry| matches!(entry.target.timing, VoteTiming::Now))
+    }
+
+    fn has_scheduled(&self) -> bool {
+        self.effective()
+            .any(|entry| matches!(entry.target.timing, VoteTiming::Scheduled(_)))
+    }
+
+    fn changes_an_existing_vote(&self) -> bool {
+        self.effective()
+            .any(|entry| entry.target.current_choice.is_some())
+    }
+}
+
+fn review_headline(effective_count: usize, node_count: usize) -> String {
+    format!("Votes to submit ({effective_count}) from your nodes ({node_count}).")
+}
+
+fn review_target_line(
+    node: &str,
+    name: &str,
+    requested: &str,
+    current: &str,
+    timing: &str,
+) -> String {
+    format!("• {node} → {name}.dash: {requested}. Current vote: {current}. {timing}.")
+}
+
+fn review_skipped_line(no_op_count: usize) -> String {
+    format!("Targets skipped because the node already has that choice ({no_op_count}).")
+}
+
+fn review_current_choice_label(
+    current: Option<ResourceVoteChoice>,
+    candidate_name: Option<&str>,
+) -> String {
+    match current {
+        Some(choice) => review_vote_choice_label(choice, candidate_name),
+        None => "Not voted yet".to_owned(),
+    }
+}
+
 fn dpns_operation_id(context: &BackendTaskContext) -> Option<DpnsVoteOperationId> {
     match context {
         BackendTaskContext::Dispatched { operation, .. } => dpns_operation_id(operation),
@@ -337,9 +437,7 @@ impl DPNSScreen {
             DPNSSubscreen::ScheduledVotes => Vec::new(),
         }));
 
-        let voting_identities = app_context
-            .load_local_voting_identities()
-            .unwrap_or_default();
+        let voting_identities = loaded_voting_identities(app_context);
         let user_identities = app_context.load_local_user_identities().unwrap_or_default();
         let vote_poll_ids = active_contests.vote_poll_ids();
         let voter_ids = voting_identities
@@ -1592,18 +1690,61 @@ impl DPNSScreen {
             return action;
         }
 
+        self.bulk_identity_options
+            .resize(self.voting_identities.len(), VoteOption::CastNow);
+        let plan = self.build_review_plan();
+
         let mut simple_schedule_valid = true;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.label(format!(
-                "Casting on behalf of all my nodes ({count}).",
-                count = self.voting_identities.len()
-            ));
-            ui.separator();
-            ui.heading(format!("Votes to cast ({}):", self.selected_votes.len()));
-            for vote in &self.selected_votes {
-                let candidate_name = self.candidate_name(&vote.contested_name, vote.vote_choice);
-                let choice = review_vote_choice_label(vote.vote_choice, candidate_name.as_deref());
-                ui.label(format!("• {name}.dash → {choice}", name = vote.contested_name));
+            match &plan {
+                Ok(plan) => {
+                    ui.heading(review_headline(plan.effective_count(), plan.node_count()));
+                    for entry in plan.effective() {
+                        let candidate_name = self.candidate_name(
+                            &entry.target.contested_name,
+                            entry.target.requested_choice,
+                        );
+                        let requested = review_vote_choice_label(
+                            entry.target.requested_choice,
+                            candidate_name.as_deref(),
+                        );
+                        let current_candidate_name = entry
+                            .target
+                            .current_choice
+                            .and_then(|choice| {
+                                self.candidate_name(&entry.target.contested_name, choice)
+                            });
+                        let current = review_current_choice_label(
+                            entry.target.current_choice,
+                            current_candidate_name.as_deref(),
+                        );
+                        ui.label(review_target_line(
+                            &entry.node_label(),
+                            &entry.target.contested_name,
+                            &requested,
+                            &current,
+                            &entry.timing_label,
+                        ));
+                    }
+                    if plan.no_op_count() > 0 {
+                        ui.label(review_skipped_line(plan.no_op_count()));
+                    }
+                    if plan.changes_an_existing_vote() {
+                        ui.colored_label(
+                            DashColors::warning_color(dark_mode),
+                            "Changing a vote uses one of the node's limited vote changes.",
+                        );
+                    }
+                    if plan.effective_count() == 0 {
+                        ui.colored_label(
+                            DashColors::warning_color(dark_mode),
+                            "Nothing will be submitted. Choose at least one node and a vote it has not already cast.",
+                        );
+                    }
+                }
+                Err(message) => {
+                    ui.colored_label(DashColors::warning_color(dark_mode), message);
+                }
             }
             ui.separator();
             ui.horizontal(|ui| {
@@ -1690,11 +1831,6 @@ impl DPNSScreen {
                                     RichText::new(format!("Identity: {}", label))
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
-
-                                if self.bulk_identity_options.len() <= i {
-                                    self.bulk_identity_options =
-                                        vec![VoteOption::CastNow; self.voting_identities.len()];
-                                }
 
                                 let current_option = &mut self.bulk_identity_options[i];
                                 ComboBox::from_id_salt(format!("combo_bulk_identity_{}", i))
@@ -1800,35 +1936,36 @@ impl DPNSScreen {
                 ui.label("Submitting votes…");
             });
         }
-        let has_immediate = self
-            .bulk_identity_options
-            .iter()
-            .any(|option| matches!(option, VoteOption::CastNow));
-        let has_scheduled = self
-            .bulk_identity_options
-            .iter()
-            .any(|option| matches!(option, VoteOption::Scheduled { .. }));
-        let submit_label = match (has_immediate, has_scheduled) {
-            (true, false) => "Cast votes",
-            (false, true) => "Schedule votes",
+        let has_submittable = plan.as_ref().is_ok_and(|plan| plan.effective_count() > 0);
+        let submit_label = match plan
+            .as_ref()
+            .map(|plan| (plan.has_immediate(), plan.has_scheduled()))
+        {
+            Ok((true, false)) => "Cast votes",
+            Ok((false, true)) => "Schedule votes",
             _ => "Submit votes",
+        };
+        let submit_disabled_reason = if operation_in_progress {
+            "The selected votes are already being submitted."
+        } else if !simple_schedule_valid {
+            "Choose a future date and time before scheduling these votes."
+        } else if plan.is_err() {
+            "These votes cannot be submitted yet. Fix the problem shown above and try again."
+        } else {
+            "Nothing can be submitted. Choose at least one node and a vote it has not already cast."
         };
         let (submit_clicked, cancel_clicked) = ui
             .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let submit_clicked = ComponentStyles::add_primary_button_enabled(
                     ui,
-                    !operation_in_progress && simple_schedule_valid,
+                    !operation_in_progress && simple_schedule_valid && has_submittable,
                     if operation_in_progress {
                         "Submitting votes…"
                     } else {
                         submit_label
                     },
                 )
-                .disabled_tooltip(if operation_in_progress {
-                    "The selected votes are already being submitted."
-                } else {
-                    "Choose a future date and time before scheduling these votes."
-                })
+                .disabled_tooltip(submit_disabled_reason)
                 .clicked();
                 let cancel_clicked = ui
                     .add_enabled(
@@ -1885,94 +2022,110 @@ impl DPNSScreen {
         action
     }
 
-    fn bulk_apply_votes(&mut self) -> AppAction {
-        let mut targets = Vec::new();
-        let mut selected_voters = Vec::new();
-        let mut has_immediate = false;
+    /// Resolve every node × contest target the current review would submit.
+    ///
+    /// The review sheet and the submit click share this so the sheet cannot
+    /// promise something other than what is sent. `Err` carries the message the
+    /// operator sees, and blocks submission.
+    fn build_review_plan(&self) -> Result<ReviewPlan, String> {
+        let mut entries = Vec::new();
+        let mut voters = Vec::new();
         for (identity, option) in self
             .voting_identities
             .iter()
             .zip(&self.bulk_identity_options)
         {
-            let timing = match option {
+            let (timing, timing_label) = match option {
                 VoteOption::NoVote => continue,
-                VoteOption::CastNow => {
-                    has_immediate = true;
-                    VoteTiming::Now
-                }
+                VoteOption::CastNow => (VoteTiming::Now, "Cast now".to_owned()),
                 VoteOption::Scheduled {
                     days,
                     hours,
                     minutes,
                 } => {
-                    let now = Utc::now();
                     let offset = chrono::Duration::days(*days as i64)
                         + chrono::Duration::hours(*hours as i64)
                         + chrono::Duration::minutes(*minutes as i64);
-                    VoteTiming::Scheduled((now + offset).timestamp_millis() as u64)
+                    (
+                        VoteTiming::Scheduled((Utc::now() + offset).timestamp_millis() as u64),
+                        format!("Scheduled in {days} d {hours} h {minutes} min"),
+                    )
                 }
             };
-            selected_voters.push(identity.clone());
+            voters.push(identity.clone());
             for selected_vote in &self.selected_votes {
                 let voter_id = identity.identity.id();
-                let vote_poll_id = match self
+                let vote_poll_id = self
                     .app_context
                     .dpns_vote_poll_id(&selected_vote.contested_name)
-                {
-                    Ok(vote_poll_id) => vote_poll_id,
-                    Err(error) => {
+                    .map_err(|error| {
                         tracing::warn!(
                             ?error,
                             contested_name = selected_vote.contested_name,
                             "Could not build a DPNS vote target"
                         );
-                        self.bulk_vote_handling_status = VoteHandlingStatus::Failed(
-                            "This vote could not be prepared. Refresh Active contests and try again."
-                                .to_owned(),
-                        );
-                        return AppAction::None;
-                    }
-                };
+                        "This vote could not be prepared. Refresh Active contests and try again."
+                            .to_owned()
+                    })?;
                 let target_key = DpnsVoteTargetKey {
                     network: self.app_context.network(),
                     voter_id,
                     vote_poll_id,
                 };
                 if self.vote_operations.target_status(&target_key).is_some() {
-                    self.bulk_vote_handling_status = VoteHandlingStatus::Failed(format!(
+                    return Err(format!(
                         "This node's vote for {} is already in progress. Check its result before submitting again.",
                         selected_vote.contested_name
                     ));
-                    return AppAction::None;
                 }
-                let current_choice = match self.vote_state.state(voter_id, vote_poll_id) {
-                    DpnsCurrentVoteState::Available(choice) => choice,
-                    DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
-                        self.bulk_vote_handling_status = VoteHandlingStatus::Failed(
-                            "Current vote state is unavailable. Refresh voting before applying votes."
-                                .to_owned(),
-                        );
-                        return AppAction::None;
-                    }
+                let DpnsCurrentVoteState::Available(current_choice) =
+                    self.vote_state.state(voter_id, vote_poll_id)
+                else {
+                    return Err(
+                        "Current vote state is unavailable. Refresh voting before applying votes."
+                            .to_owned(),
+                    );
                 };
-                targets.push(DpnsVoteTarget {
-                    key: target_key,
-                    voter_alias: identity.alias.clone(),
-                    contested_name: selected_vote.contested_name.clone(),
-                    requested_choice: selected_vote.vote_choice,
-                    current_choice,
-                    timing,
+                entries.push(ReviewEntry {
+                    target: DpnsVoteTarget {
+                        key: target_key,
+                        voter_alias: identity.alias.clone(),
+                        contested_name: selected_vote.contested_name.clone(),
+                        requested_choice: selected_vote.vote_choice,
+                        current_choice,
+                        timing,
+                    },
+                    timing_label: timing_label.clone(),
                 });
             }
         }
+        Ok(ReviewPlan { entries, voters })
+    }
 
-        if targets.is_empty() {
+    fn bulk_apply_votes(&mut self) -> AppAction {
+        let plan = match self.build_review_plan() {
+            Ok(plan) => plan,
+            Err(message) => {
+                self.bulk_vote_handling_status = VoteHandlingStatus::Failed(message);
+                return AppAction::None;
+            }
+        };
+        let has_immediate = plan.has_immediate();
+        let ReviewPlan {
+            entries,
+            voters: selected_voters,
+        } = plan;
+
+        if entries.is_empty() {
             self.bulk_vote_handling_status = VoteHandlingStatus::Failed(
                 "No votes selected. Choose at least one node and contest.".to_owned(),
             );
             return AppAction::None;
         }
-        let operation = DpnsVoteOperation::new(targets);
+        // No-op targets are handed over unfiltered: the operation counts them,
+        // and that count drives the post-submit feedback.
+        let operation =
+            DpnsVoteOperation::new(entries.into_iter().map(|entry| entry.target).collect());
         if operation.targets.is_empty() {
             self.bulk_vote_handling_status = VoteHandlingStatus::Failed(
                 "Every selected node already has the requested vote. Nothing will be submitted."
@@ -2103,10 +2256,7 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
-        self.voting_identities = self
-            .app_context
-            .load_local_voting_identities()
-            .unwrap_or_default();
+        self.voting_identities = loaded_voting_identities(&self.app_context);
         self.bulk_identity_options = vec![VoteOption::CastNow; self.voting_identities.len()];
         self.set_all_option = VoteOption::CastNow;
         self.user_identities = self
@@ -2475,6 +2625,64 @@ mod tests {
         (ctx, temp_dir)
     }
 
+    fn kv_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        ));
+        let ctx = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        ctx.set_det_kv_override_for_test(kv);
+        (ctx, temp_dir)
+    }
+
+    /// A masternode identity as the DPNS screen sees it: `voting` decides whether
+    /// its voter identity — the key the vote submission path needs — is loaded.
+    fn masternode_identity(
+        id: u8,
+        alias: &str,
+        voting: bool,
+        network: Network,
+    ) -> QualifiedIdentity {
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::IdentityPublicKey;
+
+        let platform_version = PlatformVersion::latest();
+        let identity =
+            Identity::create_basic_identity(Identifier::from([id; 32]), platform_version)
+                .expect("identity");
+        let associated_voter_identity = voting.then(|| {
+            let voter = Identity::create_basic_identity(
+                Identifier::from([id.wrapping_add(100); 32]),
+                platform_version,
+            )
+            .expect("voter identity");
+            (
+                voter,
+                IdentityPublicKey::random_key(0, Some(id as u64), platform_version),
+            )
+        });
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::Masternode,
+            alias: Some(alias.to_owned()),
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: std::collections::BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: Default::default(),
+            network,
+        }
+    }
+
     fn pending_scheduled_key(context: &AppContext) -> DpnsScheduledVoteKey {
         DpnsScheduledVoteKey {
             network: context.network(),
@@ -2830,17 +3038,253 @@ mod tests {
         assert!(screen.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes);
     }
 
+    /// VOTE-TC-013: a masternode loaded without its voting key must not reach the
+    /// composer — the actionable "no voting key" state has to come first. This is
+    /// distinct from having no masternode loaded at all.
+    #[test]
+    fn a_loaded_masternode_without_a_voting_key_cannot_compose_votes() {
+        let (ctx, _temp_dir) = kv_ctx();
+        ctx.insert_local_qualified_identity(
+            &masternode_identity(41, "read-only-node", false, ctx.network()),
+            &None,
+        )
+        .expect("insert keyless masternode");
+
+        let screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+
+        assert!(
+            !ctx.load_local_voting_identities()
+                .expect("load voting identities")
+                .is_empty(),
+            "the keyless masternode must still be loaded, or this proves nothing"
+        );
+        assert!(
+            screen.voting_identities.is_empty(),
+            "a node with no voting key cannot satisfy the submit path"
+        );
+    }
+
+    #[test]
+    fn a_loaded_masternode_with_a_voting_key_can_compose_votes() {
+        let (ctx, _temp_dir) = kv_ctx();
+        ctx.insert_local_qualified_identity(
+            &masternode_identity(42, "voting-node", true, ctx.network()),
+            &None,
+        )
+        .expect("insert voting masternode");
+
+        let screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+
+        assert_eq!(screen.voting_identities.len(), 1);
+    }
+
+    /// The review sheet must expand every node × contest pair, suppress the
+    /// targets that already hold the requested choice, and count what it dropped.
+    #[test]
+    fn review_plan_expands_every_node_and_contest_and_suppresses_no_ops() {
+        let (ctx, _temp_dir) = kv_ctx();
+        let alpha = ctx.dpns_vote_poll_id("alpha").expect("alpha poll id");
+        let beta = ctx.dpns_vote_poll_id("beta").expect("beta poll id");
+        let first = masternode_identity(1, "node-one", true, ctx.network());
+        let second = masternode_identity(2, "node-two", true, ctx.network());
+        ctx.cache_confirmed_dpns_vote(first.identity.id(), alpha, ResourceVoteChoice::Lock)
+            .expect("seed first node's proved vote");
+        ctx.cache_confirmed_dpns_vote(second.identity.id(), beta, ResourceVoteChoice::Abstain)
+            .expect("seed second node's proved vote");
+
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        screen.voting_identities = vec![first.clone(), second.clone()];
+        screen.bulk_identity_options = vec![
+            VoteOption::CastNow,
+            VoteOption::Scheduled {
+                days: 1,
+                hours: 2,
+                minutes: 3,
+            },
+        ];
+        screen.selected_votes = vec![
+            SelectedVote {
+                contested_name: "alpha".to_owned(),
+                vote_choice: ResourceVoteChoice::Lock,
+                end_time: None,
+            },
+            SelectedVote {
+                contested_name: "beta".to_owned(),
+                vote_choice: ResourceVoteChoice::Abstain,
+                end_time: None,
+            },
+        ];
+        screen.vote_state = DpnsVoteStateSnapshot::load(
+            &ctx,
+            &[first.identity.id(), second.identity.id()],
+            &[alpha, beta],
+        )
+        .expect("load proved vote state");
+
+        let plan = screen.build_review_plan().expect("review plan");
+
+        assert_eq!(plan.entries.len(), 4, "two nodes across two contests");
+        assert_eq!(plan.effective_count(), 2);
+        assert_eq!(plan.no_op_count(), 2);
+        assert_eq!(plan.node_count(), 2);
+        assert!(plan.has_immediate());
+        assert!(plan.has_scheduled());
+        assert!(!plan.changes_an_existing_vote());
+        let retained = plan
+            .effective()
+            .map(|entry| {
+                (
+                    entry.node_label(),
+                    entry.target.contested_name.clone(),
+                    entry.timing_label.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained,
+            vec![
+                (
+                    "node-one".to_owned(),
+                    "beta".to_owned(),
+                    "Cast now".to_owned()
+                ),
+                (
+                    "node-two".to_owned(),
+                    "alpha".to_owned(),
+                    "Scheduled in 1 d 2 h 3 min".to_owned()
+                ),
+            ]
+        );
+    }
+
+    /// A review whose every target is a no-op must submit nothing.
+    #[test]
+    fn review_plan_reports_an_all_no_op_selection_as_nothing_to_submit() {
+        let (ctx, _temp_dir) = kv_ctx();
+        let alpha = ctx.dpns_vote_poll_id("alpha").expect("alpha poll id");
+        let node = masternode_identity(3, "node-three", true, ctx.network());
+        ctx.cache_confirmed_dpns_vote(node.identity.id(), alpha, ResourceVoteChoice::Lock)
+            .expect("seed proved vote");
+
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        screen.voting_identities = vec![node.clone()];
+        screen.bulk_identity_options = vec![VoteOption::CastNow];
+        screen.selected_votes = vec![SelectedVote {
+            contested_name: "alpha".to_owned(),
+            vote_choice: ResourceVoteChoice::Lock,
+            end_time: None,
+        }];
+        screen.vote_state = DpnsVoteStateSnapshot::load(&ctx, &[node.identity.id()], &[alpha])
+            .expect("load proved vote state");
+
+        let plan = screen.build_review_plan().expect("review plan");
+
+        assert_eq!(plan.effective_count(), 0);
+        assert_eq!(plan.no_op_count(), 1);
+        assert_eq!(plan.node_count(), 0);
+    }
+
+    /// A node that already voted differently is a vote change, and the review
+    /// must be able to say so.
+    #[test]
+    fn review_plan_flags_a_change_to_an_existing_vote() {
+        let (ctx, _temp_dir) = kv_ctx();
+        let alpha = ctx.dpns_vote_poll_id("alpha").expect("alpha poll id");
+        let node = masternode_identity(4, "node-four", true, ctx.network());
+        ctx.cache_confirmed_dpns_vote(node.identity.id(), alpha, ResourceVoteChoice::Lock)
+            .expect("seed proved vote");
+
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
+        screen.voting_identities = vec![node.clone()];
+        screen.bulk_identity_options = vec![VoteOption::CastNow];
+        screen.selected_votes = vec![SelectedVote {
+            contested_name: "alpha".to_owned(),
+            vote_choice: ResourceVoteChoice::Abstain,
+            end_time: None,
+        }];
+        screen.vote_state = DpnsVoteStateSnapshot::load(&ctx, &[node.identity.id()], &[alpha])
+            .expect("load proved vote state");
+
+        let plan = screen.build_review_plan().expect("review plan");
+
+        assert_eq!(plan.effective_count(), 1);
+        assert!(plan.changes_an_existing_vote());
+        assert_eq!(
+            plan.effective()
+                .next()
+                .map(|entry| entry.target.current_choice),
+            Some(Some(ResourceVoteChoice::Lock))
+        );
+    }
+
+    #[test]
+    fn review_lines_name_the_node_the_contest_the_choices_and_the_timing() {
+        let line = review_target_line("node-one", "alice", "Lock", "Not voted yet", "Cast now");
+
+        assert_eq!(
+            line,
+            "• node-one → alice.dash: Lock. Current vote: Not voted yet. Cast now."
+        );
+        assert_eq!(
+            review_headline(6, 3),
+            "Votes to submit (6) from your nodes (3)."
+        );
+        assert!(review_skipped_line(2).contains("(2)"));
+        assert_eq!(
+            review_current_choice_label(Some(ResourceVoteChoice::Abstain), None),
+            "Abstain"
+        );
+        assert_eq!(review_current_choice_label(None, None), "Not voted yet");
+    }
+
+    /// Removing a scheduled vote must clear its row. The journal cancellation is
+    /// durable, so the row cannot come back with a Remove button that does nothing.
+    #[test]
+    fn removing_a_scheduled_vote_drops_its_row_from_the_table() {
+        let (ctx, _temp_dir) = kv_ctx();
+        let voter_id = Identifier::from([23; 32]);
+        let key = DpnsVoteTargetKey {
+            network: ctx.network(),
+            voter_id,
+            vote_poll_id: Identifier::from([24; 32]),
+        };
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: key.clone(),
+            voter_alias: None,
+            contested_name: "remove-me".to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(42),
+        }]);
+        ctx.insert_dpns_vote_operation(&mut operation, None)
+            .expect("insert scheduled operation");
+        ctx.insert_scheduled_votes(&[ScheduledDPNSVote {
+            contested_name: "remove-me".to_owned(),
+            voter_id,
+            choice: ResourceVoteChoice::Lock,
+            unix_timestamp: 42,
+            executed_successfully: false,
+        }])
+        .expect("insert compatibility mirror");
+        let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::ScheduledVotes);
+        assert_eq!(screen.scheduled_votes.lock_recover().len(), 1);
+
+        ctx.cancel_scheduled_dpns_vote_target(operation.id, &key, "remove-me")
+            .expect("remove the scheduled vote");
+        screen.display_task_result(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+            network: ctx.network(),
+            operation_id: operation.id,
+        });
+
+        assert!(
+            screen.scheduled_votes.lock_recover().is_empty(),
+            "a removed schedule must not return to the table"
+        );
+    }
+
     #[test]
     fn clear_all_result_rebuilds_scheduled_rows_immediately() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
-            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
-        ));
-        let ctx = crate::context::test_support::test_app_context_with_kv(
-            temp_dir.path(),
-            Arc::new(kv.clone()),
-        );
-        ctx.set_det_kv_override_for_test(kv);
+        let (ctx, _temp_dir) = kv_ctx();
         let voter_id = Identifier::from([21; 32]);
         let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
             key: DpnsVoteTargetKey {

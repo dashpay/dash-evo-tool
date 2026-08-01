@@ -755,6 +755,7 @@ As a masternode operator, I want to schedule votes for later execution so that I
 - Set vote to be cast at a future time.
 - View and manage scheduled votes under DPNS → Scheduled votes, which remains available in the persistent DPNS subnavigation.
 - Scheduled and immediate votes share the same target locks and result states.
+- Removing a scheduled vote takes it off the list for good; it does not come back on the next refresh.
 - An ambiguous result remains visible for checking and is never automatically rebroadcast.
 
 ### DPN-007: Batch voting across contests [Implemented]
@@ -764,8 +765,9 @@ As a masternode operator, I want to apply voting choices across multiple contest
 
 - Review and cast defaults to all loaded voting nodes and Cast now.
 - The advanced per-node disclosure can set each node to Cast now, Schedule, or Do not use this node.
-- When no loaded node has a voting key, Active contests shows an actionable Load a masternode state instead of vote controls.
+- When no loaded node has a voting key, Active contests shows an actionable Load a masternode state instead of vote controls. A masternode loaded without its voting key is not a voting node, so it reaches that state instead of the composer.
 - Per-node timing overrides and multi-contest selections create exact node × contest targets.
+- Review and cast lists each of those targets with its node, contest, requested choice, current choice, and timing, and reports how many targets it skipped because the node already holds the requested choice.
 - Immediate and scheduled targets submitted together belong to one operation.
 
 ### DPN-010: Recover an ambiguous vote result [Implemented]

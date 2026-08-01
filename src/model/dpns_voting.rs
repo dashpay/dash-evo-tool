@@ -227,6 +227,17 @@ pub struct DpnsVoteTarget {
     pub timing: VoteTiming,
 }
 
+impl DpnsVoteTarget {
+    /// Whether submitting this target would change nothing on Platform.
+    ///
+    /// The single definition of no-op suppression: the review step filters on
+    /// it before the operator commits, and [`DpnsVoteOperation::new`] applies
+    /// it again when the batch is built.
+    pub fn is_no_op(&self) -> bool {
+        self.current_choice == Some(self.requested_choice)
+    }
+}
+
 /// Persistable, user-meaningful failure category without task diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DpnsVoteFailure {
@@ -297,7 +308,7 @@ impl DpnsVoteOperation {
         let original_len = targets.len();
         let targets = targets
             .into_iter()
-            .filter(|target| target.current_choice != Some(target.requested_choice))
+            .filter(|target| !target.is_no_op())
             .map(|target| {
                 let status = match target.timing {
                     VoteTiming::Now => DpnsVoteTargetStatus::Queued,

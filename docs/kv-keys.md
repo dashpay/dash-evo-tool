@@ -89,6 +89,8 @@ The identity blob and top-up history are **identity-scoped** (`DetScope::Identit
 | `det:identity_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
 | `det:top_ups:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
 
+An identity stored without a wallet association (`wallet_hash: None` — the masternode/evonode nodes) is also mirrored into the upstream `identities` table under the **unowned scope**: the all-zero `WalletId`, which upstream stores as a NULL `wallet_id`. The scope is load-bearing, not incidental. A NULL `wallet_id` activates no foreign key, so no wallet's `ON DELETE CASCADE` reaches the row, and the `cascade_meta_on_identity_delete` trigger — which would delete the identity's `meta_identity` rows, i.e. the `det:identity:v1` record above — never fires for it. Filing the same identity under a real wallet's scope would make removing that unrelated wallet destroy the node's DET record. These rows are also kept out of every wallet's `IdentityManager`, because the `identities` upsert promotes an unowned row to the first wallet that flushes it. Written by `WalletBackend::register_unowned_identity`, read back by `WalletBackend::unowned_identity_ids` (upstream's `load_unowned_identities`; the ordinary `load()` enumerates wallets and cannot reach them).
+
 Source: `src/context/identity_db.rs`
 
 ---

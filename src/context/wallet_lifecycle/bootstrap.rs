@@ -275,6 +275,51 @@ impl AppContext {
         }
     }
 
+    /// Register every DET-known identity that belongs to no wallet — the
+    /// masternode/evonode nodes — into the upstream store's unowned scope,
+    /// backfilling nodes stored before that registration existed and retrying
+    /// any whose write-through failed.
+    ///
+    /// Wallet-independent by design: it runs once per boot even on an install
+    /// with no wallets at all, which is exactly the masternode-operator case.
+    /// Best-effort and idempotent — a failure is logged and retried next boot.
+    pub(super) fn reconcile_unowned_identities(&self, backend: &WalletBackend) {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let (identities, registered) = match (
+            self.load_local_wallet_less_identities(),
+            backend.unowned_identity_ids(),
+        ) {
+            (Ok(identities), Ok(registered)) => (identities, registered),
+            (Err(error), _) | (_, Err(error)) => {
+                tracing::warn!(
+                    %error,
+                    "Unowned-identity reconcile skipped; will retry at next boot"
+                );
+                return;
+            }
+        };
+        let mut added = 0usize;
+        for qi in &identities {
+            if registered.contains(&qi.identity.id()) {
+                continue;
+            }
+            match backend.register_unowned_identity(&qi.identity) {
+                Ok(()) => added += 1,
+                Err(error) => tracing::debug!(
+                    identity = %qi.identity.id(),
+                    %error,
+                    "Unowned-identity registration deferred; will retry at next boot"
+                ),
+            }
+        }
+        if added > 0 {
+            tracing::info!(
+                added,
+                "Registered wallet-less identities with the wallet store"
+            );
+        }
+    }
+
     /// Register the DIP-15 receiving accounts of every established contact of
     /// every identity on `seed_hash`, so SPV watches the addresses each contact
     /// pays us at. Best-effort — a failure is logged and retried next unlock.
@@ -531,6 +576,12 @@ impl AppContext {
     }
 
     pub async fn bootstrap_loaded_wallets(self: &Arc<Self>) {
+        // Ahead of the per-wallet passes and independent of them: wallet-less
+        // identities exist on installs with no wallet at all.
+        if let Ok(backend) = self.wallet_backend() {
+            self.reconcile_unowned_identities(&backend);
+        }
+
         let wallets: Vec<_> = {
             let guard = self.wallets.read_recover();
             guard.values().cloned().collect()

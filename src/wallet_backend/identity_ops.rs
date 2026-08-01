@@ -10,12 +10,19 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+use platform_wallet::changeset::PlatformWalletPersistence;
+use platform_wallet::wallet::platform_wallet::WalletId;
 use std::sync::Arc;
 
 use super::{
     DetPlatformSigner, DetSigner, PlatformPathIndex, WalletBackend, map_identity_register_error,
     map_identity_top_up_error, map_platform_address_fund_error,
 };
+
+/// The all-zero `WalletId` upstream storage reserves as the spelling of
+/// "owned by no wallet": every scope-aware reader and writer maps it to a
+/// NULL `wallet_id`. Never a real wallet id.
+const UNOWNED_WALLET_SCOPE: WalletId = [0u8; 32];
 
 /// The two identity-funding account flavours DET provisions. Parsing the
 /// caller's intent into this once (at [`WalletBackend::ensure_identity_funding_accounts`])
@@ -147,6 +154,98 @@ impl WalletBackend {
                 source: Arc::new(e),
             }),
         }
+    }
+
+    /// The ids of every identity in the upstream store that belongs to no
+    /// wallet — DET's masternode/evonode nodes.
+    pub(crate) fn unowned_identity_ids(
+        &self,
+    ) -> Result<std::collections::BTreeSet<dash_sdk::platform::Identifier>, TaskError> {
+        Ok(self.load_unowned_identities()?.into_keys().collect())
+    }
+
+    /// Register `identity` in the upstream store as **unowned** — belonging to
+    /// no wallet — so a masternode/evonode node DET knows about is visible to
+    /// upstream instead of living only in DET's k/v sidecar. Idempotent.
+    ///
+    /// The wallet scope is deliberately *no wallet*: the row is written through
+    /// a persister scoped to the all-zero sentinel, which stores a NULL
+    /// `identities.wallet_id`. That is what keeps the node's DET record safe —
+    /// a real wallet's scope would put the row under that wallet's `ON DELETE
+    /// CASCADE`, and the storage layer's `cascade_meta_on_identity_delete`
+    /// trigger would then delete the node's `meta_identity` rows, i.e. DET's own
+    /// `det:identity:v1` record, when that unrelated wallet is removed.
+    pub(crate) fn register_unowned_identity(
+        &self,
+        identity: &dash_sdk::platform::Identity,
+    ) -> Result<(), TaskError> {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let mut manager = self.unowned_identity_manager()?;
+        if manager.identity(&identity.id()).is_some() {
+            return Ok(());
+        }
+        manager
+            .add_out_of_wallet_identity(identity.clone(), &self.unowned_scope_persister())
+            .map_err(|e| TaskError::WalletBackend {
+                source: Arc::new(e),
+            })
+    }
+
+    /// Withdraw an identity from the upstream store's unowned scope, mirroring
+    /// its removal from DET. A no-op for an identity that is not registered
+    /// there — including every wallet-owned one.
+    ///
+    /// Upstream records this as a tombstone rather than a row delete, so it
+    /// cannot reach the identity's `meta_identity` rows.
+    pub(crate) fn forget_unowned_identity(
+        &self,
+        identity_id: &dash_sdk::platform::Identifier,
+    ) -> Result<(), TaskError> {
+        let mut manager = self.unowned_identity_manager()?;
+        if manager.identity(identity_id).is_none() {
+            return Ok(());
+        }
+        manager
+            .remove_identity(identity_id, &self.unowned_scope_persister())
+            .map(|_| ())
+            .map_err(|e| TaskError::WalletBackend {
+                source: Arc::new(e),
+            })
+    }
+
+    fn load_unowned_identities(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<
+            dash_sdk::platform::Identifier,
+            platform_wallet::ManagedIdentity,
+        >,
+        TaskError,
+    > {
+        self.inner
+            .wallet_persister
+            .load_unowned_identities()
+            .map_err(|source| TaskError::WalletStorage { source })
+    }
+
+    /// The unowned identities as a manager, so a mutation keeps the bucket and
+    /// its private location index consistent. Deliberately its own manager and
+    /// never a wallet's: an unowned identity inside a wallet's manager is
+    /// claimed by that wallet on its next flush, via the `identities` upsert's
+    /// orphan-promotion COALESCE.
+    fn unowned_identity_manager(&self) -> Result<platform_wallet::IdentityManager, TaskError> {
+        Ok(platform_wallet::changeset::IdentityManagerStartState {
+            out_of_wallet_identities: self.load_unowned_identities()?,
+            wallet_identities: Default::default(),
+        }
+        .into())
+    }
+
+    fn unowned_scope_persister(&self) -> platform_wallet::WalletPersister {
+        platform_wallet::WalletPersister::new(
+            UNOWNED_WALLET_SCOPE,
+            Arc::clone(&self.inner.wallet_persister) as Arc<dyn PlatformWalletPersistence>,
+        )
     }
 
     /// Top up an existing identity's credit balance from this wallet's

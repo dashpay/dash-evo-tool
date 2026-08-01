@@ -101,6 +101,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Masternodes and evonodes are now recorded in the wallet store too**: a node
+  loaded from its ProTxHash was only ever written to this app's own records, so
+  the wallet store the app shares with the rest of the wallet stack had no entry
+  for it at all. Such a node is now recorded there as belonging to no wallet,
+  which is what it is — nodes already on this device are added the next time the
+  app starts, with nothing to press. Recording it under one of your wallets was
+  not an option: removing that wallet would then have deleted the node along
+  with it, keys and alias included.
+
 - **One damaged payment record no longer makes every wallet unopenable**: all
   wallets are kept in a single file, and one unreadable payment record in it
   stopped that whole file from opening — every wallet it held, funded ones

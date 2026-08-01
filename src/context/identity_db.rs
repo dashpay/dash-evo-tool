@@ -599,7 +599,30 @@ impl AppContext {
         };
         index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
-            .map_err(identity_err)
+            .map_err(identity_err)?;
+        if wallet_hash.is_none() {
+            self.register_unowned_identity_upstream(qualified_identity);
+        }
+        Ok(())
+    }
+
+    /// Mirror a wallet-less identity into the wallet store's unowned scope, so
+    /// upstream sees the masternode/evonode nodes DET knows about instead of
+    /// only DET's own sidecar holding them.
+    ///
+    /// Best-effort: the sidecar record above is the authoritative one, and
+    /// [`AppContext::reconcile_unowned_identities`] retries at the next boot.
+    fn register_unowned_identity_upstream(&self, qualified_identity: &QualifiedIdentity) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        if let Err(error) = backend.register_unowned_identity(&qualified_identity.identity) {
+            tracing::debug!(
+                identity_id = %qualified_identity.identity.id(),
+                %error,
+                "Wallet-less identity not mirrored to the wallet store; will retry at next boot"
+            );
+        }
     }
 
     /// Update a local qualified identity in place. Wallet association
@@ -770,6 +793,18 @@ impl AppContext {
         self.load_identities_filtered(&wallets, |s| {
             s.wallet_index.is_some() && s.wallet_hash == target
         })
+    }
+
+    /// Load the DET-known identities that belong to no wallet — every sidecar
+    /// entry without a `wallet_hash`, i.e. the masternode/evonode nodes. Drives
+    /// the boot reconcile that registers them in the wallet store's unowned
+    /// scope. Top-up history is intentionally not hydrated: the reconcile needs
+    /// only the identity itself.
+    pub(crate) fn load_local_wallet_less_identities(
+        &self,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        self.load_identities_filtered(&wallets, |s| s.wallet_hash.is_none())
     }
 
     /// The masternode/evonode identities for the active network — the
@@ -1083,7 +1118,20 @@ impl AppContext {
         )?;
         self.clear_identity_vault_keys(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
-        index_remove_identity(&kv, &id)
+        index_remove_identity(&kv, &id)?;
+        // Mirror the removal into the wallet store's unowned scope, so a
+        // deleted node does not linger there. Best-effort, and a no-op for a
+        // wallet-owned identity, which is never registered unowned.
+        if let Ok(backend) = self.wallet_backend()
+            && let Err(error) = backend.forget_unowned_identity(identifier)
+        {
+            tracing::debug!(
+                identity_id = %identifier,
+                %error,
+                "Deleted identity still registered with the wallet store"
+            );
+        }
+        Ok(())
     }
 
     /// EAGER identity-key migration (dialog-free): move any plaintext

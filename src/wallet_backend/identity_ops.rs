@@ -28,6 +28,10 @@ enum Funding {
     Registration,
     /// The per-identity top-up funding account at the given registration index.
     TopUp(u32),
+    /// The single top-up funding account bound to no identity index — what a
+    /// top-up of an identity this wallet does not own draws its credit output
+    /// from, since no index in this wallet's tree describes that identity.
+    TopUpNotBound,
 }
 
 impl WalletBackend {
@@ -91,6 +95,11 @@ impl WalletBackend {
     /// the upstream `IdentityManager` for `seed_hash`, so identity ops that look
     /// the identity up there (currently: top-up) can find it.
     ///
+    /// **Precondition: `seed_hash` owns `identity`** — its DET wallet link names
+    /// this wallet. Registering another wallet's identity here files that
+    /// identity's keys under this wallet, which its next load cannot resolve,
+    /// and displaces whatever this wallet already holds at `identity_index`.
+    ///
     /// Idempotent: a no-op once the identity is managed, and a concurrent
     /// `IdentityAlreadyExists` is treated as success. Touches only public-key
     /// data — never the seed — so it is safe to call while the wallet is LOCKED.
@@ -149,8 +158,37 @@ impl WalletBackend {
         }
     }
 
-    /// Top up an existing identity's credit balance from this wallet's
-    /// UTXOs. Returns the post-top-up identity balance (credits).
+    /// Test-only: the identity id this wallet's upstream manager resolves for
+    /// `identity_id`. Upstream files managed identities by `(wallet, index)` and
+    /// looks them up through a side index, so a foreign identity written into an
+    /// occupied slot answers this query with the intruder's id — which is how a
+    /// displacement becomes observable at all.
+    #[cfg(test)]
+    pub(crate) async fn resolved_managed_identity_id(
+        &self,
+        seed_hash: &WalletSeedHash,
+        identity_id: &dash_sdk::platform::Identifier,
+    ) -> Option<dash_sdk::platform::Identifier> {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let wallet = self.resolve_wallet(seed_hash).await.ok()?;
+        let wallet_id = wallet.wallet_id();
+        let manager = wallet.wallet_manager().read().await;
+        manager
+            .get_wallet_info(&wallet_id)?
+            .identity_manager
+            .identity(identity_id)
+            .map(|managed| managed.identity.id())
+    }
+
+    /// Top up **this wallet's own** identity's credit balance from its UTXOs.
+    /// Returns the post-top-up identity balance (credits).
+    ///
+    /// Only for an identity whose DET wallet link names `seed_hash`: the
+    /// upstream orchestrator resolves the identity through this wallet's
+    /// manager, so this method registers it there first (see
+    /// [`Self::ensure_identity_managed`] for what that costs a foreign
+    /// identity). An identity owned elsewhere is funded through the
+    /// index-less asset-lock path instead.
     ///
     /// Wraps upstream `IdentityWallet::top_up_identity_with_funding` —
     /// upstream handles asset-lock build/broadcast, IS→CL fallback, the
@@ -349,6 +387,10 @@ impl WalletBackend {
                     .identity_topup
                     .contains_key(&registration_index),
             ),
+            Funding::TopUpNotBound => (
+                kw.accounts.identity_topup_not_bound.is_some(),
+                info.core_wallet.accounts.identity_topup_not_bound.is_some(),
+            ),
         };
         if in_wallet && in_managed {
             return Ok(());
@@ -360,6 +402,7 @@ impl WalletBackend {
                 Funding::TopUp(registration_index) => {
                     AccountType::IdentityTopUp { registration_index }
                 }
+                Funding::TopUpNotBound => AccountType::IdentityTopUpNotBoundToIdentity,
             };
             // The live wallet is watch-only: calling `add_account(…, None)` would
             // try to derive a hardened path from an absent private key and fail
@@ -384,6 +427,7 @@ impl WalletBackend {
             Funding::TopUp(registration_index) => {
                 kw.accounts.identity_topup.get(&registration_index)
             }
+            Funding::TopUpNotBound => kw.accounts.identity_topup_not_bound.as_ref(),
         }
         .ok_or(TaskError::WalletStateInconsistent)?;
 
@@ -410,6 +454,18 @@ impl WalletBackend {
         self.provision_identity_funding_account(seed_hash, seed, Funding::Registration)
             .await?;
         self.provision_identity_funding_account(seed_hash, seed, Funding::TopUp(registration_index))
+            .await
+    }
+
+    /// Provision the index-less top-up funding account — the credit-output
+    /// source for topping up an identity this wallet does not own. Idempotent;
+    /// `seed` must be held for the duration of the call.
+    pub(crate) async fn ensure_unbound_topup_funding_account(
+        &self,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
+    ) -> Result<(), TaskError> {
+        self.provision_identity_funding_account(seed_hash, seed, Funding::TopUpNotBound)
             .await
     }
 }

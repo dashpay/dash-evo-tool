@@ -101,6 +101,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Wallet data no longer lives inside the deletable network-cache folder**:
+  each network's wallet database used to sit inside the same folder as the
+  temporary blockchain sync cache, so clearing or losing that cache folder
+  could take real wallet, identity, and key data down with it. Each network's
+  wallet database now lives in its own file alongside the app's other
+  permanent data, completely separate from the disposable cache.
+
+- **Funding an identity you don't own could silently corrupt wallet data, or
+  misdirect a later top-up**: paying Platform credits into an identity that
+  belongs to a different wallet on this device could register that identity
+  under the paying wallet by mistake. Restarting the app afterward could then
+  fail to open a wallet with "Saved wallet data appears damaged and cannot be
+  loaded," and — separately — a later top-up of the paying wallet's own
+  identity at the same position could be misdirected to the wrong identity
+  entirely. Funding another wallet's identity now completes without touching
+  the paying wallet's own identity records.
+
 - **One damaged payment record no longer makes every wallet unopenable**: all
   wallets are kept in a single file, and one unreadable payment record in it
   stopped that whole file from opening — every wallet it held, funded ones

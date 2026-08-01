@@ -8,6 +8,7 @@ use crate::database::test_helpers::create_database_at_path;
 use crate::model::secret::Secret;
 use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
+use crate::wallet_backend::wallet_database_path;
 
 /// Build an offline `AppContext` for testnet in an isolated temp dir. No
 /// network I/O happens at construction: the SDK and Core client are built
@@ -95,7 +96,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
 
 /// Process-global serialization lock for tests that tear a wallet backend
 /// down and immediately rebuild it over the *same* on-disk path. The
-/// upstream persister enforces a single open per `platform-wallet.sqlite`
+/// upstream persister enforces a single open per `det-<network>.sqlite`
 /// (`WalletStorageError::AlreadyOpen`); a bootstrap subtask spawned by
 /// `ensure_wallet_backend` may keep its `Arc<WalletBackend>` — and that
 /// open's advisory lock — alive a beat past `stop_spv`, so under parallel
@@ -823,11 +824,7 @@ async fn issue7_fresh_persistor_bip44_xpub_matches_det_bridge() {
     // handle on the *other* file does not block this). This shows exactly
     // what the seedless reload would read back for the BIP44 account-0 row —
     // the gate's "loaded" side — without needing a second AppContext.
-    let persistor_path = temp_dir
-        .path()
-        .join("spv")
-        .join("testnet")
-        .join("platform-wallet.sqlite");
+    let persistor_path = wallet_database_path(temp_dir.path(), Network::Testnet);
     let conn = rusqlite::Connection::open_with_flags(
         &persistor_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -1748,11 +1745,7 @@ async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {
     let wallet_id = backend
         .registered_wallet_id(&seed_hash)
         .expect("registered upstream wallet id");
-    let persister_path = source_dir
-        .path()
-        .join("spv")
-        .join("testnet")
-        .join("platform-wallet.sqlite");
+    let persister_path = wallet_database_path(source_dir.path(), Network::Testnet);
     let count_viewing_keys = || {
         rusqlite::Connection::open_with_flags(
             &persister_path,
@@ -1777,13 +1770,7 @@ async fn remove_wallet_reaps_persisted_shielded_viewing_keys() {
         "upstream deletion must cascade to the native FVK row"
     );
     assert!(
-        !source_dir
-            .path()
-            .join("spv")
-            .join("testnet")
-            .join("backups")
-            .join("auto")
-            .exists(),
+        !platform_wallet_storage::default_auto_backup_dir(&persister_path).exists(),
         "explicit wallet removal must not create an automatic backup"
     );
     backend.shutdown().await;
@@ -1818,11 +1805,7 @@ async fn remove_wallet_warns_when_persisted_shielded_viewing_key_delete_fails() 
     let wallet_id = backend
         .registered_wallet_id(&seed_hash)
         .expect("registered upstream wallet id");
-    let persister_path = source_dir
-        .path()
-        .join("spv")
-        .join("testnet")
-        .join("platform-wallet.sqlite");
+    let persister_path = wallet_database_path(source_dir.path(), Network::Testnet);
     let connection =
         rusqlite::Connection::open(&persister_path).expect("open persister fault injector");
     connection
@@ -3065,9 +3048,9 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
 
 /// F61 — clearing the SPV chain cache removes every `dash-spv` storage
 /// folder/file (and the storage lock) under the per-network directory while
-/// leaving the wallet (`platform-wallet.sqlite`) and shielded sidecars
-/// intact. The pre-fix `clear_spv_data` was a no-op that still reported
-/// success.
+/// leaving the wallet database (`det-<network>.sqlite`, a data-dir sibling)
+/// and the legacy shielded sidecar intact. The pre-fix `clear_spv_data` was a
+/// no-op that still reported success.
 #[test]
 fn clear_spv_chain_storage_removes_chain_cache_but_keeps_wallet_sidecars() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -3091,8 +3074,9 @@ fn clear_spv_chain_storage_removes_chain_cache_but_keeps_wallet_sidecars() {
     std::fs::write(spv_dir.join("peers.dat"), b"peers").expect("write peers");
     std::fs::write(spv_dir.with_extension("lock"), b"lock").expect("write lock");
 
-    // Plant the wallet + shielded sidecars that must survive the clear.
-    let wallet_sqlite = spv_dir.join("platform-wallet.sqlite");
+    // Plant the wallet database and the legacy shielded sidecar that must
+    // survive the clear.
+    let wallet_sqlite = wallet_database_path(tmp.path(), Network::Testnet);
     let shielded_tree = spv_dir.join("shielded-commitment-tree.sqlite");
     std::fs::write(&wallet_sqlite, b"wallet").expect("write wallet sqlite");
     std::fs::write(&shielded_tree, b"tree").expect("write shielded tree");
@@ -3111,7 +3095,7 @@ fn clear_spv_chain_storage_removes_chain_cache_but_keeps_wallet_sidecars() {
     );
     assert!(
         wallet_sqlite.exists(),
-        "platform-wallet.sqlite must survive an SPV-cache clear"
+        "the wallet database must survive an SPV-cache clear"
     );
     assert!(
         shielded_tree.exists(),
@@ -3877,11 +3861,7 @@ async fn cold_boot_skips_corrupt_fvk_for_one_wallet_and_restores_healthy_wallet(
             .registered_wallet_id(&healthy_hash)
             .expect("healthy upstream wallet id");
 
-        let persister_path = source_dir
-            .path()
-            .join("spv")
-            .join("testnet")
-            .join("platform-wallet.sqlite");
+        let persister_path = wallet_database_path(source_dir.path(), Network::Testnet);
         let connection = rusqlite::Connection::open_with_flags(
             &persister_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -3911,11 +3891,7 @@ async fn cold_boot_skips_corrupt_fvk_for_one_wallet_and_restores_healthy_wallet(
 
     let cold_dir = tempfile::tempdir().expect("cold tempdir");
     copy_dir_recursive(source_dir.path(), cold_dir.path());
-    let persister_path = cold_dir
-        .path()
-        .join("spv")
-        .join("testnet")
-        .join("platform-wallet.sqlite");
+    let persister_path = wallet_database_path(cold_dir.path(), Network::Testnet);
     let connection =
         rusqlite::Connection::open(&persister_path).expect("open cold-boot persister fixture");
     assert_eq!(
@@ -4047,11 +4023,7 @@ async fn cold_boot_surfaces_typed_error_when_persisted_transaction_txid_is_corru
     let cold_dir = tempfile::tempdir().expect("cold tempdir");
     copy_dir_recursive(source_dir.path(), cold_dir.path());
 
-    let persister_path = cold_dir
-        .path()
-        .join("spv")
-        .join("testnet")
-        .join("platform-wallet.sqlite");
+    let persister_path = wallet_database_path(cold_dir.path(), Network::Testnet);
     let persister = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path))
         .expect("reopen upstream persister");
     persister
@@ -4348,6 +4320,274 @@ async fn reconcile_managed_identities_registers_only_wallet_owned() {
             .await
             .expect("detached"),
         "index-less identity must have been skipped by the reconcile filter"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The index-less top-up funding account must provision on the live wallet,
+/// which is watch-only and has no root private key — the account xpub has to be
+/// derived from the held seed instead. Without it, upstream's asset-lock builder
+/// has no credit-output source and every top-up of an identity outside this
+/// wallet fails.
+///
+/// The second call proves the account reached BOTH the key-wallet and the
+/// managed-info collection: the idempotent early return fires only when both
+/// probes see it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unbound_topup_funding_account_provisions_on_the_watch_only_wallet() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xAEu8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "payer").await;
+
+    backend
+        .ensure_unbound_topup_funding_account(&seed_hash, &seed)
+        .await
+        .expect("the index-less top-up account must provision on a watch-only wallet");
+    backend
+        .ensure_unbound_topup_funding_account(&seed_hash, &seed)
+        .await
+        .expect("the second call must be a no-op, proving both collections hold the account");
+
+    backend.shutdown().await;
+}
+
+/// An identity publishing real public keys. `Identity::create_basic_identity`
+/// publishes none, and a key-less identity persists no `identity_keys` rows —
+/// the very rows whose mis-filing bricks a wallet at load time.
+fn keyed_test_identity() -> dash_sdk::dpp::identity::Identity {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::identity::{Identity, IdentityPublicKey};
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    let platform_version = PlatformVersion::latest();
+    let keys = (0..3u32)
+        .map(|i| {
+            let key = IdentityPublicKey::random_key(i, Some(u64::from(i) + 1), platform_version);
+            (key.id(), key)
+        })
+        .collect();
+    Identity::new_with_id_and_keys(Identifier::random(), keys, platform_version)
+        .expect("identity with keys")
+}
+
+/// Register a wallet the way production does — vault seed envelope
+/// ([`AppContext::register_wallet`]) plus upstream manager registration — so
+/// both JIT secret sessions and identity ops work in an offline test.
+async fn register_test_wallet(
+    ctx: &Arc<AppContext>,
+    backend: &WalletBackend,
+    seed: [u8; 64],
+    alias: &str,
+) -> (WalletSeedHash, Arc<RwLock<Wallet>>) {
+    let wallet = Wallet::new_from_seed(seed, Network::Testnet, Some(alias.to_string()), None)
+        .expect("build wallet");
+    let (seed_hash, wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet with the context");
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("register wallet with the upstream manager");
+    (seed_hash, wallet_arc)
+}
+
+/// Count `identity_keys` rows that have no `identities` row under the same
+/// wallet. That is exactly the shape upstream's rehydration merge rejects with
+/// `OrphanedIdentityEntry`, which fails the whole wallet load — so any non-zero
+/// count means at least one wallet will refuse to open on the next launch.
+fn orphaned_identity_key_rows(data_dir: &std::path::Path) -> i64 {
+    let connection = rusqlite::Connection::open_with_flags(
+        wallet_database_path(data_dir, Network::Testnet),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open the wallet persister read-only");
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM identity_keys k \
+             LEFT JOIN identities i \
+               ON i.identity_id = k.identity_id AND i.wallet_id = k.wallet_id \
+             WHERE i.identity_id IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count orphaned identity_keys rows")
+}
+
+/// Dispatch a wallet-funded top-up of `identity` paid from `wallet`, through
+/// the real task entry point. Offline it always fails (no funding UTXOs); every
+/// caller here asserts on the persisted side effects, not on the outcome.
+async fn dispatch_wallet_funded_top_up(
+    ctx: &Arc<AppContext>,
+    sender: &SenderAsync<TaskResult>,
+    identity: &crate::model::qualified_identity::QualifiedIdentity,
+    wallet: &Arc<RwLock<Wallet>>,
+    identity_index: u32,
+) -> TaskError {
+    use crate::backend_task::identity::{
+        IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+    };
+
+    let task = IdentityTask::TopUpIdentity(IdentityTopUpInfo {
+        qualified_identity: identity.clone(),
+        wallet: Arc::clone(wallet),
+        identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
+            100_000,
+            identity_index,
+            0,
+        ),
+    });
+    ctx.run_identity_task(task, &ctx.sdk(), sender.clone())
+        .await
+        .expect_err("an offline top-up cannot fund an asset lock, so it cannot report success")
+}
+
+/// Topping up an identity from a wallet that does not own it must leave the
+/// paying wallet's upstream identity state untouched. Filing another wallet's
+/// identity under the payer writes `identity_keys` rows the payer's next load
+/// cannot resolve, and that wallet then fails to open at all.
+///
+/// The dispatched `QualifiedIdentity` carries BOTH wallets in
+/// `associated_wallets` — exactly what `hydrate_stored_identity` fills in — so
+/// an ownership guard written against that field cannot pass this test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_wallet_top_up_leaves_the_paying_wallets_identity_state_intact() {
+    let (ctx, sender, tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender.clone())
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let (owner_hash, owner_arc) = register_test_wallet(&ctx, &backend, [0x4Eu8; 64], "owner").await;
+    let (payer_hash, payer_arc) = register_test_wallet(&ctx, &backend, [0x5Fu8; 64], "payer").await;
+
+    // The identity belongs to the owner wallet, at its index 0, and is already
+    // registered upstream there — the steady state a reconcile leaves behind.
+    let mut foreign = wallet_owned_qualified_identity(Some(0));
+    foreign.identity = keyed_test_identity();
+    foreign.associated_wallets = std::collections::BTreeMap::from([
+        (owner_hash, Arc::clone(&owner_arc)),
+        (payer_hash, Arc::clone(&payer_arc)),
+    ]);
+    ctx.insert_local_qualified_identity(&foreign, &Some((owner_hash, 0)))
+        .expect("link the identity to the owner wallet");
+    backend
+        .ensure_identity_managed(&owner_hash, &foreign.identity, 0)
+        .await
+        .expect("the owner wallet may manage its own identity");
+
+    // The op must fail on funding, not on a routing guard — otherwise the
+    // assertions below would hold for the wrong reason.
+    let error = dispatch_wallet_funded_top_up(&ctx, &sender, &foreign, &payer_arc, 0).await;
+    assert!(
+        !matches!(
+            error,
+            TaskError::IdentityNotWalletOwned { .. } | TaskError::IdentityIndexMismatch { .. }
+        ),
+        "paying for another wallet's identity must reach funding, not be rejected as unowned: \
+         {error:?}"
+    );
+
+    assert_eq!(
+        orphaned_identity_key_rows(tmp.path()),
+        0,
+        "paying for another wallet's identity must not leave identity_keys rows \
+         the next wallet load cannot resolve"
+    );
+    assert!(
+        backend
+            .ensure_identity_managed(&payer_hash, &foreign.identity, 0)
+            .await
+            .expect("ensure_identity_managed on the payer"),
+        "the paying wallet must not have adopted an identity it does not own"
+    );
+
+    backend.shutdown().await;
+}
+
+/// A cross-wallet top-up must not displace the paying wallet's OWN identity at
+/// the same registration index. Upstream files a managed identity by
+/// `(wallet, index)`, so writing a foreign identity into an occupied slot makes
+/// the wallet's own identity resolve to the intruder — and the next top-up of
+/// the wallet's own identity would then be submitted for the foreign one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cross_wallet_top_up_never_displaces_the_paying_wallets_own_identity() {
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender.clone())
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let (owner_hash, _owner_arc) =
+        register_test_wallet(&ctx, &backend, [0x6Au8; 64], "owner").await;
+    let (payer_hash, payer_arc) = register_test_wallet(&ctx, &backend, [0x7Bu8; 64], "payer").await;
+
+    // The payer's own identity occupies its index 0.
+    let mut own = wallet_owned_qualified_identity(Some(0));
+    own.identity = keyed_test_identity();
+    ctx.insert_local_qualified_identity(&own, &Some((payer_hash, 0)))
+        .expect("link the payer's own identity");
+    backend
+        .ensure_identity_managed(&payer_hash, &own.identity, 0)
+        .await
+        .expect("the payer may manage its own identity");
+
+    // A foreign identity sitting at index 0 of the owner wallet.
+    let mut foreign = wallet_owned_qualified_identity(Some(0));
+    foreign.identity = keyed_test_identity();
+    ctx.insert_local_qualified_identity(&foreign, &Some((owner_hash, 0)))
+        .expect("link the identity to the owner wallet");
+
+    let _error = dispatch_wallet_funded_top_up(&ctx, &sender, &foreign, &payer_arc, 0).await;
+
+    assert_eq!(
+        backend
+            .resolved_managed_identity_id(&payer_hash, &own.identity.id())
+            .await,
+        Some(own.identity.id()),
+        "the paying wallet's own identity must still resolve to itself"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The cold-boot/unlock reconcile registers only the identities its own wallet
+/// is linked to. An identity linked to a different wallet must stay out of this
+/// wallet's manager, whatever the in-memory `associated_wallets` map holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_managed_identities_skips_identities_linked_to_another_wallet() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let (owner_hash, _owner_arc) =
+        register_test_wallet(&ctx, &backend, [0x8Cu8; 64], "owner").await;
+    let (other_hash, _other_arc) =
+        register_test_wallet(&ctx, &backend, [0x9Du8; 64], "other").await;
+
+    let foreign = wallet_owned_qualified_identity(Some(0));
+    ctx.insert_local_qualified_identity(&foreign, &Some((owner_hash, 0)))
+        .expect("link the identity to the owner wallet");
+
+    ctx.reconcile_managed_identities(&backend, &other_hash)
+        .await;
+
+    assert!(
+        backend
+            .ensure_identity_managed(&other_hash, &foreign.identity, 0)
+            .await
+            .expect("ensure_identity_managed on the unrelated wallet"),
+        "reconcile must not register another wallet's identity"
     );
 
     backend.shutdown().await;

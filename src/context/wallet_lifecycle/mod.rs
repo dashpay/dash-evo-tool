@@ -36,9 +36,11 @@ use std::sync::{Arc, RwLock};
 const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
 
 /// The upstream `dash-spv` `DiskStorageManager` chain-cache entries under the
-/// per-network SPV directory. Each is a subfolder except `peers.dat`. The
-/// wallet/shielded SQLite sidecars in the same directory are deliberately
-/// excluded — clearing the chain cache must not touch funds or secrets.
+/// per-network SPV directory. Each is a subfolder except `peers.dat`. Only
+/// these resyncable entries are ever cleared — the durable wallet databases
+/// live outside this directory (see
+/// [`wallet_database_path`](crate::wallet_backend::wallet_database_path)) so
+/// clearing the chain cache cannot touch funds or secrets.
 const SPV_CHAIN_STORAGE_ENTRIES: [&str; 7] = [
     "block_headers",
     "filter_headers",
@@ -72,7 +74,8 @@ fn spv_storage_dir(data_dir: &Path, network: Network) -> PathBuf {
 }
 
 /// Remove the upstream chain-sync cache files under `spv_dir`, leaving the
-/// wallet (`platform-wallet.sqlite`) and shielded sidecars untouched. The
+/// legacy shielded sidecars in that directory untouched (the durable wallet
+/// databases are not in it at all — see [`SPV_CHAIN_STORAGE_ENTRIES`]). The
 /// `DiskStorageManager` lock lives at `<spv_dir>.lock` (a sibling of the
 /// directory); it is removed too so a stale lock cannot block the next sync.
 /// A missing entry is the expected fresh/never-synced state and is tolerated.
@@ -132,10 +135,10 @@ impl AppContext {
 /// These are the files DET's deleted shielded subsystem owned:
 /// `det-shielded.sqlite` (the plaintext note sidecar) and
 /// `shielded-commitment-tree.sqlite` (the grovedb commitment tree). The
-/// upstream coordinator's store (`platform-wallet-shielded.sqlite`) is a
-/// DIFFERENT file and is deliberately NOT touched here — it is reset via the
-/// coordinator's own `clear_shielded`. Scoped strictly to `spv_dir` so a clear
-/// of one network can never reach another network's files.
+/// upstream coordinator's store (`det-<network>-shielded.sqlite`, outside this
+/// directory) is a DIFFERENT file and is deliberately NOT touched here — it is
+/// reset via the coordinator's own `clear_shielded`. Scoped strictly to
+/// `spv_dir` so a clear of one network can never reach another network's files.
 fn cleanup_legacy_shielded_files(spv_dir: &Path) -> Result<(), TaskError> {
     const LEGACY_SHIELDED_FILES: [&str; 2] =
         ["det-shielded.sqlite", "shielded-commitment-tree.sqlite"];

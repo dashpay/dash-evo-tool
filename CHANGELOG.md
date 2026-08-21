@@ -347,6 +347,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A funding transaction found again on the network is now labelled honestly**:
+  when the app rediscovers a saved funding transaction from the chain rather
+  than tracking it from the start, it can tell that the network confirmed it but
+  not whether it was already spent on an identity. The funding list says exactly
+  that instead of claiming it is ready to use or already used. Selecting it still
+  works — the network has the final say and refuses one that was already spent.
+
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip
   (`d18020f` → `288a6ca`), which lands an embeddable SQLite persistence backend with

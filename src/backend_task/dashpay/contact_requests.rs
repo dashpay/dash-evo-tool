@@ -667,6 +667,7 @@ async fn resolve_username_to_identity(
         having: Vec::new(),
         order_by_clauses: vec![],
         limit: 1,
+        offset: None,
         start: None,
     };
 

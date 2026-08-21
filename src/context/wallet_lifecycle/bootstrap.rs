@@ -301,9 +301,10 @@ impl AppContext {
     /// so the cost stays with this device's node count.
     ///
     /// Neither snapshot is taken atomically with the other, so an identity
-    /// stored between them reads as a stale registration; the withdrawal loop
-    /// re-checks each candidate under that identity's record guard instead of
-    /// trusting the snapshot.
+    /// written between them reads as the opposite of what it is — a stale
+    /// registration, or a wallet-less identity that has since gained a wallet.
+    /// Both loops therefore re-check every candidate against the sidecar under
+    /// that identity's record guard instead of trusting the snapshot.
     pub(super) fn reconcile_unowned_identities(&self, backend: &WalletBackend) {
         self.reconcile_unowned_identities_seamed(backend, || {});
     }
@@ -340,10 +341,38 @@ impl AppContext {
 
         let mut added = 0usize;
         for id in wallet_less.difference(&registered) {
+            // Same guard and re-read as the withdrawal loop below, against the
+            // mirror-image race: an identity that gained a wallet since the id
+            // scan must not be registered as belonging to none. Upstream's row
+            // cannot answer that — an insert carrying a wallet hint writes none
+            // — so only the sidecar can, and only if it is read again.
+            let lock = self.identity_record_lock(*id);
+            let _record_guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match self.stored_identity_is_wallet_less(id) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::debug!(
+                        identity = %id,
+                        %error,
+                        "Unowned-identity registration skipped; the sidecar re-check failed, will retry at next boot"
+                    );
+                    continue;
+                }
+            }
             match self.get_local_qualified_identity(id) {
                 Ok(Some(qi)) => match backend.ensure_identity_unowned(&qi.identity) {
                     Ok(true) => added += 1,
                     Ok(false) => {}
+                    // Permanent, not deferred: the record says no wallet, the
+                    // wallet store says otherwise, and nothing on either side
+                    // moves on its own. Every boot lands here again.
+                    Err(TaskError::UnownedIdentityMirrorMissing { .. }) => tracing::warn!(
+                        identity = %id,
+                        "Identity is stored as belonging to no wallet while the wallet store keeps it under one; this record will be removed together with that wallet. Load the identity from the wallet that holds it to repair this."
+                    ),
                     Err(error) => tracing::debug!(
                         identity = %id,
                         %error,

@@ -5,6 +5,8 @@ use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::KeyID;
@@ -541,12 +543,23 @@ impl AppContext {
     /// enumeration index so the load-all paths can find it.
     ///
     /// One exception to that overwrite: a `None` hint over an identity that
-    /// already has one keeps the existing association unless the wallet store
-    /// accepts the matching unowned row. Upstream files one row per identity
-    /// and will not re-scope a wallet-owned one, so a `wallet_hash: None`
-    /// record written regardless would sit under that wallet's `ON DELETE
-    /// CASCADE` while claiming to be out of its reach — removing the wallet
-    /// would then take this record with it.
+    /// already has an association keeps it when the wallet store is *proven*
+    /// not to hold the matching unowned row
+    /// ([`TaskError::UnownedIdentityMirrorMissing`]). Upstream files one row
+    /// per identity and will not re-scope a wallet-owned one, so a
+    /// `wallet_hash: None` record written regardless would sit under that
+    /// wallet's `ON DELETE CASCADE` while claiming to be out of its reach —
+    /// removing the wallet would then take this record with it. The user is
+    /// told, because the stored record then disagrees with what was asked for
+    /// and only a retry (or loading the identity from its wallet) changes it:
+    /// the kept association takes the record out of the wallet-less set
+    /// `AppContext::reconcile_unowned_identities` drives off, so no boot
+    /// revisits it.
+    ///
+    /// Any *other* mirror failure — a wallet-store read that failed, so the
+    /// unowned row's absence is unproven — writes the wallet-less record the
+    /// caller asked for and leaves the mirror to that reconcile, which is the
+    /// best-effort contract every wallet-less insert has always had.
     ///
     /// The underlying k/v store offers no multi-key transaction, so the
     /// enumeration index is written *before* the blob. The ordering makes a
@@ -603,15 +616,38 @@ impl AppContext {
         // to write (see this method's docs). An orphan mirror left by a failure
         // of the writes below is withdrawn by the next boot's reconcile.
         if wallet_link.is_none()
-            && !self.mirror_identity_unowned(qualified_identity)
-            && let Some(existing) = self.stored_identity_wallet_link(&identity_id)?
+            && let Err(error) = self.mirror_identity_unowned(qualified_identity)
         {
-            tracing::warn!(
-                identity_id = %identity_id,
-                wallet = %hex::encode(existing.0),
-                "Identity kept its wallet association: the wallet store still files it under that wallet, so a wallet-less record could not be made durable",
-            );
-            wallet_link = Some(existing);
+            match error {
+                TaskError::UnownedIdentityMirrorMissing { .. } => {
+                    match self.stored_identity_wallet_link(&identity_id)? {
+                        Some(existing) => {
+                            wallet_link = Some(existing);
+                            let banner = MessageBanner::set_global(
+                                self.egui_ctx(),
+                                &error,
+                                MessageType::Warning,
+                            );
+                            banner.with_details(error);
+                            self.egui_ctx().request_repaint();
+                        }
+                        // No association to keep: this record is new here, so
+                        // the caller's request stands and the boot reconcile
+                        // reports the standing mismatch every boot.
+                        None => tracing::debug!(
+                            identity_id = %identity_id,
+                            "Wallet-less identity stored while the wallet store keeps it under a wallet"
+                        ),
+                    }
+                }
+                // Absence unproven, so the caller's request stands and the
+                // mirror is left to the reconcile — the pre-existing contract.
+                other => tracing::debug!(
+                    identity_id = %identity_id,
+                    error = %other,
+                    "Wallet-less identity not mirrored to the wallet store; will retry at next boot"
+                ),
+            }
         }
         let (wallet_hash, wallet_index) = match wallet_link {
             Some((seed, idx)) => (Some(seed), Some(idx)),
@@ -667,32 +703,19 @@ impl AppContext {
     /// wallet (the case the warning above flags as unexpected) takes the same
     /// path.
     ///
-    /// Returns whether the wallet store now holds that row — `false` when no
-    /// backend is wired yet, when the write failed, and when upstream still
-    /// files the identity under a wallet. A `false` costs no data (DET's own
-    /// record stays authoritative and
-    /// [`AppContext::reconcile_unowned_identities`] retries at the next boot)
-    /// but it does decide what that record may claim about the identity's
-    /// wallet association.
-    ///
-    /// The mirrored row carries none of `qualified_identity`'s public keys —
-    /// see [`WalletBackend::ensure_identity_unowned`](crate::wallet_backend::WalletBackend::ensure_identity_unowned)
+    /// The error is passed through rather than reduced to a flag, because the
+    /// caller's decision turns on which failure this was — see
+    /// [`Self::insert_local_qualified_identity`]. The mirrored row carries none
+    /// of `qualified_identity`'s public keys — see
+    /// [`WalletBackend::ensure_identity_unowned`](crate::wallet_backend::WalletBackend::ensure_identity_unowned)
     /// for why.
-    fn mirror_identity_unowned(&self, qualified_identity: &QualifiedIdentity) -> bool {
-        let Ok(backend) = self.wallet_backend() else {
-            return false;
-        };
-        match backend.ensure_identity_unowned(&qualified_identity.identity) {
-            Ok(_) => true,
-            Err(error) => {
-                tracing::debug!(
-                    identity_id = %qualified_identity.identity.id(),
-                    %error,
-                    "Wallet-less identity not mirrored to the wallet store; will retry at next boot"
-                );
-                false
-            }
-        }
+    fn mirror_identity_unowned(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> std::result::Result<(), TaskError> {
+        self.wallet_backend()?
+            .ensure_identity_unowned(&qualified_identity.identity)
+            .map(|_| ())
     }
 
     /// Update a local qualified identity in place. Wallet association

@@ -93,6 +93,8 @@ The identity blob and top-up history are **identity-scoped** (`DetScope::Identit
 
 Written by `WalletBackend::ensure_identity_unowned` on insert; withdrawn — tombstoned, never row-deleted — by `WalletBackend::remove_unowned_identity` on `delete_local_qualified_identity`, best-effort. Both directions are retried at the next boot by the two-way `AppContext::reconcile_unowned_identities`: it registers what the sidecar holds and upstream lacks, and withdraws what upstream holds and the sidecar lacks. Read back by `WalletBackend::unowned_identity_ids` (upstream's `load_unowned_identities`; the ordinary `load()` enumerates wallets and cannot reach them). The mirrored row carries no public keys and a `status` frozen at `Unknown` — upstream's out-of-wallet write path persists identity/balance/revision only ([tracked upstream](https://github.com/dashpay/platform/issues/4443)) — so the `det:identity:v1` record above stays the sole complete copy for these identities.
 
+`wallet_hash` is decided by that mirror, not merely by the caller: `insert_local_qualified_identity` writes `wallet_hash: None` only once the unowned row has been read back, and otherwise keeps whatever wallet link the record already had — a record never claims a durability it does not have. A wallet-store read that failed does not count as proof and leaves the caller's `None` standing, for the boot reconcile to mirror later.
+
 Source: `src/context/identity_db.rs`, `src/wallet_backend/identity_ops.rs`
 
 ---

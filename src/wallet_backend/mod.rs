@@ -344,6 +344,10 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Forces the next unowned-scope read to fail, so a test can tell a
+    /// wallet-store failure apart from a mirror upstream genuinely refused.
+    #[cfg(test)]
+    unowned_read_test_failure: std::sync::atomic::AtomicBool,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -554,6 +558,8 @@ impl WalletBackend {
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                unowned_read_test_failure: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1065,6 +1071,13 @@ impl WalletBackend {
     pub(crate) fn set_registration_test_failure(&self, fail: bool) {
         self.inner
             .registration_test_failure
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_unowned_read_test_failure(&self, fail: bool) {
+        self.inner
+            .unowned_read_test_failure
             .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 

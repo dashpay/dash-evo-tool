@@ -4790,6 +4790,113 @@ async fn reconcile_withdraws_a_stale_registration_whose_sidecar_is_wallet_owned(
     backend.shutdown().await;
 }
 
+/// The registration direction has the withdrawal direction's race in mirror
+/// image: an identity that is wallet-less in the id scan and gains a wallet
+/// before the loop reaches it must not be registered unowned. Upstream's row
+/// is absent either way — an insert with a wallet hint writes none — so only
+/// the sidecar can answer, and only if it is re-read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_does_not_register_an_identity_that_gained_a_wallet_after_the_snapshot() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Au8; 64]).await;
+
+    // Wallet-less in the id scan and absent from the unowned scope, i.e. a
+    // registration candidate the moment the reconcile takes its snapshot.
+    let identity = wallet_owned_qualified_identity(Some(0));
+    let identity_id = identity_id_of(&identity);
+    ctx.insert_local_qualified_identity_sidecar_only(&identity)
+        .expect("insert sidecar-only");
+
+    ctx.reconcile_unowned_identities_seamed(&backend, || {
+        ctx.insert_local_qualified_identity(&identity, &Some((seed_hash, 0)))
+            .expect("identity gains a wallet during the reconcile's snapshot window");
+    });
+
+    assert!(
+        !backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&identity_id),
+        "an identity that gained a wallet must not be registered unowned"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Only a mirror proven absent may override the caller and keep an existing
+/// wallet link. A wallet-store read that simply failed proves nothing about
+/// where upstream files the row, and pinning on it would be permanent: the
+/// record leaves the wallet-less set the boot reconcile drives off, so no
+/// later boot revisits it. The wallet-less record is written instead, which
+/// is what that reconcile exists to retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mirror_read_failure_leaves_the_record_wallet_less_instead_of_pinning_it() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x59u8; 64]).await;
+
+    let owned = wallet_owned_qualified_identity(Some(0));
+    let owned_id = identity_id_of(&owned);
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+
+    backend.set_unowned_read_test_failure(true);
+    ctx.insert_local_qualified_identity(&owned, &None)
+        .expect("re-insert with no wallet info");
+    backend.set_unowned_read_test_failure(false);
+
+    assert_eq!(
+        ctx.stored_identity_wallet_link(&owned_id)
+            .expect("read the sidecar wallet link"),
+        None,
+        "a failed wallet-store read must not pin the wallet link; the record stays \
+         wallet-less for the boot reconcile to retry"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The refusal to record a wallet-less identity reaches the user. Storing an
+/// identity is a user action whose outcome differs from what was asked for,
+/// and the identity keeps a wallet link whose removal takes the record with
+/// it — a silent `debug!` line is not a signal anyone receives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unverifiable_wallet_less_downgrade_warns_the_user() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Bu8; 64]).await;
+
+    let owned = wallet_owned_qualified_identity(Some(0));
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+    backend
+        .ensure_identity_managed(&seed_hash, &owned.identity, 0)
+        .await
+        .expect("register with the upstream wallet manager");
+    crate::ui::components::MessageBanner::clear_all_global(ctx.egui_ctx());
+
+    ctx.insert_local_qualified_identity(&owned, &None)
+        .expect("re-insert with no wallet info");
+
+    assert!(
+        crate::ui::components::MessageBanner::has_global(ctx.egui_ctx()),
+        "an identity kept under a wallet against the caller's request must raise a \
+         user-visible warning"
+    );
+
+    backend.shutdown().await;
+}
+
 /// `WalletBackend::ensure_identity_unowned` is idempotent at the storage
 /// layer itself, not merely because a caller happens to pre-filter: a second
 /// call on an already-registered identity is a real no-op, `Ok(false)`, not

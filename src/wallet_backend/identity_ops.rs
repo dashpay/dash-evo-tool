@@ -228,13 +228,17 @@ impl WalletBackend {
     /// the row is read back before it is claimed (see Errors).
     ///
     /// # Errors
-    /// [`TaskError::IdentityStillWalletOwnedUpstream`] when the identity's row
-    /// is scoped to a real wallet. The upsert's
+    /// [`TaskError::UnownedIdentityMirrorMissing`] when the row is absent from
+    /// the unowned scope right after being written there. The readback is the
+    /// only evidence available: the upsert's
     /// `WHERE identities.wallet_id IS NULL OR identities.wallet_id IS excluded.wallet_id`
-    /// skips such a row and reports no error for the skip, and upstream offers
-    /// no re-scoping write, so only this readback separates a durable mirror
-    /// from one that never landed. Paid on a registration only — the
-    /// already-registered fast path above returns before it.
+    /// skips a row already filed under a wallet and reports no error for the
+    /// skip, upstream offers no re-scoping write, and `add_out_of_wallet_identity`
+    /// swallows a persist failure into `tracing::error!` before returning
+    /// `Ok(())` (`manager/lifecycle.rs` at pin `4784de03`). A refused mirror and
+    /// a failed write therefore arrive here identically — the error deliberately
+    /// claims neither cause. Paid on a registration only: the already-registered
+    /// fast path above returns before it.
     ///
     /// [`TaskError::WalletStorage`] if reading the unowned set fails;
     /// [`TaskError::WalletBackend`] on an upstream add failure — currently
@@ -256,7 +260,7 @@ impl WalletBackend {
                 source: Arc::new(e),
             })?;
         if !self.load_unowned_identities()?.contains_key(&identity.id()) {
-            return Err(TaskError::IdentityStillWalletOwnedUpstream {
+            return Err(TaskError::UnownedIdentityMirrorMissing {
                 identity_id: identity.id(),
             });
         }
@@ -306,6 +310,15 @@ impl WalletBackend {
         >,
         TaskError,
     > {
+        #[cfg(test)]
+        if self
+            .inner
+            .unowned_read_test_failure
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(TaskError::WalletStorageNotReady);
+        }
+
         self.inner
             .wallet_persister
             .load_unowned_identities()

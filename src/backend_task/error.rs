@@ -349,16 +349,19 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
-    /// A wallet-less record was asked for an identity the wallet store still
-    /// files under a wallet. Upstream's out-of-wallet upsert skips such a row
-    /// instead of re-scoping it, so the durable unowned mirror the caller
-    /// needs cannot be created. Carries the identity id (data, not a message).
+    /// An identity is absent from the wallet store's unowned scope immediately
+    /// after being written there — so a record calling it wallet-free would
+    /// not survive. Names only that, because the two causes are
+    /// indistinguishable at this pin: upstream's out-of-wallet upsert skips a
+    /// row already filed under a wallet, and it also swallows a persist
+    /// failure and returns `Ok(())`. Both leave the same evidence and take
+    /// the same remedies. Carries the identity id (data, not a message).
     #[error(
-        "Identity {identity_id} is still linked to a wallet on this device, so it cannot be saved \
-         as belonging to no wallet. Open the wallet that holds it and load the identity from \
-         there, or remove that wallet first."
+        "Identity {identity_id} could not be saved as belonging to no wallet, because this \
+         device's wallet data still links it to a wallet. Open that wallet and load the identity \
+         from there, or try again in a moment."
     )]
-    IdentityStillWalletOwnedUpstream {
+    UnownedIdentityMirrorMissing {
         identity_id: dash_sdk::platform::Identifier,
     },
 

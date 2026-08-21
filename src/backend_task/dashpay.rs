@@ -35,7 +35,7 @@ fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, Dash
     DocumentQuery::new(app_context.dashpay_contract.clone(), "contactRequest").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay contactRequest",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         }
     })
 }

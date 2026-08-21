@@ -3946,24 +3946,48 @@ async fn an_unbound_topup_funding_account_survives_a_restart() {
 }
 
 /// Rows in the persisted `account_registrations` manifest for one account
-/// type / index — what `load()` rebuilds `Wallet.accounts` from.
+/// type / index across every wallet — what `load()` rebuilds
+/// `Wallet.accounts` from.
 fn persisted_account_registration_rows(
     data_dir: &std::path::Path,
     account_type: &str,
     account_index: u32,
 ) -> i64 {
-    rusqlite::Connection::open_with_flags(
+    persisted_account_registration_rows_for(data_dir, None, account_type, account_index)
+}
+
+/// As [`persisted_account_registration_rows`], but scoped to one upstream
+/// `wallet_id` when given. Multi-wallet tests must scope: the manifest is
+/// shared, so an unscoped count cannot tell whose registration it found.
+fn persisted_account_registration_rows_for(
+    data_dir: &std::path::Path,
+    wallet_id: Option<[u8; 32]>,
+    account_type: &str,
+    account_index: u32,
+) -> i64 {
+    let conn = rusqlite::Connection::open_with_flags(
         wallet_database_path(data_dir, Network::Testnet),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
-    .expect("open persisted store")
-    .query_row(
-        "SELECT COUNT(*) FROM account_registrations \
-         WHERE account_type = ?1 AND account_index = ?2",
-        rusqlite::params![account_type, account_index],
-        |row| row.get(0),
-    )
-    .expect("count persisted account registrations")
+    .expect("open persisted store");
+    match wallet_id {
+        Some(wallet_id) => conn
+            .query_row(
+                "SELECT COUNT(*) FROM account_registrations \
+                 WHERE wallet_id = ?1 AND account_type = ?2 AND account_index = ?3",
+                rusqlite::params![&wallet_id[..], account_type, account_index],
+                |row| row.get(0),
+            )
+            .expect("count persisted account registrations for wallet"),
+        None => conn
+            .query_row(
+                "SELECT COUNT(*) FROM account_registrations \
+                 WHERE account_type = ?1 AND account_index = ?2",
+                rusqlite::params![account_type, account_index],
+                |row| row.get(0),
+            )
+            .expect("count persisted account registrations"),
+    }
 }
 
 /// A malformed Orchard viewing key must be isolated to its own wallet during
@@ -4545,7 +4569,7 @@ async fn unbound_topup_funding_account_provisions_on_the_watch_only_wallet() {
 /// longer has the account — a manifest and a wallet that disagree about which
 /// accounts exist.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_transient_registration_persist_failure_retries_the_bare_flush_and_keeps_the_account() {
+async fn a_transient_registration_persist_failure_is_retried_and_keeps_the_account() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (ctx, sender) = offline_testnet_context_at(dir.path());
     ctx.ensure_wallet_backend(sender)
@@ -4574,7 +4598,7 @@ async fn a_transient_registration_persist_failure_retries_the_bare_flush_and_kee
     );
     assert!(
         !backend.registration_persist_buffer_is_staged(),
-        "the bare-flush retry must have drained the persister buffer",
+        "a successful retry must leave nothing staged",
     );
 
     backend.shutdown().await;
@@ -4593,8 +4617,7 @@ async fn a_transient_registration_persist_failure_retries_the_bare_flush_and_kee
 /// the account is live in memory, absent from the manifest, and every launch
 /// after this one re-derives nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_exhausted_transient_persist_budget_keeps_memory_and_the_next_attempt_flushes_the_buffer()
- {
+async fn an_exhausted_transient_persist_budget_keeps_memory_and_the_next_attempt_rewrites_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (ctx, sender) = offline_testnet_context_at(dir.path());
     ctx.ensure_wallet_backend(sender)
@@ -4625,18 +4648,18 @@ async fn an_exhausted_transient_persist_budget_keeps_memory_and_the_next_attempt
     assert!(view.managed, "both collections must keep the account");
     assert!(
         backend.registration_persist_buffer_is_staged(),
-        "the changeset must still be staged for a later flush",
+        "the changeset must still be staged for a later rewrite",
     );
 
-    // The next attempt sees both collections populated. It must complete the
-    // staged write rather than short-circuit on the presence guards.
+    // The next attempt sees both collections populated. It must rewrite the
+    // pending registration rather than short-circuit on the presence guards.
     backend
         .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
         .await
-        .expect("the follow-up attempt must flush the staged registration");
+        .expect("the follow-up attempt must rewrite the pending registration");
     assert!(
         !backend.registration_persist_buffer_is_staged(),
-        "the follow-up attempt must have drained the persister buffer",
+        "the follow-up attempt must leave nothing staged",
     );
 
     backend.shutdown().await;
@@ -4760,6 +4783,228 @@ async fn a_terminal_drain_evicts_only_the_accounts_whose_registrations_it_lost()
         1,
         "the retry must have made the top-up registration durable",
     );
+}
+
+/// A write that another caller drains and loses must not be reported as saved.
+///
+/// The persister buffer is shared per wallet, not owned by this call site, and
+/// `flush` answers `Ok(())` when it finds nothing staged. Upstream writes into
+/// that buffer constantly and swallows its own terminal failures, which take
+/// the whole merged changeset — this registration included — with them. A
+/// retry that only re-flushes therefore cannot tell "my row was committed"
+/// from "my row was thrown away by somebody else", and reporting success there
+/// strands an asset lock against a credit-output path that exists only in RAM.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_registration_lost_by_a_foreign_buffer_drain_is_rewritten_not_reported_saved() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xC7u8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "foreign").await;
+
+    backend.arm_registration_persist_faults([PersistenceErrorKind::Transient; 4]);
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect_err("the exhausted budget must surface");
+
+    // An unrelated wallet write drains the shared buffer and dies terminally:
+    // the staged registration is gone and this call site is never told.
+    backend.discard_staged_registration_buffer();
+
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect("the follow-up attempt must rewrite the lost registration");
+    assert!(
+        backend
+            .identity_funding_account(&seed_hash, fault_topup_account_type())
+            .await
+            .expect("probe the funding account")
+            .is_some(),
+        "the account must still be live in memory after a successful rewrite",
+    );
+
+    backend.shutdown().await;
+    assert_eq!(
+        persisted_account_registration_rows(dir.path(), "identity_topup", FAULT_TOPUP_INDEX),
+        1,
+        "success must mean the row is in the manifest, not merely that some \
+         flush returned Ok",
+    );
+}
+
+/// The same loss, inside a single retry loop, must also be rewritten.
+///
+/// After a transient `store` parks the changeset, the backoff window belongs
+/// to everyone: an unrelated writer can drain the shared buffer and lose it
+/// terminally before this call's next attempt. A retry that only re-flushes
+/// would read `Ok(())` off an empty buffer and report a saved registration
+/// that no longer exists anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_registration_lost_between_retries_is_rewritten_not_reported_saved() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xC9u8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "between").await;
+
+    // The first `store` parks the changeset; before the retry runs, an
+    // unrelated writer drains the shared buffer and loses it.
+    backend.arm_registration_persist_faults([PersistenceErrorKind::Transient]);
+    backend.discard_staged_registration_buffer_before_write(2);
+
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect("the retry must rewrite the lost registration, not ride the buffer");
+
+    backend.shutdown().await;
+    assert_eq!(
+        persisted_account_registration_rows(dir.path(), "identity_topup", FAULT_TOPUP_INDEX),
+        1,
+        "reporting success means the row is in the manifest — a flush that found \
+         an empty buffer proves nothing",
+    );
+}
+
+/// `Constraint` is the third terminal kind and must behave exactly like
+/// `Fatal`. `PersistenceErrorKind` is deliberately not `#[non_exhaustive]` so
+/// that a new kind breaks every consumer match — pinning this branch is what
+/// makes that guarantee worth something here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_constraint_registration_persist_failure_rolls_back_the_in_memory_account() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xC5u8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "constraint").await;
+
+    backend.arm_registration_persist_faults([PersistenceErrorKind::Constraint]);
+    let error = backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect_err("a constraint violation must surface as a typed error");
+    assert!(
+        matches!(error, TaskError::IdentityFundingAccountPersistFailed { .. }),
+        "the persist failure must keep its dedicated variant, got {error:?}",
+    );
+    assert!(
+        backend
+            .identity_funding_account(&seed_hash, fault_topup_account_type())
+            .await
+            .expect("probe the funding account")
+            .is_none(),
+        "a constraint violation is terminal, so the account must leave memory",
+    );
+    assert!(
+        !backend.has_pending_account_registrations(&seed_hash),
+        "a terminal failure must leave nothing pending to rewrite",
+    );
+
+    backend.shutdown().await;
+}
+
+/// A write that starts transient and then fails terminally is terminal: the
+/// staged changeset is gone, so the account must be rolled back rather than
+/// kept on the strength of the first, softer error.
+///
+/// This is the one ordering where misclassifying strands funds — keeping an
+/// account whose registration was discarded means the next attempt
+/// early-returns success on a row that will never exist.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transient_write_that_escalates_to_a_terminal_one_rolls_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xC6u8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "escalate").await;
+
+    // Transient on the first `store`, then terminal on the retry.
+    backend.arm_registration_persist_faults([
+        PersistenceErrorKind::Transient,
+        PersistenceErrorKind::Fatal,
+    ]);
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect_err("the escalated failure must surface");
+
+    assert!(
+        backend
+            .identity_funding_account(&seed_hash, fault_topup_account_type())
+            .await
+            .expect("probe the funding account")
+            .is_none(),
+        "escalation to a terminal failure must roll the account back",
+    );
+    assert!(
+        !backend.registration_persist_buffer_is_staged(),
+        "a terminal failure must take the staged changeset with it",
+    );
+    assert!(
+        !backend.has_pending_account_registrations(&seed_hash),
+        "a terminal failure must leave nothing pending to rewrite",
+    );
+
+    backend.shutdown().await;
+}
+
+/// Removing a wallet must drop its pending registrations.
+///
+/// A same-seed re-import computes the same upstream `WalletId`, so a marker
+/// left behind would be inherited by the fresh wallet and rewritten against
+/// accounts it never provisioned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removing_a_wallet_drops_its_pending_account_registrations() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xC8u8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "removed").await;
+
+    backend.arm_registration_persist_faults([PersistenceErrorKind::Transient; 4]);
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect_err("the exhausted budget must surface");
+    assert!(
+        backend.has_pending_account_registrations(&seed_hash),
+        "the registration must be recorded as pending before removal",
+    );
+
+    let wallet_id = backend.registered_wallet_id(&seed_hash).expect("wallet id");
+    backend
+        .forget_wallet_local_state(&seed_hash, Some(wallet_id))
+        .expect("forget wallet local state");
+
+    assert!(
+        !backend.has_pending_account_registrations(&seed_hash),
+        "wallet removal must drop the pending registration, or a same-seed \
+         re-import inherits it",
+    );
+
+    backend.shutdown().await;
 }
 
 /// Identity index the persist-failure tests provision a top-up account for.

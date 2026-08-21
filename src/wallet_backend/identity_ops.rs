@@ -17,14 +17,16 @@ use super::{
     map_identity_register_error, map_identity_top_up_error, map_platform_address_fund_error,
 };
 
+use dash_sdk::dpp::key_wallet::account::Account;
+use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey;
 use platform_wallet::changeset::{
     AccountRegistrationEntry, PersistenceError, PlatformWalletChangeSet, PlatformWalletPersistence,
 };
 
-/// Total attempts (initial write plus bare-`flush` retries) for a transient
-/// persister failure on the funding-account path. Mirrors upstream's
-/// `PERSIST_RETRY_MAX_ATTEMPTS` on the wallet-registration path, which is
-/// `pub(super)` there and so unreachable from DET.
+/// Total attempts for a transient persister failure on the funding-account
+/// path. Mirrors upstream's `PERSIST_RETRY_MAX_ATTEMPTS` on the
+/// wallet-registration path, which is `pub(super)` there and so unreachable
+/// from DET.
 const PERSIST_RETRY_MAX_ATTEMPTS: u32 = 4;
 
 /// Backoff before the first retry; doubles up to [`PERSIST_RETRY_MAX_BACKOFF`].
@@ -52,6 +54,41 @@ pub(super) enum Funding {
 }
 
 impl Funding {
+    /// The upstream account type this funding flavour derives and registers.
+    fn account_type(self) -> dash_sdk::dpp::key_wallet::AccountType {
+        use dash_sdk::dpp::key_wallet::AccountType;
+        match self {
+            Self::Registration => AccountType::IdentityRegistration,
+            Self::TopUp(registration_index) => AccountType::IdentityTopUp { registration_index },
+            Self::TopUpNotBound => AccountType::IdentityTopUpNotBoundToIdentity,
+        }
+    }
+
+    /// Whether the managed (info-side) collection holds this funding account.
+    fn is_managed(
+        self,
+        info: &platform_wallet::wallet::platform_wallet::PlatformWalletInfo,
+    ) -> bool {
+        match self {
+            Self::Registration => info.core_wallet.accounts.identity_registration.is_some(),
+            Self::TopUp(registration_index) => info
+                .core_wallet
+                .accounts
+                .identity_topup
+                .contains_key(&registration_index),
+            Self::TopUpNotBound => info.core_wallet.accounts.identity_topup_not_bound.is_some(),
+        }
+    }
+
+    /// This funding account as the key-wallet holds it, if at all.
+    fn account(self, kw: &dash_sdk::dpp::key_wallet::wallet::Wallet) -> Option<&Account> {
+        match self {
+            Self::Registration => kw.accounts.identity_registration.as_ref(),
+            Self::TopUp(registration_index) => kw.accounts.identity_topup.get(&registration_index),
+            Self::TopUpNotBound => kw.accounts.identity_topup_not_bound.as_ref(),
+        }
+    }
+
     /// Drop this funding account from both in-memory collections, so the next
     /// provisioning attempt re-creates and re-persists it instead of
     /// short-circuiting on the presence guards.
@@ -99,10 +136,10 @@ pub(crate) struct FundingAccountView {
 /// caller must do with the account it just put in memory.
 enum RegistrationPersistFailure {
     /// The retry budget ran out while the failure was still transient. The
-    /// persister's contract keeps the changeset buffered, so the row can still
-    /// land: the account MUST stay in memory, or a later unrelated flush would
-    /// commit a registration the live wallet no longer has. A bare `flush`
-    /// completes the write.
+    /// changeset may still be buffered and land later, so the account MUST
+    /// stay in memory — dropping it while the row can still appear would leave
+    /// a manifest the live wallet disagrees with. The registration is recorded
+    /// as pending and rewritten by the next attempt.
     Staged(PersistenceError),
     /// A terminal failure discarded the staged changeset. The row will never
     /// land, so the account must leave memory.
@@ -142,7 +179,7 @@ where
                     max_attempts = PERSIST_RETRY_MAX_ATTEMPTS,
                     backoff_ms = backoff.as_millis() as u64,
                     error = %e,
-                    "identity-funding account registration hit a transient persister failure; backing off before retrying the flush"
+                    "identity-funding account registration hit a transient persister failure; backing off before rewriting the registration"
                 );
                 tokio::time::sleep(backoff).await;
                 backoff = backoff.saturating_mul(2).min(PERSIST_RETRY_MAX_BACKOFF);
@@ -152,30 +189,36 @@ where
     }
 }
 
-/// Write one account registration through `persister` and flush it, so a cold
-/// boot rebuilds the account from the manifest.
+/// Write these account registrations through `persister` and flush them, so a
+/// cold boot rebuilds the accounts from the manifest.
 ///
-/// The first attempt is `store` then `flush`; every retry is a **bare**
-/// `flush`, because the persister's contract preserves the changeset across a
-/// transient failure and re-`store`ing the same delta would double-merge it.
-async fn persist_account_registration(
+/// Every attempt — the first and each retry — **resupplies** the entries via
+/// `store` rather than issuing a bare `flush`. The persister's buffer is
+/// shared per wallet, not owned by this call site: `flush` answers `Ok(())`
+/// when it finds nothing staged, and any other writer's terminal flush takes
+/// the whole merged buffer (these entries included) without telling us. A bare
+/// `flush` therefore cannot distinguish "committed" from "thrown away by
+/// somebody else", and inferring durability from it is how a funding account
+/// ends up live in memory and absent from the manifest.
+///
+/// Resupplying is safe precisely here, and the general "re-`store` would
+/// double-merge" caution does not bind: `account_registrations` merges by
+/// `extend` and applies through `UPSERT_ACCOUNT_SQL`, an
+/// `ON CONFLICT(wallet_id, account_type, account_index, …) DO UPDATE` keyed on
+/// the account's identity, so writing the same entry twice is idempotent.
+async fn persist_account_registrations(
     persister: &dyn PlatformWalletPersistence,
     wallet_id: WalletId,
-    account_type: dash_sdk::dpp::key_wallet::AccountType,
-    account_xpub: dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
+    entries: &[AccountRegistrationEntry],
 ) -> Result<(), RegistrationPersistFailure> {
-    let mut changeset = Some(PlatformWalletChangeSet {
-        account_registrations: vec![AccountRegistrationEntry {
-            account_type,
-            account_xpub,
-        }],
-        ..Default::default()
-    });
-    retry_transient(|| match changeset.take() {
-        Some(changeset) => persister
+    retry_transient(|| {
+        let changeset = PlatformWalletChangeSet {
+            account_registrations: entries.to_vec(),
+            ..Default::default()
+        };
+        persister
             .store(wallet_id, changeset)
-            .and_then(|()| persister.flush(wallet_id)),
-        None => persister.flush(wallet_id),
+            .and_then(|()| persister.flush(wallet_id))
     })
     .await
 }
@@ -513,15 +556,79 @@ impl WalletBackend {
         seed: &[u8; 64],
         funding: Funding,
     ) -> Result<(), TaskError> {
-        use dash_sdk::dpp::key_wallet::AccountType;
         use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreKeysAccount;
 
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
-        let mut wm = wallet.wallet_manager().write().await;
-        let (kw, info) = wm
-            .get_wallet_mut_and_info_mut(&wallet_id)
-            .ok_or(TaskError::WalletStateInconsistent)?;
+
+        // Everything that touches wallet state happens under the manager
+        // guard; the persist below deliberately does not. `wallet_manager()`
+        // hands out ONE `RwLock<WalletManager>` shared by every wallet in the
+        // process, and it is write-preferring, so sleeping a retry backoff
+        // under it would stall balance reads, sync callbacks and wallet
+        // removal for every other wallet — upstream warns about exactly this.
+        let pending = {
+            let mut wm = wallet.wallet_manager().write().await;
+            let (kw, info) = wm
+                .get_wallet_mut_and_info_mut(&wallet_id)
+                .ok_or(TaskError::WalletStateInconsistent)?;
+
+            let in_wallet = funding.account(kw).is_some();
+            let in_managed = funding.is_managed(info);
+
+            // Registrations a previous attempt could not make durable. They
+            // are rewritten below: returning success while one is outstanding
+            // would leave its account live in memory and absent from the
+            // manifest.
+            let mut pending = self.staged_account_registrations(&wallet_id)?;
+            if in_wallet && in_managed && pending.is_empty() {
+                return Ok(());
+            }
+
+            if !in_wallet {
+                let account_type = funding.account_type();
+                // The live wallet is watch-only: calling `add_account(…, None)` would
+                // try to derive a hardened path from an absent private key and fail
+                // with "Watch-only wallet has no private key". Derive the xpub from a
+                // short-lived seed wallet instead and pass it as `Some(xpub)`.
+                let seed_wallet = self.seed_wallet(seed)?;
+
+                let path = account_type
+                    .derivation_path(self.inner.network)
+                    .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed {
+                        source,
+                    })?;
+
+                let account_xpub =
+                    seed_wallet
+                        .derive_extended_public_key(&path)
+                        .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed {
+                            source,
+                        })?;
+
+                kw.add_account(account_type, Some(account_xpub))
+                    .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed {
+                        source,
+                    })?;
+            }
+
+            if !(in_wallet && in_managed) {
+                let derived = funding
+                    .account(kw)
+                    .ok_or(TaskError::WalletStateInconsistent)?;
+                let account_xpub = derived.account_xpub;
+                let managed = ManagedCoreKeysAccount::from_account(derived);
+                info.core_wallet
+                    .accounts
+                    .insert_keys_bearing_account(managed)
+                    .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed {
+                        source,
+                    })?;
+                pending.insert(funding, account_xpub);
+            }
+
+            pending
+        };
 
         // In test builds the write goes through a fault-injecting decorator
         // that is inert until a test arms it; production talks to the
@@ -536,153 +643,122 @@ impl WalletBackend {
         #[cfg(test)]
         let persister: &dyn PlatformWalletPersistence = &injector;
 
-        let (in_wallet, in_managed) = match funding {
-            Funding::Registration => (
-                kw.accounts.identity_registration.is_some(),
-                info.core_wallet.accounts.identity_registration.is_some(),
-            ),
-            Funding::TopUp(registration_index) => (
-                kw.accounts.identity_topup.contains_key(&registration_index),
-                info.core_wallet
-                    .accounts
-                    .identity_topup
-                    .contains_key(&registration_index),
-            ),
-            Funding::TopUpNotBound => (
-                kw.accounts.identity_topup_not_bound.is_some(),
-                info.core_wallet.accounts.identity_topup_not_bound.is_some(),
-            ),
-        };
-        if in_wallet && in_managed {
-            // A previous attempt may have left registrations staged in the
-            // persister buffer after a transient failure. Returning success
-            // here would leave those accounts live in memory and absent from
-            // the manifest — precisely the state this path exists to prevent.
-            if self.staged_account_registrations(&wallet_id)?.is_empty() {
-                return Ok(());
-            }
-            return match retry_transient(|| persister.flush(wallet_id)).await {
-                Ok(()) => self.clear_staged_account_registrations(&wallet_id),
-                Err(failure) => {
-                    if matches!(failure, RegistrationPersistFailure::Discarded(_)) {
-                        for staged in self.staged_account_registrations(&wallet_id)? {
-                            staged.remove(kw, info);
-                        }
-                        self.clear_staged_account_registrations(&wallet_id)?;
-                    }
-                    Err(failure.into_task_error())
-                }
-            };
-        }
-
-        if !in_wallet {
-            let account_type = match funding {
-                Funding::Registration => AccountType::IdentityRegistration,
-                Funding::TopUp(registration_index) => {
-                    AccountType::IdentityTopUp { registration_index }
-                }
-                Funding::TopUpNotBound => AccountType::IdentityTopUpNotBoundToIdentity,
-            };
-            // The live wallet is watch-only: calling `add_account(…, None)` would
-            // try to derive a hardened path from an absent private key and fail
-            // with "Watch-only wallet has no private key". Derive the xpub from a
-            // short-lived seed wallet instead and pass it as `Some(xpub)`.
-            let seed_wallet = self.seed_wallet(seed)?;
-
-            let path = account_type
-                .derivation_path(self.inner.network)
-                .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
-
-            let account_xpub = seed_wallet
-                .derive_extended_public_key(&path)
-                .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
-
-            kw.add_account(account_type, Some(account_xpub))
-                .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
-        }
-
-        let derived = match funding {
-            Funding::Registration => kw.accounts.identity_registration.as_ref(),
-            Funding::TopUp(registration_index) => {
-                kw.accounts.identity_topup.get(&registration_index)
-            }
-            Funding::TopUpNotBound => kw.accounts.identity_topup_not_bound.as_ref(),
-        }
-        .ok_or(TaskError::WalletStateInconsistent)?;
-
-        let account_type = derived.account_type;
-        let account_xpub = derived.account_xpub;
-
-        let managed = ManagedCoreKeysAccount::from_account(derived);
-        info.core_wallet
-            .accounts
-            .insert_keys_bearing_account(managed)
-            .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
-
-        // Persist the registration. `load()` rebuilds `Wallet.accounts` from
+        // Persist the registrations. `load()` rebuilds `Wallet.accounts` from
         // `account_registrations` alone, and the upstream creator that would
-        // normally write this row skips it once both in-memory collections hold
-        // the account — which they do by the time it runs, because of the
+        // normally write these rows skips them once both in-memory collections
+        // hold the account — which they do by the time it runs, because of the
         // inserts above. Without this the account is memory-only: a restart
         // between an asset-lock broadcast and its consumption cannot re-derive
         // the credit-output path, stranding the lock and its funds.
-        match persist_account_registration(persister, wallet_id, account_type, account_xpub).await {
-            // A successful flush is wallet-wide: everything staged landed too.
-            Ok(()) => self.clear_staged_account_registrations(&wallet_id),
-            Err(RegistrationPersistFailure::Staged(source)) => {
-                // The row can still land, so keeping the account is what makes
-                // disk and the live wallet agree; the marker makes the next
-                // attempt for this wallet finish the write.
-                self.mark_account_registration_staged(wallet_id, funding)?;
-                Err(RegistrationPersistFailure::Staged(source).into_task_error())
-            }
-            Err(RegistrationPersistFailure::Discarded(source)) => {
-                // A terminal failure drops the whole wallet buffer, so this
-                // account and every previously staged one must leave memory —
-                // otherwise the presence guards short-circuit persists that
-                // never happened.
-                funding.remove(kw, info);
-                for staged in self.staged_account_registrations(&wallet_id)? {
-                    staged.remove(kw, info);
+        let entries: Vec<AccountRegistrationEntry> = pending
+            .iter()
+            .map(|(funding, account_xpub)| AccountRegistrationEntry {
+                account_type: funding.account_type(),
+                account_xpub: *account_xpub,
+            })
+            .collect();
+
+        let failure = match persist_account_registrations(persister, wallet_id, &entries).await {
+            Ok(()) => return self.clear_staged_account_registrations(&wallet_id),
+            Err(failure) => failure,
+        };
+
+        // Keep the accounts only when the write is still worth retrying AND
+        // that intent was actually recorded. A marker we could not write is a
+        // silent dead end: the account would stay in memory with nothing
+        // scheduled to persist it, and the next call would early-return
+        // success on a row that is not there.
+        let recoverable = matches!(failure, RegistrationPersistFailure::Staged(_))
+            && match self.mark_account_registrations_staged(wallet_id, &pending) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::error!(
+                        wallet = %hex::encode(wallet_id),
+                        error = ?e,
+                        "could not record a pending identity-funding registration; dropping the account so a retry rebuilds it"
+                    );
+                    false
                 }
-                self.clear_staged_account_registrations(&wallet_id)?;
-                Err(RegistrationPersistFailure::Discarded(source).into_task_error())
+            };
+
+        if !recoverable {
+            // The staged changeset is gone (or unrecoverable), so every
+            // account it covered must leave memory — otherwise the presence
+            // guards short-circuit persists that never happened.
+            self.evict_funding_accounts(&wallet, wallet_id, &pending)
+                .await;
+            if let Err(e) = self.clear_staged_account_registrations(&wallet_id) {
+                tracing::error!(
+                    wallet = %hex::encode(wallet_id),
+                    error = ?e,
+                    "could not clear pending identity-funding registrations after a terminal persist failure"
+                );
+            }
+        }
+
+        Err(failure.into_task_error())
+    }
+
+    /// Drop funding accounts whose registrations did not reach disk from both
+    /// in-memory collections, so the next attempt re-creates and re-persists
+    /// them.
+    ///
+    /// Re-acquires the manager guard, which was released for the persist, and
+    /// only removes an account still carrying the xpub we tried to write — a
+    /// concurrent provisioning that re-created it has its own durable row and
+    /// must not be evicted on our behalf.
+    async fn evict_funding_accounts(
+        &self,
+        wallet: &Arc<platform_wallet::PlatformWallet>,
+        wallet_id: WalletId,
+        pending: &std::collections::BTreeMap<Funding, ExtendedPubKey>,
+    ) {
+        let mut wm = wallet.wallet_manager().write().await;
+        let Some((kw, info)) = wm.get_wallet_mut_and_info_mut(&wallet_id) else {
+            return;
+        };
+        for (funding, account_xpub) in pending {
+            if funding
+                .account(kw)
+                .is_some_and(|a| a.account_xpub == *account_xpub)
+            {
+                funding.remove(kw, info);
             }
         }
     }
 
-    /// The funding accounts whose registration a transient failure left staged
-    /// in this wallet's persister buffer.
+    /// The funding accounts whose registration a previous attempt could not
+    /// make durable, with the account xpub each one still needs written.
     fn staged_account_registrations(
         &self,
         wallet_id: &WalletId,
-    ) -> Result<Vec<Funding>, TaskError> {
+    ) -> Result<std::collections::BTreeMap<Funding, ExtendedPubKey>, TaskError> {
         Ok(self
             .inner
             .buffered_account_registrations
             .lock()?
             .get(wallet_id)
-            .map(|staged| staged.iter().copied().collect())
+            .cloned()
             .unwrap_or_default())
     }
 
-    /// Record a staged registration for the idempotent early return in
-    /// [`Self::provision_identity_funding_account`] to finish later.
-    fn mark_account_registration_staged(
+    /// Record registrations for the next provisioning attempt on this wallet
+    /// to rewrite, instead of early-returning success on absent rows.
+    fn mark_account_registrations_staged(
         &self,
         wallet_id: WalletId,
-        funding: Funding,
+        pending: &std::collections::BTreeMap<Funding, ExtendedPubKey>,
     ) -> Result<(), TaskError> {
         self.inner
             .buffered_account_registrations
             .lock()?
             .entry(wallet_id)
             .or_default()
-            .insert(funding);
+            .extend(pending.iter().map(|(f, x)| (*f, *x)));
         Ok(())
     }
 
-    /// Forget this wallet's staged registrations, once they are durable or
+    /// Forget this wallet's pending registrations, once they are durable or
     /// definitively lost.
     fn clear_staged_account_registrations(&self, wallet_id: &WalletId) -> Result<(), TaskError> {
         self.inner

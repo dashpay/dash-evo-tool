@@ -351,19 +351,28 @@ struct Inner {
     /// registration write. Inert until a test arms it.
     #[cfg(test)]
     persist_faults: persist_fault_test_support::PersistFaults,
-    /// Per wallet, the identity-funding accounts whose registration is staged
-    /// in the persister buffer but not yet durable, because a transient write
-    /// failure exhausted its retry budget. Each account stays live in memory
-    /// (its row can still land), so the next provisioning attempt for that
-    /// wallet must complete the write with a bare `flush` instead of taking
-    /// the idempotent early return and reporting success on absent rows.
+    /// Per wallet, the identity-funding accounts whose registration a
+    /// transient write failure could not make durable, each with the account
+    /// xpub still owed to the manifest. The accounts stay live in memory (the
+    /// rows can still land), so the next provisioning attempt for that wallet
+    /// rewrites them instead of taking the idempotent early return and
+    /// reporting success on rows that are not there.
     ///
-    /// Keyed by account and not just by wallet: `flush` is wallet-scoped, so
-    /// one failed drain discards every registration staged for that wallet and
-    /// all of them — not merely the account being provisioned right now — have
-    /// to leave memory.
-    buffered_account_registrations:
-        std::sync::Mutex<std::collections::BTreeMap<WalletId, std::collections::BTreeSet<Funding>>>,
+    /// Carries the xpub, not just the account identity, so the rewrite
+    /// resupplies the entry rather than betting on a shared persister buffer
+    /// this call site does not own — and so a terminal failure only evicts an
+    /// account still carrying the xpub whose write was lost.
+    ///
+    /// Entries are dropped when the write succeeds, when it fails terminally,
+    /// and when the wallet is removed ([`Self::forget_wallet_local_state`]) —
+    /// a stale entry would otherwise be inherited by a same-seed re-import,
+    /// which computes the same `WalletId`.
+    buffered_account_registrations: std::sync::Mutex<
+        std::collections::BTreeMap<
+            WalletId,
+            std::collections::BTreeMap<Funding, dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey>,
+        >,
+    >,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -1124,6 +1133,37 @@ impl WalletBackend {
         self.inner.persist_faults.has_staged_changeset()
     }
 
+    /// Drop the staged changeset the way an unrelated writer's terminal flush
+    /// does — the buffer is shared per wallet, and its loss is never reported
+    /// to the account-registration caller.
+    #[cfg(test)]
+    pub(crate) fn discard_staged_registration_buffer(&self) {
+        self.inner.persist_faults.discard_staged();
+    }
+
+    /// Arm a one-shot foreign drain of the staged buffer immediately before the
+    /// `write`-th `store`/`flush` on the registration path. Write 1 is the
+    /// first attempt's `store`, so arming write 2 puts the drain in the
+    /// backoff window between the first attempt and its retry.
+    #[cfg(test)]
+    pub(crate) fn discard_staged_registration_buffer_before_write(&self, write: usize) {
+        self.inner.persist_faults.discard_staged_before_write(write);
+    }
+
+    /// `true` when a pending funding-account registration is recorded for this
+    /// wallet, awaiting a rewrite by the next provisioning attempt.
+    #[cfg(test)]
+    pub(crate) fn has_pending_account_registrations(&self, seed_hash: &WalletSeedHash) -> bool {
+        let Some(wallet_id) = self.registered_wallet_id(seed_hash) else {
+            return false;
+        };
+        self.inner
+            .buffered_account_registrations
+            .lock()
+            .map(|pending| pending.contains_key(&wallet_id))
+            .unwrap_or(false)
+    }
+
     /// Resolve one just-registered upstream wallet into the DET-keyed maps via
     /// the account-xpub fund-routing gate, identical in spirit to the gate the
     /// seedless loader applies per wallet.
@@ -1422,6 +1462,13 @@ impl WalletBackend {
             self.inner.id_map.write()?.remove(seed_hash);
             self.inner.wallets.write()?.remove(&wallet_id);
             self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);
+            // A same-seed re-import computes the same `WalletId`, so a pending
+            // registration left behind here would be inherited by the fresh
+            // wallet and rewritten against accounts it never provisioned.
+            self.inner
+                .buffered_account_registrations
+                .lock()?
+                .remove(&wallet_id);
         }
 
         match first_error {

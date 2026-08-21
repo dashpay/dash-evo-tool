@@ -542,31 +542,28 @@ impl AppContext {
     /// from the passed-in hint. Also registers the id in the Global
     /// enumeration index so the load-all paths can find it.
     ///
-    /// One exception to that overwrite: a `None` hint over an identity that
-    /// already has an association keeps it when the wallet store is *proven*
-    /// not to hold the matching unowned row
-    /// ([`TaskError::UnownedIdentityMirrorMissing`]). Upstream files one row
-    /// per identity and will not re-scope a wallet-owned one, so a
-    /// `wallet_hash: None` record written regardless would sit under that
-    /// wallet's `ON DELETE CASCADE` while claiming to be out of its reach —
-    /// removing the wallet would then take this record with it. The user is
-    /// told, because the stored record then disagrees with what was asked for
-    /// and only a retry (or loading the identity from its wallet) changes it:
-    /// the kept association takes the record out of the wallet-less set
+    /// One condition on that overwrite: `wallet_hash: None` is written only
+    /// against a *verified* unowned mirror — [`Self::mirror_identity_unowned`]
+    /// returning `Ok`, which means the wallet store was read back and holds
+    /// the wallet-free row. Upstream files one row per identity and will not
+    /// re-scope a wallet-owned one, so a `wallet_hash: None` record written
+    /// without that proof may sit under some wallet's `ON DELETE CASCADE`
+    /// while claiming to be out of its reach — removing that wallet would then
+    /// take this record with it.
+    ///
+    /// No mirror error carries the proof, so all of them take one path: keep
+    /// the identity's existing wallet link if it has one, and otherwise fail
+    /// with the mirror's own error, persisting nothing. Keeping a link is at
+    /// worst a **mislabel, not a loss** — if the mirror write was merely lost
+    /// (upstream swallows a persist failure into `Ok(())`, so a lost write and
+    /// a refused one are indistinguishable here) there is no upstream row for
+    /// any `ON DELETE CASCADE` to reach, and the identity keeps a wallet link
+    /// it may not deserve until the operation is retried. The user is told
+    /// either way, because the outcome differs from what was asked for and
+    /// only a retry — or loading the identity from its wallet — changes it: a
+    /// kept association takes the record out of the wallet-less set
     /// `AppContext::reconcile_unowned_identities` drives off, so no boot
     /// revisits it.
-    ///
-    /// Any *other* mirror failure — a wallet-store read that failed, so the
-    /// unowned row's absence is unproven — writes the wallet-less record the
-    /// caller asked for and leaves the mirror to that reconcile, which is the
-    /// best-effort contract every wallet-less insert has always had.
-    ///
-    /// Absence is all the readback proves; upstream also swallows a persist
-    /// failure into `Ok(())`, so a lost write is indistinguishable from a
-    /// refused one and keeps the link too. The residual is a **mislabel, not a
-    /// loss**: a write that never landed leaves no upstream row, so no wallet's
-    /// `ON DELETE CASCADE` reaches the record either way. The identity keeps a
-    /// wallet link it may not deserve until the operation is retried.
     ///
     /// The underlying k/v store offers no multi-key transaction, so the
     /// enumeration index is written *before* the blob. The ordering makes a
@@ -614,60 +611,52 @@ impl AppContext {
         };
         let identity_id = qualified_identity.identity.id();
         let id = identity_id.to_buffer();
+        // Mirror first: its outcome decides what to write (see this method's
+        // docs), and a refusal returns before the vault write below rather than
+        // stranding placeholders no record points at. An orphan mirror left by
+        // a failure of the writes below is withdrawn by the next boot's
+        // reconcile.
+        if wallet_link.is_none()
+            && let Err(error) = self.mirror_identity_unowned(qualified_identity)
+        {
+            match self.stored_identity_wallet_link(&identity_id)? {
+                Some(existing) => {
+                    wallet_link = Some(existing);
+                    // Logged here rather than left to the banner: a banner logs
+                    // only when a frame renders it, which never happens headless
+                    // (MCP/CLI) and need not happen in the GUI, where it is an
+                    // evictable toast. No boot revisits this record, so it gets
+                    // the durable record and a banner that stays put.
+                    tracing::warn!(
+                        identity_id = %identity_id,
+                        wallet = %hex::encode(existing.0),
+                        error = %error,
+                        "Identity kept its wallet link: the wallet store could not confirm a wallet-free row for it, so a wallet-free record would not be durable. Retry, or load the identity from the wallet that holds it."
+                    );
+                    let banner =
+                        MessageBanner::set_global(self.egui_ctx(), &error, MessageType::Warning);
+                    banner.with_details(error);
+                    banner.disable_auto_dismiss();
+                    self.egui_ctx().request_repaint();
+                }
+                // Nothing on file to keep instead, so a wallet-free record here
+                // would be this method's own invention. Refuse rather than
+                // persist a claim the wallet store contradicts.
+                None => {
+                    tracing::warn!(
+                        identity_id = %identity_id,
+                        error = %error,
+                        "Identity not stored: the wallet store could not confirm a wallet-free row for it, and no earlier wallet link is on file to keep instead. Retry, or load the identity from the wallet that holds it."
+                    );
+                    return Err(error);
+                }
+            }
+        }
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // the at-rest blob carries only `InVault` placeholders. A vault-write
         // failure aborts the insert (nothing is persisted).
         let qi_bytes =
             encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
-        // Mirror before the record is written, because its outcome decides what
-        // to write (see this method's docs). An orphan mirror left by a failure
-        // of the writes below is withdrawn by the next boot's reconcile.
-        if wallet_link.is_none()
-            && let Err(error) = self.mirror_identity_unowned(qualified_identity)
-        {
-            match error {
-                TaskError::UnownedIdentityMirrorMissing { .. } => {
-                    match self.stored_identity_wallet_link(&identity_id)? {
-                        Some(existing) => {
-                            wallet_link = Some(existing);
-                            // Logged here rather than left to the banner: a
-                            // banner logs only when a frame renders it, which
-                            // never happens headless (MCP/CLI) and need not
-                            // happen in the GUI, where it is an evictable
-                            // toast. This condition is permanent, so it gets
-                            // the durable record and a banner that stays put.
-                            tracing::warn!(
-                                identity_id = %identity_id,
-                                wallet = %hex::encode(existing.0),
-                                "Identity kept its wallet link: the wallet store holds no wallet-free row for it, so a wallet-free record would not be durable. Retry, or load the identity from the wallet that holds it."
-                            );
-                            let banner = MessageBanner::set_global(
-                                self.egui_ctx(),
-                                &error,
-                                MessageType::Warning,
-                            );
-                            banner.with_details(error);
-                            banner.disable_auto_dismiss();
-                            self.egui_ctx().request_repaint();
-                        }
-                        // No association to keep: this record is new here, so
-                        // the caller's request stands and the boot reconcile
-                        // reports the standing mismatch every boot.
-                        None => tracing::debug!(
-                            identity_id = %identity_id,
-                            "Wallet-less identity stored while the wallet store holds no wallet-free row for it"
-                        ),
-                    }
-                }
-                // Absence unproven, so the caller's request stands and the
-                // mirror is left to the reconcile — the pre-existing contract.
-                other => tracing::debug!(
-                    identity_id = %identity_id,
-                    error = %other,
-                    "Wallet-less identity not mirrored to the wallet store; will retry at next boot"
-                ),
-            }
-        }
         let (wallet_hash, wallet_index) = match wallet_link {
             Some((seed, idx)) => (Some(seed), Some(idx)),
             None => (None, None),
@@ -722,10 +711,11 @@ impl AppContext {
     /// wallet (the case the warning above flags as unexpected) takes the same
     /// path.
     ///
-    /// The error is passed through rather than reduced to a flag, because the
-    /// caller's decision turns on which failure this was — see
-    /// [`Self::insert_local_qualified_identity`]. The mirrored row carries none
-    /// of `qualified_identity`'s public keys — see
+    /// `Ok` is the only proof [`Self::insert_local_qualified_identity`] accepts
+    /// that a wallet-free record would be durable — no failure distinguishes a
+    /// refused row from a lost write — so the error is passed through for that
+    /// caller to report rather than reduced to a flag. The mirrored row carries
+    /// none of `qualified_identity`'s public keys — see
     /// [`WalletBackend::ensure_identity_unowned`](crate::wallet_backend::WalletBackend::ensure_identity_unowned)
     /// for why.
     ///
@@ -733,8 +723,8 @@ impl AppContext {
     /// only one — upstream swallowing its own persist failure — is recoverable,
     /// and each attempt rebuilds its manager from a fresh read, so the second
     /// is a real attempt rather than a re-reading of the first. A refused row
-    /// costs one extra no-op; a lost write costs the record its wallet-free
-    /// state for good, which is the trade this retry is priced against.
+    /// costs one extra no-op; a lost write costs the caller its insert, which
+    /// is the trade this retry is priced against.
     fn mirror_identity_unowned(
         &self,
         qualified_identity: &QualifiedIdentity,

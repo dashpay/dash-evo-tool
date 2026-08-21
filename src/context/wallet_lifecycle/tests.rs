@@ -5069,6 +5069,59 @@ async fn provisioning_two_funding_accounts_on_one_wallet_does_not_overlap() {
     backend.shutdown().await;
 }
 
+/// A pending registration must not outlive the wallet it belongs to.
+///
+/// `forget_wallet_local_state` is the synchronous cleanup path and cannot take
+/// the (async) provisioning lock, so a provisioning call already inside its
+/// retry window can still be running when the wallet is removed and record its
+/// marker afterwards. A same-seed re-import recomputes the identical
+/// `WalletId`, so that leftover would be inherited by the fresh wallet and
+/// rewritten against accounts it never provisioned — exactly what the prune
+/// exists to stop. Recording is therefore refused once the wallet is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pending_registration_recorded_after_wallet_removal_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xCAu8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "outlive").await;
+    let wallet_id = backend.registered_wallet_id(&seed_hash).expect("wallet id");
+
+    // Provision once so a real account xpub is available to record.
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect("provision identity funding accounts");
+    let account_xpub = backend
+        .identity_funding_account(&seed_hash, fault_topup_account_type())
+        .await
+        .expect("probe the funding account")
+        .expect("the top-up account must be live in memory")
+        .account_xpub;
+
+    backend
+        .forget_wallet_local_state(&seed_hash, Some(wallet_id))
+        .expect("forget wallet local state");
+
+    // The tail of a provisioning call that was still in flight when the wallet
+    // was removed: it reaches its bookkeeping after the prune has run.
+    backend
+        .record_pending_account_registration_for_test(wallet_id, FAULT_TOPUP_INDEX, account_xpub)
+        .expect("recording must not error, only decline");
+
+    assert!(
+        !backend.has_pending_account_registrations_for(wallet_id),
+        "a pending registration recorded after the wallet was removed outlives \
+         it, and a same-seed re-import inherits it",
+    );
+
+    backend.shutdown().await;
+}
+
 /// Identity index the persist-failure tests provision a top-up account for.
 ///
 /// Per-index top-up accounts are the funding accounts DET actually creates:

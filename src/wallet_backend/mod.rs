@@ -1215,6 +1215,15 @@ impl WalletBackend {
         let Some(wallet_id) = self.registered_wallet_id(seed_hash) else {
             return false;
         };
+        self.has_pending_account_registrations_for(wallet_id)
+    }
+
+    /// As [`Self::has_pending_account_registrations`], but keyed by the
+    /// upstream id. A removed wallet is gone from `id_map`, so the seed-hash
+    /// form cannot see leftovers that outlived it — which is the state worth
+    /// asserting after a removal.
+    #[cfg(test)]
+    pub(crate) fn has_pending_account_registrations_for(&self, wallet_id: WalletId) -> bool {
         self.inner
             .buffered_account_registrations
             .lock()
@@ -1523,6 +1532,13 @@ impl WalletBackend {
             // A same-seed re-import computes the same `WalletId`, so a pending
             // registration left behind here would be inherited by the fresh
             // wallet and rewritten against accounts it never provisioned.
+            //
+            // Order matters: `wallets` is cleared above BEFORE this prune, and
+            // `mark_account_registrations_staged` checks `wallets` while
+            // holding this same lock. That pairing is what stops a
+            // provisioning call still inside its retry window from recording a
+            // marker that outlives the wallet — this path is synchronous and
+            // cannot take the wallet's async provisioning lock.
             self.inner
                 .buffered_account_registrations
                 .lock()?

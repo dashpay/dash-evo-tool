@@ -804,13 +804,50 @@ impl WalletBackend {
         wallet_id: WalletId,
         pending: &std::collections::BTreeMap<Funding, ExtendedPubKey>,
     ) -> Result<(), TaskError> {
-        self.inner
-            .buffered_account_registrations
-            .lock()?
+        let mut buffered = self.inner.buffered_account_registrations.lock()?;
+
+        // Declining for a wallet that is gone is what keeps a pending
+        // registration from outliving it — `forget_wallet_local_state` is the
+        // synchronous cleanup path and cannot take the (async) provisioning
+        // lock, so a call already inside its retry window can reach this point
+        // after the removal has pruned. A same-seed re-import recomputes the
+        // identical `WalletId` and would inherit the leftover.
+        //
+        // Sound for every interleaving because removal drops the wallet from
+        // `Inner::wallets` BEFORE pruning here, and this liveness check is
+        // taken while holding the pending-set lock the prune also needs:
+        // seeing the wallet still present means the prune has not run yet and
+        // must wait for this lock, so it will remove what is inserted below;
+        // seeing it absent means the removal already happened and there is
+        // nothing worth recording.
+        if !self.inner.wallets.read()?.contains_key(&wallet_id) {
+            tracing::debug!(
+                wallet = %hex::encode(wallet_id),
+                "declining to record a pending identity-funding registration for a removed wallet"
+            );
+            return Ok(());
+        }
+
+        buffered
             .entry(wallet_id)
             .or_default()
             .extend(pending.iter().map(|(f, x)| (*f, *x)));
         Ok(())
+    }
+
+    /// Record a pending funding-account registration through the real
+    /// bookkeeping path, so a test can drive the ordering a concurrent
+    /// provisioning would produce without racing it.
+    #[cfg(test)]
+    pub(crate) fn record_pending_account_registration_for_test(
+        &self,
+        wallet_id: WalletId,
+        registration_index: u32,
+        account_xpub: ExtendedPubKey,
+    ) -> Result<(), TaskError> {
+        let pending =
+            std::collections::BTreeMap::from([(Funding::TopUp(registration_index), account_xpub)]);
+        self.mark_account_registrations_staged(wallet_id, &pending)
     }
 
     /// Forget the given registrations, once they are durable or definitively

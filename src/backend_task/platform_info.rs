@@ -721,6 +721,7 @@ impl AppContext {
                     having: Vec::new(),
                     order_by_clauses: vec![],
                     limit: 50,
+                    offset: None,
                     start: None,
                 };
 
@@ -785,6 +786,7 @@ impl AppContext {
                         },
                     ],
                     limit: 100,
+                    offset: None,
                     start: None,
                 };
 
@@ -895,6 +897,7 @@ impl AppContext {
                     having: Vec::new(),
                     order_by_clauses,
                     limit: page_limit,
+                    offset: None,
                     start,
                 };
 

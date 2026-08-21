@@ -1674,22 +1674,16 @@ impl WalletBackend {
         }
         // `pwm.shutdown()` quiesces the periodic coordinators — draining any
         // in-flight pass and its persister / host-callback fan-out — then drains
-        // the wallet-event adapter task. Best-effort: a non-clean report used to
-        // flag a still-live worker or orphan, which teardown proceeds past
-        // regardless — log it rather than surface it.
-        //
-        // TODO(platform-pr3954): `shutdown()` returns `()` at this rev (no
-        // clean-shutdown report type yet) — the report check below is
-        // commented out rather than dropped outright; restore once platform
-        // re-adds the report type. User-confirmed removal of the
-        // shutdown-failure warning log for this rev.
-        self.inner.pwm.shutdown().await;
-        // if !report.all_clean() {
-        //     tracing::warn!(
-        //         ?report,
-        //         "Wallet manager shutdown did not complete cleanly; continuing teardown"
-        //     );
-        // }
+        // the wallet-event adapter task. Best-effort: a non-clean report flags a
+        // still-live worker or orphan, which teardown proceeds past regardless —
+        // log it rather than surface it.
+        let report = self.inner.pwm.shutdown().await;
+        if !report.all_clean() {
+            tracing::warn!(
+                ?report,
+                "Wallet manager shutdown did not complete cleanly; continuing teardown"
+            );
+        }
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -1740,9 +1734,24 @@ impl WalletBackend {
         // 2. Quiesce the coordinators (consumers) directly — do NOT call
         //    `pwm.shutdown()`, which would also tear down the non-restartable
         //    wallet-event adapter.
-        self.inner.pwm.platform_address_sync_arc().quiesce().await;
-        self.inner.pwm.identity_sync_arc().quiesce().await;
-        self.inner.pwm.shielded_sync_arc().quiesce().await;
+        //    A coordinator that does not drain within its budget leaves its
+        //    upstream quiescing gate closed, so the reconnect cannot restart
+        //    it — name the one that wedged instead of reconnecting silently.
+        if !self.inner.pwm.platform_address_sync_arc().quiesce().await {
+            tracing::warn!(
+                "Platform address sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
+        if !self.inner.pwm.identity_sync_arc().quiesce().await {
+            tracing::warn!(
+                "Identity sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
+        if !self.inner.pwm.shielded_sync_arc().quiesce().await {
+            tracing::warn!(
+                "Shielded sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
         // 3. Re-arm the DET start gates for the next start() on this backend.
         self.inner.start_latch.reset();
         self.inner.coordinator_gate.reset();
@@ -2869,10 +2878,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         },
 
         // Every remaining variant → generic WalletBackend wrapper.
-        //
-        // TODO(platform-pr3954): `ShieldedShutdownIncomplete` doesn't exist on
-        // `PlatformWalletError` at this rev; it belongs in this bucket once
-        // platform re-adds it.
         other @ (P::WalletCreation(_)
         | P::PlatformNodePool(_)
         | P::PersisterLoad(_)
@@ -2924,7 +2929,21 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
-        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
+        | P::ShieldedKeyDerivation(_)
+        | P::PlatformShieldCapacityExceeded { .. }
+        | P::CorePooledInsufficientFunds { .. }
+        | P::InsufficientIdentityCredits { .. }
+        | P::IdentityDiscoveryIncomplete { .. }
+        | P::DpnsNameNotFound { .. }
+        | P::ContestedNameNotTradable { .. }
+        | P::DocumentNotForSale { .. }
+        | P::DocumentPriceChanged { .. }
+        | P::InvalidParameter(_)
+        | P::MessageSigningAddressInvalid { .. }
+        | P::MessageSigningMessageInvalid { .. }
+        | P::MessageSigningKeyUnavailable { .. }
+        | P::MessageSigningFailed { .. }
+        | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
     }
@@ -3184,10 +3203,33 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // caller must not re-submit (the next sync reconciles).
         | P::TransactionBroadcastUnconfirmed(_)
         | P::ShieldedBroadcastUnconfirmed { .. }
-        | P::ShieldedSpendUnconfirmed { .. } => IdentityOpErrorKind::Other,
-        // TODO(platform-pr3954): `ShieldedShutdownIncomplete` doesn't exist on
-        // `PlatformWalletError` at this rev; it belongs in the `Other` bucket
-        // once platform re-adds it.
+        | P::ShieldedSpendUnconfirmed { .. }
+        // Funding and credit shortfalls, like their `CoreInsufficientFunds`
+        // sibling above: the submission never reached Platform.
+        | P::CorePooledInsufficientFunds { .. }
+        | P::InsufficientIdentityCredits { .. }
+        | P::PlatformShieldCapacityExceeded { .. }
+        // DPNS / document-trading preconditions. No identity register or
+        // top-up reaches them, and none describes a Platform rejection of
+        // *this* op.
+        | P::DpnsNameNotFound { .. }
+        | P::ContestedNameNotTradable { .. }
+        | P::DocumentNotForSale { .. }
+        | P::DocumentPriceChanged { .. }
+        | P::InvalidParameter(_)
+        // Message signing is a wallet-local operation with no Platform
+        // submission at all.
+        | P::MessageSigningAddressInvalid { .. }
+        | P::MessageSigningMessageInvalid { .. }
+        | P::MessageSigningKeyUnavailable { .. }
+        | P::MessageSigningFailed { .. }
+        // A gap-limit scan that left probes unanswered means "we do not
+        // know", so it is not `NotManaged` (which asserts the identity is
+        // absent and must be reloaded); upstream's contract is to retry.
+        | P::IdentityDiscoveryIncomplete { .. }
+        // Background sync failed to quiesce — a shutdown fault, unrelated to
+        // whether this op reached Platform.
+        | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
     }
 }
 
@@ -3564,6 +3606,30 @@ mod tests {
         assert!(
             matches!(mapped, TaskError::WalletBackend { .. }),
             "Expected WalletBackend fallthrough, got: {mapped:?}"
+        );
+    }
+
+    /// An incomplete identity-discovery scan means "we do not know", not "this
+    /// identity is not in the wallet": it must not classify as `NotManaged`,
+    /// whose user-facing advice is to reload the identity.
+    #[test]
+    fn map_identity_register_error_discovery_incomplete_is_not_not_managed() {
+        let inner = platform_wallet::error::PlatformWalletError::IdentityDiscoveryIncomplete {
+            start_index: 0,
+            probed: 20,
+            failed_probes: 3,
+            source: Box::new(dash_sdk::Error::Config("no node reachable".to_string())),
+        };
+        assert!(
+            matches!(identity_op_error_kind(&inner), IdentityOpErrorKind::Other),
+            "an unanswered discovery probe must not claim the identity is unmanaged"
+        );
+        assert!(
+            matches!(
+                map_identity_register_error(inner),
+                TaskError::WalletBackend { .. }
+            ),
+            "the register façade wraps it in the generic envelope"
         );
     }
 

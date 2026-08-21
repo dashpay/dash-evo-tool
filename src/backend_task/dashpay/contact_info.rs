@@ -510,7 +510,7 @@ async fn lookup_contact_info(
     let mut query = DocumentQuery::new(dashpay_contract, "contactInfo").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay contactInfo",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         }
     })?;
     query = query.with_where(WhereClause {

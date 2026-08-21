@@ -129,12 +129,11 @@ fn dry_run_asset_lock_amount(
 // bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget,
 // which closes rust-dashcore#918. The aggregate quote still has a deadline
 // because it performs many individually bounded selections under a write lock.
-// Confirmed present: `platform`'s `key-wallet` dep tracks rust-dashcore's
-// `dash-evo-tool` integration branch (rev 34f0921e, which merges #919's
-// source branch directly), and this crate's own `Cargo.toml` pins `platform`
-// to rev a18bd1586858ef680124e150caad6a7dc21d0b64 (feat/platform-wallet-
-// storage-rehydration tip) or later, which resolves to that same key-wallet
-// rev or newer. If either pin ever moves backward, re-verify this holds.
+// Confirmed present: this crate's `Cargo.toml` pins `platform` to rev
+// 993584a6b53831026f2f5fe30f21a8f4d14a06e8, whose `key-wallet` dep pins
+// rust-dashcore rev 173ffac0, and that rev's `coin_selection.rs` is
+// byte-identical to the one carrying #919. Re-verify whenever either pin
+// moves — the key-wallet reference is a rev, so it cannot drift on its own.
 fn dry_run_asset_lock_amount_with_strategy(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
@@ -152,20 +151,24 @@ fn dry_run_asset_lock_amount_with_strategy(
                 script_pubkey: ScriptBuf::from_bytes(vec![0; P2PKH_CREDIT_OUTPUT_SCRIPT_LEN]),
             }]),
         ))
-        .set_funding(&mut dry_run_account, account);
+        .add_funding(&mut dry_run_account, account);
     if let Some(strategy) = selection_strategy {
         builder = builder.set_selection_strategy(strategy);
     }
-    let result = builder.require_final_inputs().build_unsigned();
+    let result = builder.require_final_inputs().build_unsigned_reserved();
 
     match result {
-        Ok((transaction, _)) => {
+        Ok((transaction, _, reservation)) => {
             // `ManagedCoreFundsAccount::clone` shares the live `ReservationSet`
             // (`Arc<Mutex<_>>`; source of truth: key-wallet's
             // `managed_account/reservation.rs` doc comment). Every successful probe
             // reserves real wallet outpoints, so this call MUST run on every success
             // path; deleting it silently strands real UTXOs for the 24-block TTL.
-            dry_run_account.release_reservation(&transaction);
+            // The owner guard frees only what this build reserved, never a
+            // concurrent build's re-reservation of the same outpoint.
+            if let Some(token) = reservation {
+                dry_run_account.release_reservation_if_owner(&transaction, token);
+            }
             Ok(AssetLockDryRun::Builds)
         }
         Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {
@@ -203,18 +206,22 @@ fn asset_lock_drain_ceiling(
                 script_pubkey: ScriptBuf::from_bytes(vec![0; P2PKH_CREDIT_OUTPUT_SCRIPT_LEN]),
             }]),
         ))
-        .set_funding(&mut dry_run_account, account)
+        .add_funding(&mut dry_run_account, account)
         .require_final_inputs()
-        .build_unsigned();
+        .build_unsigned_reserved();
 
     match result {
-        Ok((transaction, _)) => {
+        Ok((transaction, _, reservation)) => {
             // `ManagedCoreFundsAccount::clone` shares the live `ReservationSet`
             // (`Arc<Mutex<_>>`; source of truth: key-wallet's
             // `managed_account/reservation.rs` doc comment). Every successful probe
             // reserves real wallet outpoints, so this call MUST run on every success
             // path; deleting it silently strands real UTXOs for the 24-block TTL.
-            dry_run_account.release_reservation(&transaction);
+            // The owner guard frees only what this build reserved, never a
+            // concurrent build's re-reservation of the same outpoint.
+            if let Some(token) = reservation {
+                dry_run_account.release_reservation_if_owner(&transaction, token);
+            }
             transaction
                 .output
                 .first()
@@ -700,7 +707,7 @@ impl WalletBackend {
                 let wallet_id = wallet.wallet_id();
 
                 // Assemble and sign under one uninterrupted hold of the
-                // wallet-manager write lock: `set_funding` reads the funding
+                // wallet-manager write lock: `add_funding` reads the funding
                 // account's free UTXOs and `build_signed` reserves the ones it
                 // selects. Holding the lock across both closes the
                 // read-then-reserve window a concurrent build could otherwise use
@@ -726,7 +733,7 @@ impl WalletBackend {
                     let mut builder = TransactionBuilder::new()
                         .set_current_height(current_height)
                         .set_selection_strategy(SelectionStrategy::LargestFirst)
-                        .set_funding(managed_account, account);
+                        .add_funding(managed_account, account);
                     for (address, amount) in &recipients {
                         builder = builder.add_output(address, *amount);
                     }
@@ -1018,13 +1025,13 @@ mod tests {
             .expect("the balance covers the Max-send fee reserve");
 
         assert_eq!(max_amount, 9_999_780);
-        let (transaction, fee) = TransactionBuilder::new()
+        let (transaction, fee, _no_reservation) = TransactionBuilder::new()
             .set_current_height(200)
             .set_selection_strategy(SelectionStrategy::LargestFirst)
             .add_inputs([utxo])
             .add_output(&address, max_amount)
             .set_change_address(address)
-            .build_unsigned()
+            .build_unsigned_reserved()
             .expect("a Max send must fold the zero/dust remainder into its fee");
 
         assert_eq!(transaction.output.len(), 1);
@@ -1089,7 +1096,7 @@ mod tests {
         );
 
         let mut dry_run_account = managed_account.clone();
-        let (transaction, _) = TransactionBuilder::new()
+        let (transaction, _, reservation) = TransactionBuilder::new()
             .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
             .set_current_height(CURRENT_HEIGHT)
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
@@ -1098,11 +1105,13 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut dry_run_account, account)
+            .add_funding(&mut dry_run_account, account)
             .require_final_inputs()
-            .build_unsigned()
+            .build_unsigned_reserved()
             .expect("quoted Max must build through the real asset-lock selector");
-        dry_run_account.release_reservation(&transaction);
+        if let Some(token) = reservation {
+            dry_run_account.release_reservation_if_owner(&transaction, token);
+        }
 
         let mut one_over_account = managed_account.clone();
         let one_over = TransactionBuilder::new()
@@ -1114,9 +1123,9 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut one_over_account, account)
+            .add_funding(&mut one_over_account, account)
             .require_final_inputs()
-            .build_unsigned();
+            .build_unsigned_reserved();
         assert!(
             one_over.is_err(),
             "one duff above the quoted Max must fail through the real selector"
@@ -1132,9 +1141,9 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut overshoot_account, account)
+            .add_funding(&mut overshoot_account, account)
             .require_final_inputs()
-            .build_unsigned();
+            .build_unsigned_reserved();
         assert!(
             overshoot.is_err(),
             "the display-only snapshot amount must reproduce the builder rejection"
@@ -1206,7 +1215,7 @@ mod tests {
         );
 
         let mut dry_run_account = managed_account.clone();
-        let (transaction, _) = TransactionBuilder::new()
+        let (transaction, _, reservation) = TransactionBuilder::new()
             .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
             .set_current_height(CURRENT_HEIGHT)
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
@@ -1215,15 +1224,17 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut dry_run_account, account)
+            .add_funding(&mut dry_run_account, account)
             .require_final_inputs()
-            .build_unsigned()
+            .build_unsigned_reserved()
             .expect("quoted Max must build from an in-cap subset");
         assert!(
             transaction.input.len() <= INPUT_CAP,
             "the achievable quote must respect the builder's input cap"
         );
-        dry_run_account.release_reservation(&transaction);
+        if let Some(token) = reservation {
+            dry_run_account.release_reservation_if_owner(&transaction, token);
+        }
 
         let mut one_over_account = managed_account.clone();
         let one_over = TransactionBuilder::new()
@@ -1235,9 +1246,9 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut one_over_account, account)
+            .add_funding(&mut one_over_account, account)
             .require_final_inputs()
-            .build_unsigned();
+            .build_unsigned_reserved();
         assert!(
             one_over.is_err(),
             "one duff above the quote must exceed the achievable in-cap subset"

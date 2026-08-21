@@ -76,6 +76,7 @@ impl ViewTokenClaimsScreen {
                 having: Vec::new(),
                 order_by_clauses: vec![],
                 limit: 0,
+                offset: None,
                 start: None,
             },
             fetch_status: FetchStatus::NotFetching,

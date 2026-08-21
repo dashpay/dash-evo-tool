@@ -110,6 +110,7 @@ impl AppContext {
             having: Vec::new(),
             order_by_clauses: vec![],
             limit: 1,
+            offset: None,
             start: None,
         };
         let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);

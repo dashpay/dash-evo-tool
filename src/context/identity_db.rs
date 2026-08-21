@@ -540,6 +540,14 @@ impl AppContext {
     /// from the passed-in hint. Also registers the id in the Global
     /// enumeration index so the load-all paths can find it.
     ///
+    /// One exception to that overwrite: a `None` hint over an identity that
+    /// already has one keeps the existing association unless the wallet store
+    /// accepts the matching unowned row. Upstream files one row per identity
+    /// and will not re-scope a wallet-owned one, so a `wallet_hash: None`
+    /// record written regardless would sit under that wallet's `ON DELETE
+    /// CASCADE` while claiming to be out of its reach — removing the wallet
+    /// would then take this record with it.
+    ///
     /// The underlying k/v store offers no multi-key transaction, so the
     /// enumeration index is written *before* the blob. The ordering makes a
     /// mid-operation failure self-healing: a dangling index entry that points
@@ -561,8 +569,8 @@ impl AppContext {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
-        let (wallet_hash, wallet_index) = match wallet_and_identity_id_info {
-            Some((seed, idx)) => (Some(*seed), Some(*idx)),
+        let mut wallet_link = match wallet_and_identity_id_info {
+            Some((seed, idx)) => Some((*seed, *idx)),
             None => {
                 // Masternodes and evonodes are loaded by ProTxHash and have no
                 // associated HD wallet by design, so a missing wallet is normal
@@ -581,15 +589,34 @@ impl AppContext {
                         "saving masternode/evonode identity without wallet (expected)",
                     );
                 }
-                (None, None)
+                None
             }
         };
-        let id = qualified_identity.identity.id().to_buffer();
+        let identity_id = qualified_identity.identity.id();
+        let id = identity_id.to_buffer();
         // Vault-first: move any plaintext keys into the vault before encoding, so
         // the at-rest blob carries only `InVault` placeholders. A vault-write
         // failure aborts the insert (nothing is persisted).
         let qi_bytes =
             encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        // Mirror before the record is written, because its outcome decides what
+        // to write (see this method's docs). An orphan mirror left by a failure
+        // of the writes below is withdrawn by the next boot's reconcile.
+        if wallet_link.is_none()
+            && !self.mirror_identity_unowned(qualified_identity)
+            && let Some(existing) = self.stored_identity_wallet_link(&identity_id)?
+        {
+            tracing::warn!(
+                identity_id = %identity_id,
+                wallet = %hex::encode(existing.0),
+                "Identity kept its wallet association: the wallet store still files it under that wallet, so a wallet-less record could not be made durable",
+            );
+            wallet_link = Some(existing);
+        }
+        let (wallet_hash, wallet_index) = match wallet_link {
+            Some((seed, idx)) => (Some(seed), Some(idx)),
+            None => (None, None),
+        };
         let stored = StoredQualifiedIdentity {
             qi_bytes,
             status: qualified_identity.status.as_u8(),
@@ -600,9 +627,6 @@ impl AppContext {
         index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
             .map_err(identity_err)?;
-        if wallet_hash.is_none() {
-            self.register_unowned_identity_upstream(qualified_identity);
-        }
         Ok(())
     }
 
@@ -643,21 +667,31 @@ impl AppContext {
     /// wallet (the case the warning above flags as unexpected) takes the same
     /// path.
     ///
-    /// Best-effort: the sidecar record above is the authoritative one, and
-    /// [`AppContext::reconcile_unowned_identities`] retries at the next boot.
+    /// Returns whether the wallet store now holds that row — `false` when no
+    /// backend is wired yet, when the write failed, and when upstream still
+    /// files the identity under a wallet. A `false` costs no data (DET's own
+    /// record stays authoritative and
+    /// [`AppContext::reconcile_unowned_identities`] retries at the next boot)
+    /// but it does decide what that record may claim about the identity's
+    /// wallet association.
+    ///
     /// The mirrored row carries none of `qualified_identity`'s public keys —
     /// see [`WalletBackend::ensure_identity_unowned`](crate::wallet_backend::WalletBackend::ensure_identity_unowned)
     /// for why.
-    fn register_unowned_identity_upstream(&self, qualified_identity: &QualifiedIdentity) {
+    fn mirror_identity_unowned(&self, qualified_identity: &QualifiedIdentity) -> bool {
         let Ok(backend) = self.wallet_backend() else {
-            return;
+            return false;
         };
-        if let Err(error) = backend.ensure_identity_unowned(&qualified_identity.identity) {
-            tracing::debug!(
-                identity_id = %qualified_identity.identity.id(),
-                %error,
-                "Wallet-less identity not mirrored to the wallet store; will retry at next boot"
-            );
+        match backend.ensure_identity_unowned(&qualified_identity.identity) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::debug!(
+                    identity_id = %qualified_identity.identity.id(),
+                    %error,
+                    "Wallet-less identity not mirrored to the wallet store; will retry at next boot"
+                );
+                false
+            }
         }
     }
 
@@ -871,7 +905,7 @@ impl AppContext {
     /// Masternodes-page card list and the page-scoped masternode pill source.
     /// The complement of [`Self::load_local_user_identities`] over the FR-6 type
     /// boundary (`identity_type`) — a different partition from
-    /// [`Self::load_local_wallet_less_identities`] (`wallet_hash`); the two
+    /// [`Self::local_wallet_less_identity_ids`] (`wallet_hash`); the two
     /// sets need not match. Filters the hydrated full load, so each card's
     /// top-up history is available (unlike the pre-decode
     /// [`Self::load_local_voting_identities`], which is un-hydrated and named
@@ -951,6 +985,33 @@ impl AppContext {
             .get::<StoredQualifiedIdentity>(DetScope::Identity(&id.to_buffer()), IDENTITY_KEY)
             .map_err(identity_err)?
             .and_then(|stored| Some((stored.wallet_hash?, stored.wallet_index?))))
+    }
+
+    /// Whether `id` is one of DET's wallet-less identities right now — the
+    /// single-id form of [`Self::local_wallet_less_identity_ids`], and read
+    /// the same way: on the enumeration index (the roster, so an id dropped
+    /// from it is gone whatever its blob still says) and then on the record's
+    /// `wallet_hash`.
+    ///
+    /// The boot reconcile re-checks this before withdrawing an upstream
+    /// unowned registration: an identity stored after its id scan must keep
+    /// its registration, while one that has since gained a wallet must still
+    /// lose it — a distinction [`Self::has_local_qualified_identity`] cannot
+    /// make. Two wrapper reads, the roster and the record: no blob decode, no
+    /// vault touch.
+    pub(crate) fn stored_identity_is_wallet_less(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<bool, TaskError> {
+        let kv = self.det_kv()?;
+        let id_buf = id.to_buffer();
+        if !load_identity_index(&kv)?.contains(&id_buf) {
+            return Ok(false);
+        }
+        Ok(kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .is_some_and(|stored| stored.wallet_hash.is_none()))
     }
 
     /// Returns whether an identity blob is stored under `id` without decoding it.
@@ -1163,8 +1224,10 @@ impl AppContext {
     /// its mirrored row in the upstream unowned scope, via
     /// [`WalletBackend::remove_unowned_identity`](crate::wallet_backend::WalletBackend::remove_unowned_identity)
     /// below — so upstream stops advertising a node this device no longer
-    /// has. Best-effort and, unlike registration, not retried on failure: a
-    /// tombstone lost here stays lost until the identity is re-inserted.
+    /// has. Best-effort, and retried like registration is: a tombstone lost
+    /// here is re-issued by the next boot's
+    /// `AppContext::reconcile_unowned_identities`, which withdraws every
+    /// unowned registration whose sidecar record is gone.
     pub fn delete_local_qualified_identity(
         &self,
         identifier: &Identifier,

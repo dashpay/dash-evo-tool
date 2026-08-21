@@ -349,6 +349,19 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// A wallet-less record was asked for an identity the wallet store still
+    /// files under a wallet. Upstream's out-of-wallet upsert skips such a row
+    /// instead of re-scoping it, so the durable unowned mirror the caller
+    /// needs cannot be created. Carries the identity id (data, not a message).
+    #[error(
+        "Identity {identity_id} is still linked to a wallet on this device, so it cannot be saved \
+         as belonging to no wallet. Open the wallet that holds it and load the identity from \
+         there, or remove that wallet first."
+    )]
+    IdentityStillWalletOwnedUpstream {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
     /// The wallet storage backend could not read or write wallet data.
     #[error(
         "Could not access wallet data. Check available disk space and restart the application."

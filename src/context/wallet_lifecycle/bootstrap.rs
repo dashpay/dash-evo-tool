@@ -290,13 +290,32 @@ impl AppContext {
     /// with no wallets at all, which is exactly the masternode-operator case.
     /// Best-effort and idempotent — a failure is logged and retried next boot.
     ///
-    /// Cheap on a steady-state boot: both sides are compared by id only
-    /// ([`AppContext::local_wallet_less_identity_ids`](crate::context::AppContext::local_wallet_less_identity_ids)
-    /// and [`WalletBackend::unowned_identity_ids`](crate::wallet_backend::WalletBackend::unowned_identity_ids)
-    /// are both pre-decode reads), so a full identity is hydrated — decoding
-    /// the blob and touching the secret vault — only for an id this pass is
-    /// actually about to register.
+    /// Compared by id on both sides, so DET hydrates a full identity —
+    /// decoding the blob and touching the secret vault — only for an id this
+    /// pass is actually about to register:
+    /// [`AppContext::local_wallet_less_identity_ids`](crate::context::AppContext::local_wallet_less_identity_ids)
+    /// is a pre-decode scan. The upstream half is not:
+    /// [`WalletBackend::unowned_identity_ids`](crate::wallet_backend::WalletBackend::unowned_identity_ids)
+    /// decodes each row it then reduces to an id, because upstream exposes no
+    /// id-only read of the unowned scope — one row per wallet-less identity,
+    /// so the cost stays with this device's node count.
+    ///
+    /// Neither snapshot is taken atomically with the other, so an identity
+    /// stored between them reads as a stale registration; the withdrawal loop
+    /// re-checks each candidate under that identity's record guard instead of
+    /// trusting the snapshot.
     pub(super) fn reconcile_unowned_identities(&self, backend: &WalletBackend) {
+        self.reconcile_unowned_identities_seamed(backend, || {});
+    }
+
+    /// [`Self::reconcile_unowned_identities`] with a seam between its two id
+    /// snapshots — the window a concurrent insert lands in. Production passes
+    /// a no-op; the race test stores an identity there.
+    pub(super) fn reconcile_unowned_identities_seamed(
+        &self,
+        backend: &WalletBackend,
+        between_snapshots: impl FnOnce(),
+    ) {
         let wallet_less = match self.local_wallet_less_identity_ids() {
             Ok(ids) => ids,
             Err(error) => {
@@ -307,6 +326,7 @@ impl AppContext {
                 return;
             }
         };
+        between_snapshots();
         let registered = match backend.unowned_identity_ids() {
             Ok(ids) => ids,
             Err(error) => {
@@ -349,6 +369,27 @@ impl AppContext {
 
         let mut removed = 0usize;
         for id in registered.difference(&wallet_less) {
+            // Re-read under the guard `insert_local_qualified_identity` holds
+            // across both of its writes: a record stored since the id scan
+            // keeps its registration, while one that has since gained a wallet
+            // still loses it. A read failure keeps the registration — a stale
+            // row costs one more boot, a wrongly withdrawn one costs the node.
+            let lock = self.identity_record_lock(*id);
+            let _record_guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match self.stored_identity_is_wallet_less(id) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::debug!(
+                        identity = %id,
+                        %error,
+                        "Unowned-identity removal skipped; the sidecar re-check failed, will retry at next boot"
+                    );
+                    continue;
+                }
+            }
             match backend.remove_unowned_identity(id) {
                 Ok(()) => removed += 1,
                 Err(error) => tracing::debug!(

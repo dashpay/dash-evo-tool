@@ -175,6 +175,13 @@ impl WalletBackend {
     /// own cheap sidecar id scan on both sides — registering what's missing
     /// here and withdrawing what's missing there — so this is also the read
     /// half of that reconcile's two-way contract, not only a test accessor.
+    ///
+    /// Ids are all the caller gets, but not all this costs: upstream exposes
+    /// no id-only door (`SqlitePersister::load_unowned_identities` is the only
+    /// public read of the unowned scope), so every row is decoded into a full
+    /// `ManagedIdentity` — keys and contacts merged in — and then dropped.
+    /// Acceptable because the unowned scope holds one row per wallet-less
+    /// identity, i.e. this device's masternode/evonode nodes.
     pub(crate) fn unowned_identity_ids(
         &self,
     ) -> Result<std::collections::BTreeSet<dash_sdk::platform::Identifier>, TaskError> {
@@ -217,14 +224,23 @@ impl WalletBackend {
     /// Returns `true` when this call newly registered the identity, `false`
     /// when it was already in the unowned scope — matching
     /// [`Self::ensure_identity_managed`], so a reconcile driver can log only
-    /// real changes instead of every attempt.
+    /// real changes instead of every attempt. A `true` is a *verified* one:
+    /// the row is read back before it is claimed (see Errors).
     ///
     /// # Errors
-    /// [`TaskError::WalletStorage`] if reading back the existing unowned set
-    /// fails; [`TaskError::WalletBackend`] on an upstream add failure —
-    /// currently unreachable in practice, since upstream's
-    /// `add_out_of_wallet_identity` returns `Ok` unconditionally, but that is
-    /// an implementation detail of the pinned rev, not a documented contract.
+    /// [`TaskError::IdentityStillWalletOwnedUpstream`] when the identity's row
+    /// is scoped to a real wallet. The upsert's
+    /// `WHERE identities.wallet_id IS NULL OR identities.wallet_id IS excluded.wallet_id`
+    /// skips such a row and reports no error for the skip, and upstream offers
+    /// no re-scoping write, so only this readback separates a durable mirror
+    /// from one that never landed. Paid on a registration only — the
+    /// already-registered fast path above returns before it.
+    ///
+    /// [`TaskError::WalletStorage`] if reading the unowned set fails;
+    /// [`TaskError::WalletBackend`] on an upstream add failure — currently
+    /// unreachable in practice, since upstream's `add_out_of_wallet_identity`
+    /// returns `Ok` unconditionally, but that is an implementation detail of
+    /// the pinned rev, not a documented contract.
     pub(crate) fn ensure_identity_unowned(
         &self,
         identity: &dash_sdk::platform::Identity,
@@ -236,10 +252,15 @@ impl WalletBackend {
         }
         manager
             .add_out_of_wallet_identity(identity.clone(), &self.unowned_scope_persister())
-            .map(|()| true)
             .map_err(|e| TaskError::WalletBackend {
                 source: Arc::new(e),
-            })
+            })?;
+        if !self.load_unowned_identities()?.contains_key(&identity.id()) {
+            return Err(TaskError::IdentityStillWalletOwnedUpstream {
+                identity_id: identity.id(),
+            });
+        }
+        Ok(true)
     }
 
     /// Withdraw an identity from the upstream store's unowned scope, mirroring
@@ -249,12 +270,13 @@ impl WalletBackend {
     /// Upstream records this as a tombstone rather than a row delete, so it
     /// cannot reach the identity's `meta_identity` rows.
     ///
-    /// Asymmetric with registration: nothing retries a failed call here — the
-    /// caller ([`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity))
-    /// only logs it, and the boot reconcile (`AppContext::reconcile_unowned_identities`)
-    /// only ever *adds*. A tombstone lost to a crash or storage error between
-    /// the sidecar delete and this call stays lost — upstream keeps
-    /// advertising a node this device no longer has.
+    /// Retried like registration is: the caller
+    /// ([`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity))
+    /// only logs a failure, but the boot reconcile
+    /// (`AppContext::reconcile_unowned_identities`) works both directions and
+    /// re-issues this call for every registration whose sidecar record is
+    /// gone. A tombstone lost to a crash or storage error between the sidecar
+    /// delete and this call therefore costs one boot, not the record.
     ///
     /// # Errors
     /// [`TaskError::WalletStorage`] if reading back the existing unowned set

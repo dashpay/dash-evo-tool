@@ -431,12 +431,73 @@ impl WalletBackend {
         }
         .ok_or(TaskError::WalletStateInconsistent)?;
 
+        let account_type = derived.account_type;
+        let account_xpub = derived.account_xpub;
+
         let managed = ManagedCoreKeysAccount::from_account(derived);
         info.core_wallet
             .accounts
             .insert_keys_bearing_account(managed)
             .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
-        Ok(())
+
+        // Persist the registration. `load()` rebuilds `Wallet.accounts` from
+        // `account_registrations` alone, and the upstream creator that would
+        // normally write this row skips it once both in-memory collections hold
+        // the account — which they do by the time it runs, because of the
+        // inserts above. Without this the account is memory-only: a restart
+        // between an asset-lock broadcast and its consumption cannot re-derive
+        // the credit-output path, stranding the lock and its funds.
+        self.persist_account_registration(&wallet_id, account_type, account_xpub)
+            .inspect_err(|_| {
+                // Roll back both sides so a retry re-creates and re-persists,
+                // rather than the `in_wallet && in_managed` guard above short-
+                // circuiting a persist that never happened.
+                match funding {
+                    Funding::Registration => {
+                        kw.accounts.identity_registration = None;
+                        info.core_wallet.accounts.identity_registration = None;
+                    }
+                    Funding::TopUp(registration_index) => {
+                        kw.accounts.identity_topup.remove(&registration_index);
+                        info.core_wallet
+                            .accounts
+                            .identity_topup
+                            .remove(&registration_index);
+                    }
+                    Funding::TopUpNotBound => {
+                        kw.accounts.identity_topup_not_bound = None;
+                        info.core_wallet.accounts.identity_topup_not_bound = None;
+                    }
+                }
+            })
+    }
+
+    /// Write one account registration through the upstream persister and flush
+    /// it, so a cold boot rebuilds the account from the manifest.
+    fn persist_account_registration(
+        &self,
+        wallet_id: &platform_wallet::wallet::platform_wallet::WalletId,
+        account_type: dash_sdk::dpp::key_wallet::AccountType,
+        account_xpub: dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
+    ) -> Result<(), TaskError> {
+        use platform_wallet::changeset::{
+            AccountRegistrationEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
+        };
+
+        let changeset = PlatformWalletChangeSet {
+            account_registrations: vec![AccountRegistrationEntry {
+                account_type,
+                account_xpub,
+            }],
+            ..Default::default()
+        };
+        self.inner
+            .wallet_persister
+            .store(*wallet_id, changeset)
+            .and_then(|()| self.inner.wallet_persister.flush(*wallet_id))
+            .map_err(|source| TaskError::IdentityFundingAccountPersistFailed {
+                source: Box::new(source),
+            })
     }
 
     /// Provision the identity-registration funding account and the per-

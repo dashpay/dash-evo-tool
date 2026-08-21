@@ -3786,6 +3786,82 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
     backend2.shutdown().await;
 }
 
+/// A provisioned identity top-up account must survive a restart.
+///
+/// `load()` rebuilds `Wallet.accounts` from `account_registrations` alone, and
+/// the upstream creator that would otherwise write that row skips it once both
+/// in-memory collections already hold the account — which DET's own
+/// provisioning puts there first. A memory-only account leaves a restart
+/// between an asset-lock broadcast and its consumption unable to re-derive the
+/// credit-output path, stranding the lock and the funds in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_provisioned_identity_topup_account_survives_a_restart() {
+    let _guard = backend_reopen_lock().await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let seed = [0xF3u8; 64];
+    let registration_index = 7u32;
+
+    let seed_hash = {
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+
+        let (ctx, sender) = offline_testnet_context_at(source_dir.path());
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire backend offline");
+        let backend = ctx.wallet_backend().expect("backend");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("upstream register");
+        backend
+            .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
+            .await
+            .expect("provision identity funding accounts");
+        backend.shutdown().await;
+        seed_hash
+    };
+
+    let cold_dir = tempfile::tempdir().expect("cold tempdir");
+    copy_dir_recursive(source_dir.path(), cold_dir.path());
+
+    // The manifest is the only thing `load()` rebuilds `Wallet.accounts` from,
+    // so assert the row itself rather than a downstream in-memory effect.
+    let persisted_topup_rows: i64 = rusqlite::Connection::open_with_flags(
+        wallet_database_path(cold_dir.path(), Network::Testnet),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open persisted store")
+    .query_row(
+        "SELECT COUNT(*) FROM account_registrations \
+         WHERE account_type = 'identity_topup' AND account_index = ?1",
+        [registration_index],
+        |row| row.get(0),
+    )
+    .expect("count persisted top-up registrations");
+    assert_eq!(
+        persisted_topup_rows, 1,
+        "the provisioned top-up account must be in the persisted manifest, or a \
+         broadcast asset lock cannot be resumed after a restart",
+    );
+
+    let (ctx2, sender2) = offline_testnet_context_at(cold_dir.path());
+    ctx2.ensure_wallet_backend(sender2)
+        .await
+        .expect("cold boot must load the persisted wallet");
+    let backend2 = ctx2.wallet_backend().expect("backend");
+    assert!(
+        backend2.is_wallet_registered(&seed_hash),
+        "the wallet must still come back registered with the extra account row",
+    );
+
+    backend2.shutdown().await;
+}
+
 /// A malformed Orchard viewing key must be isolated to its own wallet during
 /// the real seedless cold-boot load.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

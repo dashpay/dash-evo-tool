@@ -606,6 +606,36 @@ impl AppContext {
         Ok(())
     }
 
+    /// Test-only: write a wallet-less identity's sidecar record WITHOUT the
+    /// upstream unowned-scope mirror [`Self::insert_local_qualified_identity`]
+    /// always performs for one. Simulates the genuine pre-#955 on-disk shape
+    /// — a sidecar record that predates the mirror existing at all — which a
+    /// [`WalletBackend::remove_unowned_identity`](crate::wallet_backend::WalletBackend::remove_unowned_identity)
+    /// call cannot: that leaves a *tombstoned* upstream row (an add-then-
+    /// remove path), not the *absent* row (a row that was never added) an
+    /// upgrading pre-#955 install actually has, and upstream's upsert may
+    /// treat reviving a tombstone differently from a first insert.
+    #[cfg(test)]
+    pub(crate) fn insert_local_qualified_identity_sidecar_only(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        let id = qualified_identity.identity.id().to_buffer();
+        let qi_bytes =
+            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
+        let stored = StoredQualifiedIdentity {
+            qi_bytes,
+            status: qualified_identity.status.as_u8(),
+            identity_type: qualified_identity.identity_type.as_tag().to_string(),
+            wallet_hash: None,
+            wallet_index: None,
+        };
+        index_add_identity(&kv, &id)?;
+        kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+            .map_err(identity_err)
+    }
+
     /// Mirror a wallet-less identity into the wallet store's unowned scope, so
     /// upstream has a durable record of it instead of only DET's own sidecar
     /// holding it. Every wallet-less identity is mirrored here, not only
@@ -801,21 +831,40 @@ impl AppContext {
         })
     }
 
-    /// Load the DET-known identities that belong to no wallet — every sidecar
-    /// entry without a `wallet_hash`. Masternode/evonode nodes are the
-    /// expected case, but this partitions on `wallet_hash`, not
+    /// The ids of every DET-known identity that belongs to no wallet — every
+    /// sidecar entry without a `wallet_hash`. Masternode/evonode nodes are
+    /// the expected case, but this partitions on `wallet_hash`, not
     /// `identity_type` — **not** the same set as
     /// [`Self::load_local_masternode_identities`], which partitions on
     /// `identity_type` and can both include a wallet-owned node and exclude
-    /// a wallet-less `User` identity that this method would return. Drives
-    /// the boot reconcile that registers them in the wallet store's unowned
-    /// scope. Top-up history is intentionally not hydrated: the reconcile needs
-    /// only the identity itself.
-    pub(crate) fn load_local_wallet_less_identities(
+    /// a wallet-less `User` identity that this method would return.
+    ///
+    /// Cheap by design: reads only the un-hydrated [`StoredQualifiedIdentity`]
+    /// wrapper for each id in the Global enumeration index — no blob decode,
+    /// no vault key migration. Drives the boot reconcile
+    /// (`AppContext::reconcile_unowned_identities`), which diffs this set
+    /// against what's already registered upstream and hydrates
+    /// (via [`Self::get_local_qualified_identity`]) only the ids it actually
+    /// needs to act on — a steady-state boot with nothing to reconcile
+    /// touches neither the blob decoder nor the secret vault.
+    pub(crate) fn local_wallet_less_identity_ids(
         &self,
-    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        self.load_identities_filtered(&wallets, |s| s.wallet_hash.is_none())
+    ) -> std::result::Result<std::collections::BTreeSet<Identifier>, TaskError> {
+        let kv = self.det_kv()?;
+        let ids = load_identity_index(&kv)?;
+        let mut out = std::collections::BTreeSet::new();
+        for id in ids {
+            let Some(stored) = kv
+                .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
+                .map_err(identity_err)?
+            else {
+                continue;
+            };
+            if stored.wallet_hash.is_none() {
+                out.insert(Identifier::from(id));
+            }
+        }
+        Ok(out)
     }
 
     /// The masternode/evonode identities for the active network — the
@@ -1156,6 +1205,23 @@ impl AppContext {
             );
         }
         Ok(())
+    }
+
+    /// Test-only: remove `identifier` from the Global enumeration index
+    /// without touching the upstream unowned scope or any other
+    /// Identity-scoped data. Simulates a sidecar delete whose upstream
+    /// tombstone never landed — e.g. a crash between
+    /// [`Self::delete_local_qualified_identity`]'s sidecar drain and its
+    /// [`WalletBackend::remove_unowned_identity`](crate::wallet_backend::WalletBackend::remove_unowned_identity)
+    /// call, or the `wallet_backend()` guard above finding no backend wired
+    /// yet.
+    #[cfg(test)]
+    pub(crate) fn remove_local_qualified_identity_from_index_only(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        index_remove_identity(&kv, &identifier.to_buffer())
     }
 
     /// EAGER identity-key migration (dialog-free): move any plaintext

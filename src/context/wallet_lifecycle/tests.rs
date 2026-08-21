@@ -4408,6 +4408,36 @@ async fn storing_a_wallet_less_identity_registers_it_as_unowned() {
     backend.shutdown().await;
 }
 
+/// "Wallet-less" is not synonymous with "masternode/evonode": a wallet-less
+/// `IdentityType::User` — the case `insert_local_qualified_identity` flags
+/// with a `warn`-level "needs investigating" log as unexpected, e.g. a
+/// foreign identity looked up by id or DPNS name — is mirrored into the
+/// unowned scope exactly like a node identity is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wallet_less_user_identity_is_mirrored_unowned_too() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let orphan = wallet_owned_qualified_identity(None);
+    let orphan_id = identity_id_of(&orphan);
+    ctx.insert_local_qualified_identity(&orphan, &None)
+        .expect("insert wallet-less user identity");
+
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&orphan_id),
+        "a wallet-less User identity must be mirrored unowned too, not only \
+         masternode/evonode nodes"
+    );
+
+    backend.shutdown().await;
+}
+
 /// A wallet-owned identity stays out of the unowned scope: it belongs to its
 /// wallet, and an unowned row would be claimed by the first wallet to flush it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4429,6 +4459,59 @@ async fn storing_a_wallet_owned_identity_does_not_register_it_as_unowned() {
             .expect("read unowned identities")
             .is_empty(),
         "a wallet-owned identity must never enter the unowned scope"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The dangerous path `storing_a_wallet_owned_identity_does_not_register_it_as_unowned`
+/// doesn't reach: `insert_local_qualified_identity(&qi, &None)` against an
+/// identity that is ALREADY wallet-owned upstream. This is safe only because
+/// upstream's out-of-wallet upsert guards on `wallet_id IS NULL OR wallet_id
+/// IS excluded.wallet_id` and skips the row rather than erroring — nothing in
+/// DET pins that guarantee anywhere else, so this test is the one that would
+/// notice an upstream change to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn none_insert_of_a_wallet_owned_identity_does_not_disturb_the_upstream_row() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x56u8; 64]).await;
+
+    let owned = wallet_owned_qualified_identity(Some(0));
+    let owned_id = identity_id_of(&owned);
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+    backend
+        .ensure_identity_managed(&seed_hash, &owned.identity, 0)
+        .await
+        .expect("register with the upstream wallet manager");
+    assert_eq!(
+        backend
+            .resolved_managed_identity_id(&seed_hash, &owned_id)
+            .await,
+        Some(owned_id),
+        "precondition: the identity is managed by its owning wallet upstream"
+    );
+
+    ctx.insert_local_qualified_identity(&owned, &None)
+        .expect("re-insert with no wallet info");
+
+    assert!(
+        !backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&owned_id),
+        "an already wallet-owned identity must not enter the unowned scope"
+    );
+    assert_eq!(
+        backend
+            .resolved_managed_identity_id(&seed_hash, &owned_id)
+            .await,
+        Some(owned_id),
+        "the upstream wallet-owned row must be unaffected by the &None re-insert"
     );
 
     backend.shutdown().await;
@@ -4513,6 +4596,124 @@ async fn deleting_a_wallet_less_identity_withdraws_its_unowned_registration() {
     backend.shutdown().await;
 }
 
+/// The reconcile's removal half closes the gap a lost tombstone leaves: an
+/// upstream registration whose sidecar record is genuinely gone — simulating
+/// a crash between the sidecar delete and its upstream tombstone — is
+/// withdrawn on the next reconcile pass rather than advertised forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_withdraws_a_stale_registration_the_sidecar_no_longer_has() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let node = masternode_qualified_identity();
+    let node_id = identity_id_of(&node);
+    ctx.insert_local_qualified_identity(&node, &None)
+        .expect("insert masternode identity");
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&node_id),
+        "precondition: the node is registered unowned"
+    );
+
+    // Drop the sidecar record directly, bypassing `delete_local_qualified_identity`
+    // (which would also withdraw the registration synchronously) — the drift
+    // this reconcile pass exists to repair.
+    ctx.remove_local_qualified_identity_from_index_only(&node_id)
+        .expect("drop sidecar record");
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&node_id),
+        "precondition: the stale registration survives the sidecar-only removal"
+    );
+
+    ctx.reconcile_unowned_identities(&backend);
+
+    assert!(
+        !backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&node_id),
+        "the reconcile must withdraw a registration its sidecar no longer has"
+    );
+
+    backend.shutdown().await;
+}
+
+/// `WalletBackend::ensure_identity_unowned` is idempotent at the storage
+/// layer itself, not merely because a caller happens to pre-filter: a second
+/// call on an already-registered identity is a real no-op, `Ok(false)`, not
+/// a silent re-add.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_identity_unowned_second_call_is_a_real_no_op() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let node = masternode_qualified_identity();
+    assert!(
+        backend
+            .ensure_identity_unowned(&node.identity)
+            .expect("first registration"),
+        "the first call must newly register the identity"
+    );
+    assert!(
+        !backend
+            .ensure_identity_unowned(&node.identity)
+            .expect("second registration"),
+        "the second call on the same identity must be a no-op, not a re-add"
+    );
+
+    backend.shutdown().await;
+}
+
+/// An identity first written via `update_local_qualified_identity` —
+/// which preserves whatever wallet association it finds (none, for a
+/// record the index never learned about) and performs no upstream
+/// write-through itself, unlike `insert_local_qualified_identity` — is
+/// still picked up by the next boot reconcile rather than lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identity_first_written_via_update_is_picked_up_by_the_boot_reconcile() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let node = masternode_qualified_identity();
+    let node_id = identity_id_of(&node);
+    ctx.update_local_qualified_identity(&node)
+        .expect("update with no prior record");
+
+    assert!(
+        !backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&node_id),
+        "precondition: update_local_qualified_identity performs no write-through"
+    );
+
+    ctx.reconcile_unowned_identities(&backend);
+
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&node_id),
+        "the boot reconcile must pick up a record the update path never mirrored"
+    );
+
+    backend.shutdown().await;
+}
+
 /// Boot backfills a node whose DET record predates the unowned registration —
 /// every node already on a device that updates into this version — and
 /// re-running the reconcile changes nothing.
@@ -4528,13 +4729,12 @@ async fn reconcile_backfills_wallet_less_identities_and_is_idempotent() {
             .await
             .expect("ensure_wallet_backend should succeed offline");
         let backend = ctx.wallet_backend().expect("backend wired");
-        ctx.insert_local_qualified_identity(&node, &None)
-            .expect("insert masternode identity");
-        // Roll the store back to the pre-version shape: DET record present,
-        // no unowned registration.
-        backend
-            .remove_unowned_identity(&node_id)
-            .expect("withdraw the registration");
+        // The genuine pre-#955 on-disk shape: a sidecar record with no
+        // upstream mirror at all — a row that was never added, not one
+        // added then withdrawn. Every node already on a device that
+        // upgrades into this version looks exactly like this.
+        ctx.insert_local_qualified_identity_sidecar_only(&node)
+            .expect("insert masternode identity sidecar-only");
         assert!(
             !backend
                 .unowned_identity_ids()

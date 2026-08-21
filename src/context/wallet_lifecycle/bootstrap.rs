@@ -275,47 +275,68 @@ impl AppContext {
         }
     }
 
-    /// Register every DET-known wallet-less identity into the upstream
-    /// store's unowned scope, backfilling nodes stored before that
-    /// registration existed and retrying any whose write-through failed.
-    /// Masternode/evonode nodes are the expected case, but any wallet-less
-    /// identity DET stores takes this path.
+    /// Two-way reconcile between DET's wallet-less identities and the
+    /// upstream store's unowned scope: registers every DET-known wallet-less
+    /// identity upstream doesn't have yet (backfilling nodes stored before
+    /// that registration existed, and retrying any whose write-through
+    /// failed), and withdraws every upstream registration whose sidecar
+    /// record is gone — a tombstone lost to a crash or storage error between
+    /// [`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity)'s
+    /// synchronous attempt and its upstream write. Masternode/evonode nodes
+    /// are the expected case, but any wallet-less identity DET stores takes
+    /// this path.
     ///
     /// Wallet-independent by design: it runs once per boot even on an install
     /// with no wallets at all, which is exactly the masternode-operator case.
     /// Best-effort and idempotent — a failure is logged and retried next boot.
     ///
-    /// Add-only: nothing here withdraws a stale registration — that happens
-    /// synchronously, on delete, in
-    /// [`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity).
-    /// A withdrawal lost to a crash or storage error between that delete and
-    /// its upstream tombstone is not repaired by this pass; it only ever adds.
-    ///
-    /// `added` counts identities [`WalletBackend::ensure_identity_unowned`](crate::wallet_backend::WalletBackend::ensure_identity_unowned)
-    /// newly registered this pass — it returns `Ok(false)` for one already
-    /// present, matching [`Self::reconcile_managed_identities`]'s sibling
-    /// contract, so a no-op boot never inflates the count or logs.
+    /// Cheap on a steady-state boot: both sides are compared by id only
+    /// ([`AppContext::local_wallet_less_identity_ids`](crate::context::AppContext::local_wallet_less_identity_ids)
+    /// and [`WalletBackend::unowned_identity_ids`](crate::wallet_backend::WalletBackend::unowned_identity_ids)
+    /// are both pre-decode reads), so a full identity is hydrated — decoding
+    /// the blob and touching the secret vault — only for an id this pass is
+    /// actually about to register.
     pub(super) fn reconcile_unowned_identities(&self, backend: &WalletBackend) {
-        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        let identities = match self.load_local_wallet_less_identities() {
-            Ok(identities) => identities,
+        let wallet_less = match self.local_wallet_less_identity_ids() {
+            Ok(ids) => ids,
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "Unowned-identity reconcile skipped; will retry at next boot"
+                    "Unowned-identity reconcile skipped; sidecar id scan failed, will retry at next boot"
                 );
                 return;
             }
         };
-        let mut added = 0usize;
-        for qi in &identities {
-            match backend.ensure_identity_unowned(&qi.identity) {
-                Ok(true) => added += 1,
-                Ok(false) => {}
-                Err(error) => tracing::debug!(
-                    identity = %qi.identity.id(),
+        let registered = match backend.unowned_identity_ids() {
+            Ok(ids) => ids,
+            Err(error) => {
+                tracing::warn!(
                     %error,
-                    "Unowned-identity registration deferred; will retry at next boot"
+                    "Unowned-identity reconcile skipped; upstream unowned-scope read failed, will retry at next boot"
+                );
+                return;
+            }
+        };
+
+        let mut added = 0usize;
+        for id in wallet_less.difference(&registered) {
+            match self.get_local_qualified_identity(id) {
+                Ok(Some(qi)) => match backend.ensure_identity_unowned(&qi.identity) {
+                    Ok(true) => added += 1,
+                    Ok(false) => {}
+                    Err(error) => tracing::debug!(
+                        identity = %id,
+                        %error,
+                        "Unowned-identity registration deferred; will retry at next boot"
+                    ),
+                },
+                // Raced with a concurrent delete between the id scan above and
+                // here; nothing left to register.
+                Ok(None) => {}
+                Err(error) => tracing::debug!(
+                    identity = %id,
+                    %error,
+                    "Unowned-identity hydration failed; will retry at next boot"
                 ),
             }
         }
@@ -323,6 +344,24 @@ impl AppContext {
             tracing::info!(
                 added,
                 "Registered wallet-less identities with the wallet store"
+            );
+        }
+
+        let mut removed = 0usize;
+        for id in registered.difference(&wallet_less) {
+            match backend.remove_unowned_identity(id) {
+                Ok(()) => removed += 1,
+                Err(error) => tracing::debug!(
+                    identity = %id,
+                    %error,
+                    "Unowned-identity removal deferred; will retry at next boot"
+                ),
+            }
+        }
+        if removed > 0 {
+            tracing::info!(
+                removed,
+                "Withdrew stale wallet-less registrations from the wallet store"
             );
         }
     }

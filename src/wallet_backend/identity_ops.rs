@@ -165,17 +165,16 @@ impl WalletBackend {
         }
     }
 
-    /// Test-only: the ids of every identity in the upstream store that
-    /// belongs to no wallet — DET's wallet-less identities. Masternode/evonode
-    /// nodes are the expected case, but any identity
+    /// The ids of every identity in the upstream store that belongs to no
+    /// wallet — DET's wallet-less identities. Masternode/evonode nodes are
+    /// the expected case, but any identity
     /// [`AppContext::insert_local_qualified_identity`](crate::context::AppContext::insert_local_qualified_identity)
     /// stores without a wallet association lands here too.
     ///
-    /// No production caller: `AppContext::reconcile_unowned_identities` drives
-    /// its diff off [`Self::ensure_identity_unowned`]'s own return value
-    /// instead. Kept as the direct assertion surface for that mirror's tests,
-    /// matching [`Self::resolved_managed_identity_id`]'s precedent.
-    #[cfg(test)]
+    /// `AppContext::reconcile_unowned_identities` diffs this set against its
+    /// own cheap sidecar id scan on both sides — registering what's missing
+    /// here and withdrawing what's missing there — so this is also the read
+    /// half of that reconcile's two-way contract, not only a test accessor.
     pub(crate) fn unowned_identity_ids(
         &self,
     ) -> Result<std::collections::BTreeSet<dash_sdk::platform::Identifier>, TaskError> {
@@ -209,12 +208,11 @@ impl WalletBackend {
     /// balance/revision stay frozen at whatever they were on first
     /// registration — there is no update path today.
     ///
-    /// Currently latent, not a live bug: nothing reads keys, status, or
-    /// balance off a mirrored row — the only production consumer,
-    /// `AppContext::reconcile_unowned_identities`, only ever calls this method
-    /// itself and reacts to its `bool`, never inspecting a returned
-    /// `ManagedIdentity`. It becomes a live bug the day a caller trusts the
-    /// mirror for anything beyond presence.
+    /// Currently latent, not a live bug: every production reader —
+    /// `AppContext::reconcile_unowned_identities` via [`Self::unowned_identity_ids`],
+    /// and this method's own `bool` return — only ever consults an id, never a
+    /// mirrored row's keys, status, or balance. It becomes a live bug the day
+    /// a caller trusts the mirror for anything beyond presence.
     ///
     /// Returns `true` when this call newly registered the identity, `false`
     /// when it was already in the unowned scope — matching

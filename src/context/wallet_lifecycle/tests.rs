@@ -4924,6 +4924,10 @@ async fn a_mirror_read_failure_with_no_sidecar_link_refuses_the_insert() {
 /// the readback reports it missing. With no earlier sidecar record, DET has
 /// no wallet link to keep and no evidence for the wallet-less claim either —
 /// the insert is refused rather than guessed at.
+///
+/// This case needs no wallet-removal counterpart of its own: the assertions
+/// below leave nothing for a removal to reach, neither a record nor an
+/// enumeration-index entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wallet_owned_upstream_row_with_no_sidecar_refuses_the_wallet_less_insert() {
     let (ctx, sender, _tmp) = offline_testnet_context();
@@ -4956,17 +4960,27 @@ async fn a_wallet_owned_upstream_row_with_no_sidecar_refuses_the_wallet_less_ins
             .is_none(),
         "a refused insert must leave no record behind"
     );
+    assert!(
+        !ctx.local_wallet_less_identity_ids()
+            .expect("scan wallet-less identity ids")
+            .contains(&owned_id),
+        "a refused insert must leave no enumeration-index entry behind"
+    );
 
     backend.shutdown().await;
 }
 
-/// The loss the kept wallet link exists to prevent, driven end to end: a
-/// record DET reports as wallet-less must survive removal of any wallet. A
-/// mirror read failure over a wallet-owned row is the entry point — flip the
-/// sidecar to `wallet_hash: None` there and the identity joins the wallet-less
-/// set while its upstream row stays under the wallet's `ON DELETE CASCADE`,
-/// so removing that wallet fires `cascade_meta_on_identity_delete` and takes
-/// the DET record DET just swore was safe.
+/// What DET reports as wallet-less is exactly what removing a wallet may not
+/// reach, and a mirror read failure over a wallet-owned row is how the two
+/// come apart: flip that record to `wallet_hash: None` and it joins the
+/// wallet-less set while its upstream row stays under the wallet's `ON DELETE
+/// CASCADE`, so removing that wallet fires `cascade_meta_on_identity_delete`
+/// and takes the DET record DET just swore was safe.
+///
+/// The kept link is what closes that gap, so that is where this test fails
+/// without it — at the membership assertion, before the removal runs. Past
+/// that point the removal shows the other half of the contract: it takes the
+/// record still linked to the wallet, and none of the wallet-less ones.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn removing_a_wallet_deletes_no_wallet_less_record_after_a_mirror_read_failure() {
     let (ctx, sender, _tmp) = offline_testnet_context();
@@ -5032,6 +5046,120 @@ async fn removing_a_wallet_deletes_no_wallet_less_record_after_a_mirror_read_fai
             .expect("read sidecar")
             .is_none(),
         "a record still linked to the removed wallet must go with it"
+    );
+
+    backend.shutdown().await;
+}
+
+/// A record that is *already* wallet-less has nothing left to protect: the
+/// wallet-free claim it carries is the one this write would restate, so an
+/// unverifiable mirror is no reason to reject it. Refusing would forfeit
+/// whatever else the write carried — the alias here, and on
+/// `IdentityTask::LoadIdentity` a whole refreshed identity — to repair a
+/// divergence that declining to rewrite the record does not repair.
+///
+/// Masternodes and evonodes are wallet-less by design and take this path on
+/// every refresh, so this is the common case, not an edge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mirror_read_failure_still_accepts_a_record_already_stored_wallet_less() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let mut node = masternode_qualified_identity();
+    let node_id = identity_id_of(&node);
+    ctx.insert_local_qualified_identity(&node, &None)
+        .expect("first insert: the mirror lands and the record is wallet-less");
+
+    // The refresh every masternode/evonode reload performs.
+    node.alias = Some("hp-masternode-1-renamed".to_string());
+
+    backend.set_unowned_read_test_failure(true);
+    let outcome = ctx.insert_local_qualified_identity(&node, &None);
+    backend.set_unowned_read_test_failure(false);
+
+    assert!(
+        outcome.is_ok(),
+        "a record already stored wallet-less must still accept a write that leaves it \
+         wallet-less, got {outcome:?}"
+    );
+    assert_eq!(
+        ctx.get_local_qualified_identity(&node_id)
+            .expect("read sidecar")
+            .expect("the record is still stored")
+            .alias,
+        Some("hp-masternode-1-renamed".to_string()),
+        "the accepted write must actually land, not merely return Ok"
+    );
+    assert_eq!(
+        ctx.stored_identity_wallet_link(&node_id)
+            .expect("read the sidecar wallet link"),
+        None,
+        "the record must stay wallet-less: this write changes nothing about its scope"
+    );
+
+    backend.shutdown().await;
+}
+
+/// A refused insert must strand nothing in the vault either. The mirror check
+/// runs before `encode_identity_blob_vault_first` precisely so a refusal
+/// leaves no `InVault` secret behind for a record that was never written —
+/// an orphan no later read reaches and no delete path knows to reap.
+///
+/// The identity needs a resident plaintext key for this to mean anything: the
+/// vault write is skipped outright for a key-less one, which is every other
+/// fixture here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_insert_strands_no_vault_entry() {
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::IdentityPublicKey;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x7Au8; 64]).await;
+
+    let mut owned = wallet_owned_qualified_identity(Some(0));
+    let public_key = IdentityPublicKey::random_key(1, Some(1), PlatformVersion::latest());
+    let key_id = public_key.id();
+    let mut keys = KeyStorage::default();
+    keys.insert_at(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            QualifiedIdentityPublicKey::from(public_key),
+            PrivateKeyData::Clear([0xEEu8; 32]),
+        ),
+    );
+    owned.private_keys = keys;
+    let owned_id = identity_id_of(&owned);
+
+    // Upstream owns the row and DET has no record, so the insert is refused.
+    backend
+        .ensure_identity_managed(&seed_hash, &owned.identity, 0)
+        .await
+        .expect("register with the upstream wallet manager");
+
+    let outcome = ctx.insert_local_qualified_identity(&owned, &None);
+    assert!(
+        outcome.is_err(),
+        "precondition: the insert is refused, got {outcome:?}"
+    );
+
+    let vaulted = IdentityKeyView::new(backend.secret_store(), owned_id.to_buffer())
+        .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+        .expect("vault read");
+    assert!(
+        vaulted.is_none(),
+        "a refused insert must strand no vault entry; found one for key {key_id}"
     );
 
     backend.shutdown().await;

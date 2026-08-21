@@ -47,6 +47,8 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
+#[cfg(test)]
+pub(crate) mod persist_fault_test_support;
 pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
@@ -90,6 +92,7 @@ pub use secret_prompt::{
 pub use secret_seam::SecretSeam;
 
 use coordinator_gate::CoordinatorGate;
+use identity_ops::Funding;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
@@ -344,6 +347,23 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Injected persister faults for the identity-funding account
+    /// registration write. Inert until a test arms it.
+    #[cfg(test)]
+    persist_faults: persist_fault_test_support::PersistFaults,
+    /// Per wallet, the identity-funding accounts whose registration is staged
+    /// in the persister buffer but not yet durable, because a transient write
+    /// failure exhausted its retry budget. Each account stays live in memory
+    /// (its row can still land), so the next provisioning attempt for that
+    /// wallet must complete the write with a bare `flush` instead of taking
+    /// the idempotent early return and reporting success on absent rows.
+    ///
+    /// Keyed by account and not just by wallet: `flush` is wallet-scoped, so
+    /// one failed drain discards every registration staged for that wallet and
+    /// all of them — not merely the account being provisioned right now — have
+    /// to leave memory.
+    buffered_account_registrations:
+        std::sync::Mutex<std::collections::BTreeMap<WalletId, std::collections::BTreeSet<Funding>>>,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -554,6 +574,11 @@ impl WalletBackend {
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                persist_faults: persist_fault_test_support::PersistFaults::default(),
+                buffered_account_registrations: std::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                ),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1080,6 +1105,23 @@ impl WalletBackend {
         self.inner
             .forget_wallet_local_state_test_failure
             .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Queue persister faults for the identity-funding account registration
+    /// write, served one per `store` / `flush` call in order.
+    #[cfg(test)]
+    pub(crate) fn arm_registration_persist_faults(
+        &self,
+        kinds: impl IntoIterator<Item = platform_wallet::changeset::PersistenceErrorKind>,
+    ) {
+        self.inner.persist_faults.arm(kinds);
+    }
+
+    /// `true` while an injected transient failure still holds an uncommitted
+    /// account-registration changeset in the persister buffer.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_buffer_is_staged(&self) -> bool {
+        self.inner.persist_faults.has_staged_changeset()
     }
 
     /// Resolve one just-registered upstream wallet into the DET-keyed maps via

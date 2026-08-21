@@ -348,6 +348,11 @@ struct Inner {
     /// wallet-store failure apart from a mirror upstream genuinely refused.
     #[cfg(test)]
     unowned_read_test_failure: std::sync::atomic::AtomicBool,
+    /// Drops the next unowned-scope write, reproducing upstream's swallowed
+    /// persist failure — it logs and returns `Ok(())` — which reaches DET as a
+    /// mirror that is simply absent.
+    #[cfg(test)]
+    swallow_next_unowned_write: std::sync::atomic::AtomicBool,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -560,6 +565,8 @@ impl WalletBackend {
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 unowned_read_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                swallow_next_unowned_write: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1079,6 +1086,13 @@ impl WalletBackend {
         self.inner
             .unowned_read_test_failure
             .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_swallow_next_unowned_write(&self) {
+        self.inner
+            .swallow_next_unowned_write
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cfg(test)]

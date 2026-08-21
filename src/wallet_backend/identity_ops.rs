@@ -254,11 +254,20 @@ impl WalletBackend {
         if manager.identity(&identity.id()).is_some() {
             return Ok(false);
         }
-        manager
-            .add_out_of_wallet_identity(identity.clone(), &self.unowned_scope_persister())
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })?;
+        #[cfg(test)]
+        let write_swallowed = self
+            .inner
+            .swallow_next_unowned_write
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(test))]
+        let write_swallowed = false;
+        if !write_swallowed {
+            manager
+                .add_out_of_wallet_identity(identity.clone(), &self.unowned_scope_persister())
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
+        }
         if !self.load_unowned_identities()?.contains_key(&identity.id()) {
             return Err(TaskError::UnownedIdentityMirrorMissing {
                 identity_id: identity.id(),

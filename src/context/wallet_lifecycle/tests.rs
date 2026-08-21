@@ -4877,6 +4877,7 @@ async fn an_unverifiable_wallet_less_downgrade_warns_the_user() {
     let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Bu8; 64]).await;
 
     let owned = wallet_owned_qualified_identity(Some(0));
+    let owned_id = identity_id_of(&owned);
     ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
         .expect("insert wallet-owned identity");
     backend
@@ -4888,10 +4889,59 @@ async fn an_unverifiable_wallet_less_downgrade_warns_the_user() {
     ctx.insert_local_qualified_identity(&owned, &None)
         .expect("re-insert with no wallet info");
 
+    // The refusal's own typed message, naming the identity — asserting merely
+    // that *some* banner exists would survive being told the opposite.
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
     assert!(
-        crate::ui::components::MessageBanner::has_global(ctx.egui_ctx()),
-        "an identity kept under a wallet against the caller's request must raise a \
-         user-visible warning"
+        banner_texts.contains(
+            &TaskError::UnownedIdentityMirrorMissing {
+                identity_id: owned_id
+            }
+            .to_string()
+        ),
+        "an identity kept under a wallet against the caller's request must say so \
+         through its own typed message, got {banner_texts:?}"
+    );
+
+    backend.shutdown().await;
+}
+
+/// A missing mirror is either upstream refusing the row or upstream swallowing
+/// its own persist failure (it logs and returns `Ok(())`), and only the second
+/// is recoverable. One retry costs an already-failing path a single extra
+/// attempt — each rebuilds its manager from a fresh read, so it is a real
+/// second attempt — and saves the record from a wallet link no boot revisits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swallowed_mirror_write_is_retried_before_the_wallet_link_is_kept() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x5Cu8; 64]).await;
+
+    let owned = wallet_owned_qualified_identity(Some(0));
+    let owned_id = identity_id_of(&owned);
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("insert wallet-owned identity");
+
+    backend.set_swallow_next_unowned_write();
+    ctx.insert_local_qualified_identity(&owned, &None)
+        .expect("re-insert with no wallet info");
+
+    assert_eq!(
+        ctx.stored_identity_wallet_link(&owned_id)
+            .expect("read the sidecar wallet link"),
+        None,
+        "a mirror write lost to a swallowed failure must be retried, not answered by \
+         keeping the wallet link for good"
+    );
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&owned_id),
+        "the retry must land the mirror the first attempt lost"
     );
 
     backend.shutdown().await;

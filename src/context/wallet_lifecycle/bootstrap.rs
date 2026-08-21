@@ -366,12 +366,11 @@ impl AppContext {
                 Ok(Some(qi)) => match backend.ensure_identity_unowned(&qi.identity) {
                     Ok(true) => added += 1,
                     Ok(false) => {}
-                    // Permanent, not deferred: the record says no wallet, the
-                    // wallet store says otherwise, and nothing on either side
-                    // moves on its own. Every boot lands here again.
+                    // Permanent, not deferred: nothing on either side moves on
+                    // its own, so every boot lands here again.
                     Err(TaskError::UnownedIdentityMirrorMissing { .. }) => tracing::warn!(
                         identity = %id,
-                        "Identity is stored as belonging to no wallet while the wallet store keeps it under one; this record will be removed together with that wallet. Load the identity from the wallet that holds it to repair this."
+                        "Identity is stored as belonging to no wallet, but the wallet store holds no wallet-free row for it and will not take one. If a wallet holds this identity, removing that wallet removes this record too. Load the identity from the wallet that holds it to repair this."
                     ),
                     Err(error) => tracing::debug!(
                         identity = %id,

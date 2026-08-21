@@ -275,22 +275,31 @@ impl AppContext {
         }
     }
 
-    /// Register every DET-known identity that belongs to no wallet — the
-    /// masternode/evonode nodes — into the upstream store's unowned scope,
-    /// backfilling nodes stored before that registration existed and retrying
-    /// any whose write-through failed.
+    /// Register every DET-known wallet-less identity into the upstream
+    /// store's unowned scope, backfilling nodes stored before that
+    /// registration existed and retrying any whose write-through failed.
+    /// Masternode/evonode nodes are the expected case, but any wallet-less
+    /// identity DET stores takes this path.
     ///
     /// Wallet-independent by design: it runs once per boot even on an install
     /// with no wallets at all, which is exactly the masternode-operator case.
     /// Best-effort and idempotent — a failure is logged and retried next boot.
+    ///
+    /// Add-only: nothing here withdraws a stale registration — that happens
+    /// synchronously, on delete, in
+    /// [`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity).
+    /// A withdrawal lost to a crash or storage error between that delete and
+    /// its upstream tombstone is not repaired by this pass; it only ever adds.
+    ///
+    /// `added` counts identities [`WalletBackend::ensure_identity_unowned`](crate::wallet_backend::WalletBackend::ensure_identity_unowned)
+    /// newly registered this pass — it returns `Ok(false)` for one already
+    /// present, matching [`Self::reconcile_managed_identities`]'s sibling
+    /// contract, so a no-op boot never inflates the count or logs.
     pub(super) fn reconcile_unowned_identities(&self, backend: &WalletBackend) {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        let (identities, registered) = match (
-            self.load_local_wallet_less_identities(),
-            backend.unowned_identity_ids(),
-        ) {
-            (Ok(identities), Ok(registered)) => (identities, registered),
-            (Err(error), _) | (_, Err(error)) => {
+        let identities = match self.load_local_wallet_less_identities() {
+            Ok(identities) => identities,
+            Err(error) => {
                 tracing::warn!(
                     %error,
                     "Unowned-identity reconcile skipped; will retry at next boot"
@@ -300,11 +309,9 @@ impl AppContext {
         };
         let mut added = 0usize;
         for qi in &identities {
-            if registered.contains(&qi.identity.id()) {
-                continue;
-            }
-            match backend.register_unowned_identity(&qi.identity) {
-                Ok(()) => added += 1,
+            match backend.ensure_identity_unowned(&qi.identity) {
+                Ok(true) => added += 1,
+                Ok(false) => {}
                 Err(error) => tracing::debug!(
                     identity = %qi.identity.id(),
                     %error,

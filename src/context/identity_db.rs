@@ -607,16 +607,22 @@ impl AppContext {
     }
 
     /// Mirror a wallet-less identity into the wallet store's unowned scope, so
-    /// upstream sees the masternode/evonode nodes DET knows about instead of
-    /// only DET's own sidecar holding them.
+    /// upstream has a durable record of it instead of only DET's own sidecar
+    /// holding it. Every wallet-less identity is mirrored here, not only
+    /// masternodes/evonodes — a `User` identity DET loaded without an owning
+    /// wallet (the case the warning above flags as unexpected) takes the same
+    /// path.
     ///
     /// Best-effort: the sidecar record above is the authoritative one, and
     /// [`AppContext::reconcile_unowned_identities`] retries at the next boot.
+    /// The mirrored row carries none of `qualified_identity`'s public keys —
+    /// see [`WalletBackend::ensure_identity_unowned`](crate::wallet_backend::WalletBackend::ensure_identity_unowned)
+    /// for why.
     fn register_unowned_identity_upstream(&self, qualified_identity: &QualifiedIdentity) {
         let Ok(backend) = self.wallet_backend() else {
             return;
         };
-        if let Err(error) = backend.register_unowned_identity(&qualified_identity.identity) {
+        if let Err(error) = backend.ensure_identity_unowned(&qualified_identity.identity) {
             tracing::debug!(
                 identity_id = %qualified_identity.identity.id(),
                 %error,
@@ -796,7 +802,12 @@ impl AppContext {
     }
 
     /// Load the DET-known identities that belong to no wallet — every sidecar
-    /// entry without a `wallet_hash`, i.e. the masternode/evonode nodes. Drives
+    /// entry without a `wallet_hash`. Masternode/evonode nodes are the
+    /// expected case, but this partitions on `wallet_hash`, not
+    /// `identity_type` — **not** the same set as
+    /// [`Self::load_local_masternode_identities`], which partitions on
+    /// `identity_type` and can both include a wallet-owned node and exclude
+    /// a wallet-less `User` identity that this method would return. Drives
     /// the boot reconcile that registers them in the wallet store's unowned
     /// scope. Top-up history is intentionally not hydrated: the reconcile needs
     /// only the identity itself.
@@ -810,9 +821,12 @@ impl AppContext {
     /// The masternode/evonode identities for the active network — the
     /// Masternodes-page card list and the page-scoped masternode pill source.
     /// The complement of [`Self::load_local_user_identities`] over the FR-6 type
-    /// boundary. Filters the hydrated full load, so each card's top-up history
-    /// is available (unlike the pre-decode [`Self::load_local_voting_identities`],
-    /// which is un-hydrated and named for the DPNS voting flows).
+    /// boundary (`identity_type`) — a different partition from
+    /// [`Self::load_local_wallet_less_identities`] (`wallet_hash`); the two
+    /// sets need not match. Filters the hydrated full load, so each card's
+    /// top-up history is available (unlike the pre-decode
+    /// [`Self::load_local_voting_identities`], which is un-hydrated and named
+    /// for the DPNS voting flows).
     pub fn load_local_masternode_identities(
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
@@ -1086,14 +1100,22 @@ impl AppContext {
     /// children. Returns `Ok(())` even when the identity is unknown —
     /// mirrors the pre-C7 `DELETE` which silently no-ops on missing rows.
     ///
-    /// Cleanup verdict: explicit. DET never deletes the upstream
-    /// `identities` row (that table is owned by the upstream sync layer;
-    /// DET stores the qualified-identity blob in the `meta_identity` k/v
-    /// scope only), so the upstream `cascade_meta_identity_on_identity_delete`
-    /// trigger never fires for this path. This method therefore drains the
-    /// Identity scope itself — the blob, the top-up history, and every
-    /// scheduled vote queued for this identity — and removes the Global
-    /// index entries that the trigger would not touch.
+    /// Cleanup verdict: explicit. DET never issues a row `DELETE` against the
+    /// upstream `identities` table (that table is owned by the upstream sync
+    /// layer; DET stores the qualified-identity blob in the `meta_identity`
+    /// k/v scope only), so the upstream `cascade_meta_on_identity_delete`
+    /// trigger — which fires on `DELETE`, not `UPDATE` — never reaches this
+    /// path. This method therefore drains the Identity scope itself — the
+    /// blob, the top-up history, and every scheduled vote queued for this
+    /// identity — and removes the Global index entries that the trigger
+    /// would not touch.
+    ///
+    /// For a wallet-less identity this also *tombstones* (never row-deletes)
+    /// its mirrored row in the upstream unowned scope, via
+    /// [`WalletBackend::remove_unowned_identity`](crate::wallet_backend::WalletBackend::remove_unowned_identity)
+    /// below — so upstream stops advertising a node this device no longer
+    /// has. Best-effort and, unlike registration, not retried on failure: a
+    /// tombstone lost here stays lost until the identity is re-inserted.
     pub fn delete_local_qualified_identity(
         &self,
         identifier: &Identifier,
@@ -1125,7 +1147,7 @@ impl AppContext {
         // deleted node does not linger there. Best-effort, and a no-op for a
         // wallet-owned identity, which is never registered unowned.
         if let Ok(backend) = self.wallet_backend()
-            && let Err(error) = backend.forget_unowned_identity(identifier)
+            && let Err(error) = backend.remove_unowned_identity(identifier)
         {
             tracing::debug!(
                 identity_id = %identifier,

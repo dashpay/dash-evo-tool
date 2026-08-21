@@ -4533,7 +4533,7 @@ async fn reconcile_backfills_wallet_less_identities_and_is_idempotent() {
         // Roll the store back to the pre-version shape: DET record present,
         // no unowned registration.
         backend
-            .forget_unowned_identity(&node_id)
+            .remove_unowned_identity(&node_id)
             .expect("withdraw the registration");
         assert!(
             !backend

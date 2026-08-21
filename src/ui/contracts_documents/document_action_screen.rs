@@ -776,7 +776,8 @@ impl DocumentActionScreen {
                                     .background_color(DashColors::input_background(dark_mode)),
                             );
                         }
-                        DocumentPropertyType::Identifier => {
+                        DocumentPropertyType::Identifier
+                        | DocumentPropertyType::IdentifierWithReference(_) => {
                             let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
@@ -1352,7 +1353,8 @@ impl DocumentActionScreen {
                     };
                     Value::Bytes(bytes)
                 }
-                DocumentPropertyType::Identifier => {
+                DocumentPropertyType::Identifier
+                | DocumentPropertyType::IdentifierWithReference(_) => {
                     let id = Identifier::from_string(input_str, Encoding::Base58)
                         .map_err(|_| format!("{} is not a valid Identifier (base58)", name))?;
                     id.into()
@@ -1529,7 +1531,8 @@ impl DocumentActionScreen {
                     };
                     Value::Bytes(bytes)
                 }
-                DocumentPropertyType::Identifier => {
+                DocumentPropertyType::Identifier
+                | DocumentPropertyType::IdentifierWithReference(_) => {
                     let id = Identifier::from_string(input_str, Encoding::Base58)
                         .map_err(|_| format!("{} is not a valid Identifier (base58)", name))?;
                     id.into()

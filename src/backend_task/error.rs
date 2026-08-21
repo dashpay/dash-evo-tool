@@ -330,6 +330,15 @@ pub enum TaskError {
     )]
     AssetLockNotEligibleForTopUp,
 
+    /// A top-up of an identity outside this wallet was handed a funding mode
+    /// this path cannot build — currently only the whole-account drain, which
+    /// no flow here requests. Rejected before any funds move rather than
+    /// quietly substituting a different funding mode.
+    #[error(
+        "This way of paying is not available when topping up an identity from another wallet. Enter the amount to add, or choose a saved funding transaction instead."
+    )]
+    TopUpFundingMethodUnsupported,
+
     /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
     /// timed out without producing a usable proof for Platform.
     #[error(

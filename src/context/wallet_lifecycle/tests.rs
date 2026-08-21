@@ -3786,16 +3786,28 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
     backend2.shutdown().await;
 }
 
-/// A malformed Orchard viewing key must be isolated to its own wallet during
-/// the real seedless cold-boot load.
+/// A shielded viewing-key row that will not decode fails the whole seedless
+/// cold boot, with the dedicated fatal local-data error naming the column.
+///
+/// Upstream gates every tolerated decode failure on `LoadPolicy`, which
+/// defaults to `Strict` — a row that will not decode aborts `load()` rather
+/// than being skipped, so no wallet in the file comes up half-formed. DET
+/// opens its persister under that default and therefore fails closed here.
+/// Graceful degradation (retrying the load under `LoadPolicy::Recovery` for
+/// read-only access) is deliberately not covered: it does not exist yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_boot_skips_corrupt_fvk_for_one_wallet_and_restores_healthy_wallet() {
+async fn cold_boot_fails_closed_on_a_corrupt_fvk_row() {
+    use platform_wallet::changeset::{PersistenceError, PersistenceErrorKind};
+    use platform_wallet::error::PlatformWalletError;
+
     let _guard = backend_reopen_lock().await;
     let source_dir = tempfile::tempdir().expect("source tempdir");
     let corrupt_seed = [0xD5u8; 64];
     let healthy_seed = [0xD6u8; 64];
 
-    let (corrupt_hash, corrupt_wallet_id, healthy_hash, healthy_wallet_id) = {
+    // The seed hashes matter only inside the fixture block below; the strict
+    // load fails before any wallet is registered, so nothing outside reads them.
+    let (corrupt_wallet_id, healthy_wallet_id) = {
         let password = Secret::new("cold-boot-fvk-password");
         let corrupt_wallet = crate::model::wallet::Wallet::new_from_seed(
             corrupt_seed,
@@ -3881,12 +3893,7 @@ async fn cold_boot_skips_corrupt_fvk_for_one_wallet_and_restores_healthy_wallet(
 
         backend.shutdown().await;
         let _ = ctx.subtasks.shutdown_async().await;
-        (
-            corrupt_hash,
-            corrupt_wallet_id,
-            healthy_hash,
-            healthy_wallet_id,
-        )
+        (corrupt_wallet_id, healthy_wallet_id)
     };
 
     let cold_dir = tempfile::tempdir().expect("cold tempdir");
@@ -3906,48 +3913,49 @@ async fn cold_boot_skips_corrupt_fvk_for_one_wallet_and_restores_healthy_wallet(
     );
     drop(connection);
 
-    let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
-    ctx.ensure_wallet_backend(sender)
-        .await
-        .expect("one corrupt FVK must not prevent cold boot");
-    let backend = ctx.wallet_backend().expect("cold-boot backend");
-
-    assert!(
-        ctx.wallets.read_recover().contains_key(&corrupt_hash),
-        "the corrupt-FVK DET wallet must remain registered"
-    );
-    assert!(
-        ctx.wallets.read_recover().contains_key(&healthy_hash),
-        "the healthy DET wallet must remain registered"
-    );
-    assert!(
-        backend.is_wallet_registered(&corrupt_hash),
-        "the corrupt-FVK wallet must remain registered upstream"
-    );
-    assert!(
-        backend.is_wallet_registered(&healthy_hash),
-        "the healthy wallet must remain registered upstream"
-    );
-    assert!(
-        !backend
-            .bind_shielded_from_persisted_for_test(&corrupt_hash)
-            .await
-            .expect("probe skipped corrupt viewing key"),
-        "the corrupt wallet must not restore a shielded binding"
-    );
-    assert!(
-        backend
-            .bind_shielded_from_persisted_for_test(&healthy_hash)
-            .await
-            .expect("restore healthy viewing key"),
-        "the healthy wallet must restore its shielded binding"
-    );
     assert_ne!(
         corrupt_wallet_id, healthy_wallet_id,
         "fixture wallets must have distinct upstream ids"
     );
 
-    backend.shutdown().await;
+    let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
+    let error = ctx
+        .ensure_wallet_backend(sender)
+        .await
+        .expect_err("a corrupt FVK row must fail the strict cold-boot load");
+
+    // Assert the whole chain, not just the outer variant: the boot classifier
+    // only maps a `Fatal` backend load failure onto the dedicated error, and
+    // the column label is what says WHICH row aborted the load.
+    let TaskError::WalletLocalDataLoadFailed { source } = &error else {
+        panic!("fatal persisted-wallet corruption must use the dedicated error, got: {error:?}");
+    };
+    let PlatformWalletError::PersisterLoad(PersistenceError::Backend { kind, source }) =
+        source.as_ref()
+    else {
+        panic!("the corrupt row must surface as a persister load failure, got: {source:?}");
+    };
+    assert_eq!(
+        *kind,
+        PersistenceErrorKind::Fatal,
+        "a row that will not decode is not retryable"
+    );
+    let storage = source
+        .downcast_ref::<platform_wallet_storage::WalletStorageError>()
+        .expect("the SQLite backend boxes a typed WalletStorageError");
+    assert!(
+        matches!(
+            storage,
+            platform_wallet_storage::WalletStorageError::BlobDecode { reason }
+                if *reason == "shielded_viewing_keys.viewing_key"
+        ),
+        "the error must name the column that failed to decode, got: {storage:?}"
+    );
+
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "a failed load must leave no half-wired backend behind"
+    );
     let _ = ctx.subtasks.shutdown_async().await;
 }
 

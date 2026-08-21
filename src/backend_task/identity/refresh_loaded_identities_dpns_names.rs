@@ -34,6 +34,7 @@ impl AppContext {
                 having: Vec::new(),
                 order_by_clauses: vec![],
                 limit: 100,
+                offset: None,
                 start: None,
             };
 

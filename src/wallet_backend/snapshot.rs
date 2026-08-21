@@ -279,17 +279,19 @@ fn observe_asset_lock_inputs_locked(
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut dry_run_account, account)
+            .add_funding(&mut dry_run_account, account)
             .require_final_inputs()
-            .build_unsigned();
+            .build_unsigned_reserved();
         match result {
-            Ok((transaction, _)) => {
+            Ok((transaction, _, reservation)) => {
                 observed.extend(transaction.input.iter().filter_map(|input| {
                     values
                         .get(&input.previous_output)
                         .map(|value| (input.previous_output, *value))
                 }));
-                dry_run_account.release_reservation(&transaction);
+                if let Some(token) = reservation {
+                    dry_run_account.release_reservation_if_owner(&transaction, token);
+                }
             }
             Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {}
             Err(BuilderError::CoinSelection(SelectionError::InsufficientFunds { .. }))
@@ -1419,7 +1421,7 @@ mod tests {
         );
         let initial_revision = store.snapshot(&seed(0x51)).asset_lock_input_revision;
 
-        let (reserved_tx, _) = TransactionBuilder::new()
+        let (reserved_tx, _, reservation) = TransactionBuilder::new()
             .set_fee_rate(FeeRate::new(1_000))
             .set_current_height(CURRENT_HEIGHT)
             .set_selection_strategy(SelectionStrategy::All)
@@ -1429,9 +1431,9 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(managed_account, account)
+            .add_funding(managed_account, account)
             .require_final_inputs()
-            .build_unsigned()
+            .build_unsigned_reserved()
             .expect("reservation-producing build");
 
         let after = asset_lock_final_input_state(
@@ -1459,7 +1461,9 @@ mod tests {
             store.snapshot(&seed(0x51)).asset_lock_input_revision > initial_revision,
             "taking a live reservation must advance the display-side input revision"
         );
-        managed_account.release_reservation(&reserved_tx);
+        if let Some(token) = reservation {
+            managed_account.release_reservation_if_owner(&reserved_tx, token);
+        }
     }
 
     #[test]

@@ -973,7 +973,7 @@ async fn drain_wallets(app_context: &Arc<AppContext>) -> Result<bool, TaskError>
 
     // Register the migrated wallets upstream BEFORE the completion sentinel,
     // so the sentinel can never claim "done" while a migratable unprotected
-    // wallet is still absent from `spv/<net>/platform-wallet.sqlite`. On failure
+    // wallet is still absent from `det-<net>.sqlite`. On failure
     // this returns `Err` (the sentinel is skipped) so the next cold start — or
     // the "Retry now" banner — re-runs the idempotent migration.
     register_migrated_wallets(app_context).await?;

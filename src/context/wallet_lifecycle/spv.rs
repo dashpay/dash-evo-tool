@@ -9,8 +9,8 @@ impl AppContext {
     /// scratch.
     ///
     /// Only the upstream `dash-spv` `DiskStorageManager` files under the
-    /// per-network SPV directory are removed; the wallet state
-    /// (`platform-wallet.sqlite`) and the shielded commitment tree are left
+    /// per-network SPV directory are removed; the wallet databases (which live
+    /// outside that directory) and the shielded commitment tree are left
     /// intact — clearing the chain cache must never touch funds or secrets. The
     /// "Clear SPV Data" control is enabled only while sync is stopped, so the
     /// `DiskStorageManager` has released its file lock and the deletes do not

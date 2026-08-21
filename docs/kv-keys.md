@@ -7,7 +7,7 @@ Three backing stores exist:
 | Store | Path | Contents |
 |-------|------|----------|
 | `det-app.sqlite` | `<data_dir>/det-app.sqlite` | Cross-network settings, wallet metadata, migration sentinel, single-key metadata |
-| `platform-wallet.sqlite` | `<data_dir>/spv/<net>/platform-wallet.sqlite` | Per-network identities, tokens, contracts, DashPay overlays, platform addresses, selected wallet |
+| `det-<net>.sqlite` | `<data_dir>/det-<net>.sqlite` | Per-network identities, tokens, contracts, DashPay overlays, platform addresses, selected wallet |
 | `SecretStore` | `<data_dir>/secrets/det-secrets.*` | Encrypted HD-wallet seed envelopes and imported single-key private bytes |
 
 In the per-domain tables below, a `Scope` of `None` denotes `DetScope::Global`.
@@ -72,7 +72,7 @@ Source: `src/backend_task/migration/finish_unwire.rs` (`sentinel_key_for`, `SENT
 
 | Key | Scope | Store | Value type | Fields |
 |-----|-------|-------|------------|--------|
-| `det:selected_wallet:v1` | `None` | `platform-wallet.sqlite` | `SelectedWallet` | `hd_wallet_hash: Option<[u8;32]>`, `single_key_hash: Option<[u8;32]>` |
+| `det:selected_wallet:v1` | `None` | `det-<net>.sqlite` | `SelectedWallet` | `hd_wallet_hash: Option<[u8;32]>`, `single_key_hash: Option<[u8;32]>` |
 
 Source: `src/model/selected_wallet.rs`, `src/wallet_backend/mod.rs`
 
@@ -84,10 +84,10 @@ The identity blob and top-up history are **identity-scoped** (`DetScope::Identit
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:identity:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `StoredQualifiedIdentity` | Fields: `qi_bytes` (inner bincode, redacted in `Debug`), `status: u8`, `identity_type: String`, `wallet_hash: Option<[u8;32]>`, `wallet_index: Option<u32>` |
-| `det:identity_index:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids |
-| `det:identity_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
-| `det:top_ups:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
+| `det:identity:v1` | `DetScope::Identity(&id)` | `det-<net>.sqlite` | `StoredQualifiedIdentity` | Fields: `qi_bytes` (inner bincode, redacted in `Debug`), `status: u8`, `identity_type: String`, `wallet_hash: Option<[u8;32]>`, `wallet_index: Option<u32>` |
+| `det:identity_index:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids |
+| `det:identity_order:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
+| `det:top_ups:v1` | `DetScope::Identity(&id)` | `det-<net>.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
 
 An identity stored without a wallet association (`wallet_hash: None` — the masternode/evonode nodes) is also mirrored into the upstream `identities` table under the **unowned scope**: the all-zero `WalletId`, which upstream stores as a NULL `wallet_id`. The scope is load-bearing, not incidental. A NULL `wallet_id` activates no foreign key, so no wallet's `ON DELETE CASCADE` reaches the row, and the `cascade_meta_on_identity_delete` trigger — which would delete the identity's `meta_identity` rows, i.e. the `det:identity:v1` record above — never fires for it. Filing the same identity under a real wallet's scope would make removing that unrelated wallet destroy the node's DET record. These rows are also kept out of every wallet's `IdentityManager`, because the `identities` upsert promotes an unowned row to the first wallet that flushes it. Written by `WalletBackend::register_unowned_identity`, read back by `WalletBackend::unowned_identity_ids` (upstream's `load_unowned_identities`; the ordinary `load()` enumerates wallets and cannot reach them).
 
@@ -101,8 +101,8 @@ Scheduled votes are **voter-scoped** (`DetScope::Identity(&voter_id)`); the cont
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:scheduled_vote:<contested_name>` | `DetScope::Identity(&voter_id)` | `platform-wallet.sqlite` | `StoredScheduledVote` | Fields: `voter_id: [u8;32]`, `contested_name: String`, `choice: StoredVoteChoice`, `unix_timestamp: u64`, `executed_successfully: bool` |
-| `det:scheduled_vote_voters:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | Enumeration index of voter ids with scheduled votes |
+| `det:scheduled_vote:<contested_name>` | `DetScope::Identity(&voter_id)` | `det-<net>.sqlite` | `StoredScheduledVote` | Fields: `voter_id: [u8;32]`, `contested_name: String`, `choice: StoredVoteChoice`, `unix_timestamp: u64`, `executed_successfully: bool` |
+| `det:scheduled_vote_voters:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | Enumeration index of voter ids with scheduled votes |
 
 Source: `src/context/identity_db.rs`
 
@@ -112,7 +112,7 @@ Source: `src/context/identity_db.rs`
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:contested_name:<normalized_name>` | `None` | `platform-wallet.sqlite` | `StoredContestedName` | Fields: `normalized_contested_name`, `locked_votes`, `abstain_votes`, `awarded_to`, `end_time`, `locked`, `last_updated`, `contestants: Vec<StoredContestant>` |
+| `det:contested_name:<normalized_name>` | `None` | `det-<net>.sqlite` | `StoredContestedName` | Fields: `normalized_contested_name`, `locked_votes`, `abstain_votes`, `awarded_to`, `end_time`, `locked`, `last_updated`, `contestants: Vec<StoredContestant>` |
 
 `StoredContestant` fields: `id: [u8;32]`, `name`, `info`, `votes: u32`, `created_at`, `created_at_block_height`, `created_at_core_block_height`, `document_id: [u8;32]`.
 
@@ -124,7 +124,7 @@ Source: `src/context/contested_names_db.rs`
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:contract:<base58_contract_id>` | `None` | `platform-wallet.sqlite` | `StoredContract` | Fields: `contract_bytes: Vec<u8>` (platform-serialized), `alias: Option<String>` |
+| `det:contract:<base58_contract_id>` | `None` | `det-<net>.sqlite` | `StoredContract` | Fields: `contract_bytes: Vec<u8>` (platform-serialized), `alias: Option<String>` |
 
 Source: `src/context/contract_token_db.rs`
 
@@ -134,8 +134,8 @@ Source: `src/context/contract_token_db.rs`
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:token:<base58_token_id>` | `None` | `platform-wallet.sqlite` | `StoredToken` | Fields: `config_bytes: Vec<u8>` (bincode `TokenConfiguration`), `alias: String`, `data_contract_id: [u8;32]`, `position: u16` |
-| `det:token_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<([u8;32],[u8;32])>` | Ordered `(token_id, identity_id)` pairs for My Tokens screen |
+| `det:token:<base58_token_id>` | `None` | `det-<net>.sqlite` | `StoredToken` | Fields: `config_bytes: Vec<u8>` (bincode `TokenConfiguration`), `alias: String`, `data_contract_id: [u8;32]`, `position: u16` |
+| `det:token_order:v1` | `None` | `det-<net>.sqlite` | `Vec<([u8;32],[u8;32])>` | Ordered `(token_id, identity_id)` pairs for My Tokens screen |
 
 Per-`(identity, token)` balances are no longer cached by DET. They are read live from the upstream `IdentitySyncManager` through the `TokenBalanceView` seam (`src/wallet_backend/token_balance.rs`), which is fed a lock-free snapshot refreshed off the UI thread.
 
@@ -149,8 +149,8 @@ Both keys use **per-wallet scope** (`DetScope::Wallet(&seed_hash)`) so entries c
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:platform_addr:<canonical_address>` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `StoredPlatformAddressInfo` | Fields: `balance: u64`, `nonce: u32` |
-| `det:platform_sync:v1` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `StoredPlatformSyncInfo` | Fields: `last_sync_timestamp: u64`, `sync_height: u64` |
+| `det:platform_addr:<canonical_address>` | `DetScope::Wallet(&seed_hash)` | `det-<net>.sqlite` | `StoredPlatformAddressInfo` | Fields: `balance: u64`, `nonce: u32` |
+| `det:platform_sync:v1` | `DetScope::Wallet(&seed_hash)` | `det-<net>.sqlite` | `StoredPlatformSyncInfo` | Fields: `last_sync_timestamp: u64`, `sync_height: u64` |
 
 Source: `src/context/platform_address_db.rs`, `src/wallet_backend/platform_address.rs`
 
@@ -158,18 +158,18 @@ Source: `src/context/platform_address_db.rs`, `src/wallet_backend/platform_addre
 
 ## DashPay sidecar
 
-The per-network `platform-wallet.sqlite` already partitions DashPay data by network, so no `<network>:` prefix is needed within a key. Owner-specific decisions and recovery state use `DetScope::Identity(&owner)`; the owner id is carried by the scope and the upstream soft-cascade reaps those values when the owner identity row is deleted.
+The per-network `det-<net>.sqlite` already partitions DashPay data by network, so no `<network>:` prefix is needed within a key. Owner-specific decisions and recovery state use `DetScope::Identity(&owner)`; the owner id is carried by the scope and the upstream soft-cascade reaps those values when the owner identity row is deleted.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:dashpay:blocked:<base58_contact_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `()` | Presence-only flag: contact is blocked |
-| `det:dashpay:declined:<base58_counterparty_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `()` | Presence-only flag: incoming contact request declined |
-| `det:dashpay:withdrawn:<base58_counterparty_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `()` | Presence-only flag: outgoing contact request withdrawn |
-| `det:dashpay:request_action:<decline|cancel>:<base58_request_id>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactRequestActionPhase` | Durable recovery phase for a paid hide/corrective-unhide followed by a local marker write |
-| `det:dashpay:timestamps:<base58_entity_id>` | `None` | `platform-wallet.sqlite` | `(i64, i64)` | DET-local `(created_at_ms, updated_at_ms)` |
-| `det:dashpay:private:<base58_contact>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactPrivateInfo` | Fields: `nickname: String`, `notes: String`, `is_hidden: bool` |
-| `det:dashpay:address_index:<base58_contact>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactAddressIndex` | Fields: `owner_identity_id: Vec<u8>`, `contact_identity_id: Vec<u8>`, `next_send_index: u32`, `highest_receive_index: u32`, `bloom_registered_count: u32` |
-| `det:dashpay:addr_map:<base58_owner>:<address>` | `None` | `platform-wallet.sqlite` | `([u8;32], u32)` | Reverse map: wallet address → `(contact_id_bytes, index)` |
+| `det:dashpay:blocked:<base58_contact_id>` | `DetScope::Identity(&owner)` | `det-<net>.sqlite` | `()` | Presence-only flag: contact is blocked |
+| `det:dashpay:declined:<base58_counterparty_id>` | `DetScope::Identity(&owner)` | `det-<net>.sqlite` | `()` | Presence-only flag: incoming contact request declined |
+| `det:dashpay:withdrawn:<base58_counterparty_id>` | `DetScope::Identity(&owner)` | `det-<net>.sqlite` | `()` | Presence-only flag: outgoing contact request withdrawn |
+| `det:dashpay:request_action:<decline|cancel>:<base58_request_id>` | `DetScope::Identity(&owner)` | `det-<net>.sqlite` | `ContactRequestActionPhase` | Durable recovery phase for a paid hide/corrective-unhide followed by a local marker write |
+| `det:dashpay:timestamps:<base58_entity_id>` | `None` | `det-<net>.sqlite` | `(i64, i64)` | DET-local `(created_at_ms, updated_at_ms)` |
+| `det:dashpay:private:<base58_contact>` | `DetScope::Identity(&owner)` | `det-<net>.sqlite` | `ContactPrivateInfo` | Fields: `nickname: String`, `notes: String`, `is_hidden: bool` |
+| `det:dashpay:address_index:<base58_contact>` | `DetScope::Identity(&owner)` | `det-<net>.sqlite` | `ContactAddressIndex` | Fields: `owner_identity_id: Vec<u8>`, `contact_identity_id: Vec<u8>`, `next_send_index: u32`, `highest_receive_index: u32`, `bloom_registered_count: u32` |
+| `det:dashpay:addr_map:<base58_owner>:<address>` | `None` | `det-<net>.sqlite` | `([u8;32], u32)` | Reverse map: wallet address → `(contact_id_bytes, index)` |
 
 Source: `src/wallet_backend/dashpay.rs`, `src/model/dashpay.rs`
 
@@ -206,7 +206,7 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 | Store | Key count |
 |-------|-----------|
 | `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `platform-wallet.sqlite` | 21 (across 8 domains) |
+| `det-<net>.sqlite` | 21 (across 8 domains) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
 | **Total** | **27** |
 

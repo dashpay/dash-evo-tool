@@ -117,7 +117,7 @@ impl AppContext {
                 .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
         }
 
-        // 1. Reject a duplicate import. The upstream `platform-wallet.sqlite`
+        // 1. Reject a duplicate import. The upstream `det-<network>.sqlite`
         // persistor is the system of record now; DET no longer writes the
         // legacy `data.db.wallet` row (the fresh-install schema gates that
         // table out entirely). Uniqueness is enforced against the wallet-meta

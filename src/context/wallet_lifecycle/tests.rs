@@ -4717,16 +4717,17 @@ async fn a_terminal_registration_persist_failure_rolls_back_the_in_memory_accoun
     );
 }
 
-/// A drain that fails terminally must evict the accounts whose registrations
-/// it lost — and only those.
+/// A terminal failure must only evict what the failing call itself created.
 ///
-/// `flush` is wallet-scoped, so the drain runs on whichever funding account is
-/// provisioned next, which is usually not the one that was staged. Evicting
-/// the account being provisioned instead of the staged one would strip a
-/// perfectly durable account from the live wallet and leave the staged one
-/// memory-only with nothing left to retry it.
+/// A call rewrites every registration still pending on the wallet, not just
+/// its own, so its `pending` set includes entries inherited from earlier
+/// attempts. Its failure says nothing about those: a foreign flush may already
+/// have made them durable, and the next attempt rewrites them regardless.
+/// Evicting them as collateral would drop an account that can be on disk —
+/// memory-without-disk's mirror image — so they keep both their account and
+/// their pending marker, and a durable account is never touched at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_terminal_drain_evicts_only_the_accounts_whose_registrations_it_lost() {
+async fn a_terminal_failure_keeps_inherited_pending_registrations_for_the_next_attempt() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (ctx, sender) = offline_testnet_context_at(dir.path());
     ctx.ensure_wallet_backend(sender)
@@ -4735,22 +4736,23 @@ async fn a_terminal_drain_evicts_only_the_accounts_whose_registrations_it_lost()
     let backend = ctx.wallet_backend().expect("backend wired");
 
     let seed = [0xC4u8; 64];
-    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "drain").await;
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "inherited").await;
 
-    // Strand the top-up registration in the buffer.
+    // Leave the top-up registration pending.
     backend.arm_registration_persist_faults([PersistenceErrorKind::Transient; 4]);
     backend
         .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
         .await
         .expect_err("the exhausted budget must surface");
 
-    // The next call provisions the registration account first, so its drain of
-    // the staged top-up write is what fails terminally here.
+    // The next call creates nothing — both accounts are already in memory — so
+    // its only work is rewriting the inherited pending registration, and that
+    // is what fails terminally here.
     backend.arm_registration_persist_faults([PersistenceErrorKind::Fatal]);
     backend
         .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
         .await
-        .expect_err("a terminal drain must surface");
+        .expect_err("a terminal rewrite must surface");
 
     assert!(
         backend
@@ -4761,21 +4763,27 @@ async fn a_terminal_drain_evicts_only_the_accounts_whose_registrations_it_lost()
             .await
             .expect("probe the registration account")
             .is_some(),
-        "the registration account is durable and must survive another account's failed drain",
+        "a durable account must survive another account's failed rewrite",
     );
     assert!(
         backend
             .identity_funding_account(&seed_hash, fault_topup_account_type())
             .await
             .expect("probe the top-up account")
-            .is_none(),
-        "the account whose registration the drain discarded must leave memory",
+            .is_some(),
+        "an inherited pending account must not be evicted as collateral — its \
+         row may already be durable by another route",
+    );
+    assert!(
+        backend.has_pending_account_registrations(&seed_hash),
+        "the inherited registration must stay pending so the next attempt \
+         rewrites it",
     );
 
     backend
         .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
         .await
-        .expect("a clean retry must re-create and re-persist the top-up account");
+        .expect("a clean retry must rewrite the pending top-up registration");
 
     backend.shutdown().await;
     assert_eq!(
@@ -5002,6 +5010,60 @@ async fn removing_a_wallet_drops_its_pending_account_registrations() {
         !backend.has_pending_account_registrations(&seed_hash),
         "wallet removal must drop the pending registration, or a same-seed \
          re-import inherits it",
+    );
+
+    backend.shutdown().await;
+}
+
+/// Provisioning two funding accounts on one wallet must not overlap.
+///
+/// Each call reads the wallet's pending-registration set, releases the manager
+/// guard for the persist, and writes the set back. Overlapping calls interleave
+/// those read-modify-write cycles, so one call's bookkeeping lands on top of
+/// the other's and a registration that never reached the manifest is left with
+/// nothing recorded to rewrite it. Serialising per wallet is what makes the
+/// pending set safe to reason about; the manager guard used to do it by
+/// accident, and no longer does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provisioning_two_funding_accounts_on_one_wallet_does_not_overlap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xCEu8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "concurrent").await;
+
+    // Enough transient faults that both calls sit in their retry windows at
+    // the same time if nothing serialises them.
+    backend.arm_registration_persist_faults([PersistenceErrorKind::Transient; 8]);
+
+    let first = {
+        let backend = backend.clone();
+        tokio::spawn(async move {
+            backend
+                .ensure_identity_funding_accounts(&seed_hash, &seed, 11)
+                .await
+        })
+    };
+    let second = {
+        let backend = backend.clone();
+        tokio::spawn(async move {
+            backend
+                .ensure_identity_funding_accounts(&seed_hash, &seed, 12)
+                .await
+        })
+    };
+    let _ = first.await.expect("join first");
+    let _ = second.await.expect("join second");
+
+    assert_eq!(
+        backend.provisioning_high_water(),
+        1,
+        "two provisioning calls on one wallet overlapped; their pending-registration \
+         bookkeeping can then clobber each other",
     );
 
     backend.shutdown().await;

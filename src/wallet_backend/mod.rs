@@ -112,6 +112,49 @@ pub use token_balance::UpstreamTokenBalances;
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
+/// Test-only detector for overlapping identity-funding provisioning.
+///
+/// Counts concurrent entries into the provisioning body and remembers the
+/// high-water mark, so a test can assert that two calls on one wallet are
+/// serialised instead of racing over the shared pending-registration set.
+/// Counts globally, so tests that use it must drive a single wallet.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ProvisionOverlap {
+    in_flight: std::sync::atomic::AtomicUsize,
+    high_water: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl ProvisionOverlap {
+    /// Record an entry; the returned guard records the matching exit.
+    fn enter(&self) -> ProvisionOverlapGuard<'_> {
+        use std::sync::atomic::Ordering;
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.high_water.fetch_max(now, Ordering::SeqCst);
+        ProvisionOverlapGuard { owner: self }
+    }
+
+    /// Greatest number of provisioning calls observed in flight at once.
+    pub(crate) fn high_water(&self) -> usize {
+        self.high_water.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+struct ProvisionOverlapGuard<'a> {
+    owner: &'a ProvisionOverlap,
+}
+
+#[cfg(test)]
+impl Drop for ProvisionOverlapGuard<'_> {
+    fn drop(&mut self) {
+        self.owner
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenBalanceSyncOutcome {
     Performed,
@@ -351,6 +394,11 @@ struct Inner {
     /// registration write. Inert until a test arms it.
     #[cfg(test)]
     persist_faults: persist_fault_test_support::PersistFaults,
+    #[cfg(test)]
+    provision_overlap: ProvisionOverlap,
+    /// Per-wallet serialisation for identity-funding provisioning. See
+    /// [`identity_ops::FundingProvisionLocks`].
+    funding_provision_locks: identity_ops::FundingProvisionLocks,
     /// Per wallet, the identity-funding accounts whose registration a
     /// transient write failure could not make durable, each with the account
     /// xpub still owed to the manifest. The accounts stay live in memory (the
@@ -585,6 +633,9 @@ impl WalletBackend {
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 persist_faults: persist_fault_test_support::PersistFaults::default(),
+                #[cfg(test)]
+                provision_overlap: ProvisionOverlap::default(),
+                funding_provision_locks: identity_ops::FundingProvisionLocks::default(),
                 buffered_account_registrations: std::sync::Mutex::new(
                     std::collections::BTreeMap::new(),
                 ),
@@ -1148,6 +1199,13 @@ impl WalletBackend {
     #[cfg(test)]
     pub(crate) fn discard_staged_registration_buffer_before_write(&self, write: usize) {
         self.inner.persist_faults.discard_staged_before_write(write);
+    }
+
+    /// Greatest number of identity-funding provisioning calls seen in flight at
+    /// once since this backend was built.
+    #[cfg(test)]
+    pub(crate) fn provisioning_high_water(&self) -> usize {
+        self.inner.provision_overlap.high_water()
     }
 
     /// `true` when a pending funding-account registration is recorded for this

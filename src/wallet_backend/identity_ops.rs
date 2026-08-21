@@ -132,6 +132,46 @@ pub(crate) struct FundingAccountView {
     pub managed: bool,
 }
 
+/// Per-wallet serialisation for identity-funding provisioning.
+///
+/// A provisioning call reads the wallet's pending-registration set, releases
+/// the manager guard for the persist, then writes the set back. Overlapping
+/// calls interleave those read-modify-write cycles and one call's bookkeeping
+/// lands on top of the other's — leaving a registration that never reached the
+/// manifest with nothing recorded to rewrite it. The manager guard used to
+/// serialise these by accident; it is deliberately released for the persist
+/// now (holding a process-wide lock across a retry backoff stalls every
+/// wallet), so this carries the invariant explicitly, and per wallet.
+///
+/// Lock order is provisioning lock → manager guard, never the reverse.
+#[derive(Default)]
+pub(super) struct FundingProvisionLocks {
+    locks: std::sync::Mutex<
+        std::collections::BTreeMap<WalletId, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
+}
+
+impl FundingProvisionLocks {
+    async fn lock(&self, wallet_id: WalletId) -> tokio::sync::OwnedMutexGuard<()> {
+        let wallet_lock = {
+            let mut locks = self
+                .locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            match locks.get(&wallet_id).and_then(std::sync::Weak::upgrade) {
+                Some(lock) => lock,
+                None => {
+                    let lock = Arc::new(tokio::sync::Mutex::new(()));
+                    locks.insert(wallet_id, Arc::downgrade(&lock));
+                    lock
+                }
+            }
+        };
+        wallet_lock.lock_owned().await
+    }
+}
+
 /// Why an account registration did not reach disk — and therefore what the
 /// caller must do with the account it just put in memory.
 enum RegistrationPersistFailure {
@@ -561,13 +601,20 @@ impl WalletBackend {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
 
+        // Serialise per wallet: the pending-registration set below is a
+        // read-modify-write spanning an unlocked persist.
+        let _provisioning = self.inner.funding_provision_locks.lock(wallet_id).await;
+
+        #[cfg(test)]
+        let _overlap = self.inner.provision_overlap.enter();
+
         // Everything that touches wallet state happens under the manager
         // guard; the persist below deliberately does not. `wallet_manager()`
         // hands out ONE `RwLock<WalletManager>` shared by every wallet in the
         // process, and it is write-preferring, so sleeping a retry backoff
         // under it would stall balance reads, sync callbacks and wallet
         // removal for every other wallet — upstream warns about exactly this.
-        let pending = {
+        let (pending, created) = {
             let mut wm = wallet.wallet_manager().write().await;
             let (kw, info) = wm
                 .get_wallet_mut_and_info_mut(&wallet_id)
@@ -612,6 +659,7 @@ impl WalletBackend {
                     })?;
             }
 
+            let mut created = None;
             if !(in_wallet && in_managed) {
                 let derived = funding
                     .account(kw)
@@ -625,9 +673,10 @@ impl WalletBackend {
                         source,
                     })?;
                 pending.insert(funding, account_xpub);
+                created = Some(funding);
             }
 
-            pending
+            (pending, created)
         };
 
         // In test builds the write goes through a fault-injecting decorator
@@ -659,7 +708,12 @@ impl WalletBackend {
             .collect();
 
         let failure = match persist_account_registrations(persister, wallet_id, &entries).await {
-            Ok(()) => return self.clear_staged_account_registrations(&wallet_id),
+            // Only the entries this call actually wrote stop being pending.
+            // Another call's marker is not this call's to clear.
+            Ok(()) => {
+                let written: Vec<Funding> = pending.keys().copied().collect();
+                return self.clear_staged_account_registrations(&wallet_id, &written);
+            }
             Err(failure) => failure,
         };
 
@@ -681,17 +735,22 @@ impl WalletBackend {
                 }
             };
 
-        if !recoverable {
-            // The staged changeset is gone (or unrecoverable), so every
-            // account it covered must leave memory — otherwise the presence
-            // guards short-circuit persists that never happened.
-            self.evict_funding_accounts(&wallet, wallet_id, &pending)
+        if let (false, Some(created)) = (recoverable, created) {
+            // Only the account this call created is known not to be durable,
+            // so only it leaves memory — otherwise the presence guards would
+            // short-circuit a persist that never happened. Entries inherited
+            // from an earlier attempt keep both their account and their
+            // marker: this failure says nothing about them, a foreign flush
+            // may already have committed them, and the next attempt rewrites
+            // them either way. Evicting on their behalf would drop an account
+            // that can be on disk.
+            self.evict_funding_account(&wallet, wallet_id, created)
                 .await;
-            if let Err(e) = self.clear_staged_account_registrations(&wallet_id) {
+            if let Err(e) = self.clear_staged_account_registrations(&wallet_id, &[created]) {
                 tracing::error!(
                     wallet = %hex::encode(wallet_id),
                     error = ?e,
-                    "could not clear pending identity-funding registrations after a terminal persist failure"
+                    "could not clear a pending identity-funding registration after a terminal persist failure"
                 );
             }
         }
@@ -699,32 +758,28 @@ impl WalletBackend {
         Err(failure.into_task_error())
     }
 
-    /// Drop funding accounts whose registrations did not reach disk from both
-    /// in-memory collections, so the next attempt re-creates and re-persists
-    /// them.
+    /// Drop a funding account this call created but could not persist, from
+    /// both in-memory collections, so the next attempt re-creates and
+    /// re-persists it.
     ///
-    /// Re-acquires the manager guard, which was released for the persist, and
-    /// only removes an account still carrying the xpub we tried to write — a
-    /// concurrent provisioning that re-created it has its own durable row and
-    /// must not be evicted on our behalf.
-    async fn evict_funding_accounts(
+    /// Re-acquires the manager guard, which was released for the persist.
+    /// Removing unconditionally is sound because the per-wallet provisioning
+    /// lock is still held, so no concurrent provisioning can have re-created
+    /// this account in the meantime. An xpub comparison could not establish
+    /// that in any case: the xpub is a deterministic derivation from the seed
+    /// and the account's path, so a concurrent provisioning of the same
+    /// account yields the identical value.
+    async fn evict_funding_account(
         &self,
         wallet: &Arc<platform_wallet::PlatformWallet>,
         wallet_id: WalletId,
-        pending: &std::collections::BTreeMap<Funding, ExtendedPubKey>,
+        funding: Funding,
     ) {
         let mut wm = wallet.wallet_manager().write().await;
         let Some((kw, info)) = wm.get_wallet_mut_and_info_mut(&wallet_id) else {
             return;
         };
-        for (funding, account_xpub) in pending {
-            if funding
-                .account(kw)
-                .is_some_and(|a| a.account_xpub == *account_xpub)
-            {
-                funding.remove(kw, info);
-            }
-        }
+        funding.remove(kw, info);
     }
 
     /// The funding accounts whose registration a previous attempt could not
@@ -758,13 +813,27 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Forget this wallet's pending registrations, once they are durable or
-    /// definitively lost.
-    fn clear_staged_account_registrations(&self, wallet_id: &WalletId) -> Result<(), TaskError> {
-        self.inner
-            .buffered_account_registrations
-            .lock()?
-            .remove(wallet_id);
+    /// Forget the given registrations, once they are durable or definitively
+    /// lost. Scoped to `keys` rather than the whole wallet: a concurrent
+    /// attempt's pending registration is not this call's to forget, and
+    /// dropping it would leave that account in memory with nothing left to
+    /// rewrite it.
+    fn clear_staged_account_registrations(
+        &self,
+        wallet_id: &WalletId,
+        keys: &[Funding],
+    ) -> Result<(), TaskError> {
+        let mut pending = self.inner.buffered_account_registrations.lock()?;
+        let std::collections::btree_map::Entry::Occupied(mut entry) = pending.entry(*wallet_id)
+        else {
+            return Ok(());
+        };
+        for key in keys {
+            entry.get_mut().remove(key);
+        }
+        if entry.get().is_empty() {
+            entry.remove();
+        }
         Ok(())
     }
 

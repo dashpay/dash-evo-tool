@@ -1527,6 +1527,12 @@ impl WalletBackend {
         // In-memory maps + snapshot registration.
         if let Some(wallet_id) = wallet_id {
             self.inner.id_map.write()?.remove(seed_hash);
+            // This guard MUST stay a statement temporary, dropped at the
+            // semicolon. `mark_account_registrations_staged` takes the locks
+            // the other way round (pending set, then a `wallets` read), so
+            // holding this one across the prune below — e.g. by binding it to
+            // a `let` that outlives this line — closes the cycle and hangs
+            // wallet removal against a concurrent provisioning.
             self.inner.wallets.write()?.remove(&wallet_id);
             self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);
             // A same-seed re-import computes the same `WalletId`, so a pending

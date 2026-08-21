@@ -813,6 +813,10 @@ impl WalletBackend {
         // after the removal has pruned. A same-seed re-import recomputes the
         // identical `WalletId` and would inherit the leftover.
         //
+        // The `wallets` read below is taken while this pending-set guard is
+        // held; removal takes the two the other way round, so it must not hold
+        // its `wallets` guard across its prune (noted at that site).
+        //
         // Sound for every interleaving because removal drops the wallet from
         // `Inner::wallets` BEFORE pruning here, and this liveness check is
         // taken while holding the pending-set lock the prune also needs:

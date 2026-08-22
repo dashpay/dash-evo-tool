@@ -5118,7 +5118,6 @@ async fn a_wallet_less_rewrite_the_mirror_cannot_confirm_warns_the_user() {
     let backend = ctx.wallet_backend().expect("backend wired");
 
     let mut node = masternode_qualified_identity();
-    let node_id = identity_id_of(&node);
     ctx.insert_local_qualified_identity(&node, &None)
         .expect("first insert: the mirror lands and the record is wallet-less");
     node.alias = Some("hp-masternode-1-renamed".to_string());
@@ -5128,17 +5127,131 @@ async fn a_wallet_less_rewrite_the_mirror_cannot_confirm_warns_the_user() {
         .expect("a record already stored wallet-less still accepts the write");
     backend.set_unowned_read_test_failure(false);
 
-    // The banner has to describe *this* outcome: the write landed and only its
+    // The banner has to describe *this* outcome: the record landed and only its
     // confirmation is missing. The kept-link arm's text — the mirror error's
     // own, reporting a write that did not happen — would be a lie here.
     let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
-    let expected = format!(
-        "Identity {node_id} was saved, but this device's wallet data does not yet confirm that \
-         it belongs to no wallet. Restart the application to complete the update."
+    assert!(
+        banner_texts.contains(&unconfirmed_wallet_free_banner_text()),
+        "a wallet-free rewrite the wallet store could not confirm must warn the user, \
+         got {banner_texts:?}"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The one banner text the wallet-less arm raises. Named once here because
+/// three tests assert on it and the point of the wording is that it is
+/// identical for every identity — an id in it would defeat the tray's dedup.
+fn unconfirmed_wallet_free_banner_text() -> String {
+    "An identity was saved, but this device's wallet data does not yet confirm that it belongs \
+     to no wallet. Restart the application to complete the update."
+        .to_string()
+}
+
+/// The banner reports a saved record, so it may not be raised until the record
+/// is saved. Every write of the insert — the vault encode, the enumeration
+/// index, the blob — runs after the mirror check that raises it, and any of
+/// them can fail the insert outright.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wallet_less_rewrite_that_fails_to_save_claims_no_save() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let mut node = masternode_qualified_identity();
+    let node_id = identity_id_of(&node);
+    ctx.insert_local_qualified_identity(&node, &None)
+        .expect("first insert: the mirror lands and the record is wallet-less");
+
+    // Break a write that runs after the mirror check: the Global enumeration
+    // index no longer decodes, so `index_add_identity` fails and the insert
+    // returns having persisted nothing.
+    ctx.det_kv()
+        .expect("kv handle")
+        .put(
+            crate::wallet_backend::DetScope::Global,
+            "det:identity_index:v1",
+            &"not an id roster".to_string(),
+        )
+        .expect("corrupt the enumeration index");
+
+    node.alias = Some("renamed-by-the-user".to_string());
+    backend.set_unowned_read_test_failure(true);
+    let outcome = ctx.insert_local_qualified_identity(&node, &None);
+    backend.set_unowned_read_test_failure(false);
+
+    assert!(
+        outcome.is_err(),
+        "precondition: the write after the mirror check must fail, got {outcome:?}"
+    );
+    assert_ne!(
+        ctx.get_local_qualified_identity(&node_id)
+            .expect("read the record back")
+            .and_then(|qi| qi.alias)
+            .as_deref(),
+        Some("renamed-by-the-user"),
+        "precondition: the edit must not have been persisted"
+    );
+
+    // Any claim of a save, not merely the current wording of one: a banner that
+    // says "saved" here is wrong however it is phrased.
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+    assert!(
+        !banner_texts.iter().any(|t| t.contains("was saved")),
+        "no banner may report a saved identity when the insert failed, got {banner_texts:?}"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The tray holds five messages and this banner never auto-dismisses, so the
+/// warning must be one message however many identities hit it. A masternode
+/// operator refreshing six wallet-less nodes under a single mirror failure is
+/// an ordinary shape, and it may not cost the user the message they were
+/// reading. Dedup is by exact text — hence no identity id in it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wallet_less_rewrites_warn_once_rather_than_flooding_the_banner_tray() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let nodes: Vec<_> = (0..6).map(|_| masternode_qualified_identity()).collect();
+    for node in &nodes {
+        ctx.insert_local_qualified_identity(node, &None)
+            .expect("seed a wallet-less node");
+    }
+    crate::ui::components::MessageBanner::set_global(
+        ctx.egui_ctx(),
+        "Your withdrawal was submitted.",
+        crate::ui::MessageType::Success,
+    );
+
+    backend.set_unowned_read_test_failure(true);
+    for node in &nodes {
+        ctx.insert_local_qualified_identity(node, &None)
+            .expect("a record already stored wallet-less still accepts the write");
+    }
+    backend.set_unowned_read_test_failure(false);
+
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+    assert_eq!(
+        banner_texts
+            .iter()
+            .filter(|t| *t == &unconfirmed_wallet_free_banner_text())
+            .count(),
+        1,
+        "six identities in one condition must warn once, got {banner_texts:?}"
     );
     assert!(
-        banner_texts.contains(&expected),
-        "a wallet-free rewrite the wallet store could not confirm must warn the user, \
+        banner_texts
+            .iter()
+            .any(|t| t.contains("withdrawal was submitted")),
+        "a routine wallet-less refresh must not evict the message the user was reading, \
          got {banner_texts:?}"
     );
 

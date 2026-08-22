@@ -581,8 +581,8 @@ impl AppContext {
     ///   indistinguishable here) there is no upstream row for any `ON DELETE
     ///   CASCADE` to reach, and the identity keeps a wallet link it may not
     ///   deserve until the operation is retried.
-    /// - **Already wallet-free** — the write proceeds, and the user is told
-    ///   anyway. It restates a claim the record already carries rather than
+    /// - **Already wallet-free** — the write proceeds, and once it lands the
+    ///   user is told. It restates a claim the record already carries rather than
     ///   making one, so the field the mirror guards does not change and
     ///   refusing would only forfeit the rest of the write; the divergence it
     ///   leaves — DET calling the identity wallet-free where the wallet store
@@ -650,6 +650,7 @@ impl AppContext {
         // stranding placeholders no record points at. An orphan mirror left by
         // a failure of the writes below is withdrawn by the next boot's
         // reconcile.
+        let mut unconfirmed_wallet_free = None;
         if wallet_link.is_none()
             && let Err(error) = self.mirror_identity_unowned(qualified_identity)
         {
@@ -685,21 +686,9 @@ impl AppContext {
                         error = %error,
                         "Identity already recorded as belonging to no wallet; storing it again leaves that unchanged, but the wallet store still could not confirm a wallet-free row for it. Retry, or restart the application."
                     );
-                    // Not the mirror error's own text, which the arm above
-                    // shows: it reports a write that did not happen, and this
-                    // one did.
-                    let banner = MessageBanner::set_global(
-                        self.egui_ctx(),
-                        format!(
-                            "Identity {identity_id} was saved, but this device's wallet data does \
-                             not yet confirm that it belongs to no wallet. Restart the application \
-                             to complete the update."
-                        ),
-                        MessageType::Warning,
-                    );
-                    banner.with_details(error);
-                    banner.disable_auto_dismiss();
-                    self.egui_ctx().request_repaint();
+                    // Reported once the record is on disk, not here: the writes
+                    // below can still fail.
+                    unconfirmed_wallet_free = Some(error);
                 }
                 // Nothing on file to restate, so a wallet-free record here
                 // would be this method's own invention. Refuse rather than
@@ -745,6 +734,21 @@ impl AppContext {
         index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
             .map_err(identity_err)?;
+        // Raised only now, because the writes above can still fail. Carries no
+        // identity id — the tray holds five, this banner never auto-dismisses
+        // and dedup is by exact text, so one per identity would evict whatever
+        // the user was reading. The id is in the log line and the details.
+        if let Some(error) = unconfirmed_wallet_free {
+            let banner = MessageBanner::set_global(
+                self.egui_ctx(),
+                "An identity was saved, but this device's wallet data does not yet confirm that \
+                 it belongs to no wallet. Restart the application to complete the update.",
+                MessageType::Warning,
+            );
+            banner.with_details(error);
+            banner.disable_auto_dismiss();
+            self.egui_ctx().request_repaint();
+        }
         Ok(())
     }
 

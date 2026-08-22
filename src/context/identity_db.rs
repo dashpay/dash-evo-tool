@@ -557,14 +557,16 @@ impl AppContext {
     /// from the passed-in hint. Also registers the id in the Global
     /// enumeration index so the load-all paths can find it.
     ///
-    /// One condition on that overwrite: `wallet_hash: None` is written only
-    /// against a *verified* unowned mirror — [`Self::mirror_identity_unowned`]
+    /// One condition on that overwrite: `wallet_hash: None` is written against
+    /// a *verified* unowned mirror — [`Self::mirror_identity_unowned`]
     /// returning `Ok`, which means the wallet store was read back and holds
-    /// the wallet-free row. Upstream files one row per identity and will not
-    /// re-scope a wallet-owned one, so a `wallet_hash: None` record written
-    /// without that proof may sit under some wallet's `ON DELETE CASCADE`
-    /// while claiming to be out of its reach — removing that wallet would then
-    /// take this record with it.
+    /// the wallet-free row — or, failing that, only where the record already
+    /// claims to be wallet-free (the branches below, which is where an
+    /// unverified rewrite is confined). Upstream files one row per identity
+    /// and will not re-scope a wallet-owned one, so a `wallet_hash: None`
+    /// record written without that proof may sit under some wallet's
+    /// `ON DELETE CASCADE` while claiming to be out of its reach — removing
+    /// that wallet would then take this record with it.
     ///
     /// No mirror error carries that proof, so none of them is trusted with the
     /// claim. What the failure costs depends on what the identity's record
@@ -737,7 +739,7 @@ impl AppContext {
         // Raised only now, because the writes above can still fail. Carries no
         // identity id — the tray holds five, this banner never auto-dismisses
         // and dedup is by exact text, so one per identity would evict whatever
-        // the user was reading. The id is in the log line and the details.
+        // the user was reading. The id is in the log line above.
         if let Some(error) = unconfirmed_wallet_free {
             let banner = MessageBanner::set_global(
                 self.egui_ctx(),

@@ -365,6 +365,20 @@ pub enum TaskError {
         identity_id: dash_sdk::platform::Identifier,
     },
 
+    /// An identity is still in the wallet store's unowned scope immediately
+    /// after being withdrawn from it — upstream's tombstone write logs a
+    /// persist failure and reports the removal as done regardless, so the
+    /// readback is the only evidence it landed. The next boot's reconcile
+    /// re-issues the withdrawal, which is what the message offers. Carries the
+    /// identity id (data, not a message).
+    #[error(
+        "Identity {identity_id} was removed here, but this device's wallet data still lists it. \
+         Restart the application to finish removing it."
+    )]
+    UnownedIdentityMirrorRemains {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
     /// The wallet storage backend could not read or write wallet data.
     #[error(
         "Could not access wallet data. Check available disk space and restart the application."

@@ -353,6 +353,11 @@ struct Inner {
     /// mirror that is simply absent.
     #[cfg(test)]
     swallow_next_unowned_write: std::sync::atomic::AtomicBool,
+    /// Drops the next unowned-scope removal, reproducing upstream's swallowed
+    /// tombstone persist — it logs and returns the removed identity anyway —
+    /// which leaves the withdrawn row on disk.
+    #[cfg(test)]
+    swallow_next_unowned_removal: std::sync::atomic::AtomicBool,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -567,6 +572,8 @@ impl WalletBackend {
                 unowned_read_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 swallow_next_unowned_write: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                swallow_next_unowned_removal: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1092,6 +1099,13 @@ impl WalletBackend {
     pub(crate) fn set_swallow_next_unowned_write(&self) {
         self.inner
             .swallow_next_unowned_write
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_swallow_next_unowned_removal(&self) {
+        self.inner
+            .swallow_next_unowned_removal
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 

@@ -581,11 +581,14 @@ impl AppContext {
     ///   indistinguishable here) there is no upstream row for any `ON DELETE
     ///   CASCADE` to reach, and the identity keeps a wallet link it may not
     ///   deserve until the operation is retried.
-    /// - **Already wallet-free** — the write proceeds. It restates a claim the
-    ///   record already carries rather than making one, so the field the
-    ///   mirror guards does not change and refusing would only forfeit the
-    ///   rest of the write. Masternodes and evonodes are wallet-less by
-    ///   design and refresh through here, so this is the common path.
+    /// - **Already wallet-free** — the write proceeds, and the user is told
+    ///   anyway. It restates a claim the record already carries rather than
+    ///   making one, so the field the mirror guards does not change and
+    ///   refusing would only forfeit the rest of the write; the divergence it
+    ///   leaves — DET calling the identity wallet-free where the wallet store
+    ///   will not — outlives the write regardless, so it is reported rather
+    ///   than left silent. Masternodes and evonodes are wallet-less by design
+    ///   and refresh through here, so this is the common path.
     /// - **Nothing on file** — the write is refused with the mirror's own
     ///   error and nothing is persisted, since a wallet-free record here would
     ///   be this method's invention rather than anything it can stand on.
@@ -673,12 +676,31 @@ impl AppContext {
                 // The record already claims no wallet, so this write restates
                 // that claim rather than making it. Nothing is at stake in the
                 // field the mirror guards, and refusing would forfeit the rest
-                // of the write to repair a divergence it cannot repair.
-                Ok(StoredWalletScope::WalletLess) => tracing::debug!(
-                    identity_id = %identity_id,
-                    error = %error,
-                    "Identity already recorded as belonging to no wallet; storing it again leaves that unchanged"
-                ),
+                // of the write to repair a divergence it cannot repair. Said
+                // out loud all the same — accepted, not unnoticed — because no
+                // boot revisits an accepted write.
+                Ok(StoredWalletScope::WalletLess) => {
+                    tracing::warn!(
+                        identity_id = %identity_id,
+                        error = %error,
+                        "Identity already recorded as belonging to no wallet; storing it again leaves that unchanged, but the wallet store still could not confirm a wallet-free row for it. Retry, or restart the application."
+                    );
+                    // Not the mirror error's own text, which the arm above
+                    // shows: it reports a write that did not happen, and this
+                    // one did.
+                    let banner = MessageBanner::set_global(
+                        self.egui_ctx(),
+                        format!(
+                            "Identity {identity_id} was saved, but this device's wallet data does \
+                             not yet confirm that it belongs to no wallet. Restart the application \
+                             to complete the update."
+                        ),
+                        MessageType::Warning,
+                    );
+                    banner.with_details(error);
+                    banner.disable_auto_dismiss();
+                    self.egui_ctx().request_repaint();
+                }
                 // Nothing on file to restate, so a wallet-free record here
                 // would be this method's own invention. Refuse rather than
                 // persist a claim the wallet store contradicts.

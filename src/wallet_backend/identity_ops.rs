@@ -291,9 +291,21 @@ impl WalletBackend {
     /// gone. A tombstone lost to a crash or storage error between the sidecar
     /// delete and this call therefore costs one boot, not the record.
     ///
+    /// An `Ok` is a *verified* one: the row is read back as gone before the
+    /// removal is claimed (see Errors).
+    ///
     /// # Errors
-    /// [`TaskError::WalletStorage`] if reading back the existing unowned set
-    /// fails; [`TaskError::WalletBackend`] on an upstream removal failure.
+    /// [`TaskError::UnownedIdentityMirrorRemains`] when the row is still in
+    /// the unowned scope right after being withdrawn from it. Upstream's
+    /// `remove_identity` persists the tombstone through `persist_removal`,
+    /// which swallows a persister failure into `tracing::error!` and returns
+    /// `()`, so the removal reports success either way (`manager/lifecycle.rs`
+    /// at pin `4784de03`) — the readback is the only evidence available. Paid
+    /// on a real withdrawal only: the not-registered fast path above returns
+    /// before it.
+    ///
+    /// [`TaskError::WalletStorage`] if reading the unowned set fails;
+    /// [`TaskError::WalletBackend`] on an upstream removal failure.
     pub(crate) fn remove_unowned_identity(
         &self,
         identity_id: &dash_sdk::platform::Identifier,
@@ -302,12 +314,27 @@ impl WalletBackend {
         if manager.identity(identity_id).is_none() {
             return Ok(());
         }
-        manager
-            .remove_identity(identity_id, &self.unowned_scope_persister())
-            .map(|_| ())
-            .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e),
-            })
+        #[cfg(test)]
+        let removal_swallowed = self
+            .inner
+            .swallow_next_unowned_removal
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(test))]
+        let removal_swallowed = false;
+        if !removal_swallowed {
+            manager
+                .remove_identity(identity_id, &self.unowned_scope_persister())
+                .map(|_| ())
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
+        }
+        if self.load_unowned_identities()?.contains_key(identity_id) {
+            return Err(TaskError::UnownedIdentityMirrorRemains {
+                identity_id: *identity_id,
+            });
+        }
+        Ok(())
     }
 
     fn load_unowned_identities(

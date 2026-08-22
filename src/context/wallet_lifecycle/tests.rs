@@ -5103,6 +5103,97 @@ async fn a_mirror_read_failure_still_accepts_a_record_already_stored_wallet_less
     backend.shutdown().await;
 }
 
+/// A rewrite of an already-wallet-less record proceeds even when the mirror
+/// cannot be confirmed, so the divergence it leaves behind — DET calling the
+/// identity wallet-free while the wallet store will not say so — is invisible
+/// unless this path says it out loud. It tells the user, for the same reason
+/// the kept-link path does: no boot revisits an accepted write, and a banner
+/// alone logs nothing headless (MCP/CLI), where no frame ever renders it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wallet_less_rewrite_the_mirror_cannot_confirm_warns_the_user() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let mut node = masternode_qualified_identity();
+    let node_id = identity_id_of(&node);
+    ctx.insert_local_qualified_identity(&node, &None)
+        .expect("first insert: the mirror lands and the record is wallet-less");
+    node.alias = Some("hp-masternode-1-renamed".to_string());
+
+    backend.set_unowned_read_test_failure(true);
+    ctx.insert_local_qualified_identity(&node, &None)
+        .expect("a record already stored wallet-less still accepts the write");
+    backend.set_unowned_read_test_failure(false);
+
+    // The banner has to describe *this* outcome: the write landed and only its
+    // confirmation is missing. The kept-link arm's text — the mirror error's
+    // own, reporting a write that did not happen — would be a lie here.
+    let banner_texts = crate::ui::components::message_banner::global_banner_texts(ctx.egui_ctx());
+    let expected = format!(
+        "Identity {node_id} was saved, but this device's wallet data does not yet confirm that \
+         it belongs to no wallet. Restart the application to complete the update."
+    );
+    assert!(
+        banner_texts.contains(&expected),
+        "a wallet-free rewrite the wallet store could not confirm must warn the user, \
+         got {banner_texts:?}"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Upstream's `remove_identity` persists its tombstone through
+/// `persist_removal`, which logs a persister failure and returns anyway
+/// (`manager/lifecycle.rs` at pin `4784de03`), so a removal that never reached
+/// disk arrives here as `Ok`. Reporting that as a deletion would be a lie the
+/// caller acts on: `delete_local_qualified_identity` logs nothing, and the boot
+/// reconcile counts the withdrawal it did not make.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swallowed_unowned_removal_is_reported_not_claimed_successful() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let node = masternode_qualified_identity();
+    let node_id = identity_id_of(&node);
+    ctx.insert_local_qualified_identity(&node, &None)
+        .expect("insert masternode identity");
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&node_id),
+        "precondition: the node is registered unowned"
+    );
+
+    backend.set_swallow_next_unowned_removal();
+    let outcome = backend.remove_unowned_identity(&node_id);
+
+    assert!(
+        matches!(
+            outcome,
+            Err(TaskError::UnownedIdentityMirrorRemains { identity_id }) if identity_id == node_id
+        ),
+        "a removal whose tombstone never landed must say so, got {outcome:?}"
+    );
+    // The error has to be true, not merely returned: the row it names is the
+    // one still on disk.
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities")
+            .contains(&node_id),
+        "the reported failure must describe the actual state — the row is still registered"
+    );
+
+    backend.shutdown().await;
+}
+
 /// A refused insert must strand nothing in the vault either. The mirror check
 /// runs before `encode_identity_blob_vault_first` precisely so a refusal
 /// leaves no `InVault` secret behind for a record that was never written —

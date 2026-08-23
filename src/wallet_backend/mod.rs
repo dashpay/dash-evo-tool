@@ -344,6 +344,20 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Forces the next unowned-scope read to fail, so a test can tell a
+    /// wallet-store failure apart from a mirror upstream genuinely refused.
+    #[cfg(test)]
+    unowned_read_test_failure: std::sync::atomic::AtomicBool,
+    /// Drops the next unowned-scope write, reproducing upstream's swallowed
+    /// persist failure — it logs and returns `Ok(())` — which reaches DET as a
+    /// mirror that is simply absent.
+    #[cfg(test)]
+    swallow_next_unowned_write: std::sync::atomic::AtomicBool,
+    /// Drops the next unowned-scope removal, reproducing upstream's swallowed
+    /// tombstone persist — it logs and returns the removed identity anyway —
+    /// which leaves the withdrawn row on disk.
+    #[cfg(test)]
+    swallow_next_unowned_removal: std::sync::atomic::AtomicBool,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -554,6 +568,12 @@ impl WalletBackend {
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                unowned_read_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                swallow_next_unowned_write: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                swallow_next_unowned_removal: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1066,6 +1086,27 @@ impl WalletBackend {
         self.inner
             .registration_test_failure
             .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_unowned_read_test_failure(&self, fail: bool) {
+        self.inner
+            .unowned_read_test_failure
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_swallow_next_unowned_write(&self) {
+        self.inner
+            .swallow_next_unowned_write
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_swallow_next_unowned_removal(&self) {
+        self.inner
+            .swallow_next_unowned_removal
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[cfg(test)]

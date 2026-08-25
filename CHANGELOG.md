@@ -101,6 +101,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Restarting no longer loses the account an identity's funding is paid
+  through**: creating an identity, or topping one up, first sets up an account
+  on this device for the payment to travel through. That account was only ever
+  held in memory and never written down, so closing the app between sending the
+  payment and the identity appearing left nothing able to work out where the
+  money had gone — the payment was stranded, and the funds in it with it. This
+  is also what could leave a wallet unusable after updating the app. The
+  account is now written down as it is created, so it comes back exactly as it
+  was the next time the app starts. If writing it down does not succeed, the
+  app keeps trying; it only gives up when the write can never land, and then it
+  says so plainly instead of carrying on as though the account were there.
+
 - **Masternodes and evonodes are now recorded in the wallet store too**: a node
   loaded from its ProTxHash was only ever written to this app's own records, so
   the wallet store the app shares with the rest of the wallet stack had no entry

@@ -47,6 +47,8 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
+#[cfg(test)]
+pub(crate) mod persist_fault_test_support;
 pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
@@ -90,6 +92,7 @@ pub use secret_prompt::{
 pub use secret_seam::SecretSeam;
 
 use coordinator_gate::CoordinatorGate;
+use identity_ops::Funding;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
@@ -108,6 +111,49 @@ use token_balance::TokenBalanceStore;
 pub use token_balance::UpstreamTokenBalances;
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
+
+/// Test-only detector for overlapping identity-funding provisioning.
+///
+/// Counts concurrent entries into the provisioning body and remembers the
+/// high-water mark, so a test can assert that two calls on one wallet are
+/// serialised instead of racing over the shared pending-registration set.
+/// Counts globally, so tests that use it must drive a single wallet.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ProvisionOverlap {
+    in_flight: std::sync::atomic::AtomicUsize,
+    high_water: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl ProvisionOverlap {
+    /// Record an entry; the returned guard records the matching exit.
+    fn enter(&self) -> ProvisionOverlapGuard<'_> {
+        use std::sync::atomic::Ordering;
+        let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.high_water.fetch_max(now, Ordering::SeqCst);
+        ProvisionOverlapGuard { owner: self }
+    }
+
+    /// Greatest number of provisioning calls observed in flight at once.
+    pub(crate) fn high_water(&self) -> usize {
+        self.high_water.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+struct ProvisionOverlapGuard<'a> {
+    owner: &'a ProvisionOverlap,
+}
+
+#[cfg(test)]
+impl Drop for ProvisionOverlapGuard<'_> {
+    fn drop(&mut self) {
+        self.owner
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenBalanceSyncOutcome {
@@ -344,6 +390,37 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Injected persister faults for the identity-funding account
+    /// registration write. Inert until a test arms it.
+    #[cfg(test)]
+    persist_faults: persist_fault_test_support::PersistFaults,
+    #[cfg(test)]
+    provision_overlap: ProvisionOverlap,
+    /// Per-wallet serialisation for identity-funding provisioning. See
+    /// [`identity_ops::FundingProvisionLocks`].
+    funding_provision_locks: identity_ops::FundingProvisionLocks,
+    /// Per wallet, the identity-funding accounts whose registration a
+    /// transient write failure could not make durable, each with the account
+    /// xpub still owed to the manifest. The accounts stay live in memory (the
+    /// rows can still land), so the next provisioning attempt for that wallet
+    /// rewrites them instead of taking the idempotent early return and
+    /// reporting success on rows that are not there.
+    ///
+    /// Carries the xpub, not just the account identity, so the rewrite
+    /// resupplies the entry rather than betting on a shared persister buffer
+    /// this call site does not own — and so a terminal failure only evicts an
+    /// account still carrying the xpub whose write was lost.
+    ///
+    /// Entries are dropped when the write succeeds, when it fails terminally,
+    /// and when the wallet is removed ([`Self::forget_wallet_local_state`]) —
+    /// a stale entry would otherwise be inherited by a same-seed re-import,
+    /// which computes the same `WalletId`.
+    buffered_account_registrations: std::sync::Mutex<
+        std::collections::BTreeMap<
+            WalletId,
+            std::collections::BTreeMap<Funding, dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey>,
+        >,
+    >,
     /// Forces the next unowned-scope read to fail, so a test can tell a
     /// wallet-store failure apart from a mirror upstream genuinely refused.
     #[cfg(test)]
@@ -568,6 +645,14 @@ impl WalletBackend {
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                persist_faults: persist_fault_test_support::PersistFaults::default(),
+                #[cfg(test)]
+                provision_overlap: ProvisionOverlap::default(),
+                funding_provision_locks: identity_ops::FundingProvisionLocks::default(),
+                buffered_account_registrations: std::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                ),
                 #[cfg(test)]
                 unowned_read_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
@@ -1123,6 +1208,94 @@ impl WalletBackend {
             .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Queue persister faults for the identity-funding account registration
+    /// write, served one per `store` call in order.
+    #[cfg(test)]
+    pub(crate) fn arm_registration_persist_faults(
+        &self,
+        kinds: impl IntoIterator<Item = platform_wallet::changeset::PersistenceErrorKind>,
+    ) {
+        self.inner.persist_faults.arm(kinds);
+    }
+
+    /// `true` while an injected transient failure still holds an uncommitted
+    /// account-registration changeset in the persister buffer.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_buffer_is_staged(&self) -> bool {
+        self.inner.persist_faults.has_staged_changeset()
+    }
+
+    /// Drop the staged changeset the way an unrelated writer's terminal flush
+    /// does — the buffer is shared per wallet, and its loss is never reported
+    /// to the account-registration caller.
+    #[cfg(test)]
+    pub(crate) fn discard_staged_registration_buffer(&self) {
+        self.inner.persist_faults.discard_staged();
+    }
+
+    /// Arm a one-shot foreign drain of the staged buffer immediately before the
+    /// `write`-th `store` on the registration path. Write 1 is the first
+    /// attempt's `store`, so arming write 2 puts the drain in the backoff
+    /// window between the first attempt and its retry.
+    #[cfg(test)]
+    pub(crate) fn discard_staged_registration_buffer_before_write(&self, write: usize) {
+        self.inner.persist_faults.discard_staged_before_write(write);
+    }
+
+    /// `store` calls the identity-funding registration path has made since this
+    /// backend was built — one per persist attempt.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_store_calls(&self) -> usize {
+        self.inner.persist_faults.store_calls()
+    }
+
+    /// `flush` calls the identity-funding registration path has made since this
+    /// backend was built. The path makes none while
+    /// [`Self::registration_persist_commits_inline`] holds: a successful
+    /// `store` has already committed.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_flush_calls(&self) -> usize {
+        self.inner.persist_faults.flush_calls()
+    }
+
+    /// Whether DET's persister reports a successful `store` as already
+    /// committed — the property the flush-free registration write rests on.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_commits_inline(&self) -> bool {
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        self.inner.wallet_persister.store_commits_inline()
+    }
+
+    /// Greatest number of identity-funding provisioning calls seen in flight at
+    /// once since this backend was built.
+    #[cfg(test)]
+    pub(crate) fn provisioning_high_water(&self) -> usize {
+        self.inner.provision_overlap.high_water()
+    }
+
+    /// `true` when a pending funding-account registration is recorded for this
+    /// wallet, awaiting a rewrite by the next provisioning attempt.
+    #[cfg(test)]
+    pub(crate) fn has_pending_account_registrations(&self, seed_hash: &WalletSeedHash) -> bool {
+        let Some(wallet_id) = self.registered_wallet_id(seed_hash) else {
+            return false;
+        };
+        self.has_pending_account_registrations_for(wallet_id)
+    }
+
+    /// As [`Self::has_pending_account_registrations`], but keyed by the
+    /// upstream id. A removed wallet is gone from `id_map`, so the seed-hash
+    /// form cannot see leftovers that outlived it — which is the state worth
+    /// asserting after a removal.
+    #[cfg(test)]
+    pub(crate) fn has_pending_account_registrations_for(&self, wallet_id: WalletId) -> bool {
+        self.inner
+            .buffered_account_registrations
+            .lock()
+            .map(|pending| pending.contains_key(&wallet_id))
+            .unwrap_or(false)
+    }
+
     /// Resolve one just-registered upstream wallet into the DET-keyed maps via
     /// the account-xpub fund-routing gate, identical in spirit to the gate the
     /// seedless loader applies per wallet.
@@ -1419,8 +1592,28 @@ impl WalletBackend {
         // In-memory maps + snapshot registration.
         if let Some(wallet_id) = wallet_id {
             self.inner.id_map.write()?.remove(seed_hash);
+            // This guard MUST stay a statement temporary, dropped at the
+            // semicolon. `mark_account_registrations_staged` takes the locks
+            // the other way round (pending set, then a `wallets` read), so
+            // holding this one across the prune below — e.g. by binding it to
+            // a `let` that outlives this line — closes the cycle and hangs
+            // wallet removal against a concurrent provisioning.
             self.inner.wallets.write()?.remove(&wallet_id);
             self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);
+            // A same-seed re-import computes the same `WalletId`, so a pending
+            // registration left behind here would be inherited by the fresh
+            // wallet and rewritten against accounts it never provisioned.
+            //
+            // Order matters: `wallets` is cleared above BEFORE this prune, and
+            // `mark_account_registrations_staged` checks `wallets` while
+            // holding this same lock. That pairing is what stops a
+            // provisioning call still inside its retry window from recording a
+            // marker that outlives the wallet — this path is synchronous and
+            // cannot take the wallet's async provisioning lock.
+            self.inner
+                .buffered_account_registrations
+                .lock()?
+                .remove(&wallet_id);
         }
 
         match first_error {

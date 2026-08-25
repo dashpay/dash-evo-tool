@@ -19,6 +19,18 @@ pub mod top_up_identity_screen;
 pub mod transfer_screen;
 pub mod withdraw_screen;
 
+/// Confirmation shown once an identity is removed from this device.
+pub const IDENTITY_REMOVED: &str = "The identity was removed from this device.";
+
+/// Shown when the identity was removed but the voter identity tied to it was
+/// not. Naming the leftover matters: the user sees one entry disappear and one
+/// stay, and this is what tells them the remaining entry is not a mistake.
+pub const IDENTITY_REMOVED_VOTER_LEFT: &str = "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.";
+
+/// Shown when a removal is refused because the storage update is still running.
+pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
+    "The storage update is still running. Wait for it to finish before removing an identity.";
+
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
 /// # Description

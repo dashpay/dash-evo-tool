@@ -19,6 +19,9 @@ use crate::ui::identities::register_dpns_name_screen::{
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
+use crate::ui::identities::{
+    IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE, IDENTITY_REMOVED, IDENTITY_REMOVED_VOTER_LEFT,
+};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::wallet_backend::poison::MutexRecover;
@@ -950,7 +953,7 @@ impl IdentitiesScreen {
                         if self.app_context.migration_status().state().is_in_progress() {
                             MessageBanner::set_global(
                                 self.app_context.egui_ctx(),
-                                "The storage update is still running. Wait for it to finish before removing an identity.",
+                                IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE,
                                 MessageType::Warning,
                             );
                             return AppAction::None;
@@ -1144,14 +1147,14 @@ impl ScreenLike for IdentitiesScreen {
                 if associated_cleanup_failed {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.",
+                        IDENTITY_REMOVED_VOTER_LEFT,
                         MessageType::Warning,
                     )
                     .disable_auto_dismiss();
                 } else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        "The identity was removed from this device.",
+                        IDENTITY_REMOVED,
                         MessageType::Success,
                     );
                 }

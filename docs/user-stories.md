@@ -700,6 +700,19 @@ As a user whose identity was already in the app before the upgrade — a mastern
 - The previous version's data is never modified, so restoring can be repeated safely; repeating it reports that there was nothing left to restore and changes nothing.
 - Restoring keeps the app usable while it waits for the identity password: other identities can still be removed, and anything else saved for this identity while the password prompt is open survives the restore.
 
+### IDN-021: Unload an identity from this device [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to remove an identity from this device from the identity's own Settings tab, so that I can clear out an identity I no longer use without hunting for a separate screen.
+
+- The identity's Settings tab has an "Unload this identity from this device" action in its Danger zone, and it is usable rather than announced as a coming feature.
+- Confirming removes the identity, its top-up history, and its scheduled DPNS votes from this device; the identity itself stays on Dash Platform and can be loaded again.
+- The removal applies to the identity that was on screen when the action was chosen, even if the selected identity changes while the confirmation is open.
+- Choosing "Keep", or dismissing the confirmation, changes nothing.
+- While a storage update is running the removal is refused with an explanation and can be retried once it finishes.
+- Once the identity is gone the Settings tab moves to another identity on its own, and the outcome is reported — including the case where the identity went but a voter identity tied to it stayed behind.
+- A removal that cannot be completed leaves the identity's private keys intact, so a retry still has everything it needs and no identity is left listed without its keys.
+
 ---
 
 ## DPNS (DPN)

@@ -20,6 +20,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
+use crate::ui::identities::{IDENTITY_REMOVED, IDENTITY_REMOVED_VOTER_LEFT};
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -571,6 +572,39 @@ impl ScreenLike for IdentityHubScreen {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         "This contact is back in your list.",
+                        MessageType::Success,
+                    );
+                }
+            }
+            // The Settings tab's unload lands here. The tab re-resolves its own
+            // selection next frame, so this only has to report the outcome —
+            // including the case where the identity went but its voter twin
+            // stayed, which the user would otherwise read as a failed removal.
+            BackendTaskSuccessResult::RemovedIdentities {
+                identity_ids,
+                associated_cleanup_failed,
+            } => {
+                // Drop the app-wide selection when it names something that no
+                // longer exists, so the hub falls back deliberately instead of
+                // resolving around a pointer to a deleted identity.
+                if self
+                    .app_context
+                    .selected_identity_id()
+                    .is_some_and(|active| identity_ids.contains(&active))
+                {
+                    self.app_context.set_selected_identity(None);
+                }
+                if *associated_cleanup_failed {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        IDENTITY_REMOVED_VOTER_LEFT,
+                        MessageType::Warning,
+                    )
+                    .disable_auto_dismiss();
+                } else {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        IDENTITY_REMOVED,
                         MessageType::Success,
                     );
                 }

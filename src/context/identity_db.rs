@@ -1405,9 +1405,20 @@ impl AppContext {
                 source: Arc::new(source),
             },
         )?;
-        self.clear_identity_vault_keys(&kv, &id)?;
-        purge_identity_scope(&kv, &id)?;
+        // Ordering is a safety property. The vault delete is the only step
+        // nothing can undo — Platform can re-supply the identity, but no one
+        // can re-supply its keys — so it runs last, once the identity is
+        // already unlisted and drained. Its delete set is read up front,
+        // because the blob `purge_identity_scope` drops is where that set is
+        // recorded.
+        let vault_keys = self.identity_vault_key_placements(&kv, &id)?;
         index_remove_identity(&kv, &id)?;
+        purge_identity_scope(&kv, &id)?;
+        // Propagated, not swallowed: a vault delete that fails leaves key
+        // material on a device the user asked to clear, which is the one part
+        // of this operation they must not be told succeeded.
+        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, id)
+            .delete_all(vault_keys)?;
         // Mirror the removal into the wallet store's unowned scope, so a
         // deleted node does not linger there. Best-effort, and a no-op for a
         // wallet-owned identity, which is never registered unowned.
@@ -1498,6 +1509,30 @@ impl AppContext {
         kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
     }
 
+    /// The vault placements holding `id`'s identity-key secrets, as recorded in
+    /// its stored blob. Empty when the identity is not stored.
+    ///
+    /// Split out from [`Self::clear_identity_vault_keys`] so a caller that is
+    /// about to drop the blob can take the delete set while it still exists —
+    /// the blob is the only record of which vault labels belong to `id`, so a
+    /// sweep run after the blob is gone silently deletes nothing and strands
+    /// the secrets in the vault.
+    fn identity_vault_key_placements(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
+            .map_err(identity_err)?
+        else {
+            return Ok(std::collections::BTreeSet::new());
+        };
+        Ok(decode_stored_identity(&stored.qi_bytes, self.network)?
+            .private_keys
+            .keys_set())
+    }
+
     /// Delete every identity-key raw secret for `id` from the vault.
     /// Idempotent when the identity or an individual vault label is absent.
     fn clear_identity_vault_keys(
@@ -1505,15 +1540,8 @@ impl AppContext {
         kv: &DetKv,
         id: &[u8; 32],
     ) -> std::result::Result<(), TaskError> {
-        let Some(stored) = kv
-            .get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
-            .map_err(identity_err)?
-        else {
-            return Ok(());
-        };
-        let qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
-        let view = crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id);
-        view.delete_all(qi.private_keys.keys_set())
+        let placements = self.identity_vault_key_placements(kv, id)?;
+        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id).delete_all(placements)
     }
 
     /// Delete the vault secrets filed at `placements` for `identity_id`, leaving
@@ -2818,5 +2846,165 @@ mod tests {
 
         ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
             .expect("deleting an already-gone placement is not an error");
+    }
+
+    /// A stored identity whose plaintext keys the read path has already moved
+    /// into the vault — the state a real delete runs against. Holds the temp dir
+    /// and the event receiver so neither is dropped while the test runs.
+    struct StagedIdentity {
+        ctx: Arc<AppContext>,
+        store: Arc<platform_wallet_storage::secrets::SecretStore>,
+        id: Identifier,
+        _dir: tempfile::TempDir,
+        _events: tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    }
+
+    async fn stage_identity_with_vaulted_keys(high: [u8; 32], medium: [u8; 32]) -> StagedIdentity {
+        let (ctx, store, dir) = ctx_with_vault().await;
+        // `det_kv()` is only reachable once the wallet backend is wired.
+        let (tx, events) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+
+        let qi = qi_with_plaintext_and_derived(high, medium);
+        let id = qi.identity.id();
+        let id_buf = id.to_buffer();
+        let kv = ctx.det_kv().expect("identity kv");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                qi_bytes: qi.to_bytes(),
+                status: qi.status.as_u8(),
+                identity_type: qi.identity_type.as_tag().to_string(),
+                wallet_hash: None,
+                wallet_index: None,
+            },
+        )
+        .expect("stage the identity blob");
+        index_add_identity(&kv, &id_buf).expect("index the identity");
+        ctx.get_local_qualified_identity(&id)
+            .expect("hydrate the staged identity")
+            .expect("identity present");
+
+        let view = IdentityKeyView::new(&store, id_buf);
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .unwrap()
+                .is_some()
+                && view
+                    .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 2)
+                    .unwrap()
+                    .is_some(),
+            "precondition: both plaintext keys are in the vault before the delete"
+        );
+        StagedIdentity {
+            ctx,
+            store,
+            id,
+            _dir: dir,
+            _events: events,
+        }
+    }
+
+    /// Removal ordering is a safety property, not a style choice: the vault-key
+    /// delete is the one irreversible step (Platform can re-supply the identity,
+    /// nothing can re-supply the keys), so it must be unreachable until the
+    /// identity is already gone from local storage. Failing a step in the middle
+    /// of the delete must therefore leave every key where it was, rather than
+    /// leaving a "zombie" — an identity still on file whose keys are gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_identity_delete_never_destroys_the_vault_keys() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0xAA; 32];
+        const MEDIUM: [u8; 32] = [0xBB; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, MEDIUM).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+
+        // Break the Global enumeration index so the delete fails partway: the
+        // index read no longer decodes, which is the same shape as a store that
+        // goes away mid-operation.
+        kv.put(
+            DetScope::Global,
+            IDENTITY_INDEX_KEY,
+            &"not an identity index".to_string(),
+        )
+        .expect("corrupt the enumeration index");
+
+        let error = staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect_err("an unreadable index must fail the delete");
+        assert!(
+            !matches!(error, TaskError::WalletStorageNotReady),
+            "the delete must reach the index step, not stop at the migration guard: {error:?}"
+        );
+
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        assert_eq!(
+            *view
+                .get(&MAIN, 1)
+                .unwrap()
+                .expect("the HIGH key must survive a failed delete"),
+            HIGH,
+        );
+        assert_eq!(
+            *view
+                .get(&MAIN, 2)
+                .unwrap()
+                .expect("the MEDIUM key must survive a failed delete"),
+            MEDIUM,
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_some(),
+            "the identity record must survive a failed delete, so a retry still has something to delete"
+        );
+    }
+
+    /// The other half of the ordering contract. Deferring the vault delete must
+    /// not quietly turn it into a no-op: the delete set is read from the blob,
+    /// so reading it after `purge_identity_scope` drops that blob would strand
+    /// every private key in the vault. A completed removal leaves nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_successful_identity_delete_leaves_no_orphaned_vault_key() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+        let staged = stage_identity_with_vaulted_keys([0xCC; 32], [0xDD; 32]).await;
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("delete the staged identity");
+
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} must not be stranded in the vault after a completed delete"
+            );
+        }
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "the identity record must be gone after a completed delete"
+        );
+        assert!(
+            !load_identity_index(&staged.ctx.det_kv().expect("identity kv"))
+                .expect("read the index")
+                .contains(&staged.id.to_buffer()),
+            "the identity must be unlisted after a completed delete"
+        );
     }
 }

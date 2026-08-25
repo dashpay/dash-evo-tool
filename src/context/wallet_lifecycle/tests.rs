@@ -4561,6 +4561,63 @@ async fn unbound_topup_funding_account_provisions_on_the_watch_only_wallet() {
     backend.shutdown().await;
 }
 
+/// A committed registration write must not be followed by a second one.
+///
+/// The persister runs in `FlushMode::Immediate`, so a successful `store` has
+/// already committed. A follow-up `flush` would add no durability and would
+/// take the per-wallet buffer *including whatever an unrelated writer parked
+/// there*: that stranger's terminal failure would come back as this
+/// registration's, evicting an account whose row is already on disk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_committed_registration_write_is_not_followed_by_a_second_write() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0xCBu8; 64];
+    let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "one-write").await;
+
+    let stores_before = backend.registration_persist_store_calls();
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect("an unfaulted provisioning must succeed");
+
+    assert_eq!(
+        backend.registration_persist_store_calls() - stores_before,
+        1,
+        "the registration must reach disk in exactly one `store`",
+    );
+    assert_eq!(
+        backend.registration_persist_flush_calls(),
+        0,
+        "a committed `store` must not be followed by a `flush` — it adds no \
+         durability, and the shared buffer it would adopt lets an unrelated \
+         writer's terminal failure discard this registration",
+    );
+
+    let view = backend
+        .identity_funding_account(&seed_hash, fault_topup_account_type())
+        .await
+        .expect("probe the funding account")
+        .expect("the provisioned account must be live in memory");
+    assert!(view.managed, "both collections must hold the account");
+    assert!(
+        !backend.registration_persist_buffer_is_staged(),
+        "a committed write must leave nothing staged",
+    );
+
+    backend.shutdown().await;
+    assert_eq!(
+        persisted_account_registration_rows(dir.path(), "identity_topup", FAULT_TOPUP_INDEX),
+        1,
+        "the single `store` must have made the registration durable",
+    );
+}
+
 /// A transient persister failure must be ridden out, not surfaced.
 ///
 /// The persistence contract says a transient `store` keeps the changeset
@@ -4628,8 +4685,9 @@ async fn an_exhausted_transient_persist_budget_keeps_memory_and_the_next_attempt
     let seed = [0xC2u8; 64];
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "exhausted").await;
 
-    // One `store` plus every bare-flush retry the budget allows. Sizing the
-    // queue to the budget exactly leaves nothing armed for the follow-up call.
+    // One fault per `store` the retry budget allows — every attempt resupplies
+    // the entries. Sizing the queue to the budget exactly leaves nothing armed
+    // for the follow-up call.
     backend.arm_registration_persist_faults([PersistenceErrorKind::Transient; 4]);
     let error = backend
         .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)

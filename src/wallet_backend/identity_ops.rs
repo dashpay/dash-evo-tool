@@ -229,21 +229,24 @@ where
     }
 }
 
-/// Write these account registrations through `persister` and flush them, so a
-/// cold boot rebuilds the accounts from the manifest.
+/// Write these account registrations through `persister`, so a cold boot
+/// rebuilds the accounts from the manifest.
 ///
-/// Every attempt — the first and each retry — **resupplies** the entries via
-/// `store` rather than issuing a bare `flush`. The persister's buffer is
-/// shared per wallet, not owned by this call site: `flush` answers `Ok(())`
-/// when it finds nothing staged, and any other writer's terminal flush takes
-/// the whole merged buffer (these entries included) without telling us. A bare
-/// `flush` therefore cannot distinguish "committed" from "thrown away by
-/// somebody else", and inferring durability from it is how a funding account
-/// ends up live in memory and absent from the manifest.
+/// A single `store` is the whole write. [`WalletBackend::new`] builds the
+/// persister with `SqlitePersisterConfig::new` and never selects a flush mode,
+/// leaving the default `FlushMode::Immediate`, under which a successful
+/// `store` has already committed its transaction. A follow-up `flush` could
+/// therefore add no durability, only exposure: the buffer is shared per
+/// wallet, so that call would adopt whatever another writer had parked in it
+/// and hand us that stranger's failure — classifying a registration whose row
+/// is already on disk as discarded, and evicting its account from memory.
 ///
-/// Resupplying is safe precisely here, and the general "re-`store` would
-/// double-merge" caution does not bind: `account_registrations` merges by
-/// `extend` and applies through `UPSERT_ACCOUNT_SQL`, an
+/// Every attempt — the first and each retry — **resupplies** the entries
+/// rather than issuing a bare `flush`, which answers `Ok(())` on an empty
+/// buffer and so cannot distinguish "committed" from "thrown away by somebody
+/// else". Resupplying is safe precisely here, and the general "re-`store`
+/// would double-merge" caution does not bind: `account_registrations` merges
+/// by `extend` and applies through `UPSERT_ACCOUNT_SQL`, an
 /// `ON CONFLICT(wallet_id, account_type, account_index, …) DO UPDATE` keyed on
 /// the account's identity, so writing the same entry twice is idempotent.
 async fn persist_account_registrations(
@@ -256,9 +259,7 @@ async fn persist_account_registrations(
             account_registrations: entries.to_vec(),
             ..Default::default()
         };
-        persister
-            .store(wallet_id, changeset)
-            .and_then(|()| persister.flush(wallet_id))
+        persister.store(wallet_id, changeset)
     })
     .await
 }

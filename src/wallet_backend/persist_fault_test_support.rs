@@ -2,12 +2,12 @@
 //! [`PlatformWalletPersistence`] retry contract.
 //!
 //! Decorates the real [`SqlitePersister`] so a test can make individual
-//! `store` / `flush` calls fail with a chosen [`PersistenceErrorKind`] while
-//! every other call reaches the real database. The injected failures mirror
-//! what the real persister does with the buffer: a `Transient` failure parks
-//! the changeset so a later write still commits it, and a terminal failure
-//! drops the whole per-wallet buffer — including anything a previous transient
-//! failure had staged, because `flush_inner` takes the merged buffer and
+//! `store` calls fail with a chosen [`PersistenceErrorKind`] while every other
+//! call reaches the real database. The injected failures mirror what the real
+//! persister does with the buffer: a `Transient` failure parks the changeset
+//! so a later write still commits it, and a terminal failure drops the whole
+//! per-wallet buffer — including anything a previous transient failure had
+//! staged, because `flush_inner` takes the merged buffer and
 //! `handle_flush_error` restores it only for transient errors. Assertions can
 //! therefore be made against real persisted rows rather than a fake's
 //! bookkeeping.
@@ -17,9 +17,17 @@
 //! two-wallet test commit one wallet's changeset under another wallet's id and
 //! still pass.
 //!
-//! Only `store`, `flush` and `load` are routed — the decorator is used at one
-//! call site (the identity-funding account registration write) and the trait's
-//! defaults cover the rest.
+//! Only `store` faults, and only `store`, `flush` and `load` are routed at all
+//! — the trait's defaults cover the rest. The decorator has a single call site,
+//! the identity-funding account registration write, and that path issues one
+//! `store` per attempt and never flushes: DET runs the persister in
+//! `FlushMode::Immediate`, where a successful `store` is already the commit. A
+//! flush-time fault would therefore be unreachable rather than merely unused,
+//! so `flush` is a plain passthrough — it still completes a changeset an
+//! injected transient failure parked, per the trait's contract — and
+//! [`store_calls`](PersistFaults::store_calls) /
+//! [`flush_calls`](PersistFaults::flush_calls) are what a test pins that shape
+//! with.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -39,13 +47,15 @@ use platform_wallet_storage::SqlitePersister;
 pub(crate) struct PersistFaults {
     queue: Mutex<VecDeque<PersistenceErrorKind>>,
     staged: Mutex<HashMap<WalletId, PlatformWalletChangeSet>>,
-    /// One-based index of the `store`/`flush` call before which the staged
-    /// buffer is dropped; `0` disables the probe.
+    /// One-based index of the `store` call before which the staged buffer is
+    /// dropped; `0` disables the probe.
     discard_before_write: std::sync::atomic::AtomicUsize,
+    store_calls: std::sync::atomic::AtomicUsize,
+    flush_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl PersistFaults {
-    /// Queue `kinds`, served one per `store` / `flush` call in order.
+    /// Queue `kinds`, served one per `store` call in order.
     pub(crate) fn arm(&self, kinds: impl IntoIterator<Item = PersistenceErrorKind>) {
         self.queue.lock().expect("fault queue").extend(kinds);
     }
@@ -69,11 +79,11 @@ impl PersistFaults {
         self.staged.lock().expect("staged changeset").clear();
     }
 
-    /// Arm a one-shot foreign drain immediately before the `write`-th
-    /// `store`/`flush` call, as if an unrelated writer had taken the shared
-    /// buffer and lost it terminally in that window. Counting calls (rather
-    /// than firing on the next one) is what places the drain *between* two
-    /// attempts of one retry loop.
+    /// Arm a one-shot foreign drain immediately before the `write`-th `store`
+    /// call, as if an unrelated writer had taken the shared buffer and lost it
+    /// terminally in that window. Counting calls (rather than firing on the
+    /// next one) is what places the drain *between* two attempts of one retry
+    /// loop.
     pub(crate) fn discard_staged_before_write(&self, write: usize) {
         self.discard_before_write
             .store(write, std::sync::atomic::Ordering::Relaxed);
@@ -96,6 +106,30 @@ impl PersistFaults {
 
     fn next(&self) -> Option<PersistenceErrorKind> {
         self.queue.lock().expect("fault queue").pop_front()
+    }
+
+    /// `store` calls the registration path has made since this backend was
+    /// built. One per persist attempt.
+    pub(crate) fn store_calls(&self) -> usize {
+        self.store_calls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// `flush` calls the registration path has made since this backend was
+    /// built. Zero unless a follow-up write has crept back in: a committed
+    /// `store` needs none, and one would expose the registration to an
+    /// unrelated writer's failure.
+    pub(crate) fn flush_calls(&self) -> usize {
+        self.flush_calls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn record_store(&self) {
+        self.store_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn record_flush(&self) {
+        self.flush_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn stage(&self, wallet_id: WalletId, changeset: PlatformWalletChangeSet) {
@@ -142,6 +176,7 @@ impl PlatformWalletPersistence for PersistFaultInjector<'_> {
         wallet_id: WalletId,
         changeset: PlatformWalletChangeSet,
     ) -> Result<(), PersistenceError> {
+        self.faults.record_store();
         self.faults.apply_pending_discard();
         match self.faults.next() {
             // Contract: a transient failure preserves the changeset, so a
@@ -166,23 +201,15 @@ impl PlatformWalletPersistence for PersistFaultInjector<'_> {
         }
     }
 
+    /// Passthrough — the queue serves `store` only. The registration path
+    /// makes no `flush` call, so faulting one would test nothing; the counter
+    /// is what a test asserts on instead.
     fn flush(&self, wallet_id: WalletId) -> Result<(), PersistenceError> {
-        self.faults.apply_pending_discard();
-        match self.faults.next() {
-            Some(PersistenceErrorKind::Transient) => {
-                Err(Self::injected(PersistenceErrorKind::Transient))
-            }
-            Some(kind) => {
-                self.faults.take_staged(&wallet_id);
-                Err(Self::injected(kind))
-            }
-            None => {
-                if let Some(staged) = self.faults.take_staged(&wallet_id) {
-                    self.inner.store(wallet_id, staged)?;
-                }
-                self.inner.flush(wallet_id)
-            }
+        self.faults.record_flush();
+        if let Some(staged) = self.faults.take_staged(&wallet_id) {
+            self.inner.store(wallet_id, staged)?;
         }
+        self.inner.flush(wallet_id)
     }
 
     fn load(&self) -> Result<ClientStartState, PersistenceError> {

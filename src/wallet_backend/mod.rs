@@ -1168,7 +1168,7 @@ impl WalletBackend {
     }
 
     /// Queue persister faults for the identity-funding account registration
-    /// write, served one per `store` / `flush` call in order.
+    /// write, served one per `store` call in order.
     #[cfg(test)]
     pub(crate) fn arm_registration_persist_faults(
         &self,
@@ -1193,12 +1193,27 @@ impl WalletBackend {
     }
 
     /// Arm a one-shot foreign drain of the staged buffer immediately before the
-    /// `write`-th `store`/`flush` on the registration path. Write 1 is the
-    /// first attempt's `store`, so arming write 2 puts the drain in the
-    /// backoff window between the first attempt and its retry.
+    /// `write`-th `store` on the registration path. Write 1 is the first
+    /// attempt's `store`, so arming write 2 puts the drain in the backoff
+    /// window between the first attempt and its retry.
     #[cfg(test)]
     pub(crate) fn discard_staged_registration_buffer_before_write(&self, write: usize) {
         self.inner.persist_faults.discard_staged_before_write(write);
+    }
+
+    /// `store` calls the identity-funding registration path has made since this
+    /// backend was built — one per persist attempt.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_store_calls(&self) -> usize {
+        self.inner.persist_faults.store_calls()
+    }
+
+    /// `flush` calls the identity-funding registration path has made since this
+    /// backend was built. The path makes none: the persister runs in
+    /// `FlushMode::Immediate`, so a successful `store` has already committed.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_flush_calls(&self) -> usize {
+        self.inner.persist_faults.flush_calls()
     }
 
     /// Greatest number of identity-funding provisioning calls seen in flight at

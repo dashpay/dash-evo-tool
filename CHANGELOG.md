@@ -101,6 +101,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Masternodes and evonodes are now recorded in the wallet store too**: a node
+  loaded from its ProTxHash was only ever written to this app's own records, so
+  the wallet store the app shares with the rest of the wallet stack had no entry
+  for it at all. Such a node is now recorded there as belonging to no wallet,
+  which is what it is — nodes already on this device are added the next time the
+  app starts, with nothing to press. Recording it under one of your wallets was
+  not an option: removing that wallet would then have deleted the node along
+  with it, keys and alias included.
+
 - **Wallet data no longer lives inside the deletable network-cache folder**:
   each network's wallet database used to sit inside the same folder as the
   temporary blockchain sync cache, so clearing or losing that cache folder
@@ -346,6 +355,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- **A funding transaction found again on the network is now labelled honestly**:
+  when the app rediscovers a saved funding transaction from the chain rather
+  than tracking it from the start, it can tell that the network confirmed it but
+  not whether it was already spent on an identity. The funding list says exactly
+  that instead of claiming it is ready to use or already used. Selecting it still
+  works — the network has the final say and refuses one that was already spent.
 
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip

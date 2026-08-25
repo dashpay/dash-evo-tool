@@ -82,6 +82,7 @@ impl AppContext {
                                     data_contract: search_contract.clone(),
                                     document_type_name: "fullDescription".to_string(),
                                     limit: 1,
+                                    offset: None,
                                     start: None,
                                     where_clauses: vec![WhereClause {
                                         field: "contractId".to_string(),

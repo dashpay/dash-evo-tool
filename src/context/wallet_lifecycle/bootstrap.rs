@@ -275,6 +275,166 @@ impl AppContext {
         }
     }
 
+    /// Two-way reconcile between DET's wallet-less identities and the
+    /// upstream store's unowned scope: registers every DET-known wallet-less
+    /// identity upstream doesn't have yet (backfilling nodes stored before
+    /// that registration existed, and retrying any whose write-through
+    /// failed), and withdraws every upstream registration whose sidecar
+    /// record is gone — a tombstone lost to a crash or storage error between
+    /// [`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity)'s
+    /// synchronous attempt and its upstream write. Masternode/evonode nodes
+    /// are the expected case, but any wallet-less identity DET stores takes
+    /// this path.
+    ///
+    /// Wallet-independent by design: it runs once per boot even on an install
+    /// with no wallets at all, which is exactly the masternode-operator case.
+    /// Best-effort and idempotent — a failure is logged and retried next boot.
+    ///
+    /// Compared by id on both sides, so DET hydrates a full identity —
+    /// decoding the blob and touching the secret vault — only for an id this
+    /// pass is actually about to register:
+    /// [`AppContext::local_wallet_less_identity_ids`](crate::context::AppContext::local_wallet_less_identity_ids)
+    /// is a pre-decode scan. The upstream half is not:
+    /// [`WalletBackend::unowned_identity_ids`](crate::wallet_backend::WalletBackend::unowned_identity_ids)
+    /// decodes each row it then reduces to an id, because upstream exposes no
+    /// id-only read of the unowned scope — one row per wallet-less identity,
+    /// so the cost stays with this device's node count.
+    ///
+    /// Neither snapshot is taken atomically with the other, so an identity
+    /// written between them reads as the opposite of what it is — a stale
+    /// registration, or a wallet-less identity that has since gained a wallet.
+    /// Both loops therefore re-check every candidate against the sidecar under
+    /// that identity's record guard instead of trusting the snapshot.
+    pub(super) fn reconcile_unowned_identities(&self, backend: &WalletBackend) {
+        self.reconcile_unowned_identities_seamed(backend, || {});
+    }
+
+    /// [`Self::reconcile_unowned_identities`] with a seam between its two id
+    /// snapshots — the window a concurrent insert lands in. Production passes
+    /// a no-op; the race test stores an identity there.
+    pub(super) fn reconcile_unowned_identities_seamed(
+        &self,
+        backend: &WalletBackend,
+        between_snapshots: impl FnOnce(),
+    ) {
+        let wallet_less = match self.local_wallet_less_identity_ids() {
+            Ok(ids) => ids,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Unowned-identity reconcile skipped; sidecar id scan failed, will retry at next boot"
+                );
+                return;
+            }
+        };
+        between_snapshots();
+        let registered = match backend.unowned_identity_ids() {
+            Ok(ids) => ids,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Unowned-identity reconcile skipped; upstream unowned-scope read failed, will retry at next boot"
+                );
+                return;
+            }
+        };
+
+        let mut added = 0usize;
+        for id in wallet_less.difference(&registered) {
+            // Same guard and re-read as the withdrawal loop below, against the
+            // mirror-image race: an identity that gained a wallet since the id
+            // scan must not be registered as belonging to none. Upstream's row
+            // cannot answer that — an insert carrying a wallet hint writes none
+            // — so only the sidecar can, and only if it is read again.
+            let lock = self.identity_record_lock(*id);
+            let _record_guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match self.stored_identity_is_wallet_less(id) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    tracing::debug!(
+                        identity = %id,
+                        %error,
+                        "Unowned-identity registration skipped; the sidecar re-check failed, will retry at next boot"
+                    );
+                    continue;
+                }
+            }
+            match self.get_local_qualified_identity(id) {
+                Ok(Some(qi)) => match backend.ensure_identity_unowned(&qi.identity) {
+                    Ok(true) => added += 1,
+                    Ok(false) => {}
+                    // Permanent, not deferred: nothing on either side moves on
+                    // its own, so every boot lands here again.
+                    Err(TaskError::UnownedIdentityMirrorMissing { .. }) => tracing::warn!(
+                        identity = %id,
+                        "Identity is stored as belonging to no wallet, but the wallet store holds no wallet-free row for it and will not take one. If a wallet holds this identity, removing that wallet removes this record too. Load the identity from the wallet that holds it to repair this."
+                    ),
+                    Err(error) => tracing::debug!(
+                        identity = %id,
+                        %error,
+                        "Unowned-identity registration deferred; will retry at next boot"
+                    ),
+                },
+                // Raced with a concurrent delete between the id scan above and
+                // here; nothing left to register.
+                Ok(None) => {}
+                Err(error) => tracing::debug!(
+                    identity = %id,
+                    %error,
+                    "Unowned-identity hydration failed; will retry at next boot"
+                ),
+            }
+        }
+        if added > 0 {
+            tracing::info!(
+                added,
+                "Registered wallet-less identities with the wallet store"
+            );
+        }
+
+        let mut removed = 0usize;
+        for id in registered.difference(&wallet_less) {
+            // Re-read under the guard `insert_local_qualified_identity` holds
+            // across both of its writes: a record stored since the id scan
+            // keeps its registration, while one that has since gained a wallet
+            // still loses it. A read failure keeps the registration — a stale
+            // row costs one more boot, a wrongly withdrawn one costs the node.
+            let lock = self.identity_record_lock(*id);
+            let _record_guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match self.stored_identity_is_wallet_less(id) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::debug!(
+                        identity = %id,
+                        %error,
+                        "Unowned-identity removal skipped; the sidecar re-check failed, will retry at next boot"
+                    );
+                    continue;
+                }
+            }
+            match backend.remove_unowned_identity(id) {
+                Ok(()) => removed += 1,
+                Err(error) => tracing::debug!(
+                    identity = %id,
+                    %error,
+                    "Unowned-identity removal deferred; will retry at next boot"
+                ),
+            }
+        }
+        if removed > 0 {
+            tracing::info!(
+                removed,
+                "Withdrew stale wallet-less registrations from the wallet store"
+            );
+        }
+    }
+
     /// Register the DIP-15 receiving accounts of every established contact of
     /// every identity on `seed_hash`, so SPV watches the addresses each contact
     /// pays us at. Best-effort — a failure is logged and retried next unlock.
@@ -531,6 +691,12 @@ impl AppContext {
     }
 
     pub async fn bootstrap_loaded_wallets(self: &Arc<Self>) {
+        // Ahead of the per-wallet passes and independent of them: wallet-less
+        // identities exist on installs with no wallet at all.
+        if let Ok(backend) = self.wallet_backend() {
+            self.reconcile_unowned_identities(&backend);
+        }
+
         let wallets: Vec<_> = {
             let guard = self.wallets.read_recover();
             guard.values().cloned().collect()

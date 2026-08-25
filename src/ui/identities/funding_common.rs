@@ -251,6 +251,11 @@ pub fn asset_lock_status_label(status: &AssetLockStatus) -> &'static str {
         AssetLockStatus::InstantSendLocked => "Confirmed and ready to use.",
         AssetLockStatus::ChainLocked => "Confirmed and ready to use.",
         AssetLockStatus::Consumed => "Already used to fund an identity.",
+        // Core-side finality is proven, but whether Platform already spent this
+        // lock is unknown, so it must claim neither "ready" nor "already used".
+        AssetLockStatus::RecoveredFromChain => {
+            "Confirmed on the network. It may already have been used to fund an identity."
+        }
     }
 }
 

@@ -1371,7 +1371,9 @@ impl AppContext {
     /// path. This method therefore drains the Identity scope itself — the
     /// blob, the top-up history, and every scheduled vote queued for this
     /// identity — and removes the Global index entries that the trigger
-    /// would not touch.
+    /// would not touch. For the same reason it clears this identity's DashPay
+    /// contact overlays and its token-list preferences, which live under Global
+    /// keys naming the owner and so outlive the scope drain.
     ///
     /// For a wallet-less identity this also *tombstones* (never row-deletes)
     /// its mirrored row in the upstream unowned scope, via
@@ -1419,6 +1421,34 @@ impl AppContext {
         // of this operation they must not be told succeeded.
         crate::wallet_backend::IdentityKeyView::new(&self.secret_store, id)
             .delete_all(vault_keys)?;
+        // `purge_identity_scope` drops only this identity's own records, so the
+        // DashPay overlays sharing its scope outlive it — as do the token-list
+        // markers and the reverse address map, which are Global keys naming the
+        // owner. Nothing else reaps any of them: the upstream soft-cascade the
+        // DashPay sidecar was written against fires on a row `DELETE` this
+        // method never issues.
+        //
+        // Best-effort, and after the key delete on purpose. These are local
+        // preferences, not secrets, and a failure here must never stop the
+        // irreversible wipe above — otherwise "delete all local data" could
+        // leave private keys on disk because a contact memo would not delete.
+        if let Err(error) = self
+            .wallet_backend()
+            .and_then(|backend| backend.dashpay_clear_owner_overlays(identifier))
+        {
+            tracing::warn!(
+                identity_id = %identifier,
+                ?error,
+                "Removed identity left its DashPay contact overlays behind"
+            );
+        }
+        if let Err(error) = super::contract_token_db::forget_identity_token_state(&kv, identifier) {
+            tracing::warn!(
+                identity_id = %identifier,
+                ?error,
+                "Removed identity left its token list preferences behind"
+            );
+        }
         // Mirror the removal into the wallet store's unowned scope, so a
         // deleted node does not linger there. Best-effort, and a no-op for a
         // wallet-owned identity, which is never registered unowned.
@@ -3005,6 +3035,148 @@ mod tests {
                 .expect("read the index")
                 .contains(&staged.id.to_buffer()),
             "the identity must be unlisted after a completed delete"
+        );
+    }
+
+    /// Identity removal must take the DashPay overlays with it. `dashpay.rs`
+    /// documents these as reaped by the upstream soft-cascade "when the owner
+    /// identity row is deleted" — but DET never issues that row delete (see this
+    /// module's `delete_local_qualified_identity` docs), so nothing reaps them
+    /// and every removal used to leave the whole set behind.
+    ///
+    /// Asserts at scope level rather than per key: the contract is "no DashPay
+    /// overlay survives under this owner", not "these six prefixes are handled".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_an_identity_clears_its_dashpay_overlays() {
+        const ADDRESS: &str = "yTb47qEBpNmgXvYYsHEN4nh8yJwa5iC4Cs";
+
+        let staged = stage_identity_with_vaulted_keys([0x11; 32], [0x22; 32]).await;
+        let backend = staged.ctx.wallet_backend().expect("wallet backend");
+        let owner = staged.id;
+        let contact = Identifier::from([0x51; 32]);
+        // A second owner that is NOT being removed. Its overlays must be
+        // untouched — bleeding across identities that share a wallet is a worse
+        // bug than the leak this test is about.
+        let bystander = Identifier::from([0x52; 32]);
+
+        for who in [owner, bystander] {
+            backend.dashpay_mark_blocked(&who, &contact).unwrap();
+            backend.dashpay_mark_declined(&who, &contact).unwrap();
+            backend.dashpay_mark_withdrawn(&who, &contact).unwrap();
+            backend
+                .dashpay_set_private_info(
+                    &who,
+                    &contact,
+                    &crate::model::dashpay::ContactPrivateInfo {
+                        nickname: "Bob".into(),
+                        notes: "poker night".into(),
+                        is_hidden: false,
+                    },
+                )
+                .unwrap();
+            backend
+                .dashpay_set_address_mapping(&who, ADDRESS, &contact, 3)
+                .unwrap();
+        }
+
+        let owner_buf = owner.to_buffer();
+        let kv = backend.kv();
+        assert!(
+            !kv.list(DetScope::Identity(&owner_buf), Some("det:dashpay:"))
+                .unwrap()
+                .is_empty(),
+            "precondition: the owner has DashPay overlays before the removal"
+        );
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&owner)
+            .expect("remove the identity");
+
+        assert!(
+            kv.list(DetScope::Identity(&owner_buf), Some("det:dashpay:"))
+                .unwrap()
+                .is_empty(),
+            "no DashPay overlay may survive under a removed identity"
+        );
+        assert!(
+            backend
+                .dashpay_get_address_mapping(&owner, ADDRESS)
+                .unwrap()
+                .is_none(),
+            "the reverse address map is Global-scoped with the owner in the key, so it \
+             needs its own sweep — the identity-scope clear cannot reach it"
+        );
+
+        assert!(
+            backend.dashpay_is_declined(&bystander, &contact),
+            "another owner's markers must survive"
+        );
+        assert!(
+            backend
+                .dashpay_get_private_info(&bystander, &contact)
+                .unwrap()
+                .is_some(),
+            "another owner's private memo must survive"
+        );
+        assert!(
+            backend
+                .dashpay_get_address_mapping(&bystander, ADDRESS)
+                .unwrap()
+                .is_some(),
+            "another owner's address mapping must survive"
+        );
+    }
+
+    /// A dismissed token balance is remembered per `(token, identity)` pair. Left
+    /// behind, it silently re-hides that token if the identity is ever loaded
+    /// again — the user cannot see the marker, so they cannot clear it. The saved
+    /// ordering is pruned for the same reason `remove_token` prunes it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_an_identity_forgets_its_token_list_state() {
+        use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let owner = staged.id;
+        let bystander = Identifier::from([0x62; 32]);
+        let token = Identifier::from([0x71; 32]);
+
+        let removed_pair = IdentityTokenIdentifier {
+            identity_id: owner,
+            token_id: token,
+        };
+        let kept_pair = IdentityTokenIdentifier {
+            identity_id: bystander,
+            token_id: token,
+        };
+        staged
+            .ctx
+            .mark_token_balance_untracked(removed_pair)
+            .unwrap();
+        staged.ctx.mark_token_balance_untracked(kept_pair).unwrap();
+        staged
+            .ctx
+            .save_token_order(vec![(token, owner), (token, bystander)])
+            .unwrap();
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&owner)
+            .expect("remove the identity");
+
+        let untracked = staged.ctx.untracked_token_balances().unwrap();
+        assert!(
+            !untracked.contains(&removed_pair),
+            "a removed identity's dismissal must not survive to re-hide the token on reload"
+        );
+        assert!(
+            untracked.contains(&kept_pair),
+            "another identity's dismissal of the same token must survive"
+        );
+        assert_eq!(
+            staged.ctx.load_token_order().unwrap(),
+            vec![(token, bystander)],
+            "the saved ordering keeps every entry except the removed identity's"
         );
     }
 }

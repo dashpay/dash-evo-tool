@@ -209,11 +209,18 @@ pub(crate) fn derive_contact_info_encryption_keys(
 //
 // Two sidecar families (`timestamps`, `addr_map`) use `DetScope::Global`
 // against the per-network upstream persister. The network already partitions
-// the database file, so no `<network>:` prefix is needed inside the key. Five
-// families (`blocked`, `declined`, `withdrawn`, `private`, `address_index`) use
-// `DetScope::Identity(&owner)` — the owner is carried by the scope, so the
-// key contains only the counterparty id; the upstream soft-cascade reaps them
-// when the owner identity row is deleted.
+// the database file, so no `<network>:` prefix is needed inside the key. Six
+// families (`blocked`, `declined`, `withdrawn`, `request_action`, `private`,
+// `address_index`) use `DetScope::Identity(&owner)` — the owner is carried by
+// the scope, so the key contains only the counterparty id.
+//
+// Everything owned by one identity — those six, plus `addr_map`, which is
+// Global but names the owner in its key — is cleared explicitly when that
+// identity is removed, by [`WalletBackend::dashpay_clear_owner_overlays`]. The
+// upstream soft-cascade does not reach them: it fires on a row `DELETE`
+// against the upstream `identities` table, which DET never issues (see
+// `AppContext::delete_local_qualified_identity`). `timestamps` is shared
+// between owners and is left to the network-wide sweep.
 
 /// Mark a contact as blocked. Value: empty (`()`). Presence is the signal.
 /// Scope: [`DetScope::Identity(&owner)`] — blocking is the acting identity's
@@ -782,11 +789,15 @@ fn sidecar_key(prefix: &str, id: &Identifier) -> String {
 /// plain `Address::to_string()` form — the network's address-version byte
 /// is already encoded into the string so no extra prefix is needed.
 fn addr_map_sidecar_key(owner: &Identifier, address: &str) -> String {
+    format!("{}{address}", addr_map_owner_prefix(owner))
+}
+
+/// Key prefix covering every `addr_map` entry belonging to `owner`. The family
+/// is Global-scoped with the owner inside the key, so this prefix is the only
+/// way to address one owner's entries as a set.
+fn addr_map_owner_prefix(owner: &Identifier) -> String {
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-    format!(
-        "{KV_PREFIX_ADDR_MAP}{}:{address}",
-        owner.to_string(Encoding::Base58)
-    )
+    format!("{KV_PREFIX_ADDR_MAP}{}:", owner.to_string(Encoding::Base58))
 }
 
 /// Test the presence of an owner-scoped marker (blocked / rejected) for a
@@ -1270,19 +1281,24 @@ impl WalletBackend {
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
-    /// Drop every Identity-scoped DashPay overlay for `owner` — the
-    /// per-contact private memos, address-index cursors, the blocked / declined /
-    /// withdrawn markers, and paid-action recovery journals.
+    /// Drop every DashPay overlay belonging to `owner` — the per-contact private
+    /// memos, address-index cursors, the blocked / declined / withdrawn markers
+    /// and paid-action recovery journals under [`DetScope::Identity`], plus the
+    /// Global-scoped reverse address map, which carries the owner in its key
+    /// rather than its scope and so is owner-scoped in every sense that matters
+    /// here.
     ///
-    /// The remaining Global-scoped overlays (timestamps, reverse address map)
-    /// are not owner-scoped and are swept by the `det:dashpay:` Global prefix in
-    /// [`crate::context::AppContext::clear_network_database`]; this method
-    /// covers the overlays that live under [`DetScope::Identity`] of the owner,
-    /// which that Global sweep can no longer reach.
+    /// `timestamps` is the one DashPay family left alone: it is keyed by the
+    /// entity (contact, request, transaction) and shared between owners, so
+    /// pruning it per owner would delete another identity's timestamps. The
+    /// wholesale `det:dashpay:` Global sweep in
+    /// [`crate::context::AppContext::clear_network_database`] is the only thing
+    /// entitled to drop it.
     pub fn dashpay_clear_owner_overlays(&self, owner: &Identifier) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
         let scope = DetScope::Identity(&owner_buf);
         let kv = self.kv();
+        let sidecar_err = |e| TaskError::DashpaySidecarStorage { source: e };
         for prefix in [
             KV_PREFIX_PRIVATE,
             KV_PREFIX_ADDRESS_INDEX,
@@ -1291,13 +1307,17 @@ impl WalletBackend {
             KV_PREFIX_WITHDRAWN,
             KV_PREFIX_REQUEST_ACTION,
         ] {
-            let keys = kv
-                .list(scope, Some(prefix))
-                .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+            let keys = kv.list(scope, Some(prefix)).map_err(sidecar_err)?;
             for key in keys {
-                kv.delete(scope, &key)
-                    .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+                kv.delete(scope, &key).map_err(sidecar_err)?;
             }
+        }
+        let owner_prefix = addr_map_owner_prefix(owner);
+        let mapped = kv
+            .list(DetScope::Global, Some(&owner_prefix))
+            .map_err(sidecar_err)?;
+        for key in mapped {
+            kv.delete(DetScope::Global, &key).map_err(sidecar_err)?;
         }
         Ok(())
     }

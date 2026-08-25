@@ -773,6 +773,32 @@ fn clear_untracked_in(
         .map_err(token_err)
 }
 
+/// Drop the token-list state belonging to `identity_id`: every balance
+/// dismissal it recorded, and its entries in the saved ordering.
+///
+/// The identity counterpart of [`clear_untracked_token_in`] and of the pruning
+/// [`AppContext::remove_token`] does — a marker naming an identity that no
+/// longer exists is invisible to the user, so left behind it silently re-hides
+/// that token if the identity is ever loaded again.
+///
+/// The dismissal keys lead with the token id, so one identity's markers are not
+/// a single prefix scan: the whole family is listed and matched on the decoded
+/// pair, keeping [`parse_untracked_key`] the only reader of the key layout.
+pub(super) fn forget_identity_token_state(
+    kv: &DetKv,
+    identity_id: &Identifier,
+) -> std::result::Result<(), TaskError> {
+    for key in kv
+        .list(DetScope::Global, Some(TOKEN_UNTRACKED_PREFIX))
+        .map_err(token_err)?
+    {
+        if parse_untracked_key(&key).is_some_and(|pair| pair.identity_id == *identity_id) {
+            kv.delete(DetScope::Global, &key).map_err(token_err)?;
+        }
+    }
+    prune_token_order(kv, |(_, identity)| identity != identity_id)
+}
+
 /// Drop every dismissal recorded for `token_id`, whichever identity made it.
 fn clear_untracked_token_in(
     kv: &DetKv,

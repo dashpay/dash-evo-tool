@@ -101,6 +101,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A sent payment whose confirmation couldn't be verified no longer tells you
+  to retry it**: when the network doesn't confirm a payment quickly enough,
+  the app used to show a generic "please retry" message — but the payment may
+  already be on its way, and sending it again risked sending it twice. The
+  app now tells you plainly that the payment was sent and its confirmation is
+  still unknown, and asks you to wait and check your balance before trying
+  again.
+
 - **Masternodes and evonodes are now recorded in the wallet store too**: a node
   loaded from its ProTxHash was only ever written to this app's own records, so
   the wallet store the app shares with the rest of the wallet stack had no entry

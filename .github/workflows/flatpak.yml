@@ -37,7 +37,14 @@ jobs:
             runs-on: ubuntu-24.04-arm
 
     runs-on: ${{ matrix.runs-on }}
-    timeout-minutes: 20
+    # Sized for a COLD build, not a cache hit. The Cargo cache key below is
+    # keyed on `Cargo.lock`, so every dependency bump starts both arches from
+    # a prefix-restore that still recompiles the whole upstream tree: ~16
+    # minutes of `cargo build --release` on x86_64 before flatpak-builder even
+    # starts exporting. A warm run finishes in well under half this budget;
+    # the headroom exists so the cold run can reach "Save Cargo cache" and
+    # make the next one warm.
+    timeout-minutes: 45
 
     steps:
       - name: Check out code
@@ -181,14 +188,27 @@ jobs:
         run: |
           flatpak build-bundle flatpak-repo dash-evo-tool-linux-${{ matrix.arch }}.flatpak org.dash.DashEvoTool
 
+      # `always()` on both steps below is what keeps a slow build from
+      # starving itself. These run after the build, so without it a job that
+      # times out or fails saves nothing, comes back just as cold next week,
+      # times out again, and never writes the cache that would have made it
+      # fast — a deadlock only a human raising the timeout can break. Partial
+      # compilation output is still a valid cache: the next run restores it
+      # and compiles only what is left.
       - name: Clean Cargo cache for storage
+        if: always()
         run: |
           rm -rf cargo-target/release/incremental
           rm -rf cargo-cache/registry/src
           echo "=== Cargo cache sizes ==="
           du -sh cargo-cache cargo-target || true
 
+      # `continue-on-error` because saving is best-effort: re-running a job
+      # whose exact key already exists makes the save a no-op, and that must
+      # never turn a green build red.
       - name: Save Cargo cache
+        if: always()
+        continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
         with:
           path: |

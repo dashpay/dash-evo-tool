@@ -1,9 +1,15 @@
 name: "Weekly Draft Pre-release"
 
-# Cuts a DRAFT pre-release every Tuesday from v1.0-dev, versioned
+# Cuts a pre-release every Tuesday from v1.0-dev, versioned
 # v<core>-weekly.<YYYYMMDD> (core read live from Cargo.toml), skipping when
 # there are no new commits since the last weekly tag or when CI is red.
 # Posts a Slack notification linking to the release page.
+#
+# DRAFT vs PUBLISHED: the release is built as a draft either way, and the
+# `finalize` job publishes it at the end of a SCHEDULED run once every build
+# leg is green and every artifact is attached. A `workflow_dispatch` run
+# leaves it a draft for the person who asked for it to review. Publishing
+# always keeps the prerelease flag, so a weekly never becomes "Latest".
 #
 # SECURITY NOTE: the `tag` job pushes with the default GITHUB_TOKEN only,
 # never a PAT. GitHub suppresses new workflow runs triggered by the default
@@ -270,6 +276,27 @@ jobs:
           gh release upload "$TAG" fp/*.flatpak --clobber -R "$GITHUB_REPOSITORY"
           url=$(gh release view "$TAG" --json url --jq .url -R "$GITHUB_REPOSITORY")
           echo "url=$url" >>"$GITHUB_OUTPUT"
+
+      # Publish the scheduled cut. Reaching this step already means every
+      # build leg is green (`if: success()` on this job) and every artifact is
+      # attached, so the draft state has nothing left to protect against and
+      # only costs a manual click each week.
+      #
+      # Scheduled runs only. A `workflow_dispatch` cut stays a draft: someone
+      # asked for that run by hand, usually to inspect or re-cut something,
+      # and gets to decide when it ships.
+      #
+      # `--prerelease` is re-asserted rather than assumed. Publishing a
+      # release not flagged prerelease would make it the repository's "Latest"
+      # and hand weekly builds to everyone tracking stable; the flag is set at
+      # creation, and this keeps a change there from silently promoting a
+      # weekly.
+      - name: Publish the weekly pre-release
+        if: github.event_name == 'schedule'
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false --prerelease -R "$GITHUB_REPOSITORY"
+          echo "Published $TAG as a pre-release."
 
   # Restore the invariant: a weekly tag exists ⟺ a complete release exists.
   cleanup:

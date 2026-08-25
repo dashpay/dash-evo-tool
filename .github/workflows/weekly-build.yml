@@ -1,9 +1,15 @@
 name: "Weekly Draft Pre-release"
 
-# Cuts a DRAFT pre-release every Tuesday from v1.0-dev, versioned
+# Cuts a pre-release every Tuesday from v1.0-dev, versioned
 # v<core>-weekly.<YYYYMMDD> (core read live from Cargo.toml), skipping when
 # there are no new commits since the last weekly tag or when CI is red.
 # Posts a Slack notification linking to the release page.
+#
+# DRAFT vs PUBLISHED: the release is built as a draft either way, and the
+# `finalize` job publishes it at the end of a SCHEDULED run once every build
+# leg is green and every artifact is attached. A `workflow_dispatch` run
+# leaves it a draft for the person who asked for it to review. Publishing
+# always keeps the prerelease flag, so a weekly never becomes "Latest".
 #
 # SECURITY NOTE: the `tag` job pushes with the default GITHUB_TOKEN only,
 # never a PAT. GitHub suppresses new workflow runs triggered by the default
@@ -249,6 +255,10 @@ jobs:
       actions: read
     outputs:
       url: ${{ steps.upload.outputs.url }}
+      # "true" only when this run actually published the release. Empty for a
+      # manual cut left as a draft, and empty when publishing failed — both of
+      # which leave a draft needing a human.
+      published: ${{ steps.publish.outputs.published }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.gate.outputs.tag }}
@@ -270,6 +280,37 @@ jobs:
           gh release upload "$TAG" fp/*.flatpak --clobber -R "$GITHUB_REPOSITORY"
           url=$(gh release view "$TAG" --json url --jq .url -R "$GITHUB_REPOSITORY")
           echo "url=$url" >>"$GITHUB_OUTPUT"
+
+      # Publish the scheduled cut. Reaching this step already means every
+      # build leg is green (`if: success()` on this job) and every artifact is
+      # attached, so the draft state has nothing left to protect against and
+      # only costs a manual click each week.
+      #
+      # Scheduled runs only. A `workflow_dispatch` cut stays a draft: someone
+      # asked for that run by hand, usually to inspect or re-cut something,
+      # and gets to decide when it ships.
+      #
+      # `--prerelease` is re-asserted rather than assumed. Publishing a
+      # release not flagged prerelease would make it the repository's "Latest"
+      # and hand weekly builds to everyone tracking stable; the flag is set at
+      # creation, and this keeps a change there from silently promoting a
+      # weekly.
+      # `continue-on-error` is load-bearing, not politeness. `cleanup` deletes
+      # the tag and release whenever `finalize` does not succeed. By this point
+      # the release is COMPLETE — every artifact attached — and only its draft
+      # flag is unset, so letting a failed publish fail the job would destroy a
+      # good release over a cosmetic last step. Failing soft leaves a complete
+      # draft that can be published by hand; `notify` reads the outcome below
+      # and says which happened.
+      - name: Publish the weekly pre-release
+        id: publish
+        if: github.event_name == 'schedule'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --draft=false --prerelease -R "$GITHUB_REPOSITORY"
+          echo "published=true" >>"$GITHUB_OUTPUT"
+          echo "Published $TAG as a pre-release."
 
   # Restore the invariant: a weekly tag exists ⟺ a complete release exists.
   cleanup:
@@ -308,6 +349,7 @@ jobs:
           VERSION: ${{ needs.gate.outputs.version }}
           RELEASE_URL: ${{ needs.finalize.outputs.url }}
           FINALIZE_RESULT: ${{ needs.finalize.result }}
+          PUBLISHED: ${{ needs.finalize.outputs.published }}
           RELEASE_RESULT: ${{ needs.release.result }}
           FLATPAK_RESULT: ${{ needs.flatpak.result }}
           TAG_RESULT: ${{ needs.tag.result }}
@@ -325,6 +367,8 @@ jobs:
 
           if [ "$CI_RED" = "true" ]; then
             TEXT=":warning: *I, Claudius the Magnificent, decline to bless a broken week.* CI on \`${GITHUB_REF_NAME}\` is red — no weekly draft was cut. Mend the pipeline: <${RUN_URL}|the run>."
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ] && [ "${PUBLISHED:-}" = "true" ]; then
+            TEXT=":sparkles: *I, Claudius the Magnificent, have published another weekly for \`${REPO}\`.* Version \`${VERSION}\` is live as a pre-release, no assent required: <${RELEASE_URL}|the release page>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ]; then
             TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` awaits your royal assent — undraft it here: <${RELEASE_URL}|the release page>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ] && [ "$CLEANUP_RESULT" = "success" ]; then

@@ -188,13 +188,13 @@ jobs:
         run: |
           flatpak build-bundle flatpak-repo dash-evo-tool-linux-${{ matrix.arch }}.flatpak org.dash.DashEvoTool
 
-      # `always()` on both steps below is what keeps a slow build from
-      # starving itself. These run after the build, so without it a job that
-      # times out or fails saves nothing, comes back just as cold next week,
-      # times out again, and never writes the cache that would have made it
-      # fast — a deadlock only a human raising the timeout can break. Partial
-      # compilation output is still a valid cache: the next run restores it
-      # and compiles only what is left.
+      # `always()` on both steps below keeps a failed build from starving itself.
+      # These run after the build, so without it a job that fails before the cache
+      # steps saves nothing and comes back just as cold next week. (Note: a job-level
+      # timeout still cancels the runner, so the increased timeout above is what
+      # ensures the cache-save step is reached on cold runs.) Partial compilation
+      # output is still a valid cache: the next run restores it and compiles only
+      # what is left.
       - name: Clean Cargo cache for storage
         if: always()
         run: |

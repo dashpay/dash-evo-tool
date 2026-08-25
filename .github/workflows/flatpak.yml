@@ -139,7 +139,13 @@ jobs:
             cargo-cache
             cargo-target
           key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          # Ordered most to least specific. The middle entry is what makes a
+          # partial save useful: an incomplete build saves under a run-suffixed
+          # key (see "Save Cargo cache"), and this prefix picks up the most
+          # recent one for THIS lockfile ahead of a complete cache built from a
+          # different, older lockfile.
           restore-keys: |
+            cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}-
             cargo-flatpak-${{ matrix.arch }}-
 
       - name: Bind-mount Cargo cache into Flatpak sandbox
@@ -188,13 +194,15 @@ jobs:
         run: |
           flatpak build-bundle flatpak-repo dash-evo-tool-linux-${{ matrix.arch }}.flatpak org.dash.DashEvoTool
 
-      # `always()` on both steps below is what keeps a slow build from
-      # starving itself. These run after the build, so without it a job that
-      # times out or fails saves nothing, comes back just as cold next week,
-      # times out again, and never writes the cache that would have made it
-      # fast — a deadlock only a human raising the timeout can break. Partial
-      # compilation output is still a valid cache: the next run restores it
-      # and compiles only what is left.
+      # These run after the build, so on a failed or timed-out job they are
+      # reached only if the runner gets that far. The timeout above is what
+      # primarily guarantees a cold build reaches them; `always()` is
+      # defence-in-depth, and it is unconditionally effective for an ordinary
+      # step failure (a compile error, a failed dependency check) where the
+      # partial `cargo-target` is still worth keeping. On a cancellation the
+      # runner continues into its cleanup phase, so the save often lands, but
+      # a multi-gigabyte upload can be cut short by the cancellation grace
+      # period — treat it as opportunistic, never as a guarantee.
       - name: Clean Cargo cache for storage
         if: always()
         run: |
@@ -203,9 +211,18 @@ jobs:
           echo "=== Cargo cache sizes ==="
           du -sh cargo-cache cargo-target || true
 
+      # Cache entries are IMMUTABLE. Saving an incomplete build under the
+      # canonical key would freeze it: every later run would restore that
+      # partial archive, rebuild the remainder, and be unable to replace it —
+      # permanently paying for whatever the first bad run failed to compile.
+      # So only a fully successful job claims the canonical key; anything else
+      # saves under a run-suffixed key that the middle `restore-keys` prefix
+      # above picks up, letting each attempt improve on the last until one
+      # succeeds and writes the real thing.
+      #
       # `continue-on-error` because saving is best-effort: re-running a job
-      # whose exact key already exists makes the save a no-op, and that must
-      # never turn a green build red.
+      # whose key already exists makes the save a no-op, and that must never
+      # turn a green build red.
       - name: Save Cargo cache
         if: always()
         continue-on-error: true
@@ -214,7 +231,7 @@ jobs:
           path: |
             cargo-cache
             cargo-target
-          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}${{ job.status == 'success' && '' || format('-partial-{0}-{1}', github.run_id, github.run_attempt) }}
 
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

@@ -4580,6 +4580,21 @@ async fn a_committed_registration_write_is_not_followed_by_a_second_write() {
     let seed = [0xCBu8; 64];
     let (seed_hash, _wallet_arc) = register_test_wallet(&ctx, &backend, seed, "one-write").await;
 
+    assert!(
+        backend
+            .identity_funding_account(
+                &seed_hash,
+                dash_sdk::dpp::key_wallet::AccountType::IdentityRegistration,
+            )
+            .await
+            .expect("probe the registration account")
+            .is_some(),
+        "`key-wallet` must already hold the identity-registration account from \
+         a wallet's default set. Without it the call below provisions two \
+         accounts, and the `store` count it asserts measures upstream's \
+         defaults rather than DET's write shape",
+    );
+
     let stores_before = backend.registration_persist_store_calls();
     backend
         .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)

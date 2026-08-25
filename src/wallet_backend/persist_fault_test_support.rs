@@ -17,11 +17,12 @@
 //! two-wallet test commit one wallet's changeset under another wallet's id and
 //! still pass.
 //!
-//! Only `store` faults, and only `store`, `flush` and `load` are routed at all
-//! — the trait's defaults cover the rest. The decorator has a single call site,
-//! the identity-funding account registration write, and that path issues one
-//! `store` per attempt and never flushes: DET runs the persister in
-//! `FlushMode::Immediate`, where a successful `store` is already the commit. A
+//! Only `store` faults, and only `store_commits_inline`, `store`, `flush` and
+//! `load` are routed at all — the trait's defaults cover the rest. The
+//! decorator has a single call site, the identity-funding account registration
+//! write, and that path issues one `store` per attempt and never flushes: the
+//! decorated persister answers `store_commits_inline`, so a successful `store`
+//! is already the commit. A
 //! flush-time fault would therefore be unreachable rather than merely unused,
 //! so `flush` is a plain passthrough — it still completes a changeset an
 //! injected transient failure parked, per the trait's contract — and
@@ -167,6 +168,13 @@ impl<'a> PersistFaultInjector<'a> {
 }
 
 impl PlatformWalletPersistence for PersistFaultInjector<'_> {
+    /// Forwarded, not defaulted: the trait's conservative `false` would put
+    /// the registration path on its buffered-backend branch and test a write
+    /// shape DET never runs.
+    fn store_commits_inline(&self) -> bool {
+        self.inner.store_commits_inline()
+    }
+
     fn persistence_capabilities(&self) -> PersistenceCapabilities {
         self.inner.persistence_capabilities()
     }

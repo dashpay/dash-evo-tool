@@ -5822,7 +5822,7 @@ async fn unbound_topup_funding_account_provisions_on_the_watch_only_wallet() {
 
 /// A committed registration write must not be followed by a second one.
 ///
-/// The persister runs in `FlushMode::Immediate`, so a successful `store` has
+/// DET's persister answers `store_commits_inline`, so a successful `store` has
 /// already committed. A follow-up `flush` would add no durability and would
 /// take the per-wallet buffer *including whatever an unrelated writer parked
 /// there*: that stranger's terminal failure would come back as this
@@ -5852,6 +5852,12 @@ async fn a_committed_registration_write_is_not_followed_by_a_second_write() {
          a wallet's default set. Without it the call below provisions two \
          accounts, and the `store` count it asserts measures upstream's \
          defaults rather than DET's write shape",
+    );
+
+    assert!(
+        backend.registration_persist_commits_inline(),
+        "DET's persister must report `store` as the commit. A buffering backend \
+         would have to flush, and the flush count asserted below would be 1",
     );
 
     let stores_before = backend.registration_persist_store_calls();

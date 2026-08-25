@@ -1250,11 +1250,20 @@ impl WalletBackend {
     }
 
     /// `flush` calls the identity-funding registration path has made since this
-    /// backend was built. The path makes none: the persister runs in
-    /// `FlushMode::Immediate`, so a successful `store` has already committed.
+    /// backend was built. The path makes none while
+    /// [`Self::registration_persist_commits_inline`] holds: a successful
+    /// `store` has already committed.
     #[cfg(test)]
     pub(crate) fn registration_persist_flush_calls(&self) -> usize {
         self.inner.persist_faults.flush_calls()
+    }
+
+    /// Whether DET's persister reports a successful `store` as already
+    /// committed — the property the flush-free registration write rests on.
+    #[cfg(test)]
+    pub(crate) fn registration_persist_commits_inline(&self) -> bool {
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        self.inner.wallet_persister.store_commits_inline()
     }
 
     /// Greatest number of identity-funding provisioning calls seen in flight at

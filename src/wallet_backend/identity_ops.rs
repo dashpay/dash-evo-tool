@@ -237,14 +237,22 @@ where
 /// Write these account registrations through `persister`, so a cold boot
 /// rebuilds the accounts from the manifest.
 ///
-/// A single `store` is the whole write. [`WalletBackend::new`] builds the
-/// persister with `SqlitePersisterConfig::new` and never selects a flush mode,
-/// leaving the default `FlushMode::Immediate`, under which a successful
-/// `store` has already committed its transaction. A follow-up `flush` could
-/// therefore add no durability, only exposure: the buffer is shared per
-/// wallet, so that call would adopt whatever another writer had parked in it
-/// and hand us that stranger's failure — classifying a registration whose row
-/// is already on disk as discarded, and evicting its account from memory.
+/// A `store` the backend answers
+/// [`store_commits_inline`](PlatformWalletPersistence::store_commits_inline)
+/// for is the whole write, and no `flush` follows it. Such a `store` has
+/// already committed its transaction, so the follow-up could add no
+/// durability, only exposure: the buffer is shared per wallet, so that call
+/// would adopt whatever another writer had parked in it and hand us that
+/// stranger's failure — classifying a registration whose row is already on
+/// disk as discarded, and evicting its account from memory. DET's SQLite
+/// persister answers `true` (it runs in `FlushMode::Immediate`), which is
+/// asked here rather than assumed, so selecting another flush mode at the
+/// construction site changes the write shape instead of silently costing the
+/// durability this function reports.
+///
+/// A backend that only buffers is flushed in the same attempt: there, nothing
+/// is durable until the flush, and a failure at either step is one failure of
+/// one attempt — retried and classified together.
 ///
 /// Every attempt — the first and each retry — **resupplies** the entries
 /// rather than issuing a bare `flush`, which answers `Ok(())` on an empty
@@ -264,7 +272,11 @@ async fn persist_account_registrations(
             account_registrations: entries.to_vec(),
             ..Default::default()
         };
-        persister.store(wallet_id, changeset)
+        persister.store(wallet_id, changeset)?;
+        if persister.store_commits_inline() {
+            return Ok(());
+        }
+        persister.flush(wallet_id)
     })
     .await
 }
@@ -1176,5 +1188,123 @@ impl WalletBackend {
     ) -> Result<(), TaskError> {
         self.provision_identity_funding_account(seed_hash, seed, Funding::TopUpNotBound)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform_wallet::changeset::ClientStartState;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts the writes [`persist_account_registrations`] issues, answering
+    /// the inline-commit question however the test asks it to.
+    struct CountingPersister {
+        commits_inline: bool,
+        stores: AtomicUsize,
+        flushes: AtomicUsize,
+    }
+
+    impl CountingPersister {
+        fn new(commits_inline: bool) -> Self {
+            Self {
+                commits_inline,
+                stores: AtomicUsize::new(0),
+                flushes: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl PlatformWalletPersistence for CountingPersister {
+        fn store_commits_inline(&self) -> bool {
+            self.commits_inline
+        }
+
+        fn store(
+            &self,
+            _wallet_id: WalletId,
+            _changeset: PlatformWalletChangeSet,
+        ) -> Result<(), PersistenceError> {
+            self.stores.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn flush(&self, _wallet_id: WalletId) -> Result<(), PersistenceError> {
+            self.flushes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn load(&self) -> Result<ClientStartState, PersistenceError> {
+            unimplemented!("the registration write never loads")
+        }
+    }
+
+    fn one_entry() -> Vec<AccountRegistrationEntry> {
+        // A BIP32 serialized xpub: version, depth, parent fingerprint, child
+        // number, chain code, then the compressed point (secp256k1's
+        // generator, so the key itself is valid).
+        let mut raw = Vec::with_capacity(78);
+        raw.extend_from_slice(&[0x04, 0x88, 0xB2, 0x1E]);
+        raw.push(0);
+        raw.extend_from_slice(&[0u8; 4]);
+        raw.extend_from_slice(&[0u8; 4]);
+        raw.extend_from_slice(&[1u8; 32]);
+        raw.extend_from_slice(&[
+            0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95, 0xCE,
+            0x87, 0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59, 0xF2, 0x81,
+            0x5B, 0x16, 0xF8, 0x17, 0x98,
+        ]);
+        let xpub = ExtendedPubKey::decode(&raw).expect("decode a well-formed xpub");
+        vec![AccountRegistrationEntry {
+            account_type: dash_sdk::dpp::key_wallet::AccountType::IdentityRegistration,
+            account_xpub: xpub,
+        }]
+    }
+
+    /// A backend whose `store` commits inline gets exactly one write. The
+    /// follow-up `flush` would add no durability, and the per-wallet buffer it
+    /// adopts would let an unrelated writer's terminal failure discard a
+    /// registration already on disk.
+    #[tokio::test]
+    async fn an_inline_committing_store_is_the_whole_write() {
+        let persister = CountingPersister::new(true);
+        persist_account_registrations(&persister, [7u8; 32], &one_entry())
+            .await
+            .map_err(|failure| failure.into_task_error())
+            .expect("an unfaulted write must succeed");
+
+        assert_eq!(
+            persister.stores.load(Ordering::SeqCst),
+            1,
+            "the registration must reach disk in exactly one `store`",
+        );
+        assert_eq!(
+            persister.flushes.load(Ordering::SeqCst),
+            0,
+            "a `store` that commits inline must not be followed by a `flush`",
+        );
+    }
+
+    /// A backend that only buffers is flushed, in the same attempt: without
+    /// it the registration would be reported durable while still in memory.
+    #[tokio::test]
+    async fn a_buffering_store_is_completed_by_a_flush() {
+        let persister = CountingPersister::new(false);
+        persist_account_registrations(&persister, [7u8; 32], &one_entry())
+            .await
+            .map_err(|failure| failure.into_task_error())
+            .expect("an unfaulted write must succeed");
+
+        assert_eq!(
+            persister.stores.load(Ordering::SeqCst),
+            1,
+            "the entries must be supplied once per attempt",
+        );
+        assert_eq!(
+            persister.flushes.load(Ordering::SeqCst),
+            1,
+            "nothing is durable on a buffering backend until the flush that \
+             completes the same attempt",
+        );
     }
 }

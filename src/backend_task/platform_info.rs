@@ -343,7 +343,7 @@ fn format_withdrawal_documents_with_daily_limit(
         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
     let daily_withdrawal_limit =
-        daily_withdrawal_limit(total_credits_on_platform, PlatformVersion::latest())
+        daily_withdrawal_limit(Some(total_credits_on_platform), PlatformVersion::latest())
             .map_err(|e| WithdrawalParseError::DailyLimit(Box::new(e)))?;
 
     Ok(format!(

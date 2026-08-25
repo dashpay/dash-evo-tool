@@ -2939,6 +2939,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBroadcast(_)
         | P::TransactionBroadcastUnconfirmed(_)
+        | P::MasternodeWithdrawalUnconfirmed { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
@@ -3243,6 +3244,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // finality timeout. Bucket as Other; the upstream contract says the
         // caller must not re-submit (the next sync reconciles).
         | P::TransactionBroadcastUnconfirmed(_)
+        | P::MasternodeWithdrawalUnconfirmed { .. }
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. }
         // Funding and credit shortfalls, like their `CoreInsufficientFunds`

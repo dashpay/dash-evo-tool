@@ -1043,6 +1043,15 @@ impl SettingsTab {
     // Test helpers (pub(crate))
     // -----------------------------------------------------------------
 
+    /// Test helper: adopt `identity` as the tab's current selection — the state
+    /// `ensure_selected` settles into after a frame in which that identity was
+    /// the effective one. Lets a caller stage the retained-identity half of an
+    /// unload without driving a render.
+    #[cfg(test)]
+    pub(crate) fn select_identity_for_test(&mut self, identity: QualifiedIdentity) {
+        self.selected_identity = Some(identity);
+    }
+
     /// Test helper: force the advanced expander open so the kittest frame sees
     /// the interior widgets without a click event. Not used by production code
     /// but kept on the struct for future populated-render tests.

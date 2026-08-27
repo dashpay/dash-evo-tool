@@ -584,20 +584,28 @@ impl ScreenLike for IdentityHubScreen {
                 associated_cleanup_failed,
                 cleanup_deferred,
             } => {
-                // Drop the app-wide selection when it names something that no
-                // longer exists, so the hub falls back deliberately instead of
-                // resolving around a pointer to a deleted identity. Reset
-                // identity-scoped caches too — contacts, pending contact
+                // Two separate questions with two separate answers. The
+                // app-wide selection is dropped only when it is the thing that
+                // was removed, so the hub falls back deliberately instead of
+                // resolving around a pointer to a deleted identity.
+                let explicit_selection = self.app_context.selected_identity_id();
+                if explicit_selection.is_some_and(|active| identity_ids.contains(&active)) {
+                    self.app_context.set_selected_identity(None);
+                }
+                // The caches follow the *effective* identity, which is a
+                // fallback whenever no selection is stored, so they are reset
+                // on the wider condition — contacts, pending contact
                 // confirmations, and the profile cache — matching every other
                 // identity-switch path, so a resolve to the next identity next
                 // frame does not inherit state that still belongs to the one
                 // just removed.
-                if self
-                    .app_context
-                    .selected_identity_id()
-                    .is_some_and(|active| identity_ids.contains(&active))
-                {
-                    self.app_context.set_selected_identity(None);
+                if removal_invalidates_identity_caches(
+                    explicit_selection,
+                    self.settings_tab
+                        .selected_identity()
+                        .map(|identity| identity.identity.id()),
+                    identity_ids,
+                ) {
                     self.reset_contacts_for_identity_change();
                     self.profile_cache.reset();
                 }
@@ -811,6 +819,29 @@ fn applies_to_selected_identity(
     selected.as_ref() == Some(result_identity)
 }
 
+/// Whether a completed removal leaves the Hub's identity-scoped caches holding
+/// data for an identity that no longer exists.
+///
+/// The caches follow the *effective* identity — the explicit selection when
+/// there is one, a fallback otherwise — so the explicit pointer alone does not
+/// answer this: a single-identity account never stores one, and its unload
+/// would reset nothing. Re-resolving the fallback cannot answer it either,
+/// because by the time this result arrives the removed identity is gone from
+/// storage and the resolver names whichever identity replaced it. The Settings
+/// tab's retained identity is the surviving record of which identity the
+/// unload was started for, so either pointer naming a removed id invalidates
+/// the caches.
+fn removal_invalidates_identity_caches(
+    explicit_selection: Option<Identifier>,
+    settings_identity: Option<Identifier>,
+    removed: &[Identifier],
+) -> bool {
+    [explicit_selection, settings_identity]
+        .into_iter()
+        .flatten()
+        .any(|identity| removed.contains(&identity))
+}
+
 fn handle_profile_updated(
     settings: &mut SettingsTab,
     profiles: &mut super::profile_cache::ProfileCache,
@@ -963,6 +994,69 @@ mod tests {
         assert!(
             screen.result_is_for_selected_identity(&explicitly_selected),
             "a result for the explicitly selected identity must apply after a switch"
+        );
+    }
+
+    /// The Hub's identity-scoped caches follow the *effective* identity, which
+    /// is a fallback whenever no explicit selection is stored — the ordinary
+    /// state for a single-identity account, where the user never touches the
+    /// picker. Unloading that identity must therefore reset the caches even
+    /// though `selected_identity_id()` names nothing, or Contacts keeps the
+    /// removed identity's rows and its spent one-shot load guard while every
+    /// action resolves under whichever identity became the fallback.
+    ///
+    /// Re-resolving the fallback here cannot answer the question: by the time
+    /// this result lands the removed identity is gone from storage, so the
+    /// resolver names its replacement. The Settings tab's retained identity is
+    /// the surviving record of which identity the unload was started for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unloading_a_fallback_selected_identity_resets_the_identity_caches() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let fallback = seed_user_identity(&context, 1);
+        let fallback_identity = context
+            .get_local_qualified_identity(&fallback)
+            .expect("read the seeded identity")
+            .expect("identity present");
+        let mut screen = IdentityHubScreen::new(&context);
+        screen
+            .settings_tab
+            .select_identity_for_test(fallback_identity.clone());
+
+        assert_eq!(
+            context.selected_identity_id(),
+            None,
+            "precondition: the identity is effective by fallback, not by an explicit selection"
+        );
+        assert!(
+            screen.contacts_state.claim_load(),
+            "precondition: the one-shot load guard starts unclaimed"
+        );
+        screen.profile_cache.record_saved(
+            fallback,
+            crate::ui::identity::profile_cache::ProfileFields {
+                display_name: "Alicia".into(),
+                bio: String::new(),
+                avatar_url: String::new(),
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![fallback],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            screen.contacts_state.claim_load(),
+            "the load guard must be re-armed, or Contacts renders the removed identity's \
+             rows and never re-fetches for the identity that replaced it"
+        );
+        assert!(
+            screen
+                .profile_cache
+                .get_or_request(&fallback_identity)
+                .is_none(),
+            "the removed identity's cached profile must be dropped"
         );
     }
 

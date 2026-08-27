@@ -20,7 +20,9 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
-use crate::ui::identities::{IDENTITY_REMOVED, IDENTITY_REMOVED_VOTER_LEFT};
+use crate::ui::identities::{
+    IDENTITY_REMOVED, IDENTITY_REMOVED_CLEANUP_PENDING, IDENTITY_REMOVED_VOTER_LEFT,
+};
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -583,6 +585,7 @@ impl ScreenLike for IdentityHubScreen {
             BackendTaskSuccessResult::RemovedIdentities {
                 identity_ids,
                 associated_cleanup_failed,
+                primary_cleanup_deferred,
             } => {
                 // Drop the app-wide selection when it names something that no
                 // longer exists, so the hub falls back deliberately instead of
@@ -608,6 +611,12 @@ impl ScreenLike for IdentityHubScreen {
                         MessageType::Warning,
                     )
                     .disable_auto_dismiss();
+                } else if *primary_cleanup_deferred {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        IDENTITY_REMOVED_CLEANUP_PENDING,
+                        MessageType::Success,
+                    );
                 } else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),

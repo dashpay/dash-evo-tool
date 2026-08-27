@@ -16,7 +16,31 @@ impl AppContext {
                     .map(|(voter_identity, _)| voter_identity.id())
             });
 
-        self.delete_local_qualified_identity(&identity_id)?;
+        let mut primary_cleanup_deferred = false;
+        match self.delete_local_qualified_identity(&identity_id) {
+            Ok(()) => {}
+            Err(error) => {
+                // `delete_local_qualified_identity` removes the identity from
+                // the Global index before its irreversible vault delete, so a
+                // failure can land strictly after the identity is already
+                // gone from every screen — a durable vault-cleanup manifest
+                // (see that method's doc comment) guarantees the next boot's
+                // sweep finishes the job regardless. Reporting that as an
+                // outright removal failure would tell the user their
+                // already-gone identity is still there and safe to retry,
+                // when neither is true and no UI control remains to reach it
+                // with anyway.
+                if self.is_identity_listed(&identity_id).unwrap_or(true) {
+                    return Err(error);
+                }
+                primary_cleanup_deferred = true;
+                tracing::warn!(
+                    ?error,
+                    %identity_id,
+                    "Identity removed but its vault cleanup is still pending; the next boot's sweep will finish it"
+                );
+            }
+        }
 
         let mut removed_identity_ids = vec![identity_id];
         let mut associated_cleanup_failed = false;
@@ -37,6 +61,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::RemovedIdentities {
             identity_ids: removed_identity_ids,
             associated_cleanup_failed,
+            primary_cleanup_deferred,
         })
     }
 }

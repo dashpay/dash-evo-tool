@@ -1109,6 +1109,21 @@ impl AppContext {
             .collect())
     }
 
+    /// Whether `id` is currently on the Global identity index — the roster
+    /// every screen reads. Distinct from [`Self::get_local_qualified_identity`],
+    /// which reads the per-identity blob: a [`Self::delete_local_qualified_identity`]
+    /// failure can leave the blob already gone (an early `purge_identity_scope`
+    /// step) while the index removal that actually delists the identity ran
+    /// even earlier, so only the index membership answers "is this identity
+    /// still reachable from the UI".
+    pub(crate) fn is_identity_listed(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<bool, TaskError> {
+        let kv = self.det_kv()?;
+        Ok(load_identity_index(&kv)?.contains(&id.to_buffer()))
+    }
+
     /// Read one stored qualified identity by id, hydrated like the list loads
     /// (status, wallet index, network, wallets, secret access). `None` when no
     /// identity with `id` is stored. Backs the load-path existence check
@@ -1531,7 +1546,25 @@ impl AppContext {
     /// ([`super::wallet_lifecycle::bootstrap`]'s unowned-identity pass): a
     /// failure on one manifest is logged and retried next boot, and never
     /// blocks the sweep from resuming every other one.
+    ///
+    /// Guarded by the same `migration_run` lock and in-progress check as
+    /// [`Self::delete_local_qualified_identity`]: a storage migration can be
+    /// mid-rewrite of this same Identity scope around the same boot window
+    /// this sweep runs in, and the sweep's purge/vault-delete pair is not
+    /// safe to interleave with that.
     pub(crate) fn resume_pending_vault_cleanups(&self) {
+        let Ok(_migration_guard) = self.migration_run.try_lock() else {
+            tracing::debug!(
+                "Pending vault-cleanup sweep skipped; a storage migration is running, will retry at next boot"
+            );
+            return;
+        };
+        if self.migration_status().state().is_in_progress() {
+            tracing::debug!(
+                "Pending vault-cleanup sweep skipped; a storage migration is in progress, will retry at next boot"
+            );
+            return;
+        }
         let kv = match self.det_kv() {
             Ok(kv) => kv,
             Err(error) => {
@@ -3221,6 +3254,48 @@ mod tests {
                 .expect("read the blob")
                 .is_some(),
             "the identity record must survive a failed delete, so a retry still has something to delete"
+        );
+    }
+
+    /// `is_identity_listed` is the primitive `remove_identity` uses to tell a
+    /// benign "removed, cleanup still pending" failure apart from a real
+    /// "never removed" one: it must track the Global index, not the blob —
+    /// `purge_identity_scope`'s first step drops the blob before the index
+    /// removal that actually delists the identity has even run for the case
+    /// this distinction exists to catch (a failure strictly after delisting).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn is_identity_listed_tracks_the_index_not_the_blob() {
+        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+
+        assert!(
+            staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read listed state"),
+            "a freshly staged identity must be listed"
+        );
+
+        // Drop the blob directly, leaving the index untouched — the inverse
+        // of the failure window this helper exists to distinguish.
+        kv.delete(DetScope::Identity(&staged.id.to_buffer()), IDENTITY_KEY)
+            .expect("drop the blob");
+        assert!(
+            staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read listed state"),
+            "the index, not the blob, is authoritative: a blob-only removal \
+             must still read as listed"
+        );
+
+        index_remove_identity(&kv, &staged.id.to_buffer()).expect("remove from the index");
+        assert!(
+            !staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read listed state"),
+            "once the index entry is gone, the identity must read as unlisted"
         );
     }
 

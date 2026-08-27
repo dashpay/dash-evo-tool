@@ -20,7 +20,8 @@ use crate::ui::identities::register_dpns_name_screen::{
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::identities::{
-    IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE, IDENTITY_REMOVED, IDENTITY_REMOVED_VOTER_LEFT,
+    IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE, IDENTITY_REMOVED, IDENTITY_REMOVED_CLEANUP_PENDING,
+    IDENTITY_REMOVED_VOTER_LEFT,
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -1138,6 +1139,7 @@ impl ScreenLike for IdentitiesScreen {
             crate::ui::BackendTaskSuccessResult::RemovedIdentities {
                 identity_ids,
                 associated_cleanup_failed,
+                primary_cleanup_deferred,
             } => {
                 let mut identities = self.identities.lock_recover();
                 for identity_id in identity_ids {
@@ -1151,6 +1153,12 @@ impl ScreenLike for IdentitiesScreen {
                         MessageType::Warning,
                     )
                     .disable_auto_dismiss();
+                } else if primary_cleanup_deferred {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        IDENTITY_REMOVED_CLEANUP_PENDING,
+                        MessageType::Success,
+                    );
                 } else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),

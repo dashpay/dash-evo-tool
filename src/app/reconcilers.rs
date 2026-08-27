@@ -1529,6 +1529,40 @@ mod tests {
         );
     }
 
+    /// `AppState::update` drains every queued task result before the
+    /// reconciler ticks, and the poll throttle can suppress a tick for
+    /// seconds more. A long burst of unrelated banners in that window must
+    /// not cost the warning its right to come back.
+    #[test]
+    fn an_evicted_banner_comes_back_after_a_long_burst_before_the_next_tick() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        reconciler.track_unwatchable(ambiguous_banner(&harness.ctx));
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+
+        // Many times the capacity, all before the reconciler gets to look.
+        for n in 0..crate::ui::components::message_banner::MAX_BANNERS * 20 {
+            MessageBanner::set_global(
+                &harness.ctx,
+                format!("Unrelated banner {n}"),
+                MessageType::Info,
+            );
+        }
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
+
+        reconciler.update(&harness.ctx, &app_context);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the warning must survive a burst of chatter, however long"
+        );
+    }
+
     /// The transactions belong to the network the user just left; their
     /// banners must go with them.
     #[test]

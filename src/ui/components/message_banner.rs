@@ -3,7 +3,8 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
@@ -13,12 +14,6 @@ const DEFAULT_AUTO_DISMISS_LONG: Duration = Duration::from_secs(9);
 /// the oldest, so a handle can outlive the banner it names.
 pub(crate) const MAX_BANNERS: usize = 5;
 const BANNER_STATE_ID: &str = "__global_message_banner";
-/// Egui context-data slot holding the keys of capacity-evicted banners.
-const EVICTED_KEYS_ID: &str = "__global_message_banner_evicted";
-/// How many evictions back a handle can still recognise its own. Bounded
-/// because the record is never consumed: a holder that has not asked after
-/// this many further evictions is not going to.
-const EVICTED_KEY_MEMORY: usize = MAX_BANNERS * 4;
 /// Egui context-data slot holding the pending action ids that the
 /// per-frame app loop drains via [`MessageBanner::take_action`]. A
 /// banner with an attached [`BannerHandle::with_action`] pushes its
@@ -79,6 +74,11 @@ impl ComponentResponse for MessageBannerResponse {
 #[derive(Clone)]
 struct BannerState {
     key: u64,
+    /// Set when the cap drops this banner to make room. Shared with every
+    /// [`BannerHandle`] naming it, so the attribution lives exactly as long
+    /// as someone still holds a handle to ask — no bounded log to age out
+    /// while a warning about the user's money is still unresolved.
+    evicted: Arc<AtomicBool>,
     text: String,
     message_type: MessageType,
     created_at: Instant,
@@ -108,6 +108,7 @@ impl BannerState {
     fn new(key: u64, text: String, message_type: MessageType) -> Self {
         Self {
             key,
+            evicted: Arc::new(AtomicBool::new(false)),
             text,
             message_type,
             created_at: Instant::now(),
@@ -164,6 +165,8 @@ impl BannerState {
 pub struct BannerHandle {
     ctx: egui::Context,
     key: u64,
+    /// Shared with the banner this handle names — see [`BannerState::evicted`].
+    evicted: Arc<AtomicBool>,
 }
 
 impl BannerHandle {
@@ -182,9 +185,9 @@ impl BannerHandle {
     ///
     /// The distinction is what lets a caller restore an important message
     /// without overriding the user: re-raise on `true`, stay quiet otherwise.
-    /// Only remembers the last [`EVICTED_KEY_MEMORY`] evictions.
+    /// The answer stays available for as long as the handle does.
     pub fn was_evicted(&self) -> bool {
-        !self.is_live() && was_key_evicted(&self.ctx, self.key)
+        self.evicted.load(Ordering::Relaxed)
     }
 
     /// The banner's current display text, or `None` if it no longer exists.
@@ -453,33 +456,42 @@ impl MessageBanner {
             if existing.message_type != message_type {
                 existing.message_type = message_type;
                 let key = existing.key;
+                let evicted = existing.evicted.clone();
                 set_banners(ctx, banners);
                 return BannerHandle {
                     ctx: ctx.clone(),
                     key,
+                    evicted,
                 };
             }
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: existing.key,
+                evicted: existing.evicted.clone(),
             };
         }
         let key = next_banner_key();
+        // An empty text raises nothing, so the handle names no banner and can
+        // never be evicted; its own cell stays false.
+        let mut lifecycle = Arc::new(AtomicBool::new(false));
         if !text.is_empty() {
-            banners.push(BannerState::new(key, text, message_type));
+            let raised = BannerState::new(key, text, message_type);
+            lifecycle = raised.evicted.clone();
+            banners.push(raised);
             if banners.len() > MAX_BANNERS {
                 let evicted = banners.remove(0);
                 warn!(
                     "Banner evicted (capacity {}): {:?}",
                     MAX_BANNERS, evicted.message_type,
                 );
-                record_eviction(ctx, evicted.key);
+                evicted.evicted.store(true, Ordering::Relaxed);
             }
             set_banners(ctx, banners);
         }
         BannerHandle {
             ctx: ctx.clone(),
             key,
+            evicted: lifecycle,
         }
     }
 
@@ -524,33 +536,40 @@ impl MessageBanner {
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: next_banner_key(),
+                evicted: Arc::new(AtomicBool::new(false)),
             };
         }
         let mut banners = get_banners(ctx);
         let key;
+        let lifecycle;
         if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
             key = b.key;
+            lifecycle = b.evicted.clone();
             b.reset_to(new_text, message_type);
         } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
             // Idempotent: if new_text already displayed, return handle without
             // resetting (consistent with set_global behavior).
             key = existing.key;
+            lifecycle = existing.evicted.clone();
         } else {
             key = next_banner_key();
-            banners.push(BannerState::new(key, new_text, message_type));
+            let raised = BannerState::new(key, new_text, message_type);
+            lifecycle = raised.evicted.clone();
+            banners.push(raised);
             if banners.len() > MAX_BANNERS {
                 let evicted = banners.remove(0);
                 warn!(
                     "Banner evicted (capacity {}): {:?}",
                     MAX_BANNERS, evicted.message_type,
                 );
-                record_eviction(ctx, evicted.key);
+                evicted.evicted.store(true, Ordering::Relaxed);
             }
         }
         set_banners(ctx, banners);
         BannerHandle {
             ctx: ctx.clone(),
             key,
+            evicted: lifecycle,
         }
     }
 
@@ -896,24 +915,6 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
     }
 }
 
-/// Remember that `key`'s banner was dropped to make room, so its holder can
-/// tell an involuntary eviction from a message the user chose to dismiss.
-fn record_eviction(ctx: &egui::Context, key: u64) {
-    ctx.data_mut(|d| {
-        let keys = d.get_temp_mut_or_default::<Vec<u64>>(egui::Id::new(EVICTED_KEYS_ID));
-        keys.push(key);
-        if keys.len() > EVICTED_KEY_MEMORY {
-            keys.remove(0);
-        }
-    });
-}
-
-/// Whether `key` names a banner dropped by a recent capacity eviction.
-fn was_key_evicted(ctx: &egui::Context, key: u64) -> bool {
-    ctx.data(|d| d.get_temp::<Vec<u64>>(egui::Id::new(EVICTED_KEYS_ID)))
-        .is_some_and(|keys| keys.contains(&key))
-}
-
 /// Reads the pending banner-action queue (FIFO) from egui context data.
 fn get_actions(ctx: &egui::Context) -> Vec<String> {
     ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)))
@@ -1182,6 +1183,27 @@ mod tests {
         assert!(oldest.was_evicted());
         assert!(survivor.is_live(), "only the oldest is dropped");
         assert!(!survivor.was_evicted());
+    }
+
+    /// Attribution used to live in a bounded log of recently-evicted keys, so
+    /// a burst of unrelated notifications could age a still-held warning out
+    /// of it and turn `was_evicted` permanently false — losing the message
+    /// for good. The cause now travels with the handle, so no amount of
+    /// later churn can forget it.
+    #[test]
+    fn eviction_stays_attributable_after_a_long_burst_of_later_evictions() {
+        let ctx = egui::Context::default();
+        let unresolved = MessageBanner::set_global(&ctx, "money in flight", MessageType::Error);
+        // Far past the old bound (MAX_BANNERS * 4) of remembered evictions.
+        for n in 0..MAX_BANNERS * 20 {
+            MessageBanner::set_global(&ctx, format!("chatter {n}"), MessageType::Info);
+        }
+
+        assert!(!unresolved.is_live());
+        assert!(
+            unresolved.was_evicted(),
+            "a handle must still recognise its own eviction after later churn"
+        );
     }
 
     /// TC-MIG-005 (unit) — push_action enqueues FIFO and take_action

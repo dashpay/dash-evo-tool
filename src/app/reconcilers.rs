@@ -37,11 +37,11 @@ use crate::ui::components::{
 use super::{
     COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MAX_PENDING_WATCHES,
     MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
-    MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID, PENDING_CONFIRMED_MESSAGE,
-    PENDING_POLL_INTERVAL, PENDING_STALE_MESSAGE, PendingStep, SPV_CONNECTING_DESCRIPTION,
-    SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION, SpvBlockStep,
-    cold_start_backend_wait_timed_out, migration_failed_with_unreadable_identities_text,
-    migration_running_text, migration_unreadable_data_text, pending_step,
+    MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID, PENDING_POLL_INTERVAL,
+    PENDING_STALE_MESSAGE, PendingStep, SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION,
+    SPV_SYNCING_DESCRIPTION, SpvBlockStep, cold_start_backend_wait_timed_out,
+    migration_failed_with_unreadable_identities_text, migration_running_text,
+    migration_unreadable_data_text, pending_confirmed_message, pending_step,
     should_dispatch_cold_start, spv_block_step,
 };
 
@@ -842,13 +842,18 @@ pub(super) struct PendingConfirmation {
     unwatchable: bool,
     /// The shared stale banner, raised while any claim needs it.
     stale: Option<BannerHandle>,
-    /// The shared confirmation banner, held for the same reason the question
-    /// it answers is: this feature exists because the user walked away, so
-    /// the answer has to still be on screen when they come back. Raised
-    /// without auto-dismiss — a default `Success` banner retires itself after
-    /// five seconds, which would take the answer away moments after
-    /// [`Self::sync_banners`] retired the question, leaving nothing at all.
-    confirmed: Option<BannerHandle>,
+    /// One confirmation banner per answered payment, each naming its own
+    /// transaction. Not shared the way the two warnings are: those ask the
+    /// same question of every claim at once, whereas a confirmation speaks for
+    /// exactly one payment, and with several waiting the user has to be able
+    /// to tell which one it means.
+    ///
+    /// Held, and raised without auto-dismiss, for the same reason the question
+    /// is: this feature exists because the user walked away, so the answer has
+    /// to still be on screen when they come back. A default `Success` banner
+    /// retires itself after five seconds, which would take the answer away
+    /// moments after [`Self::sync_banners`] retired the question.
+    confirmed: Vec<BannerHandle>,
     /// Whether a watch was retired at [`MAX_PENDING_WATCHES`]. The watch is
     /// gone but its stale advice stays — the transaction is still out there.
     retired: bool,
@@ -865,7 +870,7 @@ impl PendingConfirmation {
             ambiguous_text: None,
             unwatchable: false,
             stale: None,
-            confirmed: None,
+            confirmed: Vec::new(),
             retired: false,
             last_poll: None,
         }
@@ -948,9 +953,11 @@ impl PendingConfirmation {
         self.ambiguous.take_and_clear();
         self.ambiguous_text = None;
         self.stale.take_and_clear();
-        // The confirmation names a payment on the network being left, so it
+        // Each confirmation names a payment on the network being left, so it
         // would be read against the wrong wallet's history if it stayed.
-        self.confirmed.take_and_clear();
+        for banner in self.confirmed.drain(..) {
+            banner.clear();
+        }
     }
 
     /// Re-read the snapshot for every open watch, at most once per
@@ -992,7 +999,7 @@ impl PendingConfirmation {
         confirmation: impl Fn(&Txid) -> Option<TransactionConfirmation>,
     ) {
         let mut open = Vec::with_capacity(self.watches.len());
-        let mut confirmed = false;
+        let mut confirmed = Vec::new();
         for mut watch in self.watches.drain(..) {
             match pending_step(
                 confirmation(&watch.txid),
@@ -1001,7 +1008,7 @@ impl PendingConfirmation {
             ) {
                 PendingStep::Confirmed => {
                     tracing::info!(txid = %watch.txid, "A payment with an unverified outcome is confirmed on the network");
-                    confirmed = true;
+                    confirmed.push(watch.txid);
                 }
                 PendingStep::Stale => {
                     tracing::warn!(txid = %watch.txid, "A payment with an unverified outcome is still unconfirmed");
@@ -1017,9 +1024,10 @@ impl PendingConfirmation {
         // warning `sync_banners` had just restored. Reconciling last makes the
         // warning the one that survives a full list — the message that guards
         // the user's money outranks the one that merely reassures them.
-        if confirmed {
-            self.confirmed
-                .raise_persistent(ctx, PENDING_CONFIRMED_MESSAGE, MessageType::Success);
+        for txid in confirmed {
+            let mut banner = None;
+            banner.raise_persistent(ctx, pending_confirmed_message(&txid), MessageType::Success);
+            self.confirmed.extend(banner);
         }
         self.sync_banners(ctx);
     }
@@ -1172,7 +1180,11 @@ mod tests {
             harness.query_by_label(AMBIGUOUS).is_none(),
             "the stale wait-and-refresh advice must be retired once the outcome is known"
         );
-        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
         assert!(
             reconciler.watched().is_empty(),
             "a resolved watch must stop costing a snapshot scan"
@@ -1194,16 +1206,17 @@ mod tests {
     fn a_confirmation_does_not_expire_while_the_user_is_away() {
         let mut harness = banner_harness();
         let mut reconciler = PendingConfirmation::new();
-        adopt(
-            &mut reconciler,
-            &harness.ctx,
-            Txid::from_byte_array([2u8; 32]),
-        );
+        let txid = Txid::from_byte_array([2u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, txid);
 
         reconciler.apply(&harness.ctx, |_| mined(1_234));
         harness.run();
 
-        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
         assert!(
             harness.query_by_label(COUNTDOWN_AT_FULL_TERM).is_none(),
             "the confirmation must not carry an auto-dismiss timer: the whole \
@@ -1233,7 +1246,11 @@ mod tests {
         harness.run();
 
         assert!(harness.query_by_label(AMBIGUOUS).is_some());
-        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_none());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_none()
+        );
         assert_eq!(reconciler.watched(), vec![txid]);
     }
 
@@ -1255,7 +1272,18 @@ mod tests {
         });
         harness.run();
 
-        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&first))
+                .is_some(),
+            "the confirmation must name the payment that actually landed"
+        );
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&second))
+                .is_none(),
+            "and must not be readable as the payment still in the air"
+        );
         assert!(
             harness.query_by_label(AMBIGUOUS).is_some(),
             "the payment still unanswered must keep the message telling its user to wait"
@@ -1303,7 +1331,11 @@ mod tests {
         reconciler.apply(&harness.ctx, |_| mined(21));
         harness.run();
 
-        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
         assert!(
             harness.query_by_label(AMBIGUOUS).is_some(),
             "an outcome no watch can answer must keep its message when another payment confirms"
@@ -1364,7 +1396,11 @@ mod tests {
         reconciler.apply(&harness.ctx, |_| mined(7));
         harness.run();
         assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_none());
-        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
     }
 
     /// A run of ambiguous sends must not grow the watch list without bound,

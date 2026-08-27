@@ -26,6 +26,7 @@ use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScr
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
+use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
@@ -42,7 +43,7 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
 use crate::wallet_backend::{DetScope, WalletBackend};
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{Network, Txid};
 use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
@@ -819,7 +820,19 @@ const MAX_PENDING_WATCHES: usize = 8;
 /// Replaces the ambiguous-outcome banner once the network has demonstrably
 /// taken the transaction. Everyday-User copy: the whole outcome in one plain
 /// sentence, with nothing left for the user to do.
-const PENDING_CONFIRMED_MESSAGE: &str = "Your transaction is confirmed.";
+///
+/// Names the transaction because up to [`MAX_PENDING_WATCHES`] payments can be
+/// waiting at once and the warning for the others stays up beside this. An
+/// unattributed "your transaction is confirmed" next to an unattributed "could
+/// not be verified" leaves the user to guess which is which, and guessing wrong
+/// in either direction ends in paying the same person twice. The id is
+/// shortened the way every other identifier in the app is, and its head and
+/// tail still match by eye against the full id in the transaction history the
+/// stale copy points at.
+fn pending_confirmed_message(txid: &Txid) -> String {
+    let transaction = shorten_id(&txid.to_string());
+    format!("Your transaction {transaction} is confirmed.")
+}
 
 /// Replaces the ambiguous-outcome banner once a watch passes
 /// [`PENDING_STALE_AFTER`]. Deliberately promises nothing about the funds
@@ -3577,6 +3590,7 @@ mod contact_request_routing_tests {
 #[cfg(test)]
 mod pending_confirmation_tests {
     use super::*;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
 
     fn seen(status: TransactionStatus, height: Option<u32>) -> Option<TransactionConfirmation> {
         Some(TransactionConfirmation { status, height })
@@ -3695,7 +3709,8 @@ mod pending_confirmation_tests {
     /// cannot verify.
     #[test]
     fn pending_copy_stays_jargon_free_and_promises_nothing_about_the_funds() {
-        for message in [PENDING_CONFIRMED_MESSAGE, PENDING_STALE_MESSAGE] {
+        let confirmed = pending_confirmed_message(&Txid::from_byte_array([0xab; 32]));
+        for message in [confirmed.as_str(), PENDING_STALE_MESSAGE] {
             for jargon in [
                 "mempool",
                 "broadcast",
@@ -3716,6 +3731,32 @@ mod pending_confirmation_tests {
                 "the copy must not vouch for the safety of a resend: {message}"
             );
         }
+    }
+
+    /// The confirmation has to name the payment it answers for. Several can be
+    /// waiting at once and the others keep their warning on screen beside it,
+    /// so an unattributed "your transaction is confirmed" leaves the user to
+    /// guess which one landed — and either guess ends in paying twice.
+    #[test]
+    fn the_confirmation_copy_names_the_payment_it_answers_for() {
+        let first = Txid::from_byte_array([0x11; 32]);
+        let second = Txid::from_byte_array([0x22; 32]);
+
+        let message = pending_confirmed_message(&first);
+        assert_ne!(
+            message,
+            pending_confirmed_message(&second),
+            "two payments must not produce the same confirmation, or the shared \
+             banner list collapses them into one indistinguishable message"
+        );
+
+        let full = first.to_string();
+        let head = &full[..5];
+        assert!(
+            message.contains(head),
+            "the copy must carry enough of the id to match the transaction \
+             history row it sends the user to: {message}"
+        );
     }
 
     /// The stale copy is reached for every non-confirmed observation, including

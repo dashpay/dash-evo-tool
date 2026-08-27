@@ -283,6 +283,17 @@ impl std::fmt::Debug for SecretPromptSlot {
     }
 }
 
+/// Record-lock handles handed out so far, counted at the moment
+/// [`AppContext::identity_record_lock`] returns one — which is *before* the
+/// caller's blocking acquire.
+///
+/// Test-only instrumentation, and the fact a test needs to know a background
+/// worker has reached the lock rather than merely being slow to start. Elapsed
+/// time cannot distinguish those two; this can.
+#[cfg(test)]
+pub(crate) static IDENTITY_RECORD_LOCK_REQUESTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 impl AppContext {
     pub(crate) fn hd_wallet_rename_lock(&self, seed_hash: WalletSeedHash) -> Arc<Mutex<()>> {
         self.hd_wallet_rename_locks
@@ -319,6 +330,8 @@ impl AppContext {
     /// holder is a key-protection tier change, whose per-key derivation runs in
     /// the low hundreds of milliseconds. Different identities never contend.
     pub(crate) fn identity_record_lock(&self, identity_id: Identifier) -> Arc<Mutex<()>> {
+        #[cfg(test)]
+        IDENTITY_RECORD_LOCK_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.identity_record_locks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

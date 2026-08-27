@@ -339,12 +339,28 @@ impl From<StoredScheduledVote> for ScheduledDPNSVote {
 /// never the roster and never a record lock.
 static IDENTITY_INDEX_LOCK: Mutex<()> = Mutex::new(());
 
+/// Threads currently blocked acquiring [`IDENTITY_INDEX_LOCK`].
+///
+/// Test-only instrumentation, and the thing that makes serialization
+/// *observable* rather than merely inferable from elapsed time: a thread
+/// counted here has reached the roster read and cannot proceed, which is
+/// precisely what a timing-based test can only guess at. Read by the
+/// rendezvous fixture in the roster race tests.
+#[cfg(test)]
+pub(crate) static IDENTITY_INDEX_LOCK_CONTENDERS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Acquire [`IDENTITY_INDEX_LOCK`]. A poisoned lock guards no invariant of its
 /// own — the k/v store holds the state — so the guard is taken regardless.
 fn lock_identity_index() -> MutexGuard<'static, ()> {
-    IDENTITY_INDEX_LOCK
+    #[cfg(test)]
+    IDENTITY_INDEX_LOCK_CONTENDERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let guard = IDENTITY_INDEX_LOCK
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    #[cfg(test)]
+    IDENTITY_INDEX_LOCK_CONTENDERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    guard
 }
 
 /// Read the Global identity-id enumeration index. Returns an empty
@@ -2427,13 +2443,21 @@ pub(crate) mod test_staging {
 mod tests {
     use super::test_staging::*;
     use super::*;
+    use crate::context::IDENTITY_RECORD_LOCK_REQUESTS;
     use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, RendezvousKv};
     use DetKv;
     use std::sync::Arc;
 
-    /// A store whose reads can be held until every racing reader has
-    /// snapshotted, plus the [`DetKv`] over it. Arm it once the test's
-    /// setup writes are done; until then reads pass straight through.
+    /// A store whose reads are held until every racing reader has snapshotted
+    /// — or until the missing ones are provably stuck acquiring the roster
+    /// lock — plus the [`DetKv`] over it. Arm it once the test's setup writes
+    /// are done; until then reads pass straight through.
+    /// Peers parked on the roster lock: they have reached the read and cannot
+    /// proceed, so a reader waiting on them can stop waiting.
+    fn roster_lock_contenders() -> usize {
+        IDENTITY_INDEX_LOCK_CONTENDERS.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     fn rendezvous_kv() -> (Arc<RendezvousKv>, DetKv) {
         let store = Arc::new(RendezvousKv::default());
         let kv = DetKv::from_store(store.clone());
@@ -2574,7 +2598,7 @@ mod tests {
     #[test]
     fn concurrently_listing_two_identities_keeps_both_on_the_roster() {
         let (store, kv) = rendezvous_kv();
-        store.arm(2);
+        store.arm(2, roster_lock_contenders);
 
         std::thread::scope(|scope| {
             scope.spawn(|| index_add_identity(&kv, &id(1)).expect("list the re-imported identity"));
@@ -2600,9 +2624,9 @@ mod tests {
         let (store, kv) = rendezvous_kv();
         index_add_identity(&kv, &id(1)).unwrap();
         index_add_identity(&kv, &id(2)).unwrap();
-        // Armed only now: the two seeding writes above are sequential and
-        // would each wait out the timeout for a peer that never comes.
-        store.arm(2);
+        // Armed only now: the two seeding writes above are sequential, and an
+        // armed read waits for a peer that would never come.
+        store.arm(2, roster_lock_contenders);
 
         std::thread::scope(|scope| {
             scope
@@ -3943,6 +3967,11 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+        // Baseline taken after our own acquisition above, so the next
+        // increment can only come from the sweep.
+        let requests_before_sweep =
+            IDENTITY_RECORD_LOCK_REQUESTS.load(std::sync::atomic::Ordering::SeqCst);
+
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let sweep_ctx = Arc::clone(&staged.ctx);
         let sweep = std::thread::spawn(move || {
@@ -3950,15 +3979,26 @@ mod tests {
             let _ = done_tx.send(());
         });
 
-        // While we hold the identity's record lock, the sweep must not be
-        // able to finish at all — proving it genuinely blocks on the same
-        // lock rather than racing straight through. 300ms is generous
-        // headroom over how long an unblocked sweep of one manifest takes
-        // (sub-millisecond), so this bound is not a source of flakiness.
+        // Wait — without a deadline — for the sweep to reach the point just
+        // before it blocks on this identity's record lock. A timeout here
+        // would prove nothing: a sweep that has not started yet and a sweep
+        // parked on the lock are indistinguishable by elapsed time, so a slow
+        // worker would let the assertion below pass against a sweep that never
+        // took the lock at all.
+        while IDENTITY_RECORD_LOCK_REQUESTS.load(std::sync::atomic::Ordering::SeqCst)
+            == requests_before_sweep
+        {
+            std::thread::yield_now();
+        }
+
+        // It has asked for the lock and we hold it, so it can only be blocked
+        // acquiring it. Anything else — in particular finishing, having
+        // deleted the keys — is the bug.
         assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_millis(300))
-                .is_err(),
+            matches!(
+                done_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
             "the sweep must block on this identity's record lock while a \
              re-import holds it, not race ahead and delete its keys"
         );

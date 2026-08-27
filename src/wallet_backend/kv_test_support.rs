@@ -175,25 +175,39 @@ impl KvStore for StallingReadKv {
     }
 }
 
-/// How long a [`RendezvousKv`] reader waits for its peers before giving up.
+/// How often a waiting [`RendezvousKv`] reader re-checks its release condition.
 ///
-/// Reached only when the code under test is correctly serialized — the peers
-/// are blocked on its lock and can never arrive — so this bounds how long such
-/// a test runs and nothing else. It cannot change an outcome: what makes the
-/// second read observe the first write is the lock, not the clock.
-const RENDEZVOUS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+/// A polling interval, not a deadline: the wait below has no give-up branch, so
+/// this changes how promptly a released reader notices and nothing else. It
+/// cannot decide an outcome — an earlier version of this fixture used a timeout
+/// here that could, which is the bug this construction exists to remove.
+const RENDEZVOUS_POLL: std::time::Duration = std::time::Duration::from_millis(1);
 
-/// An [`InMemoryKv`] that holds every read until all armed readers have taken
-/// their snapshot.
+/// An [`InMemoryKv`] that holds every read until its peers can no longer take a
+/// pre-mutation snapshot of their own.
 ///
-/// The standing guard for lost-update invariants, and the reason it is not a
-/// sleep: arming for `readers` makes the interleaving *certain* rather than
-/// likely. Every armed reader is released only once all of them hold the
-/// pre-mutation snapshot, so an unserialized read-modify-write always loses
-/// its peer's update and the test fails every time, on every runner. A
-/// correctly serialized caller never satisfies the rendezvous at all — its
-/// peers are still queued behind its lock — and proceeds after
-/// [`RENDEZVOUS_TIMEOUT`], observing each other's writes in order.
+/// The standing guard for lost-update invariants. A reader is released when
+/// either of two things is true, and the distinction is the whole design:
+///
+/// 1. every armed reader has taken its snapshot — the unserialized case, where
+///    all of them hold the same pre-mutation value and whoever writes last
+///    destroys its peers' updates; or
+/// 2. the readers that have not arrived are *provably unable to arrive*,
+///    because they are blocked acquiring the serialization the code under test
+///    holds — the serialized case, reported by the `peers_blocked` predicate
+///    the test supplies.
+///
+/// Nothing here is timed. The wait has no deadline and no give-up branch, so a
+/// peer that is merely slow cannot release its partner early: the partner waits
+/// for it, however long it takes, and the lost update happens. That is the
+/// property the previous sleep- and timeout-based versions of this fixture both
+/// lacked — each let a delayed peer arrive *after* its partner had already
+/// written, read the completed write, and pass a test that should have failed.
+///
+/// The cost of having no deadline is that a peer which dies or never runs hangs
+/// the test instead of failing it. That is the right trade: a hang is a loud
+/// failure that gets investigated, and the alternative is a green that means
+/// nothing.
 ///
 /// Reads are unrestricted until [`Self::arm`] is called, so a test can seed
 /// state through the same store before the concurrent phase begins.
@@ -209,17 +223,33 @@ struct RendezvousState {
     /// Readers that must arrive before any is released. `None` = unarmed.
     expected: Option<usize>,
     arrived: usize,
+    /// How many peers are currently blocked acquiring the serialization under
+    /// test, and so can never reach the read. Supplied by the test, because
+    /// only the test knows what the code under test serializes on.
+    peers_blocked: Option<Box<dyn Fn() -> usize + Send + Sync>>,
 }
 
 impl RendezvousKv {
-    /// Hold the next reads until `readers` of them have taken their snapshot.
-    pub(crate) fn arm(&self, readers: usize) {
+    /// Hold the next reads until all `readers` have snapshotted, or until the
+    /// absentees are accounted for by `peers_blocked` — the count of peers
+    /// stuck acquiring the lock the code under test holds while reading.
+    ///
+    /// A test whose code under test has no such lock passes a predicate that
+    /// always answers zero, which is exactly right: nothing accounts for the
+    /// absentees, so the arrived reader waits for them indefinitely.
+    pub(crate) fn arm(
+        &self,
+        readers: usize,
+        peers_blocked: impl Fn() -> usize + Send + Sync + 'static,
+    ) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.expected = Some(readers);
         state.arrived = 0;
+        state.peers_blocked = Some(Box::new(peers_blocked));
     }
 
-    /// Block until every armed reader has snapshotted, or the wait times out.
+    /// Block until every armed reader has snapshotted or the missing ones are
+    /// provably blocked. Never gives up: see the type's documentation.
     fn rendezvous(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(expected) = state.expected else {
@@ -230,13 +260,20 @@ impl RendezvousKv {
             self.released.notify_all();
             return;
         }
-        let _ = self
-            .released
-            .wait_timeout_while(state, RENDEZVOUS_TIMEOUT, |state| {
-                state
-                    .expected
-                    .is_some_and(|expected| state.arrived < expected)
-            });
+        loop {
+            let blocked = state
+                .peers_blocked
+                .as_ref()
+                .map_or(0, |peers_blocked| peers_blocked());
+            if state.arrived >= expected || state.arrived + blocked >= expected {
+                return;
+            }
+            state = self
+                .released
+                .wait_timeout(state, RENDEZVOUS_POLL)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
     }
 }
 

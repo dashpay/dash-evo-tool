@@ -11,6 +11,7 @@ use super::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::UnreadableContactInfoPolicy;
@@ -57,6 +58,15 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
+    /// Identity of an unload this screen dispatched, retained until its result
+    /// lands. Neither selection pointer survives the wait: a frame can render
+    /// before the result arrives and reconcile both of them onto the identity
+    /// that replaced this one.
+    ///
+    /// A removal that fails leaves the record set, which is inert: the next
+    /// dispatch overwrites it, and until then it can only match a result that
+    /// removes that same identity — precisely when the reset is wanted anyway.
+    pending_unload: Option<Identifier>,
     /// Contacts-tab state. Owned here to debounce
     /// [`crate::backend_task::dashpay::DashPayTask::LoadContacts`] to a
     /// single dispatch per tab entry, instead of firing every frame.
@@ -94,6 +104,7 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
+            pending_unload: None,
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
             selection: HubSelection::default(),
@@ -112,6 +123,23 @@ impl IdentityHubScreen {
         {
             self.pending_contact_info_tasks
                 .insert(key, task.as_ref().clone());
+        }
+    }
+
+    /// Remember the identity an unload was dispatched for.
+    ///
+    /// The removal is answered frames later, and `SettingsTab::ensure_selected`
+    /// reconciles its retained identity to the effective one on every frame in
+    /// between — so by the time the result lands, both the explicit selection
+    /// and the tab's identity can name the replacement, and nothing left in the
+    /// screen would say which identity's caches are now stale. This is that
+    /// record, and the reconciler cannot move it.
+    fn capture_unload_dispatch(&mut self, action: &AppAction) {
+        if let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+            identity_id,
+        })) = action
+        {
+            self.pending_unload = Some(*identity_id);
         }
     }
 
@@ -460,6 +488,7 @@ impl ScreenLike for IdentityHubScreen {
             }
         });
         self.capture_contact_info_update(&action);
+        self.capture_unload_dispatch(&action);
 
         // A picker card click sets the active identity and routes to Home.
         if let Some(id_str) = picked_identity
@@ -604,6 +633,7 @@ impl ScreenLike for IdentityHubScreen {
                     self.settings_tab
                         .selected_identity()
                         .map(|identity| identity.identity.id()),
+                    self.pending_unload.take(),
                     identity_ids,
                 ) {
                     self.reset_contacts_for_identity_change();
@@ -827,16 +857,22 @@ fn applies_to_selected_identity(
 /// answer this: a single-identity account never stores one, and its unload
 /// would reset nothing. Re-resolving the fallback cannot answer it either,
 /// because by the time this result arrives the removed identity is gone from
-/// storage and the resolver names whichever identity replaced it. The Settings
-/// tab's retained identity is the surviving record of which identity the
-/// unload was started for, so either pointer naming a removed id invalidates
-/// the caches.
+/// storage and the resolver names whichever identity replaced it.
+///
+/// Nor is the Settings tab's retained identity enough on its own, which is
+/// what an earlier version of this got wrong: it is itself reconciled to the
+/// effective identity on every frame, and a frame can render between the
+/// dispatch and the result, leaving all three of storage, the selection and
+/// the tab naming the replacement. Only the id captured when the unload was
+/// dispatched survives that, so it is checked alongside the two live pointers
+/// — any of the three naming a removed id invalidates the caches.
 fn removal_invalidates_identity_caches(
     explicit_selection: Option<Identifier>,
     settings_identity: Option<Identifier>,
+    dispatched_unload: Option<Identifier>,
     removed: &[Identifier],
 ) -> bool {
-    [explicit_selection, settings_identity]
+    [explicit_selection, settings_identity, dispatched_unload]
         .into_iter()
         .flatten()
         .any(|identity| removed.contains(&identity))
@@ -1055,6 +1091,91 @@ mod tests {
             screen
                 .profile_cache
                 .get_or_request(&fallback_identity)
+                .is_none(),
+            "the removed identity's cached profile must be dropped"
+        );
+    }
+
+    /// The frame ordering the previous fix missed. The unload is answered
+    /// frames after dispatch, and `SettingsTab::ensure_selected` reconciles the
+    /// tab's retained identity to the effective one on every frame in between —
+    /// so a single render before the result lands leaves the explicit selection,
+    /// the tab, and storage all naming the identity that replaced the removed
+    /// one. Checking live pointers alone then finds nothing to reset and leaves
+    /// contact rows, the one-shot load guard, pending tasks and confirmations,
+    /// and the profile cache bound to an identity that no longer exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unload_answered_after_a_reconciling_frame_still_resets_the_caches() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let unloaded = seed_user_identity(&context, 1);
+        let replacement = seed_user_identity(&context, 2);
+        let replacement_identity = context
+            .get_local_qualified_identity(&replacement)
+            .expect("read the seeded identity")
+            .expect("identity present");
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // The user confirms the unload: the screen dispatches it for `unloaded`.
+        screen.capture_unload_dispatch(&AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::RemoveIdentity {
+                identity_id: unloaded,
+            },
+        )));
+
+        // A frame renders before the result arrives, and the tab reconciles
+        // onto the identity that is now effective. Both live pointers now name
+        // the replacement, or nothing.
+        screen
+            .settings_tab
+            .select_identity_for_test(replacement_identity);
+        assert_eq!(
+            context.selected_identity_id(),
+            None,
+            "precondition: no explicit selection, so only the dispatch record names the target"
+        );
+
+        assert!(screen.contacts_state.claim_load());
+        screen.profile_cache.record_saved(
+            unloaded,
+            crate::ui::identity::profile_cache::ProfileFields {
+                display_name: "Alicia".into(),
+                bio: String::new(),
+                avatar_url: String::new(),
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![unloaded],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            screen.contacts_state.claim_load(),
+            "the load guard must be re-armed even though no live pointer still names the \
+             removed identity"
+        );
+        let unloaded_identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(unloaded, PlatformVersion::latest())
+                .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        };
+        assert!(
+            screen
+                .profile_cache
+                .get_or_request(&unloaded_identity)
                 .is_none(),
             "the removed identity's cached profile must be dropped"
         );

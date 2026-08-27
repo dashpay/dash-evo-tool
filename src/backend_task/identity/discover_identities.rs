@@ -377,6 +377,7 @@ impl AppContext {
                     operator: WhereOperator::Equal,
                     value: Value::Identifier(identity.id().into()),
                 }],
+                time_range_clauses: Vec::new(),
                 group_by: Vec::new(),
                 having: Vec::new(),
                 order_by_clauses: vec![],

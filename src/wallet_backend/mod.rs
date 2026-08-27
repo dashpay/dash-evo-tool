@@ -2947,8 +2947,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AssetLockAlreadyConsumed(_)
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBroadcast(_)
+        | P::MasternodeWithdrawalUnconfirmed { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::Sdk(_)
         | P::AddressSync(_)
@@ -3233,6 +3235,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::AddressSync(_)
         | P::AddressOperation(_)
@@ -3266,6 +3269,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // Address nonce desync is a precondition/state fault unrelated to
         // identity registration; bucket as Other.
         | P::AddressNonceMismatch { .. }
+        // Broadcast was accepted but its execution result is unconfirmed — the
+        // op may already be on chain, so it is neither a rejection nor a
+        // finality timeout. Bucket as Other; the upstream contract says the
+        // caller must not re-submit (the next sync reconciles).
+        | P::MasternodeWithdrawalUnconfirmed { .. }
         // Shielded ambiguity is unreachable here — identity funding runs no
         // shielded op. `map_shielded_op_error` routes it where it can occur.
         | P::ShieldedBroadcastUnconfirmed { .. }

@@ -120,6 +120,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   you moved to, where it could never be found. Creating an asset lock is also
   covered by the earlier fix below: it was still asking you to retry an outcome
   that may already be on its way.
+
   While a payment is still unaccounted for, its message also survives other
   notifications crowding it out: only five are shown at once, and the app used
   to let ordinary ones quietly push this one off the screen for good. If that

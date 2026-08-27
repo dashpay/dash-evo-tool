@@ -974,7 +974,11 @@ impl PendingConfirmation {
         }
         let Ok(backend) = app_context.wallet_backend() else {
             // Backend not wired (boot, or mid network switch) — the snapshot it
-            // publishes is what we read, so retry on a later tick.
+            // publishes is what we read, so retry on a later tick. Reconcile the
+            // banners first all the same: restoring an evicted warning needs no
+            // snapshot, and these are the windows that flood the list with
+            // startup and connection messages in the first place.
+            self.sync_banners(ctx);
             return;
         };
         self.apply(ctx, |txid| backend.transaction_confirmation(txid));
@@ -1008,11 +1012,16 @@ impl PendingConfirmation {
             }
         }
         self.watches = open;
-        self.sync_banners(ctx);
+        // Raise the answer first, reconcile after. Raising evicts the oldest
+        // banner once the list is full, so doing it second could knock out the
+        // warning `sync_banners` had just restored. Reconciling last makes the
+        // warning the one that survives a full list — the message that guards
+        // the user's money outranks the one that merely reassures them.
         if confirmed {
             self.confirmed
                 .raise_persistent(ctx, PENDING_CONFIRMED_MESSAGE, MessageType::Success);
         }
+        self.sync_banners(ctx);
     }
 
     /// Bring both shared banners in line with the claims still open. Each is

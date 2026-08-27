@@ -777,7 +777,12 @@ impl SnapshotStore {
     /// watch, not a per-frame hot path.
     ///
     /// A transaction paying one of this app's own wallets appears in both
-    /// histories, so the strongest status wins.
+    /// histories, so the strongest status wins. Where two copies claim the same
+    /// status, the one carrying a height wins: the reader's evidence test asks
+    /// for a height at the mined tiers, and iteration order over the snapshot
+    /// map is arbitrary, so ranking on status alone could hand back a
+    /// height-less copy and read as "not confirmed yet" while the evidence sat
+    /// in the other wallet's history.
     pub(super) fn transaction_confirmation_any(
         &self,
         txid: &Txid,
@@ -788,7 +793,7 @@ impl SnapshotStore {
             .flat_map(|snapshot| snapshot.transactions.iter())
             .filter(|tx| tx.txid == *txid)
             .map(WalletTransaction::confirmation)
-            .max_by_key(|confirmation| confirmation.status)
+            .max_by_key(|confirmation| (confirmation.status, confirmation.height.is_some()))
     }
 
     /// Read a single tracked record's current status. Test-only seam for

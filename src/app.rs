@@ -858,11 +858,14 @@ enum PendingStep {
 /// their money is safe to send again when it is not.
 ///
 /// TODO(R-1, docs/gui-testing/scenarios/pending-broadcast-auto-reconcile.md):
-/// unverified in this environment — no funded testnet wallet available.
-/// `network_took_transaction`'s `height.is_some()` guard is the code-side
-/// mitigation for a locally-injected transaction reaching `Confirmed` without
-/// a real network verdict; that guard itself needs a live-network run before
-/// this PR leaves draft. Also closes R-4 (no-change-output send shape).
+/// still unverified against a live network — no funded testnet wallet is
+/// available in this environment. `network_took_transaction`'s
+/// `height.is_some()` guard is the code-side mitigation for a locally-injected
+/// transaction reaching `Confirmed` without a real network verdict, and that
+/// guard is what the scenario exists to exercise. Unit tests cover the policy
+/// against a synthetic snapshot; what is outstanding is confirming that a real
+/// dash-spv mempool injection is in fact reported height-less, which only a
+/// funded run can show. Also closes R-4 (no-change-output send shape).
 fn pending_step(
     confirmation: Option<TransactionConfirmation>,
     elapsed: Duration,

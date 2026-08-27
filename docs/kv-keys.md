@@ -88,6 +88,7 @@ The identity blob and top-up history are **identity-scoped** (`DetScope::Identit
 | `det:identity_index:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids |
 | `det:identity_order:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
 | `det:top_ups:v1` | `DetScope::Identity(&id)` | `det-<net>.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
+| `det:vault_cleanup_pending:v1:<id_base58>` | `None` | `det-<net>.sqlite` | `Vec<(StoredPrivateKeyTarget, KeyID)>` | Durable manifest of the vault-key placements a `delete_local_qualified_identity` call must still clear; persisted before that call's first mutation, cleared once every listed key is confirmed deleted. Global-scoped (not `DetScope::Identity`) so it survives the index removal that unlists `id` — the exact step it exists to protect against. Resumed by the boot-time `AppContext::resume_pending_vault_cleanups` sweep. |
 
 **Exception to the cascade above**: an identity stored without a wallet association (`wallet_hash: None`) is *also* mirrored into the upstream `identities` table under the **unowned scope** — the all-zero `WalletId`, which upstream stores as a NULL `wallet_id`. Masternode/evonode nodes are the expected case, but any wallet-less identity DET stores takes this path (e.g. a `User` identity looked up by id with no owning wallet). The scope is load-bearing, not incidental: a NULL `wallet_id` activates no foreign key, so no wallet's `ON DELETE CASCADE` reaches the row, and the `cascade_meta_on_identity_delete` trigger — which would delete the identity's `meta_identity` rows, i.e. the `det:identity:v1` record above — never fires for it. That is the whole point: filing the same identity under a real wallet's scope would make removing that unrelated wallet destroy the node's DET record. These rows are also kept out of every wallet's `IdentityManager`, because the `identities` upsert promotes an unowned row to the first wallet that flushes it.
 
@@ -216,8 +217,8 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 | Store | Key count |
 |-------|-----------|
 | `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `det-<net>.sqlite` | 21 (across 8 domains) |
+| `det-<net>.sqlite` | 22 (across 8 domains) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
-| **Total** | **27** |
+| **Total** | **28** |
 
 Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

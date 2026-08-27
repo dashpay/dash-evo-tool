@@ -1139,7 +1139,7 @@ impl ScreenLike for IdentitiesScreen {
             crate::ui::BackendTaskSuccessResult::RemovedIdentities {
                 identity_ids,
                 associated_cleanup_failed,
-                primary_cleanup_deferred,
+                cleanup_deferred,
             } => {
                 let mut identities = self.identities.lock_recover();
                 for identity_id in identity_ids {
@@ -1153,12 +1153,13 @@ impl ScreenLike for IdentitiesScreen {
                         MessageType::Warning,
                     )
                     .disable_auto_dismiss();
-                } else if primary_cleanup_deferred {
+                } else if cleanup_deferred {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         IDENTITY_REMOVED_CLEANUP_PENDING,
-                        MessageType::Success,
-                    );
+                        MessageType::Warning,
+                    )
+                    .disable_auto_dismiss();
                 } else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),

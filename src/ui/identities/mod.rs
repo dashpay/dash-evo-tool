@@ -23,11 +23,14 @@ pub mod withdraw_screen;
 pub const IDENTITY_REMOVED: &str = "The identity was removed from this device.";
 
 /// Shown when the identity's removal succeeded — it is already gone from
-/// every list — but a background step to fully clear its leftover data on
-/// this device did not finish. Framed as complete, not pending: there is no
-/// retry control left for the user to reach the identity with, and the app
-/// finishes the cleanup automatically the next time it starts.
-pub const IDENTITY_REMOVED_CLEANUP_PENDING: &str = "The identity was removed from this device. A few remaining background files will finish clearing automatically the next time you open the app.";
+/// every list — but the step that clears its private keys from this
+/// device's vault did not finish. Framed as a completed removal, since there
+/// is no retry control left for the user to reach the identity with, but
+/// honest about what is still on the device: the boot-time sweep that
+/// finishes this is best-effort (skipped while a storage update is running,
+/// scoped to one network at a time), so promising an imminent, guaranteed
+/// cleanup would be its own kind of false reassurance about key material.
+pub const IDENTITY_REMOVED_CLEANUP_PENDING: &str = "The identity was removed from this device, but its private keys are still stored here. They will be cleared automatically the next time you open the app — until then, treat this device as if it still holds them.";
 
 /// Shown when the identity was removed but the voter identity tied to it was
 /// not. Naming the leftover matters: the user sees one entry disappear and one

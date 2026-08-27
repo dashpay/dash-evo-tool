@@ -706,12 +706,13 @@ As a user whose identity was already in the app before the upgrade — a mastern
 As a user, I want to remove an identity from this device from the identity's own Settings tab, so that I can clear out an identity I no longer use without hunting for a separate screen.
 
 - The identity's Settings tab has an "Unload this identity from this device" action in its Danger zone, and it is usable rather than announced as a coming feature.
-- Confirming removes the identity, its top-up history, and its scheduled DPNS votes from this device; the identity itself stays on Dash Platform and can be loaded again.
+- The confirmation states plainly that this permanently deletes the identity's private keys stored on this device, and that using it here again needs the user's own backup — the identity record itself stays on Dash Platform, but "stays on Platform" is not "keys survive".
+- Confirming removes the identity, its top-up history, and its scheduled DPNS votes from this device.
 - The removal applies to the identity that was on screen when the action was chosen, even if the selected identity changes while the confirmation is open.
 - Choosing "Keep", or dismissing the confirmation, changes nothing.
 - While a storage update is running the removal is refused with an explanation and can be retried once it finishes.
-- Once the identity is gone the Settings tab moves to another identity on its own, and the outcome is reported — including the case where the identity went but a voter identity tied to it stayed behind.
-- A removal that cannot be completed leaves the identity's private keys intact, so a retry still has everything it needs and no identity is left listed without its keys.
+- Once the identity is gone the Settings tab moves to another identity on its own, and the outcome is reported: a plain success, a success noting a voter identity tied to it stayed behind, or — when the destructive step lands but its last bit of bookkeeping doesn't — a success noting the identity's private keys are still on this device and will finish clearing automatically next launch.
+- A removal that cannot be completed at all leaves the identity's private keys intact, so a retry still has everything it needs; no identity is ever left listed without its keys, and no identity is ever reported as still removable once it is already gone from every list.
 
 ---
 

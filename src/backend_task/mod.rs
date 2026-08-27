@@ -777,13 +777,16 @@ pub enum BackendTaskSuccessResult {
     RemovedIdentities {
         identity_ids: Vec<Identifier>,
         associated_cleanup_failed: bool,
-        /// The primary identity's own vault cleanup failed strictly after it
-        /// was already delisted (index removal succeeded), so removal itself
-        /// is done and irreversible; only a k/v drain is unfinished, and the
-        /// next boot's sweep completes it automatically. `true` here means
-        /// the identity is already gone from every screen — there is no "try
+        /// Set when the primary identity's, the associated voter identity's,
+        /// or both ones' own vault cleanup failed strictly after they were
+        /// already delisted (index removal succeeded), so removal itself is
+        /// done and irreversible; only a k/v drain — including the vault-key
+        /// delete — is unfinished, and the next boot's sweep completes it
+        /// automatically. `true` here means every identity named in
+        /// `identity_ids` is already gone from every screen, but at least
+        /// one still has its private keys on this device — there is no "try
         /// again" affordance left for the user to reach it with.
-        primary_cleanup_deferred: bool,
+        cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),

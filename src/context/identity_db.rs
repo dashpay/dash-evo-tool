@@ -87,6 +87,14 @@ fn parse_vault_cleanup_pending_key(key: &str) -> Option<[u8; 32]> {
 /// manifest. [`PrivateKeyTarget`] itself derives `bincode::{Encode, Decode}`
 /// for the vault blob's own wire format, not `serde` — the k/v sidecar is
 /// serde-based, so the manifest needs its own small serializable shape.
+///
+/// `DetKv` encodes values with `bincode::serde::encode_to_vec`, which is
+/// positional (see `wallet_backend/kv.rs`'s `SCHEMA_VERSION` doc comment):
+/// this enum's wire representation is its variants' *declaration order*,
+/// not their names. Adding a variant is fine (compiler-caught at every
+/// match site); reordering or removing an existing one silently re-labels
+/// every already-persisted manifest entry to the wrong key target —
+/// nothing decoding it would notice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 enum StoredPrivateKeyTarget {
     Main,
@@ -1457,6 +1465,18 @@ impl AppContext {
     /// here is re-issued by the next boot's
     /// `AppContext::reconcile_unowned_identities`, which withdraws every
     /// unowned registration whose sidecar record is gone.
+    ///
+    /// **`Err` does not mean "nothing happened".** The Global index removal
+    /// runs before the irreversible vault-key delete, so a failure can land
+    /// strictly after `identifier` is already gone from every screen — a
+    /// durable vault-cleanup manifest survives that and the next boot's
+    /// [`Self::resume_pending_vault_cleanups`] finishes the job regardless.
+    /// A caller that turns this `Err` straight into a user-facing "removal
+    /// failed, please retry" message is wrong in exactly that case: the
+    /// identity cannot be retried (it is unlisted) and nothing is actually
+    /// still broken. Call [`Self::is_identity_listed`] first to tell the two
+    /// outcomes apart — see `AppContext::remove_identity` (in
+    /// `backend_task/identity/remove_identity.rs`) for the reference pattern.
     pub fn delete_local_qualified_identity(
         &self,
         identifier: &Identifier,
@@ -1752,11 +1772,10 @@ impl AppContext {
     /// The vault placements holding `id`'s identity-key secrets, as recorded in
     /// its stored blob. Empty when the identity is not stored.
     ///
-    /// Split out from [`Self::clear_identity_vault_keys`] so a caller that is
-    /// about to drop the blob can take the delete set while it still exists —
-    /// the blob is the only record of which vault labels belong to `id`, so a
-    /// sweep run after the blob is gone silently deletes nothing and strands
-    /// the secrets in the vault.
+    /// Read this before anything drops the identity blob — the blob is the
+    /// only record of which vault labels belong to `id`, so a delete set
+    /// derived after it is gone is silently empty and strands every secret
+    /// in the vault.
     fn identity_vault_key_placements(
         &self,
         kv: &DetKv,
@@ -2183,6 +2202,41 @@ mod tests {
         // Removing an absent id is a no-op.
         index_remove_identity(&kv, &id(9)).unwrap();
         assert_eq!(load_identity_index(&kv).unwrap(), vec![id(2)]);
+    }
+
+    // ---------------------------------------------------------------
+    // StoredPrivateKeyTarget: wire encoding is positional, not named.
+    // ---------------------------------------------------------------
+
+    /// `DetKv` encodes with `bincode::serde::encode_to_vec`, which is
+    /// positional — a variant's wire identity is its declaration order, not
+    /// its name. This pins today's order so a future reorder or removal
+    /// fails loudly here instead of silently re-labelling every
+    /// already-persisted vault-cleanup manifest entry to the wrong key
+    /// target. A new variant appended at the end is fine and needs no
+    /// update; an insertion, removal, or reordering must update this test
+    /// deliberately, with a migration plan for existing manifests.
+    #[test]
+    fn stored_private_key_target_wire_order_is_pinned() {
+        for (variant, expected_index) in [
+            (StoredPrivateKeyTarget::Main, 0u32),
+            (StoredPrivateKeyTarget::Voter, 1u32),
+            (StoredPrivateKeyTarget::Operator, 2u32),
+        ] {
+            let encoded =
+                bincode::serde::encode_to_vec(variant, bincode::config::standard()).unwrap();
+            // bincode's derive/serde-adapter encodes a unit-only enum's
+            // discriminant as a `u32` varint prefix, with no payload after
+            // it for a fieldless variant — decode that prefix directly
+            // rather than asserting on raw bytes, which would be brittle
+            // to bincode's own varint format.
+            let (decoded_index, _): (u32, usize) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+            assert_eq!(
+                decoded_index, expected_index,
+                "{variant:?} must encode at wire position {expected_index}"
+            );
+        }
     }
 
     // ---------------------------------------------------------------

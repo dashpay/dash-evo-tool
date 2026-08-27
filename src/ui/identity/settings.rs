@@ -83,8 +83,9 @@ const TIP_ADD_KEY: &str =
 const TIP_MANAGE_KEYS: &str = "View this identity's keys and their security settings.";
 const TIP_VIEW_USERNAMES: &str = "Open the complete list of your registered usernames.";
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
-const TIP_UNLOAD: &str = "Remove this identity from this device. It remains on Dash Platform — you can load it \
-     again later.";
+const TIP_UNLOAD: &str = "Remove this identity from this device and permanently delete the private keys \
+     stored here. It remains on Dash Platform, but you will need your own backup to use it on this \
+     device again.";
 const TIP_SAVE_ALIAS: &str = "Save this name on this device.";
 const TIP_ID_COPY: &str = "Copy the full identity ID to your clipboard.";
 
@@ -843,8 +844,10 @@ impl SettingsTab {
         self.confirm_unload = Some(PendingIdentityUnload {
             dialog: ConfirmationDialog::new(
                 "Unload this identity",
-                "This removes the identity from this device. It remains on Dash \
-                 Platform — you can load it again later.",
+                "This removes the identity from this device and permanently deletes the \
+                 private keys stored here. It remains on Dash Platform, but using it again \
+                 on this device will require your own backup — such as your wallet's \
+                 recovery phrase or the key you imported.",
             )
             .confirm_text(Some("Unload"))
             .cancel_text(Some("Keep"))

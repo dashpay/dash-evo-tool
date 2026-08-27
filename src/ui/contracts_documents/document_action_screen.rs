@@ -1421,6 +1421,7 @@ impl DocumentActionScreen {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         };
 
         Ok((raw_doc.into(), entropy))
@@ -1591,6 +1592,7 @@ impl DocumentActionScreen {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         };
 
         Ok((updated_doc.into(), entropy))

@@ -544,6 +544,7 @@ pub async fn send_contact_request_with_proof(
         created_at_core_block_height: None,
         updated_at_core_block_height: None,
         transferred_at_core_block_height: None,
+        contract_version: None,
     });
 
     // Step 7: Submit the contact request
@@ -663,6 +664,7 @@ async fn resolve_username_to_identity(
                 value: Value::Text(normalized),
             },
         ],
+        time_range_clauses: Vec::new(),
         group_by: Vec::new(),
         having: Vec::new(),
         order_by_clauses: vec![],
@@ -1347,6 +1349,7 @@ mod tests {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         })
     }
 

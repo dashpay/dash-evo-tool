@@ -9,8 +9,16 @@ use tracing::{debug, error, warn};
 
 const DEFAULT_AUTO_DISMISS_SHORT: Duration = Duration::from_secs(5);
 const DEFAULT_AUTO_DISMISS_LONG: Duration = Duration::from_secs(9);
-const MAX_BANNERS: usize = 5;
+/// How many global banners show at once. Raising one past this cap evicts
+/// the oldest, so a handle can outlive the banner it names.
+pub(crate) const MAX_BANNERS: usize = 5;
 const BANNER_STATE_ID: &str = "__global_message_banner";
+/// Egui context-data slot holding the keys of capacity-evicted banners.
+const EVICTED_KEYS_ID: &str = "__global_message_banner_evicted";
+/// How many evictions back a handle can still recognise its own. Bounded
+/// because the record is never consumed: a holder that has not asked after
+/// this many further evictions is not going to.
+const EVICTED_KEY_MEMORY: usize = MAX_BANNERS * 4;
 /// Egui context-data slot holding the pending action ids that the
 /// per-frame app loop drains via [`MessageBanner::take_action`]. A
 /// banner with an attached [`BannerHandle::with_action`] pushes its
@@ -159,6 +167,38 @@ pub struct BannerHandle {
 }
 
 impl BannerHandle {
+    /// Whether the banner this handle names is still in the global list.
+    ///
+    /// A handle outlives its banner: raising a new one past [`MAX_BANNERS`]
+    /// evicts the oldest without telling whoever holds its handle. Holding a
+    /// handle is therefore not proof the user can still see the message —
+    /// callers that must keep one on screen re-raise it when this is `false`.
+    pub fn is_live(&self) -> bool {
+        get_banners(&self.ctx).iter().any(|b| b.key == self.key)
+    }
+
+    /// Whether this banner is gone *because the cap took it*, rather than
+    /// because the user dismissed it or a timer retired it.
+    ///
+    /// The distinction is what lets a caller restore an important message
+    /// without overriding the user: re-raise on `true`, stay quiet otherwise.
+    /// Only remembers the last [`EVICTED_KEY_MEMORY`] evictions.
+    pub fn was_evicted(&self) -> bool {
+        !self.is_live() && was_key_evicted(&self.ctx, self.key)
+    }
+
+    /// The banner's current display text, or `None` if it no longer exists.
+    ///
+    /// Lets a caller that adopted a banner raised elsewhere reproduce its copy
+    /// verbatim after an eviction, without having to be told the text
+    /// separately and risk the two drifting apart.
+    pub fn text(&self) -> Option<String> {
+        get_banners(&self.ctx)
+            .iter()
+            .find(|b| b.key == self.key)
+            .map(|b| b.text.clone())
+    }
+
     /// Returns how long ago this banner was created, looked up from context data.
     /// Returns `None` if the banner no longer exists.
     pub fn elapsed(&self) -> Option<Duration> {
@@ -433,6 +473,7 @@ impl MessageBanner {
                     "Banner evicted (capacity {}): {:?}",
                     MAX_BANNERS, evicted.message_type,
                 );
+                record_eviction(ctx, evicted.key);
             }
             set_banners(ctx, banners);
         }
@@ -503,6 +544,7 @@ impl MessageBanner {
                     "Banner evicted (capacity {}): {:?}",
                     MAX_BANNERS, evicted.message_type,
                 );
+                record_eviction(ctx, evicted.key);
             }
         }
         set_banners(ctx, banners);
@@ -854,6 +896,24 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
     }
 }
 
+/// Remember that `key`'s banner was dropped to make room, so its holder can
+/// tell an involuntary eviction from a message the user chose to dismiss.
+fn record_eviction(ctx: &egui::Context, key: u64) {
+    ctx.data_mut(|d| {
+        let keys = d.get_temp_mut_or_default::<Vec<u64>>(egui::Id::new(EVICTED_KEYS_ID));
+        keys.push(key);
+        if keys.len() > EVICTED_KEY_MEMORY {
+            keys.remove(0);
+        }
+    });
+}
+
+/// Whether `key` names a banner dropped by a recent capacity eviction.
+fn was_key_evicted(ctx: &egui::Context, key: u64) -> bool {
+    ctx.data(|d| d.get_temp::<Vec<u64>>(egui::Id::new(EVICTED_KEYS_ID)))
+        .is_some_and(|keys| keys.contains(&key))
+}
+
 /// Reads the pending banner-action queue (FIFO) from egui context data.
 fn get_actions(ctx: &egui::Context) -> Vec<String> {
     ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::new(BANNER_ACTIONS_ID)))
@@ -947,6 +1007,13 @@ impl<T> OptionBannerShowExt<T> for Option<T> {
 /// self.refresh_banner.replace_with_elapsed(ctx, "Refreshing...", MessageType::Info);
 /// ```
 pub trait OptionBannerExt {
+    /// Whether a handle is held and its banner was dropped to make room.
+    ///
+    /// The check `is_some()` cannot make: possessing a handle stays true after
+    /// a capacity eviction silently removed the banner. Gate a re-raise on
+    /// this so an evicted message returns while a dismissed one stays gone.
+    fn was_evicted(&self) -> bool;
+
     /// Takes the handle (leaving `None`) and clears the associated banner.
     fn take_and_clear(&mut self);
 
@@ -974,6 +1041,10 @@ pub trait OptionBannerExt {
 }
 
 impl OptionBannerExt for Option<BannerHandle> {
+    fn was_evicted(&self) -> bool {
+        self.as_ref().is_some_and(BannerHandle::was_evicted)
+    }
+
     fn take_and_clear(&mut self) {
         if let Some(h) = self.take() {
             h.clear();
@@ -1049,6 +1120,68 @@ mod tests {
         let banners = get_banners(&ctx);
         let b = banners.iter().find(|b| b.text == "boom").expect("banner");
         assert!(b.action.is_none(), "empty label must clear the action");
+    }
+
+    /// A handle names a live banner right after raising it, and can report
+    /// its copy — the pair a caller needs to restore an evicted message.
+    #[test]
+    fn a_fresh_handle_is_live_and_reports_its_text() {
+        let ctx = egui::Context::default();
+        let handle = MessageBanner::set_global(&ctx, "still here", MessageType::Error);
+
+        assert!(handle.is_live());
+        assert_eq!(handle.text().as_deref(), Some("still here"));
+    }
+
+    /// The trap `is_some()` hides: the handle is still held, the banner is
+    /// gone. Anything gating a re-raise on possession alone goes silent here.
+    #[test]
+    fn a_handle_stops_being_live_once_its_banner_is_evicted_at_capacity() {
+        let ctx = egui::Context::default();
+        let handle = MessageBanner::set_global(&ctx, "oldest", MessageType::Error);
+        for n in 0..MAX_BANNERS {
+            MessageBanner::set_global(&ctx, format!("later {n}"), MessageType::Info);
+        }
+
+        assert!(!handle.is_live(), "capacity eviction must be observable");
+        assert!(handle.text().is_none());
+        assert!(handle.was_evicted(), "and attributable to the cap");
+        assert!(
+            Some(handle).was_evicted(),
+            "the Option helper must agree with the handle it wraps"
+        );
+    }
+
+    /// The distinction the whole restore path rests on. A banner that went
+    /// away because someone closed it was not evicted — reporting otherwise
+    /// would let callers resurrect messages the user deliberately silenced.
+    #[test]
+    fn a_dismissed_banner_is_not_reported_as_evicted() {
+        let ctx = egui::Context::default();
+        let mut held = Some(MessageBanner::set_global(&ctx, "bye", MessageType::Info));
+        assert!(!held.was_evicted());
+
+        held.take_and_clear();
+        assert!(
+            !held.was_evicted(),
+            "a banner removed on purpose must not look like one the cap took"
+        );
+    }
+
+    /// Eviction is attributed per banner, not to whatever happens to be gone:
+    /// the survivors of a flood are still live and still not evicted.
+    #[test]
+    fn eviction_is_recorded_only_for_the_banner_actually_dropped() {
+        let ctx = egui::Context::default();
+        let oldest = MessageBanner::set_global(&ctx, "oldest", MessageType::Error);
+        let survivor = MessageBanner::set_global(&ctx, "survivor", MessageType::Error);
+        for n in 1..MAX_BANNERS {
+            MessageBanner::set_global(&ctx, format!("later {n}"), MessageType::Info);
+        }
+
+        assert!(oldest.was_evicted());
+        assert!(survivor.is_live(), "only the oldest is dropped");
+        assert!(!survivor.was_evicted());
     }
 
     /// TC-MIG-005 (unit) — push_action enqueues FIFO and take_action

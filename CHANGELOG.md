@@ -117,6 +117,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   you moved to, where it could never be found. Creating an asset lock is also
   covered by the earlier fix below: it was still asking you to retry an outcome
   that may already be on its way.
+  While a payment is still unaccounted for, its message also survives other
+  notifications crowding it out: only five are shown at once, and the app used
+  to let ordinary ones quietly push this one off the screen for good. If that
+  happens the message comes back on its own. Closing it yourself still closes
+  it for good — the app restores what it lost, not what you dismissed.
 
 - **A sent payment whose confirmation couldn't be verified no longer tells you
   to retry it**: when the network doesn't confirm a payment quickly enough,

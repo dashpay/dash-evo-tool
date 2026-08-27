@@ -830,6 +830,11 @@ pub(super) struct PendingConfirmation {
     watches: Vec<PendingWatch>,
     /// The shared ambiguous-outcome banner, adopted from the error arm.
     ambiguous: Option<BannerHandle>,
+    /// That banner's copy, kept so it can be raised again if the global list
+    /// evicts it at capacity while the question it asks is still open. The
+    /// text originates in the error arm, so there is nothing else to rebuild
+    /// it from.
+    ambiguous_text: Option<String>,
     /// Whether an ambiguous outcome arrived with no transaction id (identity
     /// registration, top-up, platform-address funding, asset locks). No watch
     /// can ever answer it, so it is held purely as a claim on the shared
@@ -850,6 +855,7 @@ impl PendingConfirmation {
         Self {
             watches: Vec::new(),
             ambiguous: None,
+            ambiguous_text: None,
             unwatchable: false,
             stale: None,
             retired: false,
@@ -884,7 +890,7 @@ impl PendingConfirmation {
             self.track_unwatchable(banner);
             return;
         }
-        self.ambiguous = Some(banner);
+        self.adopt_ambiguous(banner);
         // Re-tracking the same transaction (the user retried, upstream refused
         // again) keeps the original wait start: the network has had that long.
         if !self.watches.iter().any(|w| w.txid == txid) {
@@ -910,8 +916,23 @@ impl PendingConfirmation {
     /// outcome carries no transaction id, or belongs to another network. Held
     /// only so a watched payment's verdict cannot retire the message with it.
     pub(super) fn track_unwatchable(&mut self, banner: BannerHandle) {
-        self.ambiguous = Some(banner);
+        self.adopt_ambiguous(banner);
         self.unwatchable = true;
+    }
+
+    /// Take over the shared ambiguous-outcome banner, recording its copy from
+    /// the banner itself so a later eviction can be undone. A handle that is
+    /// somehow already dead leaves the last known copy in place rather than
+    /// erasing the only means of restoring the message.
+    /// Take over the shared ambiguous-outcome banner, recording its copy from
+    /// the banner itself so a later eviction can be undone. A handle that is
+    /// somehow already dead leaves the last known copy in place rather than
+    /// erasing the only means of restoring the message.
+    fn adopt_ambiguous(&mut self, banner: BannerHandle) {
+        if let Some(text) = banner.text() {
+            self.ambiguous_text = Some(text);
+        }
+        self.ambiguous = Some(banner);
     }
 
     /// Drop every watch (network switch): the new network's snapshot knows
@@ -921,6 +942,7 @@ impl PendingConfirmation {
         self.unwatchable = false;
         self.retired = false;
         self.ambiguous.take_and_clear();
+        self.ambiguous_text = None;
         self.stale.take_and_clear();
     }
 
@@ -931,10 +953,18 @@ impl PendingConfirmation {
         let throttled = self
             .last_poll
             .is_some_and(|last| last.elapsed() < PENDING_POLL_INTERVAL);
-        if self.watches.is_empty() || throttled {
+        // A claim with nothing to re-read still ticks: an outcome carrying no
+        // transaction id, or a watch retired at the cap, owns a banner that
+        // has to outlive an eviction just as a watched payment's does.
+        let idle = self.watches.is_empty() && !self.unwatchable && !self.retired;
+        if idle || throttled {
             return;
         }
         self.last_poll = Some(Instant::now());
+        if self.watches.is_empty() {
+            self.sync_banners(ctx);
+            return;
+        }
         let Ok(backend) = app_context.wallet_backend() else {
             // Backend not wired (boot, or mid network switch) — the snapshot it
             // publishes is what we read, so retry on a later tick.
@@ -979,13 +1009,25 @@ impl PendingConfirmation {
 
     /// Bring both shared banners in line with the claims still open. Each is
     /// keyed by its text, so one banner speaks for every claim of its kind: it
-    /// may only be retired once nothing still speaks through it.
+    /// may only be retired once nothing still speaks through it. A claim also
+    /// re-raises its banner if the global list evicted it at capacity, so
+    /// unrelated notifications cannot end a message about the user's money.
     fn sync_banners(&mut self, ctx: &egui::Context) {
         if !self.unwatchable && !self.watches.iter().any(|w| !w.stale) {
             self.ambiguous.take_and_clear();
+            self.ambiguous_text = None;
+        } else if self.ambiguous.was_evicted() {
+            // Unrelated app chatter pushed the warning out while the user's
+            // money is still unaccounted for. Restoring it loses only the
+            // collapsible details; the sentence is what protects them. A
+            // banner the user dismissed is not evicted, so it stays gone.
+            if let Some(text) = self.ambiguous_text.clone() {
+                self.ambiguous
+                    .raise_persistent(ctx, text, MessageType::Error);
+            }
         }
         if self.retired || self.watches.iter().any(|w| w.stale) {
-            if self.stale.is_none() {
+            if self.stale.is_none() || self.stale.was_evicted() {
                 self.stale
                     .raise_persistent(ctx, PENDING_STALE_MESSAGE, MessageType::Warning);
             }
@@ -1281,6 +1323,214 @@ mod tests {
         assert_eq!(reconciler.watched().len(), MAX_PENDING_WATCHES);
         assert!(!reconciler.watched().contains(&first));
         assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+    }
+
+    /// Raise enough unrelated banners to push everything already showing out
+    /// of the global list, exactly as ordinary app chatter (connection,
+    /// migration, per-task success) would during a long wait.
+    fn evict_showing_banners(ctx: &egui::Context) {
+        for n in 0..crate::ui::components::message_banner::MAX_BANNERS {
+            MessageBanner::set_global(ctx, format!("Unrelated banner {n}"), MessageType::Info);
+        }
+    }
+
+    /// The banner is the only thing telling the user their money may be in
+    /// flight. Ordinary app chatter pushing it out of the capacity-bound
+    /// global list must not be how that warning ends.
+    #[test]
+    fn an_evicted_ambiguous_banner_comes_back_while_the_question_is_open() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([4u8; 32]),
+        );
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_none(),
+            "the flood must actually evict the banner, or this test proves nothing"
+        );
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the unverified-payment warning must return while its answer is still unknown"
+        );
+    }
+
+    /// The same loss, one copy later: once a wait has gone on long enough to
+    /// earn the transaction-history advice, an eviction must not retire it.
+    #[test]
+    fn an_evicted_stale_banner_comes_back_while_a_watch_is_stale() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([5u8; 32]),
+        );
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_none());
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(PENDING_STALE_MESSAGE).is_some(),
+            "the stale advice must return while the transaction is still out there"
+        );
+    }
+
+    /// The mixed verdict: one payment has waited long enough for the stale
+    /// copy while another is still fresh, so both banners are owed at once. A
+    /// flood takes both, and both must come back — restoring one and leaving
+    /// the other would tell a half-truth about the user's money.
+    #[test]
+    fn both_banners_come_back_after_an_eviction_on_a_mixed_verdict() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([6u8; 32]),
+        );
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+        reconciler.apply(&harness.ctx, |_| None);
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([7u8; 32]),
+        );
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_none());
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the fresh payment's warning must return"
+        );
+        assert!(
+            harness.query_by_label(PENDING_STALE_MESSAGE).is_some(),
+            "the long wait's advice must return alongside it"
+        );
+    }
+
+    /// The other half of the restore rule. Coming back after an eviction must
+    /// not turn into coming back after the user closed it — that would make an
+    /// unavoidable nag out of a warning they have already read and acted on.
+    #[test]
+    fn a_dismissed_ambiguous_banner_is_not_raised_again() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([8u8; 32]),
+        );
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+
+        // What the dismiss button does: drop the banner, leaving the handle.
+        reconciler
+            .ambiguous
+            .clone()
+            .expect("the banner was adopted")
+            .clear();
+        harness.run();
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_none(),
+            "a warning the user closed must stay closed"
+        );
+    }
+
+    /// Same rule for the later copy: dismissing the stale advice retires it,
+    /// even though the watch it speaks for is still open.
+    #[test]
+    fn a_dismissed_stale_banner_is_not_raised_again() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([9u8; 32]),
+        );
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+
+        reconciler
+            .stale
+            .clone()
+            .expect("the stale banner was raised")
+            .clear();
+        harness.run();
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(PENDING_STALE_MESSAGE).is_none(),
+            "advice the user closed must stay closed"
+        );
+    }
+
+    /// An outcome with no transaction id has no watch to poll, so nothing was
+    /// ticking to notice its banner had been evicted. That claim is exactly the
+    /// one no verdict can ever answer, which makes losing its banner permanent.
+    #[test]
+    fn an_evicted_unwatchable_banner_comes_back_with_no_watch_to_poll() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        reconciler.track_unwatchable(ambiguous_banner(&harness.ctx));
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+        assert!(
+            reconciler.watched().is_empty(),
+            "this claim has nothing to watch — that is the point"
+        );
+
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
+
+        reconciler.update(&harness.ctx, &app_context);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "a claim nothing can answer must still keep its banner"
+        );
     }
 
     /// The transactions belong to the network the user just left; their

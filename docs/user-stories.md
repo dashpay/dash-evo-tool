@@ -478,6 +478,7 @@ As a user, I want a payment whose confirmation could not be verified to tell me 
 - Several payments can be waiting at once. One of them being answered — confirmed, or reaching the eleven-minute mark — leaves every other waiting payment's message exactly as it was, including the plain wait-and-check message shown for the flows that report no identifier to watch.
 - The app never reports such a payment as failed: the network has no rejection signal, so an invalid payment and a slow one look the same.
 - Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
+- While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
 
 ---
 

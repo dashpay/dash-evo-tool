@@ -717,6 +717,7 @@ impl AppContext {
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![],
+                    time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
                     having: Vec::new(),
                     order_by_clauses: vec![],
@@ -773,6 +774,7 @@ impl AppContext {
                             Value::U8(WithdrawalStatus::EXPIRED as u8),
                         ]),
                     }],
+                    time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
                     having: Vec::new(),
                     order_by_clauses: vec![
@@ -893,6 +895,7 @@ impl AppContext {
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses,
+                    time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
                     having: Vec::new(),
                     order_by_clauses,

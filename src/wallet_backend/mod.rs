@@ -2942,6 +2942,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::MasternodeWithdrawalUnconfirmed { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::Sdk(_)
         | P::AddressSync(_)
@@ -3206,6 +3207,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::AddressSync(_)
         | P::AddressOperation(_)

@@ -16,7 +16,7 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 /// Identity blob slot, scoped to [`DetScope::Identity`]. One entry per
 /// identity; the identity id is carried by the scope, so the key is a
@@ -306,8 +306,52 @@ impl From<StoredScheduledVote> for ScheduledDPNSVote {
     }
 }
 
+/// Serializes every read-modify-write of [`IDENTITY_INDEX_KEY`].
+///
+/// The roster is a single blob rewritten wholesale, so two identities being
+/// listed or delisted at the same time race on it: each pass reads the whole
+/// index, edits its own entry, and writes the result back over its peer's.
+/// The per-identity `identity_record_lock` cannot close that window — it
+/// serializes writers of the *same* identity, while this race is between
+/// writers of *different* ones.
+///
+/// A lost entry is not cosmetic. [`AppContext::resume_pending_vault_cleanups`]
+/// treats absence from this roster as proof an identity was removed and
+/// deletes its vault keys, so an import whose write is clobbered hands a live
+/// identity's private keys to the next boot's sweep. One process-wide lock
+/// rather than a per-context field because the mutators are free functions
+/// reached from contexts and bare [`DetKv`] handles alike; the writes are
+/// user-paced (import, removal), so serializing them globally costs nothing.
+///
+/// # Lock order
+///
+/// An identity's `identity_record_lock` is OUTER, this lock is INNER —
+/// [`AppContext::insert_local_qualified_identity`] and
+/// [`AppContext::delete_local_qualified_identity`] both already hold the
+/// record lock when their index write takes this one, so that is the order
+/// every path must keep. Never acquire a record lock while holding this one,
+/// and never hold it across an `await` or any call that can reach the index
+/// again — `std::sync::Mutex` is not reentrant, so a second acquisition on
+/// this thread self-deadlocks. Only
+/// [`AppContext::delete_all_local_qualified_identities_in_devnet`] holds it
+/// across other work, and every call it makes there (`clear_identity_vault_keys`,
+/// `purge_identity_scope`) touches the vault and Identity-scoped keys only,
+/// never the roster and never a record lock.
+static IDENTITY_INDEX_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire [`IDENTITY_INDEX_LOCK`]. A poisoned lock guards no invariant of its
+/// own — the k/v store holds the state — so the guard is taken regardless.
+fn lock_identity_index() -> MutexGuard<'static, ()> {
+    IDENTITY_INDEX_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Read the Global identity-id enumeration index. Returns an empty
 /// vector when the index has never been written.
+///
+/// Callers that go on to write the index back, or that act irreversibly on
+/// the answer, must hold [`lock_identity_index`] across both halves.
 fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskError> {
     Ok(kv
         .get::<Vec<[u8; 32]>>(DetScope::Global, IDENTITY_INDEX_KEY)
@@ -318,6 +362,7 @@ fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskErr
 /// Add `identity_id` to the Global enumeration index if absent. No-op
 /// when the id is already tracked, so repeated inserts stay idempotent.
 fn index_add_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<(), TaskError> {
+    let _index_guard = lock_identity_index();
     let mut index = load_identity_index(kv)?;
     if index.contains(identity_id) {
         return Ok(());
@@ -330,6 +375,7 @@ fn index_add_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result
 /// Remove `identity_id` from the Global enumeration index. No-op when
 /// the id is not present.
 fn index_remove_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<(), TaskError> {
+    let _index_guard = lock_identity_index();
     let mut index = load_identity_index(kv)?;
     let before = index.len();
     index.retain(|id| id != identity_id);
@@ -1554,7 +1600,12 @@ impl AppContext {
     /// reached the irreversible step, or to an identity re-imported since:
     /// either way the identity is live and the user keeps a working retry, so
     /// deleting its keys here would strand exactly the identity this ordering
-    /// exists to protect.
+    /// exists to protect. That absence is only trustworthy because every
+    /// mutation of the roster is serialized ([`lock_identity_index`]) and
+    /// every mutation *of this identity* is serialized against this sweep by
+    /// its record lock: without the first, another identity's concurrent
+    /// import could silently drop this one's entry and fake the very evidence
+    /// the delete below acts on.
     ///
     /// Also re-runs `purge_identity_scope` before deleting vault keys: the
     /// manifest is persisted one step *before* that purge, so a crash between
@@ -1874,6 +1925,12 @@ impl AppContext {
     /// current network. Matches the pre-C7
     /// `delete_all_local_qualified_identities_in_devnet` guard — no-op on
     /// non-devnet networks.
+    ///
+    /// Holds [`lock_identity_index`] across the whole wipe, the read and the
+    /// index delete alike: an import that landed in between would have its
+    /// roster entry dropped by the delete while its blob and vault keys
+    /// survived — the unlisted-but-live shape the cleanup sweep destroys keys
+    /// over.
     pub fn delete_all_local_qualified_identities_in_devnet(
         &self,
     ) -> std::result::Result<(), TaskError> {
@@ -1881,6 +1938,7 @@ impl AppContext {
             return Ok(());
         }
         let kv = self.det_kv()?;
+        let _index_guard = lock_identity_index();
         let ids = load_identity_index(&kv)?;
         for id in &ids {
             self.clear_identity_vault_keys(&kv, id)?;
@@ -2081,9 +2139,15 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use crate::wallet_backend::kv_test_support::{InMemoryKv, StallingReadKv};
     use DetKv;
     use std::sync::Arc;
+
+    /// A [`DetKv`] that stalls after every read, turning any unserialized
+    /// read-modify-write into a reproducible lost update.
+    fn stalling_kv() -> DetKv {
+        DetKv::from_store(Arc::new(StallingReadKv::default()))
+    }
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -2202,6 +2266,59 @@ mod tests {
         // Removing an absent id is a no-op.
         index_remove_identity(&kv, &id(9)).unwrap();
         assert_eq!(load_identity_index(&kv).unwrap(), vec![id(2)]);
+    }
+
+    /// A roster whose entries can be lost is a roster that authorizes an
+    /// irreversible delete on false evidence: `resume_pending_vault_cleanups`
+    /// reads "absent from the index" as proof an identity was removed and
+    /// destroys its vault keys. The index is a single blob rewritten
+    /// wholesale, so listing two identities at once is a read-modify-write
+    /// race — and the entry that loses it belongs to an identity that is
+    /// live, listed everywhere else, and about to lose its private keys on
+    /// the next boot. Every mutation of the key must be serialized.
+    #[test]
+    fn concurrently_listing_two_identities_keeps_both_on_the_roster() {
+        let kv = stalling_kv();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| index_add_identity(&kv, &id(1)).expect("list the re-imported identity"));
+            scope.spawn(|| index_add_identity(&kv, &id(2)).expect("list the imported identity"));
+        });
+
+        let mut listed = load_identity_index(&kv).unwrap();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            vec![id(1), id(2)],
+            "neither identity may lose its roster entry to the other's write"
+        );
+    }
+
+    /// The same race in its mixed form, which corrupts the roster in both
+    /// directions at once: the removal can be undone (a delisted identity
+    /// reappears on screen with its keys already deleted) or the addition can
+    /// be dropped (a live identity is handed to the cleanup sweep). Only one
+    /// of the two writes survives unless they are serialized.
+    #[test]
+    fn a_concurrent_listing_and_delisting_both_take_effect() {
+        let kv = stalling_kv();
+        index_add_identity(&kv, &id(1)).unwrap();
+        index_add_identity(&kv, &id(2)).unwrap();
+
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| index_remove_identity(&kv, &id(1)).expect("delist the removed identity"));
+            scope.spawn(|| index_add_identity(&kv, &id(3)).expect("list the imported identity"));
+        });
+
+        let mut listed = load_identity_index(&kv).unwrap();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            vec![id(2), id(3)],
+            "the removal must not resurrect the delisted identity, and the \
+             import must not vanish from the roster"
+        );
     }
 
     // ---------------------------------------------------------------

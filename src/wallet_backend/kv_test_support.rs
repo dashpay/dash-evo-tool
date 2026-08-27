@@ -125,3 +125,36 @@ impl KvStore for FailingKv {
         self.inner.list_keys(scope, prefix)
     }
 }
+
+/// An [`InMemoryKv`] that stalls *after* each read has taken its snapshot.
+///
+/// The fixture for lost-update tests. Two concurrent read-modify-write
+/// mutations of the same key both observe the pre-mutation state and write
+/// back late, so an unserialized mutation reliably loses its peer's update;
+/// a mutation that only writes never reads, never stalls, and cannot be
+/// clobbered. A caller that holds a lock across its own read and write turns
+/// the same interleaving into a queue instead.
+#[derive(Default)]
+pub(crate) struct StallingReadKv {
+    inner: InMemoryKv,
+}
+
+impl KvStore for StallingReadKv {
+    fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+        let value = self.inner.get(scope, key);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        value
+    }
+
+    fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+        self.inner.put(scope, key, value)
+    }
+
+    fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+        self.inner.delete(scope, key)
+    }
+
+    fn list_keys(&self, scope: &ObjectId, prefix: Option<&str>) -> Result<Vec<String>, KvError> {
+        self.inner.list_keys(scope, prefix)
+    }
+}

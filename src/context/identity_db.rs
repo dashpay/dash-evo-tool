@@ -386,6 +386,39 @@ fn index_remove_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Res
         .map_err(identity_err)
 }
 
+/// Run the irreversible tail of an identity removal: delete `vault_keys`
+/// from the vault, then drop the manifest that recorded them.
+///
+/// Returns `Err` only while key material may still be on the device. A vault
+/// delete that fails is propagated, never swallowed — leaving keys on a device
+/// the user asked to clear is the one part of a removal they must not be told
+/// succeeded. A manifest clear that fails afterwards is not that: the keys are
+/// already gone and only Global bookkeeping is stale, so it is logged and the
+/// removal counts as complete. Reporting it as a failure would tell the user
+/// their private keys are still here — the opposite of what happened — and
+/// would surface a cleanup-pending warning for nothing. The stale manifest is
+/// harmless: the next boot's sweep re-runs the same idempotent deletes and
+/// clears it.
+fn finish_vault_cleanup(
+    kv: &DetKv,
+    secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
+    id: &[u8; 32],
+    vault_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+) -> std::result::Result<(), TaskError> {
+    crate::wallet_backend::IdentityKeyView::new(secret_store, *id).delete_all(vault_keys)?;
+    if let Err(error) = kv
+        .delete(DetScope::Global, &vault_cleanup_pending_key(id))
+        .map_err(identity_err)
+    {
+        tracing::warn!(
+            identity = %Identifier::from(*id),
+            %error,
+            "Identity keys deleted but their cleanup manifest could not be cleared; the next boot re-runs the deletes and clears it"
+        );
+    }
+    Ok(())
+}
+
 /// Delete every Identity-scoped child of `id` (blob, top-up history, all
 /// scheduled votes) and prune the scheduled-vote voter index. Does not
 /// touch the Global identity index — callers decide whether to drop the
@@ -1564,12 +1597,7 @@ impl AppContext {
         self.persist_vault_cleanup_manifest(&kv, &id, &vault_keys)?;
         index_remove_identity(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
-        // Propagated, not swallowed: a vault delete that fails leaves key
-        // material on a device the user asked to clear, which is the one part
-        // of this operation they must not be told succeeded.
-        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, id)
-            .delete_all(vault_keys)?;
-        self.clear_vault_cleanup_manifest(&kv, &id)?;
+        finish_vault_cleanup(&kv, &self.secret_store, &id, vault_keys)?;
         // Mirror the removal into the wallet store's unowned scope, so a
         // deleted node does not linger there. Best-effort, and a no-op for a
         // wallet-owned identity, which is never registered unowned.
@@ -1719,17 +1747,8 @@ impl AppContext {
             let vault_keys = placements
                 .into_iter()
                 .map(|(target, key_id)| (target.into(), key_id));
-            match crate::wallet_backend::IdentityKeyView::new(&self.secret_store, id)
-                .delete_all(vault_keys)
-            {
-                Ok(()) => match kv.delete(DetScope::Global, &key) {
-                    Ok(()) => resumed += 1,
-                    Err(error) => tracing::warn!(
-                        identity = %Identifier::from(id),
-                        %error,
-                        "Vault keys deleted but the manifest failed to clear; a next-boot retry is a safe no-op"
-                    ),
-                },
+            match finish_vault_cleanup(&kv, &self.secret_store, &id, vault_keys) {
+                Ok(()) => resumed += 1,
                 Err(error) => tracing::warn!(
                     identity = %Identifier::from(id),
                     %error,
@@ -1865,8 +1884,8 @@ impl AppContext {
     }
 
     /// Persist `keys` as the durable vault-cleanup manifest for `id`, so a
-    /// failure anywhere between this call and [`Self::clear_vault_cleanup_manifest`]
-    /// leaves a record a retry can recover from.
+    /// failure anywhere between this call and the manifest clear in
+    /// [`finish_vault_cleanup`] leaves a record a retry can recover from.
     fn persist_vault_cleanup_manifest(
         &self,
         kv: &DetKv,
@@ -1876,17 +1895,6 @@ impl AppContext {
         let stored: Vec<(StoredPrivateKeyTarget, KeyID)> =
             keys.iter().cloned().map(|(t, k)| (t.into(), k)).collect();
         kv.put(DetScope::Global, &vault_cleanup_pending_key(id), &stored)
-            .map_err(identity_err)
-    }
-
-    /// Drop `id`'s vault-cleanup manifest. Called only once every listed key
-    /// is confirmed absent from the vault — never speculatively.
-    fn clear_vault_cleanup_manifest(
-        &self,
-        kv: &DetKv,
-        id: &[u8; 32],
-    ) -> std::result::Result<(), TaskError> {
-        kv.delete(DetScope::Global, &vault_cleanup_pending_key(id))
             .map_err(identity_err)
     }
 
@@ -2139,7 +2147,7 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet_backend::kv_test_support::{InMemoryKv, StallingReadKv};
+    use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, StallingReadKv};
     use DetKv;
     use std::sync::Arc;
 
@@ -3844,6 +3852,53 @@ mod tests {
                 .expect("read the index")
                 .contains(&id_buf),
             "the re-import must have won: the identity is listed again"
+        );
+    }
+
+    /// A removal is reported by what happened to the keys, not by what happened
+    /// to the bookkeeping. Once the vault delete lands the keys are gone, and a
+    /// manifest clear that fails afterwards leaves only a stale Global record
+    /// the next boot's sweep drops on its own. Propagating that failure would
+    /// tell the user their private keys are still on this device — the opposite
+    /// of the truth — and would raise a cleanup-pending warning for an identity
+    /// with nothing left to clean up. The other half of the distinction, a
+    /// cleanup that really is outstanding because the keys are still there, is
+    /// asserted by `remove_identity`'s deferred-cleanup tests.
+    #[test]
+    fn a_manifest_clear_failure_after_the_keys_are_deleted_still_completes_the_removal() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_vault(dir.path());
+        let failing = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(failing.clone());
+        let id_buf = id(1);
+        let manifest_key = vault_cleanup_pending_key(&id_buf);
+
+        let view = IdentityKeyView::new(&store, id_buf);
+        view.store(&MAIN, 1, &[0x11; 32]).expect("vault the key");
+        kv.put(
+            DetScope::Global,
+            &manifest_key,
+            &vec![(StoredPrivateKeyTarget::from(MAIN), 1 as KeyID)],
+        )
+        .expect("stage the manifest the delete is meant to clear");
+
+        failing.fail_deletes(true);
+        finish_vault_cleanup(&kv, &store, &id_buf, [(MAIN, 1)])
+            .expect("the keys are gone, so only bookkeeping failed: not a failed removal");
+
+        assert!(
+            view.get(&MAIN, 1).unwrap().is_none(),
+            "the vault delete must have landed before the manifest clear was even attempted"
+        );
+        failing.fail_deletes(false);
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(DetScope::Global, &manifest_key)
+                .expect("read the manifest slot")
+                .is_some(),
+            "the manifest must survive its failed clear, so the next boot's sweep still \
+             finds it and re-runs the idempotent deletes"
         );
     }
 }

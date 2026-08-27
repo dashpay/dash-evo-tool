@@ -85,6 +85,7 @@ impl KvStore for InMemoryKv {
 pub(crate) struct FailingKv {
     inner: InMemoryKv,
     fail_reads: AtomicBool,
+    fail_deletes: AtomicBool,
     puts: AtomicUsize,
 }
 
@@ -94,6 +95,13 @@ impl FailingKv {
     /// read armed to fail and then restored still yields the original blob.
     pub(crate) fn fail_reads(&self, fail: bool) {
         self.fail_reads.store(fail, Ordering::Relaxed);
+    }
+
+    /// Make every subsequent `delete` fail with [`KvError::LockPoisoned`]
+    /// (`true`), or restore normal deletes (`false`). The stored value is left
+    /// in place, which is what a real failed delete leaves behind.
+    pub(crate) fn fail_deletes(&self, fail: bool) {
+        self.fail_deletes.store(fail, Ordering::Relaxed);
     }
 
     /// How many `put` calls have reached the store.
@@ -118,6 +126,9 @@ impl KvStore for FailingKv {
     }
 
     fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+        if self.fail_deletes.load(Ordering::Relaxed) {
+            return Err(KvError::LockPoisoned);
+        }
         self.inner.delete(scope, key)
     }
 

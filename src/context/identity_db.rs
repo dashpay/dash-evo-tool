@@ -2443,6 +2443,7 @@ pub(crate) mod test_staging {
 mod tests {
     use super::test_staging::*;
     use super::*;
+    use crate::context::IDENTITY_RECORD_LOCK_REQUESTS;
     use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, RendezvousKv};
     use DetKv;
     use std::sync::Arc;
@@ -3966,6 +3967,11 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+        // Baseline taken after our own acquisition above, so the next
+        // increment can only come from the sweep.
+        let requests_before_sweep =
+            IDENTITY_RECORD_LOCK_REQUESTS.load(std::sync::atomic::Ordering::SeqCst);
+
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let sweep_ctx = Arc::clone(&staged.ctx);
         let sweep = std::thread::spawn(move || {
@@ -3973,15 +3979,26 @@ mod tests {
             let _ = done_tx.send(());
         });
 
-        // While we hold the identity's record lock, the sweep must not be
-        // able to finish at all — proving it genuinely blocks on the same
-        // lock rather than racing straight through. 300ms is generous
-        // headroom over how long an unblocked sweep of one manifest takes
-        // (sub-millisecond), so this bound is not a source of flakiness.
+        // Wait — without a deadline — for the sweep to reach the point just
+        // before it blocks on this identity's record lock. A timeout here
+        // would prove nothing: a sweep that has not started yet and a sweep
+        // parked on the lock are indistinguishable by elapsed time, so a slow
+        // worker would let the assertion below pass against a sweep that never
+        // took the lock at all.
+        while IDENTITY_RECORD_LOCK_REQUESTS.load(std::sync::atomic::Ordering::SeqCst)
+            == requests_before_sweep
+        {
+            std::thread::yield_now();
+        }
+
+        // It has asked for the lock and we hold it, so it can only be blocked
+        // acquiring it. Anything else — in particular finishing, having
+        // deleted the keys — is the bug.
         assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_millis(300))
-                .is_err(),
+            matches!(
+                done_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
             "the sweep must block on this identity's record lock while a \
              re-import holds it, not race ahead and delete its keys"
         );

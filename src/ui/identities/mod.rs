@@ -50,7 +50,12 @@ pub const IDENTITY_REMOVED_VOTER_LEFT: &str = "The identity was removed, but its
 /// identity looking like a clean failure with nothing else wrong, or the
 /// possible key residue going unmentioned entirely — so this names both, under
 /// the same hedge as [`IDENTITY_REMOVED_CLEANUP_PENDING`].
-pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed — retry after restarting the app. Private keys for one or both of them may still be stored on this device. The app will try to clear them again the next time you open it.";
+///
+/// It carries that constant's precaution too. This is the worse of the two
+/// outcomes, so it must not be the one that tells the user less: the same
+/// uncertainty about key material applies, and the same thing can be done
+/// about it now.
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed — retry after restarting the app. Private keys for one or both of them may still be stored on this device. The app will try to clear them again the next time you open it. Until then, treat this device as if it still holds them.";
 
 /// Shown when a removal is refused because the storage update is still running.
 pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
@@ -226,11 +231,13 @@ mod tests {
                 message.contains("open"),
                 "reopening the app is the action that triggers the next attempt: {message}"
             );
+            assert!(
+                message.contains("treat this device as if it still holds"),
+                "the safe assumption under uncertainty is the precaution the user can take \
+                 now, and the combined outcome is the worse one — it must not be the banner \
+                 that says less: {message}"
+            );
         }
-        assert!(
-            IDENTITY_REMOVED_CLEANUP_PENDING.contains("treat this device as if it still holds"),
-            "the safe assumption under uncertainty is the precaution the user can take now"
-        );
     }
 
     #[test]

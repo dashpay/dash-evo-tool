@@ -14,8 +14,8 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
-use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identities::{auto_selected_wallet_or_banner, get_selected_wallet};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -115,10 +115,10 @@ impl ContactRequests {
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
-            // Get wallet for the selected identity
-            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+            new_self.selected_wallet = auto_selected_wallet_or_banner(
+                app_context.egui_ctx(),
+                get_selected_wallet(&preferred, Some(&app_context), None),
+            );
         }
 
         new_self

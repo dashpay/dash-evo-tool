@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identities::{auto_selected_wallet_or_banner, get_selected_wallet};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use eframe::epaint::TextureHandle;
@@ -82,10 +82,10 @@ impl QRCodeGeneratorScreen {
             new_self.selected_identity = Some(preferred.clone());
             new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
 
-            // Get wallet for the selected identity
-            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None);
+            new_self.selected_wallet = auto_selected_wallet_or_banner(
+                app_context.egui_ctx(),
+                get_selected_wallet(&preferred, Some(&app_context), None),
+            );
         }
 
         new_self

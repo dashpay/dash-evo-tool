@@ -11,6 +11,7 @@ use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
@@ -65,9 +66,21 @@ const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
 fn vault_cleanup_pending_key(id: &[u8; 32]) -> String {
     format!(
         "{VAULT_CLEANUP_PENDING_PREFIX}{}",
-        Identifier::from(*id)
-            .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+        Identifier::from(*id).to_string(Encoding::Base58)
     )
+}
+
+/// Recover the identity id named by a vault-cleanup manifest key, for the
+/// boot-time sweep that enumerates every manifest without already knowing
+/// which identities they belong to. `None` for anything that is not a
+/// well-formed manifest key — a corrupt or foreign entry is skipped rather
+/// than treated as fatal, so it never blocks the sweep from resuming every
+/// other pending cleanup.
+fn parse_vault_cleanup_pending_key(key: &str) -> Option<[u8; 32]> {
+    let suffix = key.strip_prefix(VAULT_CLEANUP_PENDING_PREFIX)?;
+    Identifier::from_string(suffix, Encoding::Base58)
+        .ok()
+        .map(|id| id.to_buffer())
 }
 
 /// Serializable mirror of [`PrivateKeyTarget`] for the vault-cleanup
@@ -1489,6 +1502,87 @@ impl AppContext {
             );
         }
         Ok(())
+    }
+
+    /// Boot-time sweep for vault-cleanup manifests left behind by a
+    /// [`Self::delete_local_qualified_identity`] call that failed after
+    /// `index_remove_identity` had already run. Once an identity leaves the
+    /// Global index it renders on no screen, so nothing in the UI can ever
+    /// call that method again for it — the manifest, and this sweep, are the
+    /// only surviving path back to the orphaned vault keys.
+    ///
+    /// Best-effort and idempotent, like every other boot reconcile
+    /// ([`super::wallet_lifecycle::bootstrap`]'s unowned-identity pass): a
+    /// failure on one manifest is logged and retried next boot, and never
+    /// blocks the sweep from resuming every other one.
+    pub(crate) fn resume_pending_vault_cleanups(&self) {
+        let kv = match self.det_kv() {
+            Ok(kv) => kv,
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    "Pending vault-cleanup sweep skipped; k/v store not ready, will retry at next boot"
+                );
+                return;
+            }
+        };
+        let keys = match kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX)) {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Pending vault-cleanup sweep skipped; listing manifests failed, will retry at next boot"
+                );
+                return;
+            }
+        };
+        let mut resumed = 0usize;
+        for key in keys {
+            let Some(id) = parse_vault_cleanup_pending_key(&key) else {
+                tracing::warn!(%key, "Skipping an unparsable vault-cleanup manifest key");
+                continue;
+            };
+            let placements: Vec<(StoredPrivateKeyTarget, KeyID)> =
+                match kv.get(DetScope::Global, &key) {
+                    Ok(Some(placements)) => placements,
+                    // Raced with another clear of the same manifest; nothing left to do.
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            identity = %Identifier::from(id),
+                            %error,
+                            "Pending vault-cleanup manifest unreadable, will retry at next boot"
+                        );
+                        continue;
+                    }
+                };
+            let vault_keys = placements
+                .into_iter()
+                .map(|(target, key_id)| (target.into(), key_id));
+            match crate::wallet_backend::IdentityKeyView::new(&self.secret_store, id)
+                .delete_all(vault_keys)
+            {
+                Ok(()) => match kv.delete(DetScope::Global, &key) {
+                    Ok(()) => resumed += 1,
+                    Err(error) => tracing::warn!(
+                        identity = %Identifier::from(id),
+                        %error,
+                        "Vault keys deleted but the manifest failed to clear; a next-boot retry is a safe no-op"
+                    ),
+                },
+                Err(error) => tracing::warn!(
+                    identity = %Identifier::from(id),
+                    %error,
+                    "Pending vault-cleanup deferred; will retry at next boot"
+                ),
+            }
+        }
+        if resumed > 0 {
+            tracing::info!(
+                resumed,
+                "Resumed vault-key cleanups left behind by an interrupted identity removal"
+            );
+        }
     }
 
     /// Test-only: remove `identifier` from the Global enumeration index
@@ -3182,6 +3276,62 @@ mod tests {
             .expect("read the manifest slot")
             .is_none(),
             "the manifest must be cleared once every key is confirmed deleted"
+        );
+    }
+
+    /// The reachable form of the retry above: once `index_remove_identity`
+    /// has run, the identity is gone from the Global index and therefore off
+    /// every roster-backed screen — nothing in the UI can call
+    /// `delete_local_qualified_identity` again for it. The manifest must be
+    /// recoverable without that call: the boot-time sweep is the only
+    /// reachable path back to keys orphaned this way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resume_pending_vault_cleanups_recovers_a_manifest_no_ui_can_reach() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x11; 32];
+        const LOW: [u8; 32] = [0x22; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+
+        kv.put(
+            DetScope::Global,
+            SCHEDULED_VOTE_VOTERS_KEY,
+            &"not a voter index".to_string(),
+        )
+        .expect("corrupt the scheduled-vote voter index");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect_err("purge_identity_scope's last step must fail");
+
+        // The point of no return for any UI-driven retry: the identity is
+        // already gone from the roster the Hub reads.
+        assert!(
+            !load_identity_index(&kv)
+                .expect("read the index")
+                .contains(&staged.id.to_buffer()),
+            "index_remove_identity must have already run before the failure"
+        );
+
+        staged.ctx.resume_pending_vault_cleanups();
+
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} must be recovered by the sweep even with no UI path left to reach it"
+            );
+        }
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&staged.id.to_buffer())
+            )
+            .expect("read the manifest slot")
+            .is_none(),
+            "the manifest must be cleared once the sweep confirms every key deleted"
         );
     }
 }

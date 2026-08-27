@@ -695,6 +695,10 @@ impl AppContext {
         // identities exist on installs with no wallet at all.
         if let Ok(backend) = self.wallet_backend() {
             self.reconcile_unowned_identities(&backend);
+            // Resumes vault-key deletes an earlier removal couldn't finish —
+            // the identity is already off every screen by the time this
+            // manifest exists, so this sweep is its only remaining path back.
+            self.resume_pending_vault_cleanups();
         }
 
         let wallets: Vec<_> = {

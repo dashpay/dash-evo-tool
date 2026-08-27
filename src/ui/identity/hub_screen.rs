@@ -586,13 +586,20 @@ impl ScreenLike for IdentityHubScreen {
             } => {
                 // Drop the app-wide selection when it names something that no
                 // longer exists, so the hub falls back deliberately instead of
-                // resolving around a pointer to a deleted identity.
+                // resolving around a pointer to a deleted identity. Reset
+                // identity-scoped caches too — contacts, pending contact
+                // confirmations, and the profile cache — matching every other
+                // identity-switch path, so a resolve to the next identity next
+                // frame does not inherit state that still belongs to the one
+                // just removed.
                 if self
                     .app_context
                     .selected_identity_id()
                     .is_some_and(|active| identity_ids.contains(&active))
                 {
                     self.app_context.set_selected_identity(None);
+                    self.reset_contacts_for_identity_change();
+                    self.profile_cache.reset();
                 }
                 if *associated_cleanup_failed {
                     MessageBanner::set_global(

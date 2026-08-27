@@ -53,6 +53,54 @@ const SCHEDULED_VOTE_VOTERS_KEY: &str = "det:scheduled_vote_voters:v1";
 /// identity; the identity id is carried by the scope.
 const TOP_UPS_KEY: &str = "det:top_ups:v1";
 
+/// Durable manifest of vault-key placements still pending deletion for one
+/// identity, keyed by that identity's id in the key itself.
+/// [`DetScope::Global`] is deliberate, not incidental: `purge_identity_scope`
+/// only ever mutates [`DetScope::Identity`], so a manifest filed there would
+/// share fate with the very state a partial `purge_identity_scope` failure
+/// can destroy — the one case this manifest exists to survive. Key shape:
+/// `det:vault_cleanup_pending:v1:<identity_b58>`.
+const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
+
+fn vault_cleanup_pending_key(id: &[u8; 32]) -> String {
+    format!(
+        "{VAULT_CLEANUP_PENDING_PREFIX}{}",
+        Identifier::from(*id)
+            .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+    )
+}
+
+/// Serializable mirror of [`PrivateKeyTarget`] for the vault-cleanup
+/// manifest. [`PrivateKeyTarget`] itself derives `bincode::{Encode, Decode}`
+/// for the vault blob's own wire format, not `serde` — the k/v sidecar is
+/// serde-based, so the manifest needs its own small serializable shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum StoredPrivateKeyTarget {
+    Main,
+    Voter,
+    Operator,
+}
+
+impl From<PrivateKeyTarget> for StoredPrivateKeyTarget {
+    fn from(target: PrivateKeyTarget) -> Self {
+        match target {
+            PrivateKeyTarget::PrivateKeyOnMainIdentity => Self::Main,
+            PrivateKeyTarget::PrivateKeyOnVoterIdentity => Self::Voter,
+            PrivateKeyTarget::PrivateKeyOnOperatorIdentity => Self::Operator,
+        }
+    }
+}
+
+impl From<StoredPrivateKeyTarget> for PrivateKeyTarget {
+    fn from(target: StoredPrivateKeyTarget) -> Self {
+        match target {
+            StoredPrivateKeyTarget::Main => Self::PrivateKeyOnMainIdentity,
+            StoredPrivateKeyTarget::Voter => Self::PrivateKeyOnVoterIdentity,
+            StoredPrivateKeyTarget::Operator => Self::PrivateKeyOnOperatorIdentity,
+        }
+    }
+}
+
 fn scheduled_vote_key(contested_name: &str) -> String {
     format!("{SCHEDULED_VOTE_KEY_PREFIX}{contested_name}")
 }
@@ -1411,7 +1459,15 @@ impl AppContext {
         // already unlisted and drained. Its delete set is read up front,
         // because the blob `purge_identity_scope` drops is where that set is
         // recorded.
-        let vault_keys = self.identity_vault_key_placements(&kv, &id)?;
+        //
+        // `purge_identity_scope` is itself not atomic (three independent k/v
+        // writes), so a failure inside it — after its own first write has
+        // already dropped the blob — would leave a retry with nothing to
+        // re-derive the delete set from. The manifest below is what survives
+        // that: persisted before any mutation runs, retained across every
+        // error, and cleared only once every listed key is confirmed absent.
+        let vault_keys = self.pending_vault_key_placements(&kv, &id)?;
+        self.persist_vault_cleanup_manifest(&kv, &id, &vault_keys)?;
         index_remove_identity(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
         // Propagated, not swallowed: a vault delete that fails leaves key
@@ -1419,6 +1475,7 @@ impl AppContext {
         // of this operation they must not be told succeeded.
         crate::wallet_backend::IdentityKeyView::new(&self.secret_store, id)
             .delete_all(vault_keys)?;
+        self.clear_vault_cleanup_manifest(&kv, &id)?;
         // Mirror the removal into the wallet store's unowned scope, so a
         // deleted node does not linger there. Best-effort, and a no-op for a
         // wallet-owned identity, which is never registered unowned.
@@ -1531,6 +1588,53 @@ impl AppContext {
         Ok(decode_stored_identity(&stored.qi_bytes, self.network)?
             .private_keys
             .keys_set())
+    }
+
+    /// The full vault-key delete set for `id`: freshly-derived placements
+    /// from the still-live blob (empty once it is gone), unioned with any
+    /// manifest left behind by an earlier failed delete. The union — never a
+    /// choice of one source over the other — means a placement discovered
+    /// by either source is never dropped, whether this is a first attempt
+    /// (manifest empty, blob live) or a retry after the blob was already
+    /// purged (blob empty, manifest live).
+    fn pending_vault_key_placements(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
+        let mut keys = self.identity_vault_key_placements(kv, id)?;
+        let manifest: Vec<(StoredPrivateKeyTarget, KeyID)> = kv
+            .get(DetScope::Global, &vault_cleanup_pending_key(id))
+            .map_err(identity_err)?
+            .unwrap_or_default();
+        keys.extend(manifest.into_iter().map(|(t, k)| (t.into(), k)));
+        Ok(keys)
+    }
+
+    /// Persist `keys` as the durable vault-cleanup manifest for `id`, so a
+    /// failure anywhere between this call and [`Self::clear_vault_cleanup_manifest`]
+    /// leaves a record a retry can recover from.
+    fn persist_vault_cleanup_manifest(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+        keys: &std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>,
+    ) -> std::result::Result<(), TaskError> {
+        let stored: Vec<(StoredPrivateKeyTarget, KeyID)> =
+            keys.iter().cloned().map(|(t, k)| (t.into(), k)).collect();
+        kv.put(DetScope::Global, &vault_cleanup_pending_key(id), &stored)
+            .map_err(identity_err)
+    }
+
+    /// Drop `id`'s vault-cleanup manifest. Called only once every listed key
+    /// is confirmed absent from the vault — never speculatively.
+    fn clear_vault_cleanup_manifest(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<(), TaskError> {
+        kv.delete(DetScope::Global, &vault_cleanup_pending_key(id))
+            .map_err(identity_err)
     }
 
     /// Delete every identity-key raw secret for `id` from the vault.
@@ -3005,6 +3109,79 @@ mod tests {
                 .expect("read the index")
                 .contains(&staged.id.to_buffer()),
             "the identity must be unlisted after a completed delete"
+        );
+    }
+
+    /// `purge_identity_scope` is not atomic: it can fail on its own last step
+    /// (pruning the scheduled-vote voter index) after its first step has
+    /// already deleted `IDENTITY_KEY` — the blob `identity_vault_key_placements`
+    /// needs to re-derive a delete set. Without a durable manifest, a retry
+    /// after such a failure would read an empty placement set from the (now
+    /// gone) blob and report success while every vault key stays orphaned.
+    /// The manifest persisted before the first mutation must survive that
+    /// failure and let a retry still find and delete every key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retry_after_purge_partially_fails_still_recovers_every_key() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0xEE; 32];
+        const LOW: [u8; 32] = [0xFF; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+
+        // Break the Global scheduled-vote voter index so `purge_identity_scope`
+        // fails at its LAST step (`delete_scheduled_votes_for_voter` ->
+        // `remove_vote_voter_from_index`) — strictly after `IDENTITY_KEY` (the
+        // blob) and `TOP_UPS_KEY` are already gone.
+        kv.put(
+            DetScope::Global,
+            SCHEDULED_VOTE_VOTERS_KEY,
+            &"not a voter index".to_string(),
+        )
+        .expect("corrupt the scheduled-vote voter index");
+
+        let error = staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect_err("a corrupt voter index must fail the delete");
+        assert!(
+            !matches!(error, TaskError::WalletStorageNotReady),
+            "the delete must reach purge_identity_scope, not stop at the migration guard: {error:?}"
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "purge_identity_scope's first delete must already have removed the blob \
+             before its own later step failed"
+        );
+
+        // Repair the index so the retry can actually complete.
+        kv.delete(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
+            .expect("repair the voter index");
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("the retry must complete now that the index is repaired");
+
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} must not be stranded: the manifest from the failed \
+                 attempt must have survived to inform the retry"
+            );
+        }
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&staged.id.to_buffer())
+            )
+            .expect("read the manifest slot")
+            .is_none(),
+            "the manifest must be cleared once every key is confirmed deleted"
         );
     }
 }

@@ -2498,6 +2498,21 @@ impl WalletBackend {
             .clone()
     }
 
+    /// Confirmation state of `txid` across every loaded wallet's history, or
+    /// `None` when none of them has seen the transaction.
+    ///
+    /// Answers "did that payment land?" for a transaction whose broadcast
+    /// outcome was ambiguous. Reads the same published history the wallet
+    /// screen renders, so the answer can never contradict the row the user is
+    /// looking at. Linear in the combined history length — for the occasional
+    /// pending-confirmation watch, not a per-frame read.
+    pub fn transaction_confirmation(
+        &self,
+        txid: &dash_sdk::dpp::dashcore::Txid,
+    ) -> Option<crate::model::wallet::TransactionConfirmation> {
+        self.inner.snapshots.transaction_confirmation_any(txid)
+    }
+
     /// Startup hydration status for the display-only transaction history.
     pub fn transaction_history_status(
         &self,

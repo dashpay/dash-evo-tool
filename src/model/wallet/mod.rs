@@ -648,6 +648,19 @@ impl std::fmt::Display for TransactionStatus {
     }
 }
 
+/// A transaction's confirmation state, as published in the display snapshot.
+///
+/// Pairs the lifecycle [`TransactionStatus`] with the block height that backs
+/// it so a caller can tell a genuinely mined transaction from one merely
+/// reported at a mined tier: only a mined record carries a height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionConfirmation {
+    /// Highest lifecycle status observed for the transaction.
+    pub status: TransactionStatus,
+    /// Height of the block containing it; `None` until it is mined.
+    pub height: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalletTransaction {
     pub txid: Txid,
@@ -669,6 +682,14 @@ impl WalletTransaction {
 
     pub fn is_outgoing(&self) -> bool {
         self.net_amount < 0
+    }
+
+    /// This transaction's confirmation state for the snapshot readers.
+    pub fn confirmation(&self) -> TransactionConfirmation {
+        TransactionConfirmation {
+            status: self.status,
+            height: self.height,
+        }
     }
 
     pub fn is_confirmed(&self) -> bool {

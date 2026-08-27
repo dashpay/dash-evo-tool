@@ -60,7 +60,9 @@ use platform_wallet::PlatformWallet;
 use super::payments::ProbeDeadline;
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::DetectedIncomingOutput;
-use crate::model::wallet::{TransactionStatus, WalletSeedHash, WalletTransaction};
+use crate::model::wallet::{
+    TransactionConfirmation, TransactionStatus, WalletSeedHash, WalletTransaction,
+};
 
 /// Upstream `WalletId` (`SHA256(root_xpub || root_chain_code)`), distinct from
 /// DET's `WalletSeedHash`. Mirrors the alias in [`super`].
@@ -763,6 +765,30 @@ impl SnapshotStore {
         {
             tx.status = TransactionStatus::InstantSendLocked;
         }
+    }
+
+    /// Confirmation state of `txid` in any registered wallet's published
+    /// display snapshot, or `None` when no wallet has seen it.
+    ///
+    /// The same data the transaction-history row renders, so a caller watching
+    /// this can never disagree with what the user is looking at. Lock-free
+    /// (reads the `ArcSwap`ped snapshots, not `tx_log`) but linear in the
+    /// combined history length — meant for the rare pending-confirmation
+    /// watch, not a per-frame hot path.
+    ///
+    /// A transaction paying one of this app's own wallets appears in both
+    /// histories, so the strongest status wins.
+    pub(super) fn transaction_confirmation_any(
+        &self,
+        txid: &Txid,
+    ) -> Option<TransactionConfirmation> {
+        self.snapshots
+            .load()
+            .values()
+            .flat_map(|snapshot| snapshot.transactions.iter())
+            .filter(|tx| tx.txid == *txid)
+            .map(WalletTransaction::confirmation)
+            .max_by_key(|confirmation| confirmation.status)
     }
 
     /// Read a single tracked record's current status. Test-only seam for
@@ -1850,6 +1876,111 @@ mod tests {
         publish_tx_only(&store, seed(6), wid(6));
 
         assert_eq!(store.snapshot(&seed(6)).transactions.len(), 1);
+    }
+
+    /// A transaction nobody has seen must not be reported at any tier. The
+    /// pending-confirmation watch turns this answer into a funds message, so
+    /// an optimistic default here would confirm a payment that never went out.
+    #[test]
+    fn transaction_confirmation_any_is_none_for_an_unseen_txid() {
+        let store = SnapshotStore::new();
+        store.accumulate_transactions(&wid(20), [&record(1, 100)]);
+        publish_tx_only(&store, seed(20), wid(20));
+
+        assert_eq!(
+            store.transaction_confirmation_any(&Txid::all_zeros()),
+            None,
+        );
+    }
+
+    /// dash-spv injects a broadcast transaction into its own mempool before any
+    /// peer verdict, so a mempool-only record proves only that this app tried
+    /// to send it. It must read back as `Unconfirmed`, height-less.
+    #[test]
+    fn transaction_confirmation_any_reports_a_mempool_record_as_unconfirmed() {
+        let store = SnapshotStore::new();
+        let rec = record(1, 100);
+        store.accumulate_transactions(&wid(21), [&rec]);
+        publish_tx_only(&store, seed(21), wid(21));
+
+        assert_eq!(
+            store.transaction_confirmation_any(&rec.txid),
+            Some(TransactionConfirmation {
+                status: TransactionStatus::Unconfirmed,
+                height: None,
+            }),
+        );
+    }
+
+    /// An InstantSend lock is the earliest honest "this landed" signal, and it
+    /// arrives with no block, so the reader must surface it height-less rather
+    /// than withhold it for want of a height.
+    #[test]
+    fn transaction_confirmation_any_surfaces_an_instant_lock_without_a_height() {
+        let store = SnapshotStore::new();
+        let rec = record(2, 100);
+        store.accumulate_transactions(&wid(22), [&rec]);
+        store.mark_instant_locked(&wid(22), rec.txid);
+        publish_tx_only(&store, seed(22), wid(22));
+
+        assert_eq!(
+            store.transaction_confirmation_any(&rec.txid),
+            Some(TransactionConfirmation {
+                status: TransactionStatus::InstantSendLocked,
+                height: None,
+            }),
+        );
+    }
+
+    /// A mined record carries the height that backs its status — the evidence
+    /// a caller needs to tell a real block from a mis-tiered mempool record.
+    #[test]
+    fn transaction_confirmation_any_carries_the_height_of_a_mined_record() {
+        let store = SnapshotStore::new();
+        let mut rec = record(3, 100);
+        rec.context = TransactionContext::InBlock(BlockInfo::new(
+            77,
+            BlockHash::from_byte_array([0u8; 32]),
+            123,
+        ));
+        store.accumulate_transactions(&wid(23), [&rec]);
+        publish_tx_only(&store, seed(23), wid(23));
+
+        assert_eq!(
+            store.transaction_confirmation_any(&rec.txid),
+            Some(TransactionConfirmation {
+                status: TransactionStatus::Confirmed,
+                height: Some(77),
+            }),
+        );
+    }
+
+    /// A payment between two wallets this app holds lands in both histories,
+    /// which can advance at different times. The strongest evidence wins, so a
+    /// lagging copy cannot hold back an outcome the other one already has.
+    #[test]
+    fn transaction_confirmation_any_takes_the_strongest_status_across_wallets() {
+        let store = SnapshotStore::new();
+        let pending = record(4, 100);
+        store.accumulate_transactions(&wid(24), [&pending]);
+        publish_tx_only(&store, seed(24), wid(24));
+
+        let mut mined = record(4, -100);
+        mined.context = TransactionContext::InBlock(BlockInfo::new(
+            88,
+            BlockHash::from_byte_array([0u8; 32]),
+            123,
+        ));
+        store.accumulate_transactions(&wid(25), [&mined]);
+        publish_tx_only(&store, seed(25), wid(25));
+
+        assert_eq!(
+            store.transaction_confirmation_any(&pending.txid),
+            Some(TransactionConfirmation {
+                status: TransactionStatus::Confirmed,
+                height: Some(88),
+            }),
+        );
     }
 
     #[test]

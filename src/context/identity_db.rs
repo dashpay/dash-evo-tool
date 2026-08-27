@@ -2427,14 +2427,17 @@ pub(crate) mod test_staging {
 mod tests {
     use super::test_staging::*;
     use super::*;
-    use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, StallingReadKv};
+    use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, RendezvousKv};
     use DetKv;
     use std::sync::Arc;
 
-    /// A [`DetKv`] that stalls after every read, turning any unserialized
-    /// read-modify-write into a reproducible lost update.
-    fn stalling_kv() -> DetKv {
-        DetKv::from_store(Arc::new(StallingReadKv::default()))
+    /// A store whose reads can be held until every racing reader has
+    /// snapshotted, plus the [`DetKv`] over it. Arm it once the test's
+    /// setup writes are done; until then reads pass straight through.
+    fn rendezvous_kv() -> (Arc<RendezvousKv>, DetKv) {
+        let store = Arc::new(RendezvousKv::default());
+        let kv = DetKv::from_store(store.clone());
+        (store, kv)
     }
 
     fn empty_kv() -> DetKv {
@@ -2564,9 +2567,14 @@ mod tests {
     /// race — and the entry that loses it belongs to an identity that is
     /// live, listed everywhere else, and about to lose its private keys on
     /// the next boot. Every mutation of the key must be serialized.
+    ///
+    /// The rendezvous store makes that failure certain rather than likely:
+    /// both adds are released only once both hold the pre-add roster, so
+    /// unserialized code loses an entry on every run, on every runner.
     #[test]
     fn concurrently_listing_two_identities_keeps_both_on_the_roster() {
-        let kv = stalling_kv();
+        let (store, kv) = rendezvous_kv();
+        store.arm(2);
 
         std::thread::scope(|scope| {
             scope.spawn(|| index_add_identity(&kv, &id(1)).expect("list the re-imported identity"));
@@ -2589,9 +2597,12 @@ mod tests {
     /// of the two writes survives unless they are serialized.
     #[test]
     fn a_concurrent_listing_and_delisting_both_take_effect() {
-        let kv = stalling_kv();
+        let (store, kv) = rendezvous_kv();
         index_add_identity(&kv, &id(1)).unwrap();
         index_add_identity(&kv, &id(2)).unwrap();
+        // Armed only now: the two seeding writes above are sequential and
+        // would each wait out the timeout for a peer that never comes.
+        store.arm(2);
 
         std::thread::scope(|scope| {
             scope

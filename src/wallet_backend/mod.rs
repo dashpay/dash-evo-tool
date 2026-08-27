@@ -2923,6 +2923,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         // reconcile rather than follow the generic envelope's retry advice.
         other @ P::TransactionBroadcastUnconfirmed(_) => {
             TaskError::TransactionConfirmationUnknown {
+                // Upstream assembles and broadcasts the funding transaction
+                // internally and returns no id, so this outcome cannot be
+                // watched for a late confirmation.
+                txid: None,
                 source: Box::new(other),
             }
         }
@@ -3046,6 +3050,9 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
             source: Box::new(e),
         },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
             source: Box::new(e),
         },
         // Registration creates the identity, so it cannot legitimately raise a
@@ -3089,6 +3096,9 @@ fn map_identity_top_up_error(
             source: Box::new(e),
         },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
             source: Box::new(e),
         },
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
@@ -3158,6 +3168,9 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
             source: Box::new(e),
         },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
             source: Box::new(e),
         },
         // Platform-address funding does not consult the identity manager, so a
@@ -4211,6 +4224,8 @@ mod tests {
             map_identity_top_up_error(identity_id, broadcast_unconfirmed()),
             map_platform_address_fund_error(broadcast_unconfirmed()),
             map_shielded_op_error(broadcast_unconfirmed()),
+            // The payment and asset-lock-creation façades share this one.
+            super::payments::map_core_broadcast_error(None, broadcast_unconfirmed()),
         ];
         for error in mapped {
             assert!(

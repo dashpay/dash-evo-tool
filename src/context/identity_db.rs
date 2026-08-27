@@ -1511,11 +1511,21 @@ impl AppContext {
     /// call that method again for it — the manifest, and this sweep, are the
     /// only surviving path back to the orphaned vault keys.
     ///
-    /// Resumes a manifest only while its identity is absent from that index.
-    /// A manifest whose identity is still listed belongs to a removal that
-    /// never reached the irreversible step: the identity is live and the user
-    /// keeps a working retry, so deleting its keys here would strand exactly
-    /// the identity this ordering exists to protect.
+    /// Resumes a manifest only while its identity is absent from that index,
+    /// re-checked fresh under that identity's record lock (see below) rather
+    /// than from one snapshot read before the loop — a snapshot would miss a
+    /// concurrent re-import that lists the identity again mid-sweep. A
+    /// manifest whose identity is listed belongs to a removal that never
+    /// reached the irreversible step, or to an identity re-imported since:
+    /// either way the identity is live and the user keeps a working retry, so
+    /// deleting its keys here would strand exactly the identity this ordering
+    /// exists to protect.
+    ///
+    /// Also re-runs `purge_identity_scope` before deleting vault keys: the
+    /// manifest is persisted one step *before* that purge, so a crash between
+    /// the two leaves it incomplete, and every one of its steps is a delete-
+    /// if-present or list-then-conditional-prune, so re-running it against an
+    /// already-purged scope is a safe no-op.
     ///
     /// Best-effort and idempotent, like every other boot reconcile
     /// ([`super::wallet_lifecycle::bootstrap`]'s unowned-identity pass): a
@@ -1542,25 +1552,36 @@ impl AppContext {
                 return;
             }
         };
-        // The manifest is persisted one step *before* `index_remove_identity`,
-        // so its presence alone does not mean the removal ever happened. An
-        // unreadable index cannot prove any identity is gone, so resume nothing
-        // rather than guess.
-        let listed = match load_identity_index(&kv) {
-            Ok(listed) => listed,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "Pending vault-cleanup sweep skipped; the identity index is unreadable, will retry at next boot"
-                );
-                return;
-            }
-        };
         let mut resumed = 0usize;
         for key in keys {
             let Some(id) = parse_vault_cleanup_pending_key(&key) else {
                 tracing::warn!(%key, "Skipping an unparsable vault-cleanup manifest key");
                 continue;
+            };
+            // Held through the roster re-check, the purge, the vault delete,
+            // and the manifest clear — the same lock `insert_local_qualified_identity`
+            // takes before ever touching this identity's k/v, so a concurrent
+            // re-import cannot land between the "still listed?" check below
+            // and this sweep's own writes.
+            let lock = self.identity_record_lock(Identifier::from(id));
+            let _record_guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // The manifest is persisted one step *before* `index_remove_identity`,
+            // so its presence alone does not mean the removal ever happened. An
+            // unreadable index cannot prove any identity is gone, so resume nothing
+            // rather than guess. Read fresh, under the lock, on every iteration —
+            // never hoisted above the loop — so a re-import that lands between
+            // manifests is always seen.
+            let listed = match load_identity_index(&kv) {
+                Ok(listed) => listed,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Pending vault-cleanup sweep skipped; the identity index is unreadable, will retry at next boot"
+                    );
+                    return;
+                }
             };
             if listed.contains(&id) {
                 tracing::debug!(
@@ -1583,6 +1604,14 @@ impl AppContext {
                         continue;
                     }
                 };
+            if let Err(error) = purge_identity_scope(&kv, &id) {
+                tracing::warn!(
+                    identity = %Identifier::from(id),
+                    %error,
+                    "Pending vault-cleanup deferred; scope purge incomplete, will retry at next boot"
+                );
+                continue;
+            }
             let vault_keys = placements
                 .into_iter()
                 .map(|(target, key_id)| (target.into(), key_id));
@@ -3320,31 +3349,49 @@ mod tests {
 
         let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
         let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
 
-        kv.put(
-            DetScope::Global,
-            SCHEDULED_VOTE_VOTERS_KEY,
-            &"not a voter index".to_string(),
-        )
-        .expect("corrupt the scheduled-vote voter index");
-
+        // Simulate a crash between the manifest write and `purge_identity_scope`
+        // ever starting — the manifest is durable and the identity is already
+        // off the roster, but its blob, top-up history, and a scheduled vote
+        // are all still sitting untouched in Identity scope. Built directly
+        // (not via a failing `delete_local_qualified_identity` call) because
+        // `purge_identity_scope`'s first two steps are unconditional deletes
+        // that cannot be made to fail independently of its last step — going
+        // through the real call would always leave the blob and top-ups
+        // already gone, proving nothing about whether the sweep re-purges.
+        let vault_keys = staged
+            .ctx
+            .identity_vault_key_placements(&kv, &id_buf)
+            .expect("read the live placements before removing from the index");
         staged
             .ctx
-            .delete_local_qualified_identity(&staged.id)
-            .expect_err("purge_identity_scope's last step must fail");
-
-        // The point of no return for any UI-driven retry: the identity is
-        // already gone from the roster the Hub reads.
-        assert!(
-            !load_identity_index(&kv)
-                .expect("read the index")
-                .contains(&staged.id.to_buffer()),
-            "index_remove_identity must have already run before the failure"
-        );
+            .persist_vault_cleanup_manifest(&kv, &id_buf, &vault_keys)
+            .expect("persist the manifest");
+        index_remove_identity(&kv, &id_buf).expect("remove from the roster");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            TOP_UPS_KEY,
+            &std::collections::BTreeMap::from([(0u32, 5u64)]),
+        )
+        .expect("stage a top-up entry purge_identity_scope never reached");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            &scheduled_vote_key("alice"),
+            &StoredScheduledVote {
+                voter_id: id_buf,
+                contested_name: "alice".to_string(),
+                choice: StoredVoteChoice::Lock,
+                unix_timestamp: 0,
+                executed_successfully: false,
+            },
+        )
+        .expect("stage a scheduled vote purge_identity_scope never reached");
+        index_add_vote_voter(&kv, &id_buf).expect("add to the voter index");
 
         staged.ctx.resume_pending_vault_cleanups();
 
-        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        let view = IdentityKeyView::new(&staged.store, id_buf);
         for key_id in [1, 2] {
             assert!(
                 view.get(&MAIN, key_id).unwrap().is_none(),
@@ -3352,9 +3399,38 @@ mod tests {
             );
         }
         assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "the sweep's purge_identity_scope re-run must leave the blob gone"
+        );
+        assert!(
+            kv.get::<std::collections::BTreeMap<u32, u64>>(
+                DetScope::Identity(&id_buf),
+                TOP_UPS_KEY
+            )
+            .expect("read top-ups")
+            .is_none(),
+            "the sweep must drain the top-up history left behind by the interrupted purge"
+        );
+        assert!(
+            kv.list(DetScope::Identity(&id_buf), Some(SCHEDULED_VOTE_KEY_PREFIX))
+                .expect("list scheduled votes")
+                .is_empty(),
+            "the sweep must drain any scheduled votes left behind by the interrupted purge"
+        );
+        assert!(
+            load_scheduled_vote_voters(&kv)
+                .expect("read the voter index")
+                .is_empty(),
+            "the sweep must prune this voter from the Global scheduled-vote index"
+        );
+        assert!(
             kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
                 DetScope::Global,
-                &vault_cleanup_pending_key(&staged.id.to_buffer())
+                &vault_cleanup_pending_key(&id_buf)
             )
             .expect("read the manifest slot")
             .is_none(),
@@ -3434,6 +3510,94 @@ mod tests {
             .is_some(),
             "the manifest must be retained: its keys are not confirmed absent, so \
              clearing it here would discard the delete set a retry still needs"
+        );
+    }
+
+    /// The sweep's "still listed?" check and a concurrent re-import's write
+    /// both touch this identity's roster entry and vault keys; without a
+    /// shared lock the two could interleave so the sweep deletes keys a
+    /// re-import just wrote for a live identity. `identity_record_lock` — the
+    /// same lock [`AppContext::insert_local_qualified_identity`] takes before
+    /// touching this identity's k/v — must serialize the two: whichever one
+    /// the sweep observes after acquiring it is the ground truth, so a
+    /// re-import that lands first must be honored, never overwritten.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resume_pending_vault_cleanups_is_serialized_against_a_concurrent_reimport() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x55; 32];
+        const LOW: [u8; 32] = [0x66; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        // Leave a manifest behind for an unlisted identity — the sweep's
+        // normal entry condition — via the same crash simulation as above:
+        // the index write landed, but `purge_identity_scope` never got the
+        // chance to run.
+        let vault_keys = staged
+            .ctx
+            .identity_vault_key_placements(&kv, &id_buf)
+            .expect("read the live placements before removing from the index");
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id_buf, &vault_keys)
+            .expect("persist the manifest");
+        index_remove_identity(&kv, &id_buf).expect("remove from the roster");
+
+        // Hold this identity's own record lock ourselves, simulating a
+        // concurrent `insert_local_qualified_identity` re-import already in
+        // flight when the boot sweep starts.
+        let lock = staged.ctx.identity_record_lock(staged.id);
+        let guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let sweep_ctx = Arc::clone(&staged.ctx);
+        let sweep = std::thread::spawn(move || {
+            sweep_ctx.resume_pending_vault_cleanups();
+            let _ = done_tx.send(());
+        });
+
+        // While we hold the identity's record lock, the sweep must not be
+        // able to finish at all — proving it genuinely blocks on the same
+        // lock rather than racing straight through. 300ms is generous
+        // headroom over how long an unblocked sweep of one manifest takes
+        // (sub-millisecond), so this bound is not a source of flakiness.
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the sweep must block on this identity's record lock while a \
+             re-import holds it, not race ahead and delete its keys"
+        );
+
+        // The re-import completes: re-list the identity, then release the
+        // lock — mirroring `insert_local_qualified_identity`'s own order of
+        // operations under the same guard.
+        index_add_identity(&kv, &id_buf).expect("re-list the identity");
+        drop(guard);
+
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the sweep must proceed and finish once the lock is released");
+        sweep.join().expect("sweep thread must not panic");
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_some(),
+                "key {key_id} belongs to an identity the lock-holder re-listed \
+                 before releasing; the sweep must see that fresh state — read \
+                 after it acquires the lock, not before — and skip deleting it"
+            );
+        }
+        assert!(
+            load_identity_index(&kv)
+                .expect("read the index")
+                .contains(&id_buf),
+            "the re-import must have won: the identity is listed again"
         );
     }
 }

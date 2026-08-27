@@ -852,6 +852,13 @@ enum PendingStep {
 /// signal on the wire, so an invalid transaction and a slow one are
 /// indistinguishable; a synthesised "failed" would eventually tell someone
 /// their money is safe to send again when it is not.
+///
+/// TODO(R-1, docs/gui-testing/scenarios/pending-broadcast-auto-reconcile.md):
+/// unverified in this environment — no funded testnet wallet available.
+/// `network_took_transaction`'s `height.is_some()` guard is the code-side
+/// mitigation for a locally-injected transaction reaching `Confirmed` without
+/// a real network verdict; that guard itself needs a live-network run before
+/// this PR leaves draft. Also closes R-4 (no-change-output send shape).
 fn pending_step(
     confirmation: Option<TransactionConfirmation>,
     elapsed: Duration,

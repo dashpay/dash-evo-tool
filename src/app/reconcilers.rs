@@ -924,10 +924,6 @@ impl PendingConfirmation {
     /// the banner itself so a later eviction can be undone. A handle that is
     /// somehow already dead leaves the last known copy in place rather than
     /// erasing the only means of restoring the message.
-    /// Take over the shared ambiguous-outcome banner, recording its copy from
-    /// the banner itself so a later eviction can be undone. A handle that is
-    /// somehow already dead leaves the last known copy in place rather than
-    /// erasing the only means of restoring the message.
     fn adopt_ambiguous(&mut self, banner: BannerHandle) {
         if let Some(text) = banner.text() {
             self.ambiguous_text = Some(text);

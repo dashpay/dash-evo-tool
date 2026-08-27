@@ -37,9 +37,39 @@ pub const IDENTITY_REMOVED_CLEANUP_PENDING: &str = "The identity was removed fro
 /// stay, and this is what tells them the remaining entry is not a mistake.
 pub const IDENTITY_REMOVED_VOTER_LEFT: &str = "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.";
 
+/// Shown when both leftover outcomes above apply at once: the associated
+/// voter identity failed to remove *and* at least one of the two identities
+/// this call touched still has private keys on this device pending cleanup.
+/// A single-outcome banner would silently drop one of the two — the voter
+/// identity looking like a clean failure with nothing else wrong, or the key
+/// residue going unmentioned entirely — so this names both.
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed — retry after restarting the app. Also, private keys for at least one of them are still stored on this device; they will be cleared automatically the next time you open the app.";
+
 /// Shown when a removal is refused because the storage update is still running.
 pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
     "The storage update is still running. Wait for it to finish before removing an identity.";
+
+/// Which banner to show for a `BackendTaskSuccessResult::RemovedIdentities`
+/// result, and how urgently. Shared by the Identity Hub and the legacy
+/// identities screen so the two, which handle the same result type, don't
+/// carry two independently-maintained copies of this 4-way decision — the
+/// combined-flags case in particular is easy to get wrong by handling each
+/// flag in isolation (see the `both` test case below).
+pub fn removed_identities_banner(
+    associated_cleanup_failed: bool,
+    cleanup_deferred: bool,
+) -> (&'static str, crate::ui::MessageType) {
+    use crate::ui::MessageType;
+    match (associated_cleanup_failed, cleanup_deferred) {
+        (true, true) => (
+            IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING,
+            MessageType::Warning,
+        ),
+        (true, false) => (IDENTITY_REMOVED_VOTER_LEFT, MessageType::Warning),
+        (false, true) => (IDENTITY_REMOVED_CLEANUP_PENDING, MessageType::Warning),
+        (false, false) => (IDENTITY_REMOVED, MessageType::Success),
+    }
+}
 
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
@@ -118,6 +148,42 @@ pub fn get_selected_wallet(
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::*;
+    use crate::ui::MessageType;
+
+    /// The one case a naive if/else-if chain gets wrong: when the associated
+    /// voter identity's cleanup failed *and* the primary or voter's own
+    /// vault-key delete is separately still pending, both must surface —
+    /// picking only the voter-failure message silently drops the still-live
+    /// private key residue, and picking only the cleanup-pending message
+    /// silently drops the unretryable voter failure.
+    #[test]
+    fn removed_identities_banner_names_both_outcomes_when_both_apply() {
+        let (message, message_type) = removed_identities_banner(true, true);
+        assert_eq!(message, IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING);
+        assert!(
+            message.contains("voter identity") && message.contains("private keys"),
+            "the combined message must name both the voter failure and the key residue"
+        );
+        assert_eq!(message_type, MessageType::Warning);
+    }
+
+    #[test]
+    fn removed_identities_banner_covers_every_single_flag_combination() {
+        assert_eq!(
+            removed_identities_banner(true, false),
+            (IDENTITY_REMOVED_VOTER_LEFT, MessageType::Warning)
+        );
+        assert_eq!(
+            removed_identities_banner(false, true),
+            (IDENTITY_REMOVED_CLEANUP_PENDING, MessageType::Warning)
+        );
+        assert_eq!(
+            removed_identities_banner(false, false),
+            (IDENTITY_REMOVED, MessageType::Success)
+        );
+    }
+
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -125,7 +191,6 @@ mod tests {
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
-    use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::{
         KeyStorage, PrivateKeyData, WalletDerivationPath,
     };

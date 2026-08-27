@@ -12,6 +12,7 @@ use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, isla
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::identities::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -19,10 +20,6 @@ use crate::ui::identities::register_dpns_name_screen::{
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
-use crate::ui::identities::{
-    IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE, IDENTITY_REMOVED, IDENTITY_REMOVED_CLEANUP_PENDING,
-    IDENTITY_REMOVED_VOTER_LEFT,
-};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::wallet_backend::poison::MutexRecover;
@@ -1146,26 +1143,14 @@ impl ScreenLike for IdentitiesScreen {
                     identities.shift_remove(&identity_id);
                 }
                 drop(identities);
-                if associated_cleanup_failed {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        IDENTITY_REMOVED_VOTER_LEFT,
-                        MessageType::Warning,
-                    )
-                    .disable_auto_dismiss();
-                } else if cleanup_deferred {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        IDENTITY_REMOVED_CLEANUP_PENDING,
-                        MessageType::Warning,
-                    )
-                    .disable_auto_dismiss();
-                } else {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        IDENTITY_REMOVED,
-                        MessageType::Success,
-                    );
+                let (message, message_type) = crate::ui::identities::removed_identities_banner(
+                    associated_cleanup_failed,
+                    cleanup_deferred,
+                );
+                let handle =
+                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
+                if message_type == MessageType::Warning {
+                    handle.disable_auto_dismiss();
                 }
             }
             _ => {}

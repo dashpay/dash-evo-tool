@@ -20,9 +20,6 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
-use crate::ui::identities::{
-    IDENTITY_REMOVED, IDENTITY_REMOVED_CLEANUP_PENDING, IDENTITY_REMOVED_VOTER_LEFT,
-};
 use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -604,26 +601,14 @@ impl ScreenLike for IdentityHubScreen {
                     self.reset_contacts_for_identity_change();
                     self.profile_cache.reset();
                 }
-                if *associated_cleanup_failed {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        IDENTITY_REMOVED_VOTER_LEFT,
-                        MessageType::Warning,
-                    )
-                    .disable_auto_dismiss();
-                } else if *cleanup_deferred {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        IDENTITY_REMOVED_CLEANUP_PENDING,
-                        MessageType::Warning,
-                    )
-                    .disable_auto_dismiss();
-                } else {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        IDENTITY_REMOVED,
-                        MessageType::Success,
-                    );
+                let (message, message_type) = crate::ui::identities::removed_identities_banner(
+                    *associated_cleanup_failed,
+                    *cleanup_deferred,
+                );
+                let handle =
+                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
+                if message_type == MessageType::Warning {
+                    handle.disable_auto_dismiss();
                 }
             }
             _ => {}

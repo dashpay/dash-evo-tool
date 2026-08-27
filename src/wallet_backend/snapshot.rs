@@ -1887,10 +1887,7 @@ mod tests {
         store.accumulate_transactions(&wid(20), [&record(1, 100)]);
         publish_tx_only(&store, seed(20), wid(20));
 
-        assert_eq!(
-            store.transaction_confirmation_any(&Txid::all_zeros()),
-            None,
-        );
+        assert_eq!(store.transaction_confirmation_any(&Txid::all_zeros()), None,);
     }
 
     /// dash-spv injects a broadcast transaction into its own mempool before any

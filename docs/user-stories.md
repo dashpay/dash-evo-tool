@@ -467,6 +467,17 @@ As a user, I want "Max" (and the amount check behind it) to reflect what my Core
 - Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
 - The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
 
+### SND-018: A payment with an unverified outcome resolves itself [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want a payment whose confirmation could not be verified to tell me its real outcome on its own, so that I do not have to work out by hand whether my money moved.
+
+- Covers sending DASH from a Core wallet, including sending to a DashPay contact. Identity registration, identity top-up, Platform-address funding, and the shielded flows keep the plain wait-and-check message — the transaction that funds them is sent inside the wallet stack, which reports no identifier to watch.
+- Once the network takes the payment — an InstantSend lock, or a block containing it — the message is replaced with "Your transaction is confirmed." The watch survives leaving the Send screen.
+- After eleven minutes without a confirmation, the message changes once to point at the wallet's transaction history and to warn that sending again could pay the same person twice. The watch continues, so a later confirmation still replaces it.
+- The app never reports such a payment as failed: the network has no rejection signal, so an invalid payment and a slow one look the same.
+- Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases.
+
 ---
 
 ## Asset Locks (ALK)

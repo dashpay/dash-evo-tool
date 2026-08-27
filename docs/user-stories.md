@@ -473,7 +473,7 @@ As a user, I want "Max" (and the amount check behind it) to reflect what my Core
 As a user, I want a payment whose confirmation could not be verified to tell me its real outcome on its own, so that I do not have to work out by hand whether my money moved.
 
 - Covers sending DASH from a Core wallet, including sending to a DashPay contact. Identity registration, identity top-up, Platform-address funding, and the shielded flows keep the plain wait-and-check message — the transaction that funds them is sent inside the wallet stack, which reports no identifier to watch.
-- Once the network takes the payment — an InstantSend lock, or a block containing it — the message is replaced with "Your transaction is confirmed." The watch survives leaving the Send screen.
+- Once the network takes the payment — an InstantSend lock, or a block containing it — the message is replaced with "Your transaction is confirmed." The watch survives leaving the Send screen, and the confirmation stays on screen until dismissed rather than timing out, so a user who stepped away still finds the answer waiting.
 - After eleven minutes without a confirmation, the message changes once to point at the wallet's transaction history and to warn that sending again could pay the same person twice. The watch continues, so a later confirmation still replaces it.
 - Several payments can be waiting at once. One of them being answered — confirmed, or reaching the eleven-minute mark — leaves every other waiting payment's message exactly as it was, including the plain wait-and-check message shown for the flows that report no identifier to watch.
 - The app never reports such a payment as failed: the network has no rejection signal, so an invalid payment and a slow one look the same.

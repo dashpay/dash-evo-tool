@@ -105,7 +105,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the app used to tell you to wait and check your balance, and then never
   mention it again — leaving you to work out by hand whether the payment
   actually went. It now keeps watching that payment and, the moment the network
-  takes it, replaces the message with "Your transaction is confirmed." If it is
+  takes it, replaces the message with "Your transaction is confirmed." That
+  confirmation waits for you instead of timing out, so stepping away while a
+  payment is in the air no longer means returning to a blank screen with the
+  answer already expired. If it is
   still unconfirmed after eleven minutes, the message changes once to point you
   at the wallet's transaction history and to warn against sending again in the
   meantime; the watch carries on, so a late confirmation still resolves it. The

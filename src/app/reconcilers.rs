@@ -842,6 +842,13 @@ pub(super) struct PendingConfirmation {
     unwatchable: bool,
     /// The shared stale banner, raised while any claim needs it.
     stale: Option<BannerHandle>,
+    /// The shared confirmation banner, held for the same reason the question
+    /// it answers is: this feature exists because the user walked away, so
+    /// the answer has to still be on screen when they come back. Raised
+    /// without auto-dismiss — a default `Success` banner retires itself after
+    /// five seconds, which would take the answer away moments after
+    /// [`Self::sync_banners`] retired the question, leaving nothing at all.
+    confirmed: Option<BannerHandle>,
     /// Whether a watch was retired at [`MAX_PENDING_WATCHES`]. The watch is
     /// gone but its stale advice stays — the transaction is still out there.
     retired: bool,
@@ -858,6 +865,7 @@ impl PendingConfirmation {
             ambiguous_text: None,
             unwatchable: false,
             stale: None,
+            confirmed: None,
             retired: false,
             last_poll: None,
         }
@@ -940,6 +948,9 @@ impl PendingConfirmation {
         self.ambiguous.take_and_clear();
         self.ambiguous_text = None;
         self.stale.take_and_clear();
+        // The confirmation names a payment on the network being left, so it
+        // would be read against the wrong wallet's history if it stayed.
+        self.confirmed.take_and_clear();
     }
 
     /// Re-read the snapshot for every open watch, at most once per
@@ -999,7 +1010,8 @@ impl PendingConfirmation {
         self.watches = open;
         self.sync_banners(ctx);
         if confirmed {
-            MessageBanner::set_global(ctx, PENDING_CONFIRMED_MESSAGE, MessageType::Success);
+            self.confirmed
+                .raise_persistent(ctx, PENDING_CONFIRMED_MESSAGE, MessageType::Success);
         }
     }
 
@@ -1105,6 +1117,12 @@ mod tests {
     /// The network these tests run their payments on.
     const ACTIVE: Network = Network::Testnet;
 
+    /// The countdown a banner on the default short (five-second) auto-dismiss
+    /// renders in its first second of life. A persistent banner renders no
+    /// countdown at all, so this string's absence is the observable difference
+    /// between a message that will expire and one that will not.
+    const COUNTDOWN_AT_FULL_TERM: &str = "(5s)";
+
     /// Raise a fresh ambiguous-outcome banner, exactly as the generic error arm
     /// in `AppState::update` does.
     fn ambiguous_banner(ctx: &egui::Context) -> BannerHandle {
@@ -1149,6 +1167,47 @@ mod tests {
         assert!(
             reconciler.watched().is_empty(),
             "a resolved watch must stop costing a snapshot scan"
+        );
+    }
+
+    /// The answer must outlast the question. `sync_banners` retires the
+    /// ambiguous warning on the same tick the confirmation goes up, so if the
+    /// confirmation carried the default five-second `Success` timer the user
+    /// would come back to a blank screen — knowing less than before the watch
+    /// existed, with the payment's fate again theirs to work out by hand.
+    ///
+    /// A banner that will expire renders a countdown next to its text; a
+    /// persistent one renders none. Asserting on that annotation pins the
+    /// timer's absence without having to make five seconds pass. The control
+    /// case below fixes the meaning of the check: if the annotation's shape
+    /// ever changes, it fails loudly here rather than passing vacuously.
+    #[test]
+    fn a_confirmation_does_not_expire_while_the_user_is_away() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([2u8; 32]),
+        );
+
+        reconciler.apply(&harness.ctx, |_| mined(1_234));
+        harness.run();
+
+        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness.query_by_label(COUNTDOWN_AT_FULL_TERM).is_none(),
+            "the confirmation must not carry an auto-dismiss timer: the whole \
+             point is that the user is not watching when it arrives",
+        );
+
+        // Control: an ordinary Success banner does show that countdown, so the
+        // assertion above is testing the timer and not a stale label string.
+        MessageBanner::set_global(&harness.ctx, "an ordinary success", MessageType::Success);
+        harness.run();
+        assert!(
+            harness.query_by_label(COUNTDOWN_AT_FULL_TERM).is_some(),
+            "a default Success banner is expected to show its countdown",
         );
     }
 

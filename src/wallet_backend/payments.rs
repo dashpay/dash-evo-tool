@@ -783,9 +783,7 @@ impl WalletBackend {
                         &tx,
                     )
                     .await
-                    .map_err(|source| TaskError::WalletBackend {
-                        source: Arc::new(source),
-                    })?;
+                    .map_err(map_core_broadcast_error)?;
                 Ok(tx.txid())
             })
             .await
@@ -965,11 +963,31 @@ fn unbound_topup_lock_eligible(
     }
 }
 
+/// Classify a broadcast failure from the payment path. Pure — unit-testable.
+///
+/// An ambiguous outcome gets its own [`TaskError::TransactionConfirmationUnknown`]
+/// rather than the generic envelope: the payment may already be on the network,
+/// and upstream deliberately keeps its inputs reserved so it cannot be sent
+/// twice, so telling the user to retry would be both wrong and unactionable.
+/// Every definitive failure keeps the generic envelope.
+fn map_core_broadcast_error(source: platform_wallet::error::PlatformWalletError) -> TaskError {
+    match source {
+        platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(_) => {
+            TaskError::TransactionConfirmationUnknown {
+                source: Box::new(source),
+            }
+        }
+        other => TaskError::WalletBackend {
+            source: Arc::new(other),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ASSET_LOCK_FEE_PER_KB, MAX_MONEY, asset_lock_builder_height,
-        asset_lock_max_amount_from_account, unbound_topup_lock_eligible,
+        asset_lock_max_amount_from_account, map_core_broadcast_error, unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
     use crate::model::fee_estimation::core_max_send_amount_duffs;
@@ -1544,6 +1562,38 @@ mod tests {
         assert!(
             matches!(err, TaskError::AssetLockAlreadyUsed),
             "expected AssetLockAlreadyUsed, got: {err:?}"
+        );
+    }
+
+    /// A send whose broadcast outcome is ambiguous must not be reported with
+    /// the generic wallet-backend message, which tells the user to retry: the
+    /// payment may already be on the network, and upstream keeps its inputs
+    /// reserved so it must not be sent a second time.
+    #[test]
+    fn an_ambiguous_broadcast_does_not_ask_the_user_to_retry() {
+        let err = map_core_broadcast_error(
+            platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(
+                "peer timed out after send".to_string(),
+            ),
+        );
+        assert!(
+            matches!(err, TaskError::TransactionConfirmationUnknown { .. }),
+            "expected TransactionConfirmationUnknown, got: {err:?}"
+        );
+    }
+
+    /// An unambiguous broadcast rejection keeps the generic envelope — the
+    /// carve-out above must not swallow the ordinary failure path.
+    #[test]
+    fn a_definitive_broadcast_rejection_keeps_the_generic_envelope() {
+        let err = map_core_broadcast_error(
+            platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+                "rejected by peer".to_string(),
+            ),
+        );
+        assert!(
+            matches!(err, TaskError::WalletBackend { .. }),
+            "expected WalletBackend, got: {err:?}"
         );
     }
 }

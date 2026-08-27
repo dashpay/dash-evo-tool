@@ -221,6 +221,23 @@ pub enum TaskError {
         source: std::sync::Arc<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// A core transaction broadcast returned an ambiguous outcome — the
+    /// transaction may already be on the network. Carved out of
+    /// [`Self::WalletBackend`], whose "please retry" advice would invite a
+    /// double-spend here: upstream keeps the spent inputs reserved precisely so
+    /// a re-submission cannot go through, and a sync or the reservation TTL
+    /// reconciles the real outcome.
+    ///
+    /// The shielded siblings are [`Self::ShieldedConfirmationUnknown`] and the
+    /// per-operation `*ConfirmationUnknown` variants.
+    #[error(
+        "Your transaction was sent but the confirmation could not be verified. Wait a moment, then refresh your balance before sending it again."
+    )]
+    TransactionConfirmationUnknown {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// The wallet could not assemble and sign a payment transaction, for a
     /// reason other than insufficient balance or too many inputs (those get
     /// their own variants below — [`Self::InsufficientFunds`] and
@@ -5467,6 +5484,42 @@ mod tests {
                     "Expected no jargon ({jargon}) in user message, got: {msg}"
                 );
             }
+        }
+    }
+
+    /// The core-transaction sibling of the family above. Its whole reason to
+    /// exist is that `WalletBackend`'s "please retry in a moment" would invite
+    /// a double-spend of a payment that may already be on the network, so the
+    /// message must differ from that envelope's and must route the user to a
+    /// refresh instead of a resend.
+    #[test]
+    fn transaction_confirmation_unknown_message_does_not_advise_retrying() {
+        let msg = TaskError::TransactionConfirmationUnknown {
+            source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                dash_sdk::Error::Generic("boom".to_string()),
+            )),
+        }
+        .to_string();
+
+        assert!(
+            msg.contains("refresh") && msg.contains("Wait"),
+            "Expected concrete recovery guidance (wait + refresh), got: {msg}"
+        );
+        assert_ne!(
+            msg,
+            TaskError::WalletBackend {
+                source: std::sync::Arc::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    dash_sdk::Error::Generic("boom".to_string())
+                )),
+            }
+            .to_string(),
+            "the carve-out must not reuse the generic envelope's retry advice"
+        );
+        for jargon in ["nonce", "state transition", "SDK", "RPC", "broadcast"] {
+            assert!(
+                !msg.contains(jargon),
+                "Expected no jargon ({jargon}) in user message, got: {msg}"
+            );
         }
     }
 }

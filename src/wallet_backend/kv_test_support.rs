@@ -6,8 +6,8 @@
 //! `backend_task/migration/`) with byte-identical `get`/`put`/`delete`
 //! bodies. Consolidated here following the `leak_test_support` pattern.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 use platform_wallet_storage::{KvError, KvStore, ObjectId};
 
@@ -139,12 +139,17 @@ impl KvStore for FailingKv {
 
 /// An [`InMemoryKv`] that stalls *after* each read has taken its snapshot.
 ///
-/// The fixture for lost-update tests. Two concurrent read-modify-write
-/// mutations of the same key both observe the pre-mutation state and write
-/// back late, so an unserialized mutation reliably loses its peer's update;
-/// a mutation that only writes never reads, never stalls, and cannot be
-/// clobbered. A caller that holds a lock across its own read and write turns
-/// the same interleaving into a queue instead.
+/// Widens the window in which two concurrent read-modify-write mutations of
+/// one key both observe the pre-mutation state, so an unserialized mutation
+/// *usually* loses its peer's update.
+///
+/// Only usually: elapsed time establishes no happens-before between threads.
+/// A delayed thread can wake and write before its peer has even reached the
+/// read, in which case the peer observes the completed write and nothing is
+/// lost — so a test built on this fake can pass against code whose
+/// serialization was removed. Use it to make a race *likely* (a scheduling
+/// probe); use [`RendezvousKv`] when a test has to be the standing guard for
+/// an invariant, since only that one makes the interleaving certain.
 #[derive(Default)]
 pub(crate) struct StallingReadKv {
     inner: InMemoryKv,
@@ -154,6 +159,91 @@ impl KvStore for StallingReadKv {
     fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
         let value = self.inner.get(scope, key);
         std::thread::sleep(std::time::Duration::from_millis(200));
+        value
+    }
+
+    fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+        self.inner.put(scope, key, value)
+    }
+
+    fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+        self.inner.delete(scope, key)
+    }
+
+    fn list_keys(&self, scope: &ObjectId, prefix: Option<&str>) -> Result<Vec<String>, KvError> {
+        self.inner.list_keys(scope, prefix)
+    }
+}
+
+/// How long a [`RendezvousKv`] reader waits for its peers before giving up.
+///
+/// Reached only when the code under test is correctly serialized — the peers
+/// are blocked on its lock and can never arrive — so this bounds how long such
+/// a test runs and nothing else. It cannot change an outcome: what makes the
+/// second read observe the first write is the lock, not the clock.
+const RENDEZVOUS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// An [`InMemoryKv`] that holds every read until all armed readers have taken
+/// their snapshot.
+///
+/// The standing guard for lost-update invariants, and the reason it is not a
+/// sleep: arming for `readers` makes the interleaving *certain* rather than
+/// likely. Every armed reader is released only once all of them hold the
+/// pre-mutation snapshot, so an unserialized read-modify-write always loses
+/// its peer's update and the test fails every time, on every runner. A
+/// correctly serialized caller never satisfies the rendezvous at all — its
+/// peers are still queued behind its lock — and proceeds after
+/// [`RENDEZVOUS_TIMEOUT`], observing each other's writes in order.
+///
+/// Reads are unrestricted until [`Self::arm`] is called, so a test can seed
+/// state through the same store before the concurrent phase begins.
+#[derive(Default)]
+pub(crate) struct RendezvousKv {
+    inner: InMemoryKv,
+    state: Mutex<RendezvousState>,
+    released: Condvar,
+}
+
+#[derive(Default)]
+struct RendezvousState {
+    /// Readers that must arrive before any is released. `None` = unarmed.
+    expected: Option<usize>,
+    arrived: usize,
+}
+
+impl RendezvousKv {
+    /// Hold the next reads until `readers` of them have taken their snapshot.
+    pub(crate) fn arm(&self, readers: usize) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.expected = Some(readers);
+        state.arrived = 0;
+    }
+
+    /// Block until every armed reader has snapshotted, or the wait times out.
+    fn rendezvous(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(expected) = state.expected else {
+            return;
+        };
+        state.arrived += 1;
+        if state.arrived >= expected {
+            self.released.notify_all();
+            return;
+        }
+        let _ = self
+            .released
+            .wait_timeout_while(state, RENDEZVOUS_TIMEOUT, |state| {
+                state
+                    .expected
+                    .is_some_and(|expected| state.arrived < expected)
+            });
+    }
+}
+
+impl KvStore for RendezvousKv {
+    fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+        let value = self.inner.get(scope, key);
+        self.rendezvous();
         value
     }
 

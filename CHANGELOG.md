@@ -111,8 +111,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   meantime; the watch carries on, so a late confirmation still resolves it. The
   app never claims a payment has failed — the Dash network has no way to say
   so, and guessing could tell you it was safe to send again when it was not.
-  Creating an asset lock is also covered by the earlier fix below: it was still
-  asking you to retry an outcome that may already be on its way.
+  Several unverified payments can be waiting at once, and answering one of them
+  leaves every other message exactly where it was. If you switch networks while
+  one is waiting, the payment is left alone rather than followed on the network
+  you moved to, where it could never be found. Creating an asset lock is also
+  covered by the earlier fix below: it was still asking you to retry an outcome
+  that may already be on its way.
 
 - **A sent payment whose confirmation couldn't be verified no longer tells you
   to retry it**: when the network doesn't confirm a payment quickly enough,

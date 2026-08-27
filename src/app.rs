@@ -826,8 +826,12 @@ const PENDING_CONFIRMED_MESSAGE: &str = "Your transaction is confirmed.";
 /// becoming spendable again — upstream releases them on a block-height
 /// schedule this app does not measure — and hands the user the transaction
 /// history, which tracks the same data live, instead of an instruction to act
-/// blind. Complete sentences so i18n extracts it as one unit.
-const PENDING_STALE_MESSAGE: &str = "Your transaction has still not been confirmed. It is listed as Pending in this wallet's transaction history — check there before sending it again, because sending now could pay the same person twice if the first one arrives later.";
+/// blind. It names no status either: this copy is reached for every
+/// non-confirmed observation, including one no loaded wallet has seen at all,
+/// so the history row it points at may not exist and may not read the way a
+/// named status would promise. Complete sentences so i18n extracts it as one
+/// unit.
+const PENDING_STALE_MESSAGE: &str = "The app still cannot verify whether your transaction was confirmed. Check the transaction history for the wallet you sent from before sending it again, because sending now could pay the same person twice if the first one arrives later.";
 
 /// What the pending-confirmation watch should do about one watched transaction
 /// this tick. Pure so the policy is unit-testable in isolation from `AppState`.
@@ -1873,7 +1877,7 @@ impl AppState {
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&mut self, task: BackendTask) {
-        let context = BackendTaskContext::from(&task);
+        let context = BackendTaskContext::for_task_on(&task, self.current_app_context().network);
         self.handle_backend_task_with_context(task, context);
     }
 
@@ -1912,11 +1916,11 @@ impl AppState {
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
+        let app_context = self.current_app_context().clone();
         let contexts = tasks
             .iter()
-            .map(BackendTaskContext::from)
+            .map(|task| BackendTaskContext::for_task_on(task, app_context.network))
             .collect::<Vec<_>>();
-        let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
 
         let _ = self.subtasks.spawn_blocking_sync(
@@ -2899,7 +2903,19 @@ impl App for AppState {
                             TaskError::TransactionConfirmationUnknown {
                                 txid: Some(txid), ..
                             } => {
-                                self.pending_confirmation.track(ctx, *txid, handle);
+                                self.pending_confirmation.track(
+                                    ctx,
+                                    *txid,
+                                    context.payment_broadcast_network(),
+                                    self.chosen_network,
+                                    handle,
+                                );
+                            }
+                            // No transaction id, so nothing can be watched —
+                            // the reconciler only holds the banner so another
+                            // payment's verdict cannot clear it.
+                            TaskError::TransactionConfirmationUnknown { txid: None, .. } => {
+                                self.pending_confirmation.track_unwatchable(handle);
                             }
                             _ => {}
                         }
@@ -3697,6 +3713,25 @@ mod pending_confirmation_tests {
                 "the copy must not vouch for the safety of a resend: {message}"
             );
         }
+    }
+
+    /// The stale copy is reached for every non-confirmed observation, including
+    /// one no loaded wallet has seen at all and one reported at a mined tier
+    /// with no block height. Naming a status asserts a transaction-history row
+    /// the app has not established — and, in the mined-tier case, one the
+    /// wallet would render under a different word entirely.
+    #[test]
+    fn the_stale_copy_names_no_transaction_status_it_cannot_establish() {
+        for status in ["Pending", "Unconfirmed", "Confirmed", "ChainLocked"] {
+            assert!(
+                !PENDING_STALE_MESSAGE.contains(status),
+                "the copy must not name the {status} status: {PENDING_STALE_MESSAGE}"
+            );
+        }
+        assert!(
+            PENDING_STALE_MESSAGE.contains("transaction history"),
+            "the copy must still hand the user the durable surface: {PENDING_STALE_MESSAGE}"
+        );
     }
 }
 

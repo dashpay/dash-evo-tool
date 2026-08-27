@@ -31,7 +31,7 @@ use crate::ui::components::wallet_unlock_popup::{
     MigrationWalletUnlockResult, WalletUnlockPopup, wallet_needs_unlock,
 };
 use crate::ui::components::{
-    BannerHandle, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle,
+    BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
 
 use super::{
@@ -801,12 +801,9 @@ impl MigrationReconciler {
     }
 }
 
-/// One transaction whose broadcast outcome was ambiguous, and the banner that
-/// speaks for it.
+/// One transaction whose broadcast outcome was ambiguous.
 struct PendingWatch {
     txid: Txid,
-    /// The adopted ambiguous-outcome banner, replaced in place on a verdict.
-    banner: BannerHandle,
     /// When the watch was adopted, i.e. when the user was first told to wait.
     since: Instant,
     /// Whether the stale re-wording has already been applied.
@@ -823,8 +820,26 @@ struct PendingWatch {
 ///
 /// Lives above the screens on purpose: the watch has to survive the user
 /// navigating away from Send, which screen state does not.
+///
+/// It owns the two banners rather than each watch holding its own, because
+/// [`MessageBanner`] keys banners by exact text: every ambiguous outcome —
+/// each watch's, plus every outcome that arrived without a transaction id —
+/// is one and the same banner. Retiring it is therefore a decision about all
+/// of them at once, taken in [`Self::sync_banners`].
 pub(super) struct PendingConfirmation {
     watches: Vec<PendingWatch>,
+    /// The shared ambiguous-outcome banner, adopted from the error arm.
+    ambiguous: Option<BannerHandle>,
+    /// Whether an ambiguous outcome arrived with no transaction id (identity
+    /// registration, top-up, platform-address funding, asset locks). No watch
+    /// can ever answer it, so it is held purely as a claim on the shared
+    /// banner: another payment's verdict must not clear it away.
+    unwatchable: bool,
+    /// The shared stale banner, raised while any claim needs it.
+    stale: Option<BannerHandle>,
+    /// Whether a watch was retired at [`MAX_PENDING_WATCHES`]. The watch is
+    /// gone but its stale advice stays — the transaction is still out there.
+    retired: bool,
     /// `None` until the first poll, so a watch adopted this frame is resolved
     /// on the next one rather than sitting out a full interval.
     last_poll: Option<Instant>,
@@ -834,43 +849,79 @@ impl PendingConfirmation {
     pub(super) fn new() -> Self {
         Self {
             watches: Vec::new(),
+            ambiguous: None,
+            unwatchable: false,
+            stale: None,
+            retired: false,
             last_poll: None,
         }
     }
 
-    /// Adopt the banner raised for an ambiguous broadcast of `txid`. The handle
-    /// must already have auto-dismiss disabled — a pending funds question must
-    /// not time out on its own.
-    pub(super) fn track(&mut self, ctx: &egui::Context, txid: Txid, banner: BannerHandle) {
-        // Re-tracking the same transaction (the user retried, upstream refused
-        // again) keeps the original wait start: the network has had that long.
-        if let Some(existing) = self.watches.iter_mut().find(|w| w.txid == txid) {
-            existing.banner = banner;
+    /// Adopt the banner raised for an ambiguous broadcast of `txid`, sent on
+    /// `origin` while `active` is the network now selected. The handle must
+    /// already have auto-dismiss disabled — a pending funds question must not
+    /// time out on its own.
+    ///
+    /// A payment from any other network is adopted but not watched: the watch
+    /// reads the active network's wallet snapshot, which has never heard of it,
+    /// so it could only ever go stale and hand the user transaction-history
+    /// advice pointing at the wrong wallet.
+    pub(super) fn track(
+        &mut self,
+        ctx: &egui::Context,
+        txid: Txid,
+        origin: Option<Network>,
+        active: Network,
+        banner: BannerHandle,
+    ) {
+        if origin != Some(active) {
+            tracing::warn!(
+                %txid,
+                ?origin,
+                %active,
+                "Not watching a payment with an unverified outcome: it was not sent on the network now selected",
+            );
+            self.track_unwatchable(banner);
             return;
         }
-        self.watches.push(PendingWatch {
-            txid,
-            banner,
-            since: Instant::now(),
-            stale: false,
-        });
-        if self.watches.len() > MAX_PENDING_WATCHES {
-            let evicted = self.watches.remove(0);
-            tracing::warn!(
-                txid = %evicted.txid,
-                "Stopped watching the oldest unconfirmed payment: {MAX_PENDING_WATCHES} are already being watched",
-            );
-            // Retire it to the durable surface rather than going silent.
-            Self::raise_stale(ctx, evicted.banner);
+        self.ambiguous = Some(banner);
+        // Re-tracking the same transaction (the user retried, upstream refused
+        // again) keeps the original wait start: the network has had that long.
+        if !self.watches.iter().any(|w| w.txid == txid) {
+            self.watches.push(PendingWatch {
+                txid,
+                since: Instant::now(),
+                stale: false,
+            });
+            if self.watches.len() > MAX_PENDING_WATCHES {
+                let evicted = self.watches.remove(0);
+                tracing::warn!(
+                    txid = %evicted.txid,
+                    "Stopped watching the oldest unconfirmed payment: {MAX_PENDING_WATCHES} are already being watched",
+                );
+                // Retire it to the durable surface rather than going silent.
+                self.retired = true;
+            }
         }
+        self.sync_banners(ctx);
+    }
+
+    /// Adopt an ambiguous-outcome banner nothing here can ever answer — the
+    /// outcome carries no transaction id, or belongs to another network. Held
+    /// only so a watched payment's verdict cannot retire the message with it.
+    pub(super) fn track_unwatchable(&mut self, banner: BannerHandle) {
+        self.ambiguous = Some(banner);
+        self.unwatchable = true;
     }
 
     /// Drop every watch (network switch): the new network's snapshot knows
     /// nothing about these transactions, so nothing here could ever resolve.
     pub(super) fn reset(&mut self) {
-        for watch in self.watches.drain(..) {
-            watch.banner.clear();
-        }
+        self.watches.clear();
+        self.unwatchable = false;
+        self.retired = false;
+        self.ambiguous.take_and_clear();
+        self.stale.take_and_clear();
     }
 
     /// Re-read the snapshot for every open watch, at most once per
@@ -900,6 +951,7 @@ impl PendingConfirmation {
         confirmation: impl Fn(&Txid) -> Option<TransactionConfirmation>,
     ) {
         let mut open = Vec::with_capacity(self.watches.len());
+        let mut confirmed = false;
         for mut watch in self.watches.drain(..) {
             match pending_step(
                 confirmation(&watch.txid),
@@ -908,12 +960,10 @@ impl PendingConfirmation {
             ) {
                 PendingStep::Confirmed => {
                     tracing::info!(txid = %watch.txid, "A payment with an unverified outcome is confirmed on the network");
-                    watch.banner.clear();
-                    MessageBanner::set_global(ctx, PENDING_CONFIRMED_MESSAGE, MessageType::Success);
+                    confirmed = true;
                 }
                 PendingStep::Stale => {
                     tracing::warn!(txid = %watch.txid, "A payment with an unverified outcome is still unconfirmed");
-                    watch.banner = Self::raise_stale(ctx, watch.banner);
                     watch.stale = true;
                     open.push(watch);
                 }
@@ -921,16 +971,27 @@ impl PendingConfirmation {
             }
         }
         self.watches = open;
+        self.sync_banners(ctx);
+        if confirmed {
+            MessageBanner::set_global(ctx, PENDING_CONFIRMED_MESSAGE, MessageType::Success);
+        }
     }
 
-    /// Swap a watch's banner for the stale copy. Raised fresh rather than
-    /// re-worded in place because banners de-duplicate by text: two ambiguous
-    /// sends share one banner, and the first verdict retires it.
-    fn raise_stale(ctx: &egui::Context, previous: BannerHandle) -> BannerHandle {
-        previous.clear();
-        let banner = MessageBanner::set_global(ctx, PENDING_STALE_MESSAGE, MessageType::Warning);
-        banner.disable_auto_dismiss();
-        banner
+    /// Bring both shared banners in line with the claims still open. Each is
+    /// keyed by its text, so one banner speaks for every claim of its kind: it
+    /// may only be retired once nothing still speaks through it.
+    fn sync_banners(&mut self, ctx: &egui::Context) {
+        if !self.unwatchable && !self.watches.iter().any(|w| !w.stale) {
+            self.ambiguous.take_and_clear();
+        }
+        if self.retired || self.watches.iter().any(|w| w.stale) {
+            if self.stale.is_none() {
+                self.stale
+                    .raise_persistent(ctx, PENDING_STALE_MESSAGE, MessageType::Warning);
+            }
+        } else {
+            self.stale.take_and_clear();
+        }
     }
 
     /// Transactions currently being watched (test seam / observation).
@@ -1003,12 +1064,22 @@ mod tests {
             .build_ui(MessageBanner::show_global)
     }
 
-    /// Adopt a fresh ambiguous-outcome banner for `txid`, exactly as the
-    /// generic error arm in `AppState::update` does.
-    fn adopt(reconciler: &mut PendingConfirmation, ctx: &egui::Context, txid: Txid) {
+    /// The network these tests run their payments on.
+    const ACTIVE: Network = Network::Testnet;
+
+    /// Raise a fresh ambiguous-outcome banner, exactly as the generic error arm
+    /// in `AppState::update` does.
+    fn ambiguous_banner(ctx: &egui::Context) -> BannerHandle {
         let banner = MessageBanner::set_global(ctx, AMBIGUOUS, MessageType::Error);
         banner.disable_auto_dismiss();
-        reconciler.track(ctx, txid, banner);
+        banner
+    }
+
+    /// Adopt a fresh ambiguous-outcome banner for `txid`, sent on the network
+    /// still selected.
+    fn adopt(reconciler: &mut PendingConfirmation, ctx: &egui::Context, txid: Txid) {
+        let banner = ambiguous_banner(ctx);
+        reconciler.track(ctx, txid, Some(ACTIVE), ACTIVE, banner);
     }
 
     fn mined(height: u32) -> Option<TransactionConfirmation> {
@@ -1058,6 +1129,111 @@ mod tests {
         assert!(harness.query_by_label(AMBIGUOUS).is_some());
         assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_none());
         assert_eq!(reconciler.watched(), vec![txid]);
+    }
+
+    /// Two payments can be unverified at once, and every ambiguous banner is
+    /// literally the same banner — the text is identical, and banners key by
+    /// text. One payment's verdict must not retire the message the other
+    /// payment's user is still waiting on.
+    #[test]
+    fn one_watchs_confirmation_leaves_the_other_watch_its_banner() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let first = Txid::from_byte_array([10u8; 32]);
+        let second = Txid::from_byte_array([11u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, first);
+        adopt(&mut reconciler, &harness.ctx, second);
+
+        reconciler.apply(&harness.ctx, |txid| {
+            (*txid == first).then(|| mined(9)).flatten()
+        });
+        harness.run();
+
+        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the payment still unanswered must keep the message telling its user to wait"
+        );
+        assert_eq!(reconciler.watched(), vec![second]);
+    }
+
+    /// The stale re-wording speaks for one watch. Raising it must not take the
+    /// wait-and-see message away from a sibling watch still inside its window.
+    #[test]
+    fn a_stale_watch_leaves_a_sibling_still_waiting_its_banner() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let old = Txid::from_byte_array([12u8; 32]);
+        let fresh = Txid::from_byte_array([13u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, old);
+        adopt(&mut reconciler, &harness.ctx, fresh);
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the watch still inside its window must keep its own message"
+        );
+        assert_eq!(reconciler.watched(), vec![old, fresh]);
+    }
+
+    /// An ambiguous outcome with no transaction id (identity registration,
+    /// top-ups, asset locks) shares the one ambiguous banner but can never be
+    /// answered here. An unrelated payment confirming says nothing about it and
+    /// must not take its message away.
+    #[test]
+    fn a_confirmation_leaves_an_outcome_with_no_transaction_id_alone() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let txid = Txid::from_byte_array([14u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, txid);
+        reconciler.track_unwatchable(ambiguous_banner(&harness.ctx));
+
+        reconciler.apply(&harness.ctx, |_| mined(21));
+        harness.run();
+
+        assert!(harness.query_by_label(PENDING_CONFIRMED_MESSAGE).is_some());
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "an outcome no watch can answer must keep its message when another payment confirms"
+        );
+        assert!(reconciler.watched().is_empty());
+    }
+
+    /// A payment dispatched before a network switch can only be answered by the
+    /// network it was sent on: the active network's snapshot has never heard of
+    /// it, so watching it here would poll forever and then hand the user
+    /// transaction-history advice for the wrong wallet. Its banner still
+    /// stands — the outcome really is unknown.
+    #[test]
+    fn a_payment_that_did_not_come_from_the_active_network_is_not_watched() {
+        for origin in [None, Some(Network::Mainnet)] {
+            let mut harness = banner_harness();
+            let mut reconciler = PendingConfirmation::new();
+            let txid = Txid::from_byte_array([15u8; 32]);
+            let banner = ambiguous_banner(&harness.ctx);
+
+            reconciler.track(&harness.ctx, txid, origin, ACTIVE, banner);
+            harness.run();
+
+            assert!(
+                reconciler.watched().is_empty(),
+                "a payment sent on {origin:?} must not be watched against {ACTIVE:?}"
+            );
+            assert!(
+                harness.query_by_label(AMBIGUOUS).is_some(),
+                "the outcome is still unknown, so its message must stay"
+            );
+            assert!(
+                harness.query_by_label(PENDING_STALE_MESSAGE).is_none(),
+                "a watch that was never taken must not produce stale advice"
+            );
+        }
     }
 
     /// Past the threshold the original advice has expired, so the banner is

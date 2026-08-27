@@ -1511,6 +1511,12 @@ impl AppContext {
     /// call that method again for it — the manifest, and this sweep, are the
     /// only surviving path back to the orphaned vault keys.
     ///
+    /// Resumes a manifest only while its identity is absent from that index.
+    /// A manifest whose identity is still listed belongs to a removal that
+    /// never reached the irreversible step: the identity is live and the user
+    /// keeps a working retry, so deleting its keys here would strand exactly
+    /// the identity this ordering exists to protect.
+    ///
     /// Best-effort and idempotent, like every other boot reconcile
     /// ([`super::wallet_lifecycle::bootstrap`]'s unowned-identity pass): a
     /// failure on one manifest is logged and retried next boot, and never
@@ -1536,12 +1542,33 @@ impl AppContext {
                 return;
             }
         };
+        // The manifest is persisted one step *before* `index_remove_identity`,
+        // so its presence alone does not mean the removal ever happened. An
+        // unreadable index cannot prove any identity is gone, so resume nothing
+        // rather than guess.
+        let listed = match load_identity_index(&kv) {
+            Ok(listed) => listed,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Pending vault-cleanup sweep skipped; the identity index is unreadable, will retry at next boot"
+                );
+                return;
+            }
+        };
         let mut resumed = 0usize;
         for key in keys {
             let Some(id) = parse_vault_cleanup_pending_key(&key) else {
                 tracing::warn!(%key, "Skipping an unparsable vault-cleanup manifest key");
                 continue;
             };
+            if listed.contains(&id) {
+                tracing::debug!(
+                    identity = %Identifier::from(id),
+                    "Pending vault-cleanup left alone; this identity is still listed and still usable, so removing it stays the user's call"
+                );
+                continue;
+            }
             let placements: Vec<(StoredPrivateKeyTarget, KeyID)> =
                 match kv.get(DetScope::Global, &key) {
                     Ok(Some(placements)) => placements,
@@ -3332,6 +3359,81 @@ mod tests {
             .expect("read the manifest slot")
             .is_none(),
             "the manifest must be cleared once the sweep confirms every key deleted"
+        );
+    }
+
+    /// The sweep's mirror-image hazard. `index_remove_identity` runs *after*
+    /// the manifest is persisted, so a failure in that write leaves a manifest
+    /// behind for an identity that is still on the roster, still holding a live
+    /// blob, and still fully usable. Resuming such a manifest would delete the
+    /// keys of an identity the user can still see and was told was *not*
+    /// removed — the exact zombie
+    /// `a_failed_identity_delete_never_destroys_the_vault_keys` exists to
+    /// forbid, arriving one boot later. The sweep must therefore resume only
+    /// what the roster confirms is already gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resume_pending_vault_cleanups_spares_an_identity_still_on_the_roster() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x33; 32];
+        const LOW: [u8; 32] = [0x44; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        // Fail the delete *at* `index_remove_identity`, after the manifest is
+        // already durable: an unreadable index makes its own load step error.
+        kv.put(
+            DetScope::Global,
+            IDENTITY_INDEX_KEY,
+            &"not an identity index".to_string(),
+        )
+        .expect("corrupt the identity index");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect_err("index_remove_identity must fail on an unreadable index");
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_some(),
+            "precondition: the failed delete must have left a manifest behind"
+        );
+
+        // The index write never landed, so on the next boot the identity is
+        // still listed exactly as it was — the removal never happened.
+        kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &vec![id_buf])
+            .expect("restore the untouched index");
+
+        staged.ctx.resume_pending_vault_cleanups();
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_some(),
+                "key {key_id} belongs to an identity still on the roster; the sweep \
+                 must not delete it"
+            );
+        }
+        assert!(
+            load_identity_index(&kv)
+                .expect("read the index")
+                .contains(&id_buf),
+            "the identity must still be listed, making the UI retry path reachable"
+        );
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_some(),
+            "the manifest must be retained: its keys are not confirmed absent, so \
+             clearing it here would discard the delete set a retry still needs"
         );
     }
 }

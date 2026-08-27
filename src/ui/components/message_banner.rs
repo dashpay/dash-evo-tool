@@ -1155,16 +1155,31 @@ mod tests {
 
     /// The distinction the whole restore path rests on. A banner that went
     /// away because someone closed it was not evicted — reporting otherwise
-    /// would let callers resurrect messages the user deliberately silenced.
+    /// would let callers resurrect messages the user deliberately silenced,
+    /// which is the difference between restoring a message and making it
+    /// impossible to close.
+    ///
+    /// The question has to be put to a handle that outlives the dismissal.
+    /// Asking the `Option` after `take_and_clear` only ever asks a `None`, and
+    /// `Option::was_evicted` is `is_some_and(..)`, so that answer is `false`
+    /// however the eviction machinery behaves — including when it is removed
+    /// altogether. A clone keeps a live witness to interrogate instead.
     #[test]
     fn a_dismissed_banner_is_not_reported_as_evicted() {
         let ctx = egui::Context::default();
-        let mut held = Some(MessageBanner::set_global(&ctx, "bye", MessageType::Info));
+        let handle = MessageBanner::set_global(&ctx, "bye", MessageType::Info);
+        let witness = handle.clone();
+        let mut held = Some(handle);
         assert!(!held.was_evicted());
 
         held.take_and_clear();
+
         assert!(
-            !held.was_evicted(),
+            !witness.is_live(),
+            "dismissing must actually take the banner off the list"
+        );
+        assert!(
+            !witness.was_evicted(),
             "a banner removed on purpose must not look like one the cap took"
         );
     }

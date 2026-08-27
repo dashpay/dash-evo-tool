@@ -2144,8 +2144,288 @@ impl AppContext {
     }
 }
 
+/// Test-only staging fixtures for the identity-removal paths.
+///
+/// Lives outside `mod tests` so `backend_task::identity::remove_identity` can
+/// stage the same on-disk shape this module's own tests do — the classifier it
+/// owns reads exactly the state written here, and had no way to reach it while
+/// these fixtures were private to this file's test module.
+#[cfg(test)]
+pub(crate) mod test_staging {
+    use super::*;
+    use crate::model::qualified_identity::encrypted_key_storage::{
+        KeyStorage, PrivateKeyData, WalletDerivationPath,
+    };
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::IdentityPublicKey;
+
+    /// An offline `AppContext` over a throwaway data dir, plus the very vault it
+    /// was built on so a test can probe what the context wrote.
+    pub(crate) async fn ctx_with_vault() -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+    ) {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            Arc::clone(&secret_store),
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, secret_store, temp_dir)
+    }
+
+    /// A `QualifiedIdentity` carrying one `Clear` (HIGH), one `AlwaysClear`
+    /// (MEDIUM), and one `AtWalletDerivationPath` key, under the default
+    /// (all-zero) identity id.
+    pub(crate) fn qi_with_plaintext_and_derived(
+        secret_high: [u8; 32],
+        secret_medium: [u8; 32],
+    ) -> QualifiedIdentity {
+        qi_with_plaintext_and_derived_at(Identifier::default(), secret_high, secret_medium)
+    }
+
+    /// [`qi_with_plaintext_and_derived`] under a caller-chosen identity id, for
+    /// the fixtures that stage two related identities at once.
+    pub(crate) fn qi_with_plaintext_and_derived_at(
+        identity_id: Identifier,
+        secret_high: [u8; 32],
+        secret_medium: [u8; 32],
+    ) -> QualifiedIdentity {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let high = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
+            (
+                QualifiedIdentityPublicKey::from(high),
+                PrivateKeyData::Clear(secret_high),
+            ),
+        );
+        let medium = IdentityPublicKey::random_key(2, Some(2), pv);
+        ks.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, medium.id()),
+            (
+                QualifiedIdentityPublicKey::from(medium),
+                PrivateKeyData::AlwaysClear(secret_medium),
+            ),
+        );
+        let derived = IdentityPublicKey::random_key(3, Some(3), pv);
+        ks.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived.id()),
+            (
+                QualifiedIdentityPublicKey::from(derived),
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: [0x07; 32],
+                    derivation_path: DerivationPath::from(vec![]),
+                }),
+            ),
+        );
+        let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// A stored identity whose plaintext keys the read path has already moved
+    /// into the vault — the state a real delete runs against. Holds the temp dir
+    /// and the event receiver so neither is dropped while the test runs.
+    pub(crate) struct StagedIdentity {
+        pub(crate) ctx: Arc<AppContext>,
+        pub(crate) store: Arc<platform_wallet_storage::secrets::SecretStore>,
+        pub(crate) id: Identifier,
+        /// The associated voter identity, staged alongside `id` and named by
+        /// its record. `None` unless the fixture staged a voter twin.
+        pub(crate) voter_id: Option<Identifier>,
+        _dir: tempfile::TempDir,
+        _events: tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    }
+
+    /// The two vault placements [`qi_with_plaintext_and_derived_at`] leaves
+    /// behind once the read path has migrated its plaintext keys.
+    const STAGED_PLACEMENTS: [(PrivateKeyTarget, dash_sdk::dpp::identity::KeyID); 2] = [
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 2),
+    ];
+
+    /// An offline context with its wallet backend wired — `det_kv()` is only
+    /// reachable once it is.
+    async fn staged_context() -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    ) {
+        let (ctx, store, dir) = ctx_with_vault().await;
+        let (tx, events) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+        (ctx, store, dir, events)
+    }
+
+    /// Write `qi`'s blob, list it on the roster, and read it back once so the
+    /// load path moves its plaintext keys into the vault. Asserts both keys
+    /// landed there, since every fixture below is only meaningful if they did.
+    fn stage_identity_record(
+        ctx: &Arc<AppContext>,
+        store: &Arc<platform_wallet_storage::secrets::SecretStore>,
+        qi: &QualifiedIdentity,
+    ) {
+        let id = qi.identity.id();
+        let id_buf = id.to_buffer();
+        let kv = ctx.det_kv().expect("identity kv");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                qi_bytes: qi.to_bytes(),
+                status: qi.status.as_u8(),
+                identity_type: qi.identity_type.as_tag().to_string(),
+                wallet_hash: None,
+                wallet_index: None,
+            },
+        )
+        .expect("stage the identity blob");
+        index_add_identity(&kv, &id_buf).expect("index the identity");
+        ctx.get_local_qualified_identity(&id)
+            .expect("hydrate the staged identity")
+            .expect("identity present");
+
+        let view = IdentityKeyView::new(store, id_buf);
+        for (target, key_id) in STAGED_PLACEMENTS {
+            assert!(
+                view.get(&target, key_id).unwrap().is_some(),
+                "precondition: key {key_id} must be in the vault before the delete"
+            );
+        }
+    }
+
+    /// One staged identity with no voter twin.
+    pub(crate) async fn stage_identity_with_vaulted_keys(
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        let (ctx, store, dir, events) = staged_context().await;
+        let qi = qi_with_plaintext_and_derived(high, medium);
+        stage_identity_record(&ctx, &store, &qi);
+        StagedIdentity {
+            ctx,
+            store,
+            id: qi.identity.id(),
+            voter_id: None,
+            _dir: dir,
+            _events: events,
+        }
+    }
+
+    /// Break the Global scheduled-vote voter index, so the next
+    /// `delete_local_qualified_identity` fails at the last step of
+    /// `purge_identity_scope` — strictly *after* `index_remove_identity` has
+    /// already delisted the identity. The reachable shape of a removal that
+    /// failed past its point of no return: the identity is gone from every
+    /// screen, and only its vault cleanup is outstanding.
+    pub(crate) fn fail_removals_after_delisting(ctx: &Arc<AppContext>) {
+        ctx.det_kv()
+            .expect("identity kv")
+            .put(
+                DetScope::Global,
+                SCHEDULED_VOTE_VOTERS_KEY,
+                &"not a voter index".to_string(),
+            )
+            .expect("corrupt the scheduled-vote voter index");
+    }
+
+    /// Break `identity_id`'s vault-cleanup manifest slot, so its next
+    /// `delete_local_qualified_identity` fails while reading the delete set —
+    /// before any mutation, and before the identity is delisted. The reachable
+    /// shape of a removal that never happened and can still be retried.
+    pub(crate) fn fail_removal_before_delisting(ctx: &Arc<AppContext>, identity_id: &Identifier) {
+        ctx.det_kv()
+            .expect("identity kv")
+            .put(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&identity_id.to_buffer()),
+                &"not a cleanup manifest".to_string(),
+            )
+            .expect("corrupt the vault-cleanup manifest");
+    }
+
+    /// An evonode identity whose record names a separate voter identity, with
+    /// both staged and both holding vaulted keys — the shape
+    /// `AppContext::remove_identity` walks when one removal has to delete two
+    /// identities.
+    pub(crate) async fn stage_identity_with_voter_twin(
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        let (ctx, store, dir, events) = staged_context().await;
+
+        let voter = qi_with_plaintext_and_derived_at(Identifier::from([0x2A; 32]), high, medium);
+        stage_identity_record(&ctx, &store, &voter);
+
+        let mut primary =
+            qi_with_plaintext_and_derived_at(Identifier::from([0x1B; 32]), high, medium);
+        primary.identity_type = IdentityType::Evonode;
+        primary.associated_voter_identity = Some((
+            voter.identity.clone(),
+            IdentityPublicKey::random_key(4, Some(4), PlatformVersion::latest()),
+        ));
+        stage_identity_record(&ctx, &store, &primary);
+
+        StagedIdentity {
+            ctx,
+            store,
+            id: primary.identity.id(),
+            voter_id: Some(voter.identity.id()),
+            _dir: dir,
+            _events: events,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_staging::*;
     use super::*;
     use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, StallingReadKv};
     use DetKv;
@@ -2689,77 +2969,18 @@ mod tests {
     // Identity-key vault migration + deletion (funds-safety).
     // ---------------------------------------------------------------
 
-    use crate::model::qualified_identity::encrypted_key_storage::{
-        KeyStorage, PrivateKeyData, WalletDerivationPath,
-    };
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget};
     use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
     fn fresh_vault(dir: &std::path::Path) -> Arc<platform_wallet_storage::secrets::SecretStore> {
         let path = dir.join("secrets.pwsvault");
         Arc::new(crate::wallet_backend::single_key::open_secret_store(&path).expect("open vault"))
-    }
-
-    /// A `QualifiedIdentity` carrying one `Clear` (HIGH), one `AlwaysClear`
-    /// (MEDIUM), and one `AtWalletDerivationPath` key. Returns the QI plus the
-    /// `(target, key_id)` of each plaintext key for assertions.
-    fn qi_with_plaintext_and_derived(
-        secret_high: [u8; 32],
-        secret_medium: [u8; 32],
-    ) -> QualifiedIdentity {
-        let pv = PlatformVersion::latest();
-        let mut ks = KeyStorage::default();
-        let high = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.insert_at(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
-            (
-                QualifiedIdentityPublicKey::from(high),
-                PrivateKeyData::Clear(secret_high),
-            ),
-        );
-        let medium = IdentityPublicKey::random_key(2, Some(2), pv);
-        ks.insert_at(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, medium.id()),
-            (
-                QualifiedIdentityPublicKey::from(medium),
-                PrivateKeyData::AlwaysClear(secret_medium),
-            ),
-        );
-        let derived = IdentityPublicKey::random_key(3, Some(3), pv);
-        ks.insert_at(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived.id()),
-            (
-                QualifiedIdentityPublicKey::from(derived),
-                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
-                    wallet_seed_hash: [0x07; 32],
-                    derivation_path: DerivationPath::from(vec![]),
-                }),
-            ),
-        );
-        let identity =
-            Identity::create_basic_identity(Identifier::default(), pv).expect("basic identity");
-        QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: ks,
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        }
     }
 
     /// Load-path migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
@@ -3239,39 +3460,6 @@ mod tests {
         );
     }
 
-    /// An offline `AppContext` over a throwaway data dir, plus the very vault it
-    /// was built on so a test can probe what the context wrote.
-    async fn ctx_with_vault() -> (
-        Arc<AppContext>,
-        Arc<platform_wallet_storage::secrets::SecretStore>,
-        tempfile::TempDir,
-    ) {
-        use crate::app_dir::ensure_env_file;
-        use crate::context::connection_status::ConnectionStatus;
-        use crate::database::test_helpers::create_database_at_path;
-        use crate::utils::tasks::TaskManager;
-
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
-        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
-        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
-        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
-        let ctx = AppContext::new(
-            data_dir,
-            Network::Testnet,
-            db,
-            Arc::new(TaskManager::new()),
-            Arc::new(ConnectionStatus::new()),
-            egui::Context::default(),
-            app_kv,
-            Arc::clone(&secret_store),
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("offline testnet AppContext::new");
-        (ctx, secret_store, temp_dir)
-    }
-
     /// Per-key vault deletion drops the placements it is given and nothing else.
     /// That is what separates it from `clear_identity_vault_keys`, which empties
     /// the identity: dropping one key must leave the identity's remaining keys —
@@ -3312,69 +3500,6 @@ mod tests {
 
         ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
             .expect("deleting an already-gone placement is not an error");
-    }
-
-    /// A stored identity whose plaintext keys the read path has already moved
-    /// into the vault — the state a real delete runs against. Holds the temp dir
-    /// and the event receiver so neither is dropped while the test runs.
-    struct StagedIdentity {
-        ctx: Arc<AppContext>,
-        store: Arc<platform_wallet_storage::secrets::SecretStore>,
-        id: Identifier,
-        _dir: tempfile::TempDir,
-        _events: tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
-    }
-
-    async fn stage_identity_with_vaulted_keys(high: [u8; 32], medium: [u8; 32]) -> StagedIdentity {
-        let (ctx, store, dir) = ctx_with_vault().await;
-        // `det_kv()` is only reachable once the wallet backend is wired.
-        let (tx, events) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
-        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
-            tx,
-            ctx.egui_ctx().clone(),
-        ))
-        .await
-        .expect("wire the wallet backend offline");
-
-        let qi = qi_with_plaintext_and_derived(high, medium);
-        let id = qi.identity.id();
-        let id_buf = id.to_buffer();
-        let kv = ctx.det_kv().expect("identity kv");
-        kv.put(
-            DetScope::Identity(&id_buf),
-            IDENTITY_KEY,
-            &StoredQualifiedIdentity {
-                qi_bytes: qi.to_bytes(),
-                status: qi.status.as_u8(),
-                identity_type: qi.identity_type.as_tag().to_string(),
-                wallet_hash: None,
-                wallet_index: None,
-            },
-        )
-        .expect("stage the identity blob");
-        index_add_identity(&kv, &id_buf).expect("index the identity");
-        ctx.get_local_qualified_identity(&id)
-            .expect("hydrate the staged identity")
-            .expect("identity present");
-
-        let view = IdentityKeyView::new(&store, id_buf);
-        assert!(
-            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
-                .unwrap()
-                .is_some()
-                && view
-                    .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 2)
-                    .unwrap()
-                    .is_some(),
-            "precondition: both plaintext keys are in the vault before the delete"
-        );
-        StagedIdentity {
-            ctx,
-            store,
-            id,
-            _dir: dir,
-            _events: events,
-        }
     }
 
     /// Removal ordering is a safety property, not a style choice: the vault-key

@@ -3,6 +3,8 @@ mod contested_names_db;
 mod contract_token_db;
 pub mod feature_gate;
 mod identity_db;
+#[cfg(test)]
+pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
 pub mod migration_status;
 mod settings_db;

@@ -70,10 +70,16 @@ pub struct IdentityHubScreen {
     /// contact rows, load guard, pending tasks and cached profile — would never
     /// be reset, which is the original bug with an extra step.
     ///
-    /// An entry whose removal failed stays, which is inert: it is one entry per
-    /// identity the user tried to unload this session, and it can only ever
-    /// match a later result removing that same identity — precisely when the
-    /// reset is wanted anyway.
+    /// An entry whose removal failed is never consumed — a failure before
+    /// delisting sends no result, and the screen's failure signal names no
+    /// identity, so it cannot know which of several in-flight unloads to drop.
+    /// The set therefore grows by one `Identifier` per failed attempt and never
+    /// shrinks for one, for the life of the screen. Bounded by user action and
+    /// gone when the screen is, so the size is not the concern; that a stale
+    /// entry cannot misfire is, and it cannot: the check is keyed on the
+    /// identities a *result* removed, never on this set, so a stale entry can
+    /// only ever match a later result removing that same identity — precisely
+    /// when the reset is wanted anyway.
     pending_unloads: BTreeSet<Identifier>,
     /// Contacts-tab state. Owned here to debounce
     /// [`crate::backend_task::dashpay::DashPayTask::LoadContacts`] to a

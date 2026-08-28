@@ -380,6 +380,16 @@ fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskErr
         .unwrap_or_default())
 }
 
+/// Whether `identity_id` is on the Global enumeration index.
+///
+/// Read under [`lock_identity_index`] so the answer is never a half-written
+/// roster. Callers hold the identity's record guard, keeping the documented
+/// order — record OUTER, index INNER.
+fn identity_is_listed(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<bool, TaskError> {
+    let _index_guard = lock_identity_index();
+    Ok(load_identity_index(kv)?.contains(identity_id))
+}
+
 /// Add `identity_id` to the Global enumeration index if absent. No-op
 /// when the id is already tracked, so repeated inserts stay idempotent.
 fn index_add_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<(), TaskError> {
@@ -1073,8 +1083,25 @@ impl AppContext {
     /// deliberate and useful for a caller repairing a missing roster entry, but
     /// it also means every update path can resurrect an identity the user
     /// unloaded, if the removal lands between that caller's read and its write.
-    /// So a write against an absent record whose id carries an unload marker is
-    /// declined and reported `Ok(())`.
+    /// So a write for an identity that is **off the roster** and carries an
+    /// unload marker is declined and reported `Ok(())`.
+    ///
+    /// Roster membership, not blob presence, is what decides that. They differ
+    /// exactly where it matters: `purge_identity_scope` runs *after*
+    /// `index_remove_identity` and is three independent writes, so a removal
+    /// that stops in between leaves the identity delisted with its blob intact.
+    /// A blob-presence test passes such a write straight through, and
+    /// `index_add_identity` below then puts the identity back on the roster
+    /// after its removal was reported complete — where the boot sweep reads
+    /// that entry as proof the identity is live and spares the keys the removal
+    /// existed to destroy. Roster absence is the authority that sweep already
+    /// acts on; this guard asks the same question of the same source.
+    ///
+    /// It also settles the opposite case correctly. A marker written by a
+    /// removal that failed *before* delisting belongs to an identity still on
+    /// the roster, still on every screen, whose removal never happened — so
+    /// the write proceeds, which is what a user retrying that identity's
+    /// ordinary work expects.
     ///
     /// That is a completion, not a swallowed failure: the request was to bring
     /// the stored record up to date, there is no stored record, and a marker
@@ -1098,10 +1125,10 @@ impl AppContext {
         let scope = DetScope::Identity(&id);
         let existing: Option<StoredQualifiedIdentity> =
             kv.get(scope, IDENTITY_KEY).map_err(identity_err)?;
-        if existing.is_none() && self.is_identity_unloaded(&kv, &id)? {
+        if !identity_is_listed(&kv, &id)? && self.is_identity_unloaded(&kv, &id)? {
             tracing::debug!(
                 identity_id = %qualified_identity.identity.id(),
-                "Declined to store an identity that is not on this device and was unloaded from it"
+                "Declined to store an identity that is off this device's roster and was unloaded from it"
             );
             return Ok(());
         }
@@ -1279,8 +1306,7 @@ impl AppContext {
         &self,
         id: &Identifier,
     ) -> std::result::Result<bool, TaskError> {
-        let kv = self.det_kv()?;
-        Ok(load_identity_index(&kv)?.contains(&id.to_buffer()))
+        identity_is_listed(&self.det_kv()?, &id.to_buffer())
     }
 
     /// Read one stored qualified identity by id, hydrated like the list loads
@@ -2534,7 +2560,27 @@ pub(crate) mod test_staging {
         tempfile::TempDir,
         tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
     ) {
+        staged_context_with_prompt(network, None).await
+    }
+
+    /// [`staged_context_on`] with a secret-prompt host installed *before* the
+    /// wallet backend is built, which is the only point at which the prompt is
+    /// read into the `SecretAccess` chokepoint — so a test that needs a
+    /// password-protected identity has to pass it here rather than install it
+    /// afterwards.
+    async fn staged_context_with_prompt(
+        network: Network,
+        prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
+    ) -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    ) {
         let (ctx, store, dir) = ctx_with_vault_on(network).await;
+        if let Some(prompt) = prompt {
+            ctx.install_secret_prompt(prompt);
+        }
         let (tx, events) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
         ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
             tx,
@@ -2596,7 +2642,18 @@ pub(crate) mod test_staging {
         high: [u8; 32],
         medium: [u8; 32],
     ) -> StagedIdentity {
-        let (ctx, store, dir, events) = staged_context_on(network).await;
+        stage_identity_with_vaulted_keys_using_prompt(network, None, high, medium).await
+    }
+
+    /// [`stage_identity_with_vaulted_keys_on`] with a secret-prompt host, for a
+    /// test that has to seal or unseal a password-protected identity key.
+    pub(crate) async fn stage_identity_with_vaulted_keys_using_prompt(
+        network: Network,
+        prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        let (ctx, store, dir, events) = staged_context_with_prompt(network, prompt).await;
         let qi = qi_with_plaintext_and_derived(high, medium);
         stage_identity_record(&ctx, &store, &qi);
         StagedIdentity {
@@ -4742,6 +4799,120 @@ mod tests {
                 .expect("read the roster")
                 .contains(&staged.id),
             "with no unload marker, an update must still restore the record",
+        );
+    }
+
+    /// R2: the chokepoint guard must ask the roster, not the blob.
+    ///
+    /// `purge_identity_scope` is documented as three independent k/v writes,
+    /// and it runs *after* `index_remove_identity`. So a removal that stops
+    /// between them — its first delete failing, or the process ending — leaves
+    /// the identity delisted with its blob still on disk. A stale snapshot
+    /// written back then finds `existing` present, sails past a guard keyed on
+    /// blob presence, and calls `index_add_identity`: the identity is back on
+    /// the roster after its removal was reported complete, and the boot sweep
+    /// reads that roster entry as authority to spare its keys.
+    ///
+    /// Roster membership is the authority this PR already established for
+    /// exactly this question. The guard has to use it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_update_cannot_relist_an_identity_whose_purge_did_not_finish() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        // The snapshot an in-flight task is holding across its chain round-trip.
+        let stale = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        // The removal reaches its point of no return and stops there: marker
+        // written, identity delisted, blob not yet purged. Built by calling the
+        // same steps in the same order `delete_local_qualified_identity` does,
+        // because no failure has to be injected for this state to be reachable
+        // — the three purge writes are not atomic and the code says so.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id = staged.id.to_buffer();
+        staged
+            .ctx
+            .mark_identity_unloaded(&kv, &id)
+            .expect("record the unload");
+        index_remove_identity(&kv, &id).expect("delist the identity");
+
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_some(),
+            "precondition: the blob outlives the delisting, which is what makes a \
+             blob-presence check answer the wrong question"
+        );
+        assert!(
+            !staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read the roster"),
+            "precondition: the identity is already delisted"
+        );
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&stale)
+            .expect("declining is a completion, not an error");
+
+        assert!(
+            !staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read the roster"),
+            "a stale write must not put a removed identity back on the roster — the \
+             boot sweep reads that entry as proof the identity is live and spares \
+             the keys the removal was meant to destroy"
+        );
+    }
+
+    /// The other side of the same predicate. A removal that fails *before*
+    /// delisting leaves a marker on an identity that is still on the roster and
+    /// still on every screen — its removal never happened. That identity's
+    /// ordinary work must keep working: a balance refresh after a failed unload
+    /// attempt is not a resurrection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_marker_on_a_still_listed_identity_does_not_block_its_ordinary_writes() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let identity = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        // The shape a removal that failed at its delisting step leaves behind:
+        // marked, but never delisted.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        staged
+            .ctx
+            .mark_identity_unloaded(&kv, &staged.id.to_buffer())
+            .expect("record the unload");
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .expect("store the identity");
+
+        assert!(
+            staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read the roster"),
+            "an identity whose removal never got as far as delisting must keep \
+             working, marker or not"
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_some(),
+            "and its record must still be written"
         );
     }
 }

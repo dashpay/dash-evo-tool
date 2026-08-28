@@ -31,12 +31,17 @@ pub const IDENTITY_REMOVED: &str = "The identity was removed from this device.";
 /// `cleanup_deferred` flag does not actually establish. It does not establish
 /// that keys are present: the failing step may be a scope purge for a keyless
 /// identity, whose manifest names no placements at all. It does not establish
-/// that the next launch fixes it: the boot sweep is best-effort, skipped while
-/// a storage update runs, and it retains the manifest whenever the purge or
-/// vault delete fails again. So the message promises another automatic
-/// attempt, never completion — and still names the one precaution the user can
+/// that any particular launch fixes it: the boot sweep returns before doing
+/// anything while a storage update holds the migration lock or is in progress,
+/// and also when the k/v store or the manifest list cannot be read. Since this
+/// banner does not survive a restart, naming "the next time you open it" would
+/// spend the user's only warning on a launch that may make no attempt at all.
+///
+/// So the message promises a continuing automatic effort — which is true, the
+/// manifest is retained until every listed key is confirmed gone — and neither
+/// a schedule nor completion. It still names the one precaution the user can
 /// act on now, because a warning that only hedges gives them nothing to do.
-pub const IDENTITY_REMOVED_CLEANUP_PENDING: &str = "The identity was removed from this device, but its private keys may still be stored here. The app will try to clear them again the next time you open it. Until then, treat this device as if it still holds them.";
+pub const IDENTITY_REMOVED_CLEANUP_PENDING: &str = "The identity was removed from this device, but its private keys may still be stored here. The app will keep trying to clear them automatically. Until then, treat this device as if it still holds them.";
 
 /// Shown when the identity was removed but the voter identity tied to it was
 /// not. Naming the leftover matters: the user sees one entry disappear and one
@@ -55,7 +60,7 @@ pub const IDENTITY_REMOVED_VOTER_LEFT: &str = "The identity was removed, but its
 /// outcomes, so it must not be the one that tells the user less: the same
 /// uncertainty about key material applies, and the same thing can be done
 /// about it now.
-pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed — retry after restarting the app. Private keys for one or both of them may still be stored on this device. The app will try to clear them again the next time you open it. Until then, treat this device as if it still holds them.";
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed — retry after restarting the app. Private keys for one or both of them may still be stored on this device. The app will keep trying to clear them automatically. Until then, treat this device as if it still holds them.";
 
 /// Shown when a removal is refused because the storage update is still running.
 pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
@@ -187,11 +192,12 @@ mod tests {
     /// `cleanup_deferred` records that a step failed *after* delisting. It does
     /// not establish that key material is present — `purge_identity_scope` can
     /// fail for a keyless identity whose manifest holds no placements — and it
-    /// cannot promise the next launch fixes it, because the boot sweep is
-    /// skipped while a storage update runs and retains the manifest if the
-    /// purge or vault delete fails again. A banner that asserts either reads as
-    /// a guarantee, and the one thing worse than warning a user about key
-    /// residue is telling them it has been handled when it has not.
+    /// cannot promise that any particular launch fixes it, because the boot
+    /// sweep returns before doing anything while a storage update runs or when
+    /// the store cannot be read, and retains the manifest if the purge or vault
+    /// delete fails again. A banner that asserts either reads as a guarantee,
+    /// and the one thing worse than warning a user about key residue is telling
+    /// them it has been handled when it has not.
     #[test]
     fn cleanup_pending_banners_claim_no_more_than_the_flag_establishes() {
         for message in [
@@ -215,22 +221,28 @@ mod tests {
                 "the message must promise another attempt in place of the completion it \
                  cannot promise: {message}"
             );
+            assert!(
+                !message.contains("next time"),
+                "the sweep can return without attempting anything, and this banner does not \
+                 survive a restart — tying the attempt to one launch spends the user's only \
+                 warning on a launch that may do nothing: {message}"
+            );
         }
     }
 
     /// Honest uncertainty still has to leave the user something to do. A
     /// message that only hedges is its own failure — it reports a risk and
     /// hands over no way to act on it.
+    ///
+    /// With no launch to point at, the precaution *is* that action: it is the
+    /// only part of these messages the user can act on immediately, and it does
+    /// not depend on anything the app manages to do later.
     #[test]
     fn cleanup_pending_banners_still_give_the_user_something_to_do() {
         for message in [
             IDENTITY_REMOVED_CLEANUP_PENDING,
             IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING,
         ] {
-            assert!(
-                message.contains("open"),
-                "reopening the app is the action that triggers the next attempt: {message}"
-            );
             assert!(
                 message.contains("treat this device as if it still holds"),
                 "the safe assumption under uncertainty is the precaution the user can take \

@@ -1,14 +1,20 @@
-use crate::app::TaskResult;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dpns_voting::{DpnsVoteOperationId, DpnsVoteTargetKey};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
+use dash_sdk::dpp::consensus::ConsensusError;
+use dash_sdk::dpp::consensus::basic::BasicError;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::state_transition::masternode_vote_transition::MasternodeVoteTransition;
+use dash_sdk::dpp::state_transition::masternode_vote_transition::methods::MasternodeVoteTransitionMethodsV0;
+use dash_sdk::dpp::state_transition::{StateTransition, StateTransitionStructureValidation};
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
@@ -17,9 +23,21 @@ use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
 use dash_sdk::dpp::voting::votes::resource_vote::v0::ResourceVoteV0;
 use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
 use dash_sdk::platform::FetchMany;
-use dash_sdk::platform::transition::vote::PutVote;
+use dash_sdk::platform::Identifier;
+use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
+use dash_sdk::platform::transition::broadcast_request::BroadcastRequestForStateTransition;
+use dash_sdk::platform::transition::put_settings::PutSettings;
+use dash_sdk::platform::transition::waitable::Waitable;
 use dash_sdk::query_types::ContestedResource;
 use std::sync::Arc;
+
+#[derive(Debug)]
+pub(super) enum DpnsVoteAttempt {
+    Confirmed,
+    Unconfirmed(TaskError),
+    Rejected(TaskError),
+    FailedBeforeSubmission(TaskError),
+}
 
 /// Build `[Value::from("dash"), Value::Text(normalized_label.to_owned())]` for a DPNS vote poll.
 ///
@@ -32,20 +50,92 @@ fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
     ]
 }
 
+fn ensure_valid_vote_transition_structure(
+    state_transition: &StateTransition,
+    sdk: &Sdk,
+) -> Result<(), TaskError> {
+    let validation_result = state_transition.validate_structure(sdk.version());
+    if validation_result.is_valid()
+        || validation_result.errors.iter().all(|error| {
+            matches!(
+                error,
+                ConsensusError::BasicError(BasicError::UnsupportedFeatureError(_))
+            )
+        })
+    {
+        Ok(())
+    } else {
+        Err(TaskError::from(dash_sdk::Error::from(validation_result)))
+    }
+}
+
+fn classify_post_broadcast_error(error: dash_sdk::Error) -> DpnsVoteAttempt {
+    let rejected = matches!(
+        &error,
+        dash_sdk::Error::StateTransitionBroadcastError(broadcast_error)
+            if broadcast_error.cause.is_some()
+    );
+    let error = TaskError::from(error);
+    if rejected {
+        DpnsVoteAttempt::Rejected(error)
+    } else {
+        DpnsVoteAttempt::Unconfirmed(error)
+    }
+}
+
+fn classify_broadcast_error(error: dash_sdk::Error) -> DpnsVoteAttempt {
+    match &error {
+        dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(_)) => {
+            DpnsVoteAttempt::Rejected(TaskError::from(error))
+        }
+        dash_sdk::Error::StateTransitionBroadcastError(broadcast_error) => {
+            let rejected = broadcast_error.cause.is_some();
+            let error = TaskError::from(error);
+            if rejected {
+                DpnsVoteAttempt::Rejected(error)
+            } else {
+                DpnsVoteAttempt::FailedBeforeSubmission(error)
+            }
+        }
+        _ => DpnsVoteAttempt::Unconfirmed(TaskError::from(error)),
+    }
+}
+
+fn classify_broadcast_journal_result(
+    result: Result<bool, TaskError>,
+) -> Result<(), DpnsVoteAttempt> {
+    match result {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(DpnsVoteAttempt::FailedBeforeSubmission(
+            TaskError::DpnsVoteBroadcastPhaseNotMarked,
+        )),
+        Err(error) => Err(DpnsVoteAttempt::FailedBeforeSubmission(error)),
+    }
+}
+
+async fn broadcast_after_journal_mark<Mark, Broadcast, BroadcastFuture>(
+    mark_broadcast: Mark,
+    broadcast: Broadcast,
+) -> Result<(), DpnsVoteAttempt>
+where
+    Mark: FnOnce() -> Result<bool, TaskError>,
+    Broadcast: FnOnce() -> BroadcastFuture,
+    BroadcastFuture: std::future::Future<Output = Result<(), dash_sdk::Error>>,
+{
+    classify_broadcast_journal_result(mark_broadcast())?;
+    broadcast().await.map_err(classify_broadcast_error)
+}
+
 impl AppContext {
-    pub(super) async fn vote_on_dpns_name(
+    pub(super) async fn submit_dpns_vote(
         self: &Arc<Self>,
+        operation_id: DpnsVoteOperationId,
+        key: &DpnsVoteTargetKey,
         name: &str,
         vote_choice: ResourceVoteChoice,
-        voters: &[QualifiedIdentity],
+        qualified_identity: &QualifiedIdentity,
         sdk: &Sdk,
-        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        sender
-            .send(TaskResult::Refresh)
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
-
+    ) -> Result<DpnsVoteAttempt, TaskError> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
@@ -95,37 +185,55 @@ impl AppContext {
             });
         }
 
-        let mut vote_results = vec![];
-
-        for qualified_identity in voters.iter() {
-            if let Some((_, public_key)) = &qualified_identity.associated_voter_identity {
-                let resource_vote = ResourceVoteV0 {
-                    vote_poll: vote_poll.clone().into(),
-                    resource_vote_choice: vote_choice,
-                };
-                let vote = Vote::ResourceVote(ResourceVote::V0(resource_vote));
-
-                let result = vote
-                    .put_to_platform_and_wait_for_response(
-                        qualified_identity.identity.id(),
-                        public_key,
-                        sdk,
-                        qualified_identity,
-                        None,
-                    )
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| std::sync::Arc::new(TaskError::from(e)));
-
-                vote_results.push((name.to_owned(), vote_choice, result));
-            } else {
-                return Err(TaskError::NoVotingIdentity {
-                    identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),
-                });
-            }
+        let Some((_, public_key)) = &qualified_identity.associated_voter_identity else {
+            return Err(TaskError::NoVotingIdentity {
+                identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),
+            });
+        };
+        let resource_vote = ResourceVoteV0 {
+            vote_poll: vote_poll.into(),
+            resource_vote_choice: vote_choice,
+        };
+        let vote = Vote::ResourceVote(ResourceVote::V0(resource_vote));
+        let voter_pro_tx_hash = qualified_identity.identity.id();
+        let voting_public_key_hash = public_key
+            .public_key_hash()
+            .map_err(dash_sdk::Error::from)?;
+        let voting_identity_id = Identifier::create_voter_identifier(
+            voter_pro_tx_hash.as_bytes(),
+            &voting_public_key_hash,
+        );
+        let settings = PutSettings::default();
+        let nonce = sdk
+            .get_identity_nonce(voting_identity_id, true, Some(settings))
+            .await
+            .map_err(TaskError::from)?;
+        let state_transition = MasternodeVoteTransition::try_from_vote_with_signer(
+            vote,
+            qualified_identity,
+            voter_pro_tx_hash,
+            public_key,
+            nonce,
+            sdk.version(),
+            None,
+        )
+        .await
+        .map_err(dash_sdk::Error::from)?;
+        ensure_valid_vote_transition_structure(&state_transition, sdk)?;
+        state_transition.broadcast_request_for_state_transition()?;
+        if let Err(attempt) = broadcast_after_journal_mark(
+            || self.mark_dpns_vote_broadcast(operation_id, key),
+            || state_transition.broadcast(sdk, Some(settings)),
+        )
+        .await
+        {
+            return Ok(attempt);
         }
 
-        Ok(BackendTaskSuccessResult::DPNSVoteResults(vote_results))
+        match Vote::wait_for_response(sdk, state_transition, Some(settings)).await {
+            Ok(_) => Ok(DpnsVoteAttempt::Confirmed),
+            Err(error) => Ok(classify_post_broadcast_error(error)),
+        }
     }
 }
 
@@ -168,5 +276,128 @@ mod tests {
 
         // Then: the result matches the constant used by the vote poll tests.
         assert_eq!(normalized, "a11ce");
+    }
+
+    #[test]
+    fn non_broadcast_wait_error_is_unconfirmed() {
+        let attempt =
+            classify_post_broadcast_error(dash_sdk::Error::Generic("wait failed".to_owned()));
+
+        assert!(matches!(attempt, DpnsVoteAttempt::Unconfirmed(_)));
+    }
+
+    #[test]
+    fn broadcast_transport_error_after_phase_boundary_is_unconfirmed() {
+        let attempt =
+            classify_broadcast_error(dash_sdk::Error::Generic("connection refused".to_owned()));
+
+        assert!(matches!(attempt, DpnsVoteAttempt::Unconfirmed(_)));
+    }
+
+    #[test]
+    fn cause_less_broadcast_rejection_fails_before_submission() {
+        let attempt = classify_broadcast_error(
+            dash_sdk::error::StateTransitionBroadcastError {
+                code: 1,
+                message: "broadcast rejected".to_owned(),
+                cause: None,
+            }
+            .into(),
+        );
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+    }
+
+    #[test]
+    fn broadcast_consensus_error_is_rejected() {
+        let attempt = classify_broadcast_error(dash_sdk::Error::Protocol(
+            dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(ConsensusError::DefaultError)),
+        ));
+
+        assert!(matches!(attempt, DpnsVoteAttempt::Rejected(_)));
+    }
+
+    #[test]
+    fn journal_failure_before_broadcast_fails_before_submission() {
+        let attempt = classify_broadcast_journal_result(Err(TaskError::DpnsVoteTargetBusy))
+            .expect_err("a failed journal mark must prevent the broadcast");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+    }
+
+    #[test]
+    fn journal_no_op_before_broadcast_fails_before_submission() {
+        let attempt = classify_broadcast_journal_result(Ok(false))
+            .expect_err("a no-op journal mark must prevent the broadcast");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn durable_phase_boundary_precedes_broadcast() {
+        let marked = std::cell::Cell::new(false);
+        let broadcast_called = std::cell::Cell::new(false);
+
+        broadcast_after_journal_mark(
+            || {
+                marked.set(true);
+                Ok(true)
+            },
+            || async {
+                assert!(marked.get(), "journal must be marked before broadcasting");
+                broadcast_called.set(true);
+                Ok(())
+            },
+        )
+        .await
+        .expect("journal mark and broadcast succeed");
+
+        assert!(broadcast_called.get());
+    }
+
+    #[tokio::test]
+    async fn failed_phase_boundaries_prevent_broadcast() {
+        let broadcast_called = std::cell::Cell::new(false);
+
+        let attempt = broadcast_after_journal_mark(
+            || Ok(false),
+            || async {
+                broadcast_called.set(true);
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("a no-op journal mark must stop submission");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+        assert!(!broadcast_called.get());
+
+        let attempt = broadcast_after_journal_mark(
+            || Err(TaskError::DpnsVoteTargetBusy),
+            || async {
+                broadcast_called.set(true);
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("a failed journal write must stop submission");
+
+        assert!(matches!(
+            attempt,
+            DpnsVoteAttempt::FailedBeforeSubmission(_)
+        ));
+        assert!(!broadcast_called.get());
     }
 }

@@ -85,7 +85,10 @@ impl KvStore for InMemoryKv {
 pub(crate) struct FailingKv {
     inner: InMemoryKv,
     fail_reads: AtomicBool,
+    fail_gets: Mutex<Option<(String, usize)>>,
     puts: AtomicUsize,
+    fail_puts: Mutex<Option<(String, usize)>>,
+    fail_deletes: Mutex<Option<(String, usize)>>,
 }
 
 impl FailingKv {
@@ -96,15 +99,46 @@ impl FailingKv {
         self.fail_reads.store(fail, Ordering::Relaxed);
     }
 
+    /// Fail the next `count` reads whose key contains `key_fragment`.
+    pub(crate) fn fail_next_gets_containing(&self, key_fragment: &str, count: usize) {
+        *self.fail_gets.lock().unwrap() = Some((key_fragment.to_owned(), count));
+    }
+
     /// How many `put` calls have reached the store.
     pub(crate) fn put_count(&self) -> usize {
         self.puts.load(Ordering::Relaxed)
+    }
+
+    /// Fail the next `count` writes whose key contains `key_fragment`.
+    pub(crate) fn fail_next_puts_containing(&self, key_fragment: &str, count: usize) {
+        *self.fail_puts.lock().unwrap() = Some((key_fragment.to_owned(), count));
+    }
+
+    /// Fail the next `count` deletes whose key contains `key_fragment`.
+    pub(crate) fn fail_next_deletes_containing(&self, key_fragment: &str, count: usize) {
+        *self.fail_deletes.lock().unwrap() = Some((key_fragment.to_owned(), count));
     }
 }
 
 impl KvStore for FailingKv {
     fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
         if self.fail_reads.load(Ordering::Relaxed) {
+            return Err(KvError::LockPoisoned);
+        }
+        let should_fail = {
+            let mut failure = self.fail_gets.lock().unwrap();
+            let should_fail = failure
+                .as_ref()
+                .is_some_and(|(fragment, remaining)| *remaining > 0 && key.contains(fragment));
+            if should_fail && let Some((_, remaining)) = failure.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    *failure = None;
+                }
+            }
+            should_fail
+        };
+        if should_fail {
             return Err(KvError::LockPoisoned);
         }
         self.inner.get(scope, key)
@@ -114,10 +148,42 @@ impl KvStore for FailingKv {
         // Counted before delegating: an attempted write is what the assertions
         // are about, whether or not the store would have accepted it.
         self.puts.fetch_add(1, Ordering::Relaxed);
+        let should_fail = {
+            let mut failure = self.fail_puts.lock().unwrap();
+            let should_fail = failure
+                .as_ref()
+                .is_some_and(|(fragment, remaining)| *remaining > 0 && key.contains(fragment));
+            if should_fail && let Some((_, remaining)) = failure.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    *failure = None;
+                }
+            }
+            should_fail
+        };
+        if should_fail {
+            return Err(KvError::LockPoisoned);
+        }
         self.inner.put(scope, key, value)
     }
 
     fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+        let should_fail = {
+            let mut failure = self.fail_deletes.lock().unwrap();
+            let should_fail = failure
+                .as_ref()
+                .is_some_and(|(fragment, remaining)| *remaining > 0 && key.contains(fragment));
+            if should_fail && let Some((_, remaining)) = failure.as_mut() {
+                *remaining -= 1;
+                if *remaining == 0 {
+                    *failure = None;
+                }
+            }
+            should_fail
+        };
+        if should_fail {
+            return Err(KvError::LockPoisoned);
+        }
         self.inner.delete(scope, key)
     }
 

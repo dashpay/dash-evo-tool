@@ -12,6 +12,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
+use crate::model::dpns_voting::{DpnsScheduledVoteClearOutcome, DpnsVoteOperationId};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -31,7 +32,6 @@ use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
-use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
@@ -327,6 +327,11 @@ pub enum BackendTaskContext {
     TokenRewardEstimate(IdentityTokenIdentifier),
     /// The destructive per-network database clear.
     ClearNetworkDatabase,
+    /// One durable DPNS vote operation.
+    DpnsVoteOperation {
+        network: Network,
+        operation_id: DpnsVoteOperationId,
+    },
     /// A scheduled-vote sweep for one network.
     ScheduledVoteSweep { network: Network },
     /// Receive-address derivation for one wallet's deposit flow.
@@ -470,6 +475,21 @@ impl From<&BackendTask> for BackendTaskContext {
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
+            BackendTask::ContestedResourceTask(ContestedResourceTask::SubmitDpnsVoteOperation(
+                operation,
+                _,
+                _,
+                network,
+            )) => Self::DpnsVoteOperation {
+                network: *network,
+                operation_id: operation.id,
+            },
+            BackendTask::ContestedResourceTask(
+                ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id, network),
+            ) => Self::DpnsVoteOperation {
+                network: *network,
+                operation_id: *operation_id,
+            },
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {
                     seed_hash: *seed_hash,
@@ -530,8 +550,6 @@ pub enum BackendTaskSuccessResult {
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
-    CastScheduledVote(ScheduledDPNSVote),
     /// A scheduled-vote sweep finished without a query, identity or Platform
     /// failure. The app uses this acknowledgement to retire a preserved
     /// migration eligibility cutoff only after the recovery attempt succeeds.
@@ -539,6 +557,11 @@ pub enum BackendTaskSuccessResult {
         network: Network,
         preserve_eligibility_since_ms: Option<u64>,
     },
+    DpnsVoteOperationUpdated {
+        network: Network,
+        operation_id: DpnsVoteOperationId,
+    },
+    ScheduledVotesCleared(Vec<DpnsScheduledVoteClearOutcome>),
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
     /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
     ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),
@@ -927,11 +950,6 @@ pub enum BackendTaskSuccessResult {
 impl BackendTaskSuccessResult {
     fn contains_dapi_reachability_failure(&self) -> bool {
         match self {
-            Self::DPNSVoteResults(results) => results.iter().any(|(_, _, result)| {
-                result
-                    .as_ref()
-                    .is_err_and(|error| error.contains_dapi_reachability_failure())
-            }),
             Self::RefreshedWallet { warning } => warning
                 .as_ref()
                 .is_some_and(|error| error.contains_dapi_reachability_failure()),
@@ -941,17 +959,6 @@ impl BackendTaskSuccessResult {
 
     fn contextualize_dapi_availability(self, availability: DapiAddressAvailability) -> Self {
         match self {
-            Self::DPNSVoteResults(results) => Self::DPNSVoteResults(
-                results
-                    .into_iter()
-                    .map(|(name, choice, result)| {
-                        let result = result.map_err(|error| {
-                            error.contextualize_shared_dapi_availability(availability)
-                        });
-                        (name, choice, result)
-                    })
-                    .collect(),
-            ),
             Self::RefreshedWallet { warning } => Self::RefreshedWallet {
                 warning: warning
                     .map(|error| error.contextualize_shared_dapi_availability(availability)),
@@ -1660,29 +1667,6 @@ mod tests {
     }
 
     #[test]
-    fn dapi_context_maps_errors_embedded_in_success_results() {
-        let result = contextualize_dapi_result(
-            Ok(BackendTaskSuccessResult::DPNSVoteResults(vec![(
-                "alice".to_owned(),
-                ResourceVoteChoice::Lock,
-                Err(Arc::new(dapi_connection_refused_error())),
-            )])),
-            || DapiAddressAvailability {
-                configured_total: 1,
-                live_count: 0,
-            },
-        );
-
-        let Ok(BackendTaskSuccessResult::DPNSVoteResults(results)) = result else {
-            panic!("expected DPNS vote results");
-        };
-        assert!(matches!(
-            results[0].2,
-            Err(ref error) if matches!(error.as_ref(), TaskError::DapiAllAddressesExhausted { .. })
-        ));
-    }
-
-    #[test]
     fn dapi_context_maps_spawned_dpns_query_task_result() {
         let result = contextualize_dapi_task_result(
             TaskResult::unattributed_error(dapi_connection_refused_error()),
@@ -1788,6 +1772,22 @@ mod tests {
         assert_eq!(
             BackendTaskContext::from(&task),
             BackendTaskContext::ClearNetworkDatabase
+        );
+    }
+
+    #[test]
+    fn dpns_vote_context_preserves_the_originating_network() {
+        let operation_id = DpnsVoteOperationId::from_bytes([7; 16]);
+        let task = BackendTask::ContestedResourceTask(
+            ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id, Network::Mainnet),
+        );
+
+        assert_eq!(
+            BackendTaskContext::from(&task),
+            BackendTaskContext::DpnsVoteOperation {
+                network: Network::Mainnet,
+                operation_id,
+            }
         );
     }
 

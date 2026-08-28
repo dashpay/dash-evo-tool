@@ -39,11 +39,9 @@ pub struct ContestedName {
 }
 
 impl ContestedName {
-    /// Whether `voter_id` still has an actionable vote to cast on this contest:
-    /// the contest is in a votable state and the voter has not already recorded
-    /// a vote on it. Drives the Masternodes card DPNS status line (§10.1).
-    pub fn is_open_for_voter(&self, voter_id: &Identifier) -> bool {
-        self.state.state_is_votable() && !self.my_votes.keys().any(|(id, _, _)| id == voter_id)
+    /// Whether the contest's state still accepts votes.
+    pub fn is_votable(&self) -> bool {
+        self.state.state_is_votable()
     }
 
     /// The pending DPNS username this contest represents for `identity_id`, if
@@ -199,15 +197,39 @@ pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Op
 ///
 /// Composed by a display-layer read of existing contest + scheduled-vote state
 /// (no new backend concept). Feeds the count-first status line: open contests
-/// take precedence, then a pending scheduled vote, then "no open contests"
-/// (requirements §10.1).
+/// take precedence, then failed or pending scheduled votes, then no open
+/// contests (requirements §10.1).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MasternodeVoteStateSummary {
+    #[default]
+    Ready,
+    Checking,
+    Unavailable,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MasternodeContestSummary {
-    /// Number of open contests this node can still vote on.
+    /// Number of active contests, including contests with an existing vote.
     pub open_contest_count: usize,
+    /// Number of active contests whose proved state is `Not voted`.
+    pub needs_vote_count: usize,
+    /// Whether every active contest has a proved current-vote state.
+    pub vote_state: MasternodeVoteStateSummary,
     /// Whether the node has at least one pending (not-yet-executed) scheduled
-    /// vote, reusing the DPNS Scheduled Votes screen's existing state.
+    /// vote in the authoritative operation journal.
     pub has_scheduled_vote: bool,
+    /// Whether a scheduled target reached a terminal failure that needs review.
+    pub has_failed_scheduled_vote: bool,
+}
+
+impl MasternodeContestSummary {
+    /// Represent a failed summary read without implying that no contests exist.
+    pub fn unavailable() -> Self {
+        Self {
+            vote_state: MasternodeVoteStateSummary::Unavailable,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Encode, Decode, Clone)]
@@ -225,7 +247,6 @@ pub struct Contestant {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 
     fn contest(state: ContestState) -> ContestedName {
         ContestedName {
@@ -263,43 +284,16 @@ mod tests {
     }
 
     #[test]
-    fn open_for_voter_when_votable_and_not_yet_voted() {
-        let voter = Identifier::from([7u8; 32]);
-        assert!(contest(ContestState::Ongoing).is_open_for_voter(&voter));
-        assert!(contest(ContestState::Joinable).is_open_for_voter(&voter));
-    }
-
-    #[test]
-    fn not_open_when_state_not_votable() {
-        let voter = Identifier::from([7u8; 32]);
-        assert!(!contest(ContestState::Locked).is_open_for_voter(&voter));
-        assert!(!contest(ContestState::Unknown).is_open_for_voter(&voter));
-        assert!(
-            !contest(ContestState::WonBy(Identifier::from([9u8; 32]))).is_open_for_voter(&voter)
-        );
-    }
-
-    #[test]
-    fn not_open_when_voter_already_voted() {
-        let voter = Identifier::from([7u8; 32]);
-        let mut c = contest(ContestState::Ongoing);
-        c.my_votes.insert(
-            (voter, PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0),
-            ResourceVoteChoice::Abstain,
-        );
-        assert!(!c.is_open_for_voter(&voter));
-    }
-
-    #[test]
-    fn open_when_a_different_voter_already_voted() {
-        let voter = Identifier::from([7u8; 32]);
-        let other = Identifier::from([8u8; 32]);
-        let mut c = contest(ContestState::Ongoing);
-        c.my_votes.insert(
-            (other, PrivateKeyTarget::PrivateKeyOnVoterIdentity, 0),
-            ResourceVoteChoice::Abstain,
-        );
-        assert!(c.is_open_for_voter(&voter));
+    fn contest_is_votable_only_in_open_states() {
+        for (state, expected) in [
+            (ContestState::Unknown, false),
+            (ContestState::Joinable, true),
+            (ContestState::Ongoing, true),
+            (ContestState::WonBy(Identifier::from([9u8; 32])), false),
+            (ContestState::Locked, false),
+        ] {
+            assert_eq!(contest(state).is_votable(), expected);
+        }
     }
 
     // ----------------------------------------------------------------

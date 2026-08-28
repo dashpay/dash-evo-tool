@@ -1,6 +1,8 @@
 pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
+mod dpns_vote_operations;
+mod dpns_vote_state;
 pub mod feature_gate;
 mod identity_db;
 pub(crate) mod identity_load_registry;
@@ -18,6 +20,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::ExperimentalFeature;
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
+use crate::model::dpns_voting::{DpnsVoteOperationId, DpnsVoteTargetKey};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
@@ -59,6 +62,10 @@ use crate::model::user_role::{UserRole, UserRoleCell};
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 pub const SDK_THREAD_STACK_SIZE: usize = 4 * 1024 * 1024; // 4 MB stack size for each worker thread
 
+type DpnsVoteDiagnosticKey = (DpnsVoteOperationId, DpnsVoteTargetKey);
+type DpnsVoteDiagnosticEntry = (u64, Arc<TaskError>);
+type DpnsVoteDiagnostics = BTreeMap<DpnsVoteDiagnosticKey, DpnsVoteDiagnosticEntry>;
+
 /// A guard that ensures settings cache invalidation happens atomically
 ///
 /// This guard holds a write lock on the cached settings, preventing reads
@@ -76,6 +83,54 @@ impl Drop for ContactRequestActionClaim<'_> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.request_id);
+    }
+}
+
+const MAX_CONCURRENT_DPNS_VOTERS: usize = 4;
+
+#[derive(Debug)]
+pub(crate) struct DpnsVoteDispatchCoordinator {
+    voter_gates: Mutex<HashMap<Identifier, Arc<tokio::sync::Mutex<()>>>>,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for DpnsVoteDispatchCoordinator {
+    fn default() -> Self {
+        Self {
+            voter_gates: Mutex::new(HashMap::new()),
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DPNS_VOTERS)),
+        }
+    }
+}
+
+pub(crate) struct DpnsVoteDispatchGuard {
+    _voter: tokio::sync::OwnedMutexGuard<()>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl DpnsVoteDispatchCoordinator {
+    pub(crate) async fn acquire(
+        &self,
+        voter_id: Identifier,
+    ) -> Result<DpnsVoteDispatchGuard, TaskError> {
+        let voter_gate = self
+            .voter_gates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(voter_id)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        // Take the per-voter gate first so queued work for one busy voter
+        // cannot consume all of the cross-voter capacity.
+        let voter = voter_gate.lock_owned().await;
+        let permit = Arc::clone(&self.permits)
+            .acquire_owned()
+            .await
+            .map_err(|_| TaskError::DpnsVoteCoordinatorUnavailable)?;
+        Ok(DpnsVoteDispatchGuard {
+            _voter: voter,
+            _permit: permit,
+        })
     }
 }
 
@@ -142,6 +197,8 @@ pub struct AppContext {
     /// DET-owned application data that must outlive a single network's
     /// wallet persister. Cheap to clone (`Arc<DetKv>` is `Arc`-backed).
     app_kv: Arc<DetKv>,
+    #[cfg(test)]
+    det_kv_override: Mutex<Option<DetKv>>,
     /// Shared encrypted HD-seed vault at `<data_dir>/secrets/det-secrets.pwsvault`.
     /// Opened once and handed to every per-network `AppContext` and to the
     /// `WalletBackend`, because the file backend takes an exclusive advisory
@@ -166,6 +223,17 @@ pub struct AppContext {
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
+    /// Serializes operation journal writes and target-lock acquisition.
+    dpns_vote_operation_guard: Mutex<()>,
+    /// Serializes all nonce-consuming vote submissions per voter across tasks,
+    /// while bounding unrelated voters globally.
+    pub(crate) dpns_vote_dispatch: DpnsVoteDispatchCoordinator,
+    /// Runs crash recovery before this context first accepts vote work.
+    /// Re-armed only if targeted recovery cannot persist after an executor error.
+    pub(crate) dpns_vote_recovery: tokio::sync::Mutex<bool>,
+    /// Full in-process diagnostics keyed to sanitized durable outcomes.
+    dpns_vote_diagnostics: Mutex<DpnsVoteDiagnostics>,
+    dpns_vote_diagnostic_sequence: AtomicU64,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -487,6 +555,8 @@ impl AppContext {
             cached_settings: RwLock::new(None),
             pending_dpns_usernames: RwLock::new(HashMap::new()),
             app_kv,
+            #[cfg(test)]
+            det_kv_override: Mutex::new(None),
             secret_store,
             subtasks,
             token_balance_refresh_in_flight: AtomicBool::new(false),
@@ -494,6 +564,11 @@ impl AppContext {
             migration_status: Arc::new(MigrationStatus::new_idle()),
             migration_run: tokio::sync::Mutex::new(()),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
+            dpns_vote_operation_guard: Mutex::new(()),
+            dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
+            dpns_vote_recovery: tokio::sync::Mutex::new(false),
+            dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),
+            dpns_vote_diagnostic_sequence: AtomicU64::new(0),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
@@ -583,7 +658,24 @@ impl AppContext {
     /// backend is not yet initialized. Single accessor shared by every
     /// `context/*_db.rs` module.
     pub(crate) fn det_kv(&self) -> Result<DetKv, TaskError> {
+        #[cfg(test)]
+        if let Some(kv) = self
+            .det_kv_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            return Ok(kv);
+        }
         Ok(self.wallet_backend()?.kv())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_det_kv_override_for_test(&self, kv: DetKv) {
+        *self
+            .det_kv_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(kv);
     }
 
     /// Shared encrypted HD-seed vault. Cheap clone — `Arc<SecretStore>` is
@@ -2043,5 +2135,64 @@ mod tests {
             Some(user),
             "a User selection is kept by the sanitizer",
         );
+    }
+
+    async fn observe_dispatch(
+        coordinator: Arc<DpnsVoteDispatchCoordinator>,
+        voter_id: Identifier,
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        maximum: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let _guard = coordinator.acquire(voter_id).await.unwrap();
+        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+        maximum.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        active.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn dpns_dispatch_serializes_independent_operations_for_one_voter() {
+        let coordinator = Arc::new(DpnsVoteDispatchCoordinator::default());
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let maximum = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let voter = Identifier::from([7; 32]);
+        let first = tokio::spawn(observe_dispatch(
+            Arc::clone(&coordinator),
+            voter,
+            Arc::clone(&active),
+            Arc::clone(&maximum),
+        ));
+        let second = tokio::spawn(observe_dispatch(
+            coordinator,
+            voter,
+            Arc::clone(&active),
+            Arc::clone(&maximum),
+        ));
+        first.await.unwrap();
+        second.await.unwrap();
+
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dpns_dispatch_bounds_independent_voters() {
+        let coordinator = Arc::new(DpnsVoteDispatchCoordinator::default());
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let maximum = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tasks = (0..8)
+            .map(|voter| {
+                tokio::spawn(observe_dispatch(
+                    Arc::clone(&coordinator),
+                    Identifier::from([voter; 32]),
+                    Arc::clone(&active),
+                    Arc::clone(&maximum),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        assert_eq!(maximum.load(Ordering::SeqCst), MAX_CONCURRENT_DPNS_VOTERS);
     }
 }

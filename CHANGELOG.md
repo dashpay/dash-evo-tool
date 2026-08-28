@@ -79,15 +79,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Expert mode is on) for loading and managing masternode and evonode (HP
   masternode) identities by ProTxHash. Loaded nodes appear as a card list
   showing type, voter-key readiness, key status, and DPNS-voting status;
-  opening a card shows a detail view with inline DPNS contested-name voting,
-  Withdraw / Top up / Transfer actions, key management, and — for evonodes
-  only — a link to claim token rewards. The load form accepts an optional
-  password to encrypt the entered voting/owner/payout keys immediately
-  instead of only after a separate step; leaving it blank keeps today's
-  behavior, and protection can always be added later from the key screen.
-  This replaces loading a masternode or evonode from *Identities → Load
-  Existing Identity → Show Advanced Options*, which no longer offers those
-  identity types.
+  opening a card shows a detail view with Withdraw / Top up / Transfer
+  actions, key management, a "DPNS Voting" button that opens the DPNS Active
+  contests screen, and — for evonodes only — a link to claim token rewards.
+  The load form accepts an optional password to encrypt the entered
+  voting/owner/payout keys immediately instead of only after a separate
+  step; leaving it blank keeps today's behavior, and protection can always
+  be added later from the key screen. This replaces loading a masternode or
+  evonode from *Identities → Load Existing Identity → Show Advanced
+  Options*, which no longer offers those identity types.
+
+- **DPNS voting redesigned around the Active contests screen**: casting,
+  batching, and scheduling DPNS name-contest votes across your masternodes
+  now happens in one place — DPNS → Active contests. Contests are grouped
+  into Needs your vote / Voted / Not votable by your nodes, with a Review
+  and cast step for casting now or scheduling later, plus a reminder that
+  Platform allows up to four changes after the initial vote. The
+  Masternodes detail screen no longer casts votes inline — its "DPNS
+  Voting" button takes you straight to Active contests instead.
 
 - **Wallet/identity indicator on more screens (rollout in progress)**: the
   wallet and identity picker previously shown only at the top of the Identity

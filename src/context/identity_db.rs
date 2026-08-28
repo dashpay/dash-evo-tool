@@ -1065,6 +1065,30 @@ impl AppContext {
     /// [`identity_record_lock`](Self::identity_record_lock) across a wider
     /// read-modify-write span. Calling it without that guard reopens the
     /// lost-update race the guard exists to close.
+    ///
+    /// # Declining an unloaded identity
+    ///
+    /// This method creates a record when none exists — an "update" of an
+    /// absent identity writes the blob and re-lists it on the roster. That is
+    /// deliberate and useful for a caller repairing a missing roster entry, but
+    /// it also means every update path can resurrect an identity the user
+    /// unloaded, if the removal lands between that caller's read and its write.
+    /// So a write against an absent record whose id carries an unload marker is
+    /// declined and reported `Ok(())`.
+    ///
+    /// That is a completion, not a swallowed failure: the request was to bring
+    /// the stored record up to date, there is no stored record, and a marker
+    /// says the absence is what the user asked for. The requested end state —
+    /// no unwanted record — is exactly what the caller gets.
+    ///
+    /// # Invariant this rests on
+    ///
+    /// **A path that should create a record retires the marker first.** Today
+    /// that is [`Self::insert_local_qualified_identity`], which clears it under
+    /// the same record guard as the write, and
+    /// [`Self::store_discovered_identity`] for a user-requested pass. A new
+    /// deliberate-insert path that skips that step will find its writes
+    /// silently declined for any identity the user once unloaded.
     pub(crate) fn write_local_qualified_identity_locked(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -1074,6 +1098,13 @@ impl AppContext {
         let scope = DetScope::Identity(&id);
         let existing: Option<StoredQualifiedIdentity> =
             kv.get(scope, IDENTITY_KEY).map_err(identity_err)?;
+        if existing.is_none() && self.is_identity_unloaded(&kv, &id)? {
+            tracing::debug!(
+                identity_id = %qualified_identity.identity.id(),
+                "Declined to store an identity that is not on this device and was unloaded from it"
+            );
+            return Ok(());
+        }
         let (wallet_hash, wallet_index) = existing
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index))
@@ -1945,6 +1976,20 @@ impl AppContext {
     /// this network, so it is bounded by user action rather than by anything
     /// automatic. A change that lets some automatic path write these would
     /// break that bound and needs to be weighed here.
+    ///
+    /// # Why the migration import consults this too
+    ///
+    /// The legacy `data.db` rows are never deleted, so the material to
+    /// re-import an unloaded identity is permanent: the door does not close
+    /// when the upgrade succeeds, it needs only one failed attempt at any point
+    /// afterwards. `record_identity_deletion` covers most of that — a removal
+    /// records its id in the migration progress set, and the retry skips it —
+    /// but not all of it. That recording is a no-op once migration reports
+    /// success, and the devnet wipe clears identities without touching the
+    /// progress set at all, so a wipe followed by a resumed pass would hand
+    /// every cleared identity back. This marker is consulted independently of
+    /// migration state and of the progress key, so the guarantee does not rest
+    /// on a condition the user cannot see.
     fn mark_identity_unloaded(
         &self,
         kv: &DetKv,
@@ -4617,6 +4662,86 @@ mod tests {
                 .expect("read the marker"),
             "loading it back must retire the marker, or the next automatic pass \
              stops refreshing an identity the user has again",
+        );
+    }
+
+    /// The chokepoint guard, reached through the ordinary update path rather
+    /// than through discovery: every fund-moving task (top-up, transfer,
+    /// withdrawal, add-key, DPNS registration) holds a `QualifiedIdentity` it
+    /// read earlier and writes it back when the chain work finishes. A removal
+    /// landing in that window would otherwise re-create the record — a zombie
+    /// identity, listed on every screen, whose private keys are already gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_update_cannot_resurrect_an_identity_the_user_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        // The snapshot a task in flight is holding.
+        let stale = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&stale)
+            .expect("declining is a completion, not an error");
+
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "an update must not re-create the record of an unloaded identity",
+        );
+        assert!(
+            !staged
+                .ctx
+                .local_identity_ids()
+                .expect("read the roster")
+                .contains(&staged.id),
+            "and must not put it back on the roster, which is what authorizes the \
+             vault-cleanup sweep to destroy its keys",
+        );
+    }
+
+    /// The guard is narrow on purpose. Creating a record for an absent identity
+    /// is a real service to a caller repairing a lost roster entry, and only an
+    /// unload marker withdraws it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_update_still_creates_a_record_for_an_identity_never_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let identity = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        // Gone from storage without ever being unloaded — the shape a lost
+        // write or an interrupted migration leaves behind.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id = staged.id.to_buffer();
+        kv.delete(DetScope::Identity(&id), IDENTITY_KEY)
+            .expect("drop the record");
+        index_remove_identity(&kv, &id).expect("delist the identity");
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .expect("store the identity");
+
+        assert!(
+            staged
+                .ctx
+                .local_identity_ids()
+                .expect("read the roster")
+                .contains(&staged.id),
+            "with no unload marker, an update must still restore the record",
         );
     }
 }

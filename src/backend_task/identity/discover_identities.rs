@@ -287,24 +287,21 @@ impl AppContext {
         // between them, the unload check and the alias carry-over all happen
         // under a single hold of the identity's record lock, so a removal
         // cannot land between this pass's read and its write.
-        if !self.store_discovered_identity(
+        let stored = self.store_discovered_identity(
             &mut qualified_identity,
             &Some((seed_hash, identity_index)),
             settings.intent,
-        )? {
-            return Ok(false);
-        }
+        )?;
 
-        if let Ok(mut wallet_guard) = wallet.write() {
-            wallet_guard
-                .identities
-                .insert(identity_index, qualified_identity.identity.clone());
+        adopt_discovered_identity(wallet, identity_index, &qualified_identity.identity, stored);
+
+        if stored {
+            tracing::info!(
+                identity_id = %identity_id,
+                "Successfully loaded discovered identity"
+            );
         }
-        tracing::info!(
-            identity_id = %identity_id,
-            "Successfully loaded discovered identity"
-        );
-        Ok(true)
+        Ok(stored)
     }
 
     /// Build a QualifiedIdentity from a fetched Identity with wallet key derivation paths.
@@ -465,5 +462,82 @@ impl AppContext {
             status: IdentityStatus::Unknown,
             network: self.network,
         })
+    }
+}
+
+/// Adopt a discovered identity into the wallet's in-memory identity map, but
+/// only when the store actually kept it.
+///
+/// The map is a second place a refused identity comes back. The wallet views
+/// read it directly, so an identity the user unloaded would reappear there for
+/// the rest of the session even with storage correctly refusing it — a gate
+/// whose answer the caller ignores is a check-then-act with extra steps. The
+/// outcome is a parameter rather than a caller-side `if` so the coupling is
+/// enforced in one place and can be tested without a network.
+fn adopt_discovered_identity(
+    wallet: &Arc<RwLock<Wallet>>,
+    identity_index: u32,
+    identity: &dash_sdk::platform::Identity,
+    stored: bool,
+) {
+    if !stored {
+        return;
+    }
+    if let Ok(mut wallet_guard) = wallet.write() {
+        wallet_guard
+            .identities
+            .insert(identity_index, identity.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::wallet::test_support::open_wallet;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    fn identity(byte: u8) -> Identity {
+        Identity::create_basic_identity(Identifier::from([byte; 32]), PlatformVersion::latest())
+            .expect("basic identity")
+    }
+
+    /// A refusal the caller ignores is not a refusal. Storage declining an
+    /// unloaded identity is undone if the wallet's in-memory map adopts it
+    /// anyway: the wallet views read that map directly, so the identity the
+    /// user unloaded is back on screen until the app restarts.
+    #[test]
+    fn a_refused_discovery_leaves_the_wallets_identity_map_untouched() {
+        let wallet = Arc::new(RwLock::new(open_wallet()));
+
+        adopt_discovered_identity(&wallet, 3, &identity(7), false);
+
+        assert!(
+            wallet
+                .read()
+                .expect("read the wallet")
+                .identities
+                .is_empty(),
+            "an identity the store refused must not enter the wallet's identity map",
+        );
+    }
+
+    #[test]
+    fn a_stored_discovery_is_adopted_at_its_derivation_index() {
+        let wallet = Arc::new(RwLock::new(open_wallet()));
+
+        adopt_discovered_identity(&wallet, 3, &identity(7), true);
+
+        assert_eq!(
+            wallet
+                .read()
+                .expect("read the wallet")
+                .identities
+                .get(&3)
+                .map(|identity| identity.id()),
+            Some(Identifier::from([7u8; 32])),
+            "a stored identity must be adopted under the index it was found at",
+        );
     }
 }

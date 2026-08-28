@@ -70,10 +70,16 @@ pub struct IdentityHubScreen {
     /// contact rows, load guard, pending tasks and cached profile — would never
     /// be reset, which is the original bug with an extra step.
     ///
-    /// An entry whose removal failed stays, which is inert: it is one entry per
-    /// identity the user tried to unload this session, and it can only ever
-    /// match a later result removing that same identity — precisely when the
-    /// reset is wanted anyway.
+    /// An entry whose removal failed is never consumed — a failure before
+    /// delisting sends no result, and the screen's failure signal names no
+    /// identity, so it cannot know which of several in-flight unloads to drop.
+    /// The set therefore grows by one `Identifier` per failed attempt and never
+    /// shrinks for one, for the life of the screen. Bounded by user action and
+    /// gone when the screen is, so the size is not the concern; that a stale
+    /// entry cannot misfire is, and it cannot: the check is keyed on the
+    /// identities a *result* removed, never on this set, so a stale entry can
+    /// only ever match a later result removing that same identity — precisely
+    /// when the reset is wanted anyway.
     pending_unloads: BTreeSet<Identifier>,
     /// Contacts-tab state. Owned here to debounce
     /// [`crate::backend_task::dashpay::DashPayTask::LoadContacts`] to a
@@ -1287,6 +1293,54 @@ mod tests {
         assert!(
             screen.pending_unloads.is_empty(),
             "each answered unload must retire its own record"
+        );
+    }
+
+    /// A removal that fails before delisting sends no `RemovedIdentities`, so
+    /// its record is never consumed. That entry is inert rather than harmless
+    /// by assumption: the check is keyed on the identities a *result* removed,
+    /// never on the pending set, so a stale entry can only ever match a later
+    /// result removing that same identity — which is when the reset is wanted.
+    /// It cannot cause a spurious reset for any other identity.
+    ///
+    /// Asserted rather than argued because the alternative — clearing on the
+    /// error path — is not available: `display_message` carries a string and a
+    /// severity, no identity, so the screen cannot know which of several
+    /// in-flight unloads failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_unloads_stale_record_never_resets_another_identitys_caches() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let failed = seed_user_identity(&context, 1);
+        let elsewhere = seed_user_identity(&context, 2);
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // Dispatched, then the removal fails before delisting: no result ever
+        // arrives for it, so its record stays.
+        screen.capture_unload_dispatch(&AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::RemoveIdentity {
+                identity_id: failed,
+            },
+        )));
+
+        // Caches are warm and belong to the identity still in use.
+        assert!(screen.contacts_state.claim_load());
+
+        // An unrelated identity is removed — by another device, or by a screen
+        // that is not this one. Nothing live names it, and this screen never
+        // dispatched it.
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![elsewhere],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            !screen.contacts_state.claim_load(),
+            "a removal naming no identity this screen cares about must not reset its caches"
+        );
+        assert!(
+            screen.pending_unloads.contains(&failed),
+            "and must not consume the failed unload's record, which belongs to another identity"
         );
     }
 

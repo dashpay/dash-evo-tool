@@ -26,7 +26,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Context};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::home::HomeState;
@@ -58,15 +58,23 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
-    /// Identity of an unload this screen dispatched, retained until its result
-    /// lands. Neither selection pointer survives the wait: a frame can render
-    /// before the result arrives and reconcile both of them onto the identity
-    /// that replaced this one.
+    /// Identities this screen dispatched an unload for, each retained until its
+    /// own result lands. Neither selection pointer survives that wait: a frame
+    /// can render before the result arrives and reconcile both of them onto the
+    /// identity that replaced this one.
     ///
-    /// A removal that fails leaves the record set, which is inert: the next
-    /// dispatch overwrites it, and until then it can only match a result that
-    /// removes that same identity — precisely when the reset is wanted anyway.
-    pending_unload: Option<Identifier>,
+    /// A set rather than one slot, because unloads overlap. The confirmation
+    /// blocks input only while it is open; it closes on confirm and the task
+    /// runs async, so the user can confirm A, switch to B and confirm B before
+    /// A's result lands. A single slot would then hold B, and A's caches — its
+    /// contact rows, load guard, pending tasks and cached profile — would never
+    /// be reset, which is the original bug with an extra step.
+    ///
+    /// An entry whose removal failed stays, which is inert: it is one entry per
+    /// identity the user tried to unload this session, and it can only ever
+    /// match a later result removing that same identity — precisely when the
+    /// reset is wanted anyway.
+    pending_unloads: BTreeSet<Identifier>,
     /// Contacts-tab state. Owned here to debounce
     /// [`crate::backend_task::dashpay::DashPayTask::LoadContacts`] to a
     /// single dispatch per tab entry, instead of firing every frame.
@@ -104,7 +112,7 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
-            pending_unload: None,
+            pending_unloads: BTreeSet::new(),
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
             selection: HubSelection::default(),
@@ -139,7 +147,7 @@ impl IdentityHubScreen {
             identity_id,
         })) = action
         {
-            self.pending_unload = Some(*identity_id);
+            self.pending_unloads.insert(*identity_id);
         }
     }
 
@@ -633,12 +641,16 @@ impl ScreenLike for IdentityHubScreen {
                     self.settings_tab
                         .selected_identity()
                         .map(|identity| identity.identity.id()),
-                    self.pending_unload.take(),
+                    &self.pending_unloads,
                     identity_ids,
                 ) {
                     self.reset_contacts_for_identity_change();
                     self.profile_cache.reset();
                 }
+                // Only the identities this result answers for; another unload
+                // still in flight keeps its own record.
+                self.pending_unloads
+                    .retain(|pending| !identity_ids.contains(pending));
                 let (message, message_type) = crate::ui::identities::removed_identities_banner(
                     *associated_cleanup_failed,
                     *cleanup_deferred,
@@ -866,16 +878,21 @@ fn applies_to_selected_identity(
 /// the tab naming the replacement. Only the id captured when the unload was
 /// dispatched survives that, so it is checked alongside the two live pointers
 /// — any of the three naming a removed id invalidates the caches.
+///
+/// `dispatched_unloads` is a set because unloads overlap: a result answers for
+/// one of them while the others are still in flight, so matching against a
+/// single remembered id would miss every removal but the most recent.
 fn removal_invalidates_identity_caches(
     explicit_selection: Option<Identifier>,
     settings_identity: Option<Identifier>,
-    dispatched_unload: Option<Identifier>,
+    dispatched_unloads: &BTreeSet<Identifier>,
     removed: &[Identifier],
 ) -> bool {
-    [explicit_selection, settings_identity, dispatched_unload]
-        .into_iter()
-        .flatten()
-        .any(|identity| removed.contains(&identity))
+    removed.iter().any(|identity| {
+        explicit_selection == Some(*identity)
+            || settings_identity == Some(*identity)
+            || dispatched_unloads.contains(identity)
+    })
 }
 
 fn handle_profile_updated(
@@ -1178,6 +1195,98 @@ mod tests {
                 .get_or_request(&unloaded_identity)
                 .is_none(),
             "the removed identity's cached profile must be dropped"
+        );
+    }
+
+    /// Two unloads in flight at once. The confirmation blocks input only while
+    /// it is open, so the user can confirm A, switch to B and confirm B before
+    /// A's result lands — and A's result then arrives second, when nothing live
+    /// names A any more. A single remembered id would have been overwritten by
+    /// B, leaving A's caches bound to an identity that no longer exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_unload_dispatched_first_does_not_erase_the_first_ones_record() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let first = seed_user_identity(&context, 1);
+        let second = seed_user_identity(&context, 2);
+        let survivor = seed_user_identity(&context, 3);
+        let survivor_identity = context
+            .get_local_qualified_identity(&survivor)
+            .expect("read the seeded identity")
+            .expect("identity present");
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // Both confirmed before either result arrives.
+        for identity_id in [first, second] {
+            screen.capture_unload_dispatch(&AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RemoveIdentity { identity_id },
+            )));
+        }
+
+        // Frames render in between, so every live pointer names the survivor.
+        screen
+            .settings_tab
+            .select_identity_for_test(survivor_identity);
+
+        // The second unload is answered first, and must not take the first
+        // one's record with it.
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![second],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+        assert!(
+            screen.pending_unloads.contains(&first),
+            "answering one unload must not discard the record of another still in flight"
+        );
+
+        // Now the first one's result lands, with nothing live naming it.
+        assert!(screen.contacts_state.claim_load());
+        screen.profile_cache.record_saved(
+            first,
+            crate::ui::identity::profile_cache::ProfileFields {
+                display_name: "Alicia".into(),
+                bio: String::new(),
+                avatar_url: String::new(),
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![first],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            screen.contacts_state.claim_load(),
+            "the first unload's caches must be reset when its own result arrives"
+        );
+        let first_identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(first, PlatformVersion::latest())
+                .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        };
+        assert!(
+            screen
+                .profile_cache
+                .get_or_request(&first_identity)
+                .is_none(),
+            "the first unloaded identity's cached profile must be dropped"
+        );
+        assert!(
+            screen.pending_unloads.is_empty(),
+            "each answered unload must retire its own record"
         );
     }
 

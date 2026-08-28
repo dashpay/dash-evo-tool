@@ -2560,7 +2560,27 @@ pub(crate) mod test_staging {
         tempfile::TempDir,
         tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
     ) {
+        staged_context_with_prompt(network, None).await
+    }
+
+    /// [`staged_context_on`] with a secret-prompt host installed *before* the
+    /// wallet backend is built, which is the only point at which the prompt is
+    /// read into the `SecretAccess` chokepoint — so a test that needs a
+    /// password-protected identity has to pass it here rather than install it
+    /// afterwards.
+    async fn staged_context_with_prompt(
+        network: Network,
+        prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
+    ) -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    ) {
         let (ctx, store, dir) = ctx_with_vault_on(network).await;
+        if let Some(prompt) = prompt {
+            ctx.install_secret_prompt(prompt);
+        }
         let (tx, events) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
         ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
             tx,
@@ -2622,7 +2642,18 @@ pub(crate) mod test_staging {
         high: [u8; 32],
         medium: [u8; 32],
     ) -> StagedIdentity {
-        let (ctx, store, dir, events) = staged_context_on(network).await;
+        stage_identity_with_vaulted_keys_using_prompt(network, None, high, medium).await
+    }
+
+    /// [`stage_identity_with_vaulted_keys_on`] with a secret-prompt host, for a
+    /// test that has to seal or unseal a password-protected identity key.
+    pub(crate) async fn stage_identity_with_vaulted_keys_using_prompt(
+        network: Network,
+        prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        let (ctx, store, dir, events) = staged_context_with_prompt(network, prompt).await;
         let qi = qi_with_plaintext_and_derived(high, medium);
         stage_identity_record(&ctx, &store, &qi);
         StagedIdentity {

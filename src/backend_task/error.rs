@@ -621,6 +621,20 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
+    /// The identity was removed from this device between the add-key broadcast
+    /// and the local write. The key is on Platform, but nothing about it is
+    /// saved here — deliberately: the user asked for this identity's keys to be
+    /// destroyed, and the new key is one of them. Sealing it anyway would leave
+    /// private key material on a device that reports it holds none, referenced
+    /// by no record and reachable by no cleanup.
+    ///
+    /// No loss beyond the on-chain slot: the private key was supplied by the
+    /// user on the add-key screen, so they still hold it.
+    #[error(
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Load the identity again, then add the key again."
+    )]
+    IdentityKeyAddedButIdentityUnloaded,
+
     /// Fail-closed guard at the opt-in protect boundary: the task found
     /// keys still resident as plaintext on disk after the eager load-path vault
     /// migration, so the identity cannot be reported as fully protected. The

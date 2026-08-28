@@ -2,6 +2,7 @@
 //! managed identities, warming auth-key caches, and queuing identity discovery.
 
 use super::*;
+use crate::model::identity_discovery::DiscoveryIntent;
 
 impl AppContext {
     /// Whether `wallet` still needs its bootstrap address set derived.
@@ -606,7 +607,13 @@ impl AppContext {
                 .subtasks
                 .spawn_sync("all_wallets_identity_discovery", async move {
                     if let Err(error) = ctx
-                        .discover_identities_gap_limited(&wallet, 0, false, None)
+                        .discover_identities_gap_limited(
+                            &wallet,
+                            0,
+                            false,
+                            DiscoveryIntent::Automatic,
+                            None,
+                        )
                         .await
                     {
                         tracing::warn!(
@@ -656,7 +663,7 @@ impl AppContext {
         }
 
         if let Err(error) = self
-            .discover_identities_gap_limited(wallet, 0, true, None)
+            .discover_identities_gap_limited(wallet, 0, true, DiscoveryIntent::Automatic, None)
             .await
         {
             tracing::warn!(

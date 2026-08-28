@@ -4,6 +4,8 @@ mod contract_token_db;
 pub mod feature_gate;
 mod identity_db;
 #[cfg(test)]
+pub(crate) mod lock_probe;
+#[cfg(test)]
 pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
 pub mod migration_status;
@@ -283,17 +285,6 @@ impl std::fmt::Debug for SecretPromptSlot {
     }
 }
 
-/// Record-lock handles handed out so far, counted at the moment
-/// [`AppContext::identity_record_lock`] returns one — which is *before* the
-/// caller's blocking acquire.
-///
-/// Test-only instrumentation, and the fact a test needs to know a background
-/// worker has reached the lock rather than merely being slow to start. Elapsed
-/// time cannot distinguish those two; this can.
-#[cfg(test)]
-pub(crate) static IDENTITY_RECORD_LOCK_REQUESTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 impl AppContext {
     pub(crate) fn hd_wallet_rename_lock(&self, seed_hash: WalletSeedHash) -> Arc<Mutex<()>> {
         self.hd_wallet_rename_locks
@@ -330,8 +321,13 @@ impl AppContext {
     /// holder is a key-protection tier change, whose per-key derivation runs in
     /// the low hundreds of milliseconds. Different identities never contend.
     pub(crate) fn identity_record_lock(&self, identity_id: Identifier) -> Arc<Mutex<()>> {
+        // Counted before the caller's blocking acquire, so a test holding the
+        // lock learns a background worker reached it rather than merely being
+        // slow to start — which elapsed time cannot distinguish. Reported only
+        // to the probe the calling thread attached itself to, so a test never
+        // sees the suite's other lock traffic.
         #[cfg(test)]
-        IDENTITY_RECORD_LOCK_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        lock_probe::note_request(lock_probe::LockSite::RecordRequest);
         self.identity_record_locks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

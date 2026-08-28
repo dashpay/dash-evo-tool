@@ -354,39 +354,18 @@ impl From<StoredScheduledVote> for ScheduledDPNSVote {
 /// never the roster and never a record lock.
 static IDENTITY_INDEX_LOCK: Mutex<()> = Mutex::new(());
 
-/// Threads currently blocked acquiring [`IDENTITY_INDEX_LOCK`].
-///
-/// Test-only instrumentation, and the thing that makes serialization
-/// *observable* rather than merely inferable from elapsed time: a thread
-/// counted here has reached the roster read and cannot proceed, which is
-/// precisely what a timing-based test can only guess at. Read by the
-/// rendezvous fixture in the roster race tests.
-#[cfg(test)]
-pub(crate) static IDENTITY_INDEX_LOCK_CONTENDERS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// Threads blocked acquiring a record lock inside
-/// [`AppContext::store_discovered_identity`].
-///
-/// Test-only, and counted at that one call site on purpose: it makes "a
-/// discovery pass has reached its unload check and cannot proceed" an
-/// observable fact, so the interleaving test waits on thread state instead of
-/// on a clock.
-#[cfg(test)]
-pub(crate) static DISCOVERY_RECORD_LOCK_CONTENDERS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 /// Acquire [`IDENTITY_INDEX_LOCK`]. A poisoned lock guards no invariant of its
 /// own — the k/v store holds the state — so the guard is taken regardless.
 fn lock_identity_index() -> MutexGuard<'static, ()> {
+    // Counted only for the probe the calling thread attached itself to, so a
+    // fixture waiting on "my peer is parked here" cannot be answered by an
+    // unrelated test's lock traffic. Dropped once the lock is acquired.
     #[cfg(test)]
-    IDENTITY_INDEX_LOCK_CONTENDERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let guard = IDENTITY_INDEX_LOCK
+    let _waiting =
+        crate::context::lock_probe::enter_wait(crate::context::lock_probe::LockSite::RosterWait);
+    IDENTITY_INDEX_LOCK
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    #[cfg(test)]
-    IDENTITY_INDEX_LOCK_CONTENDERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    guard
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Read the Global identity-id enumeration index. Returns an empty
@@ -2032,12 +2011,14 @@ impl AppContext {
         let identity_id = qualified_identity.identity.id();
         let lock = self.identity_record_lock(identity_id);
         #[cfg(test)]
-        DISCOVERY_RECORD_LOCK_CONTENDERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let waiting = crate::context::lock_probe::enter_wait(
+            crate::context::lock_probe::LockSite::DiscoveryRecordWait,
+        );
         let _record_guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         #[cfg(test)]
-        DISCOVERY_RECORD_LOCK_CONTENDERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        drop(waiting);
 
         let kv = self.det_kv()?;
         let id = identity_id.to_buffer();
@@ -2652,19 +2633,54 @@ pub(crate) mod test_staging {
 mod tests {
     use super::test_staging::*;
     use super::*;
-    use crate::context::IDENTITY_RECORD_LOCK_REQUESTS;
+    use crate::context::lock_probe::{LockProbe, LockSite};
     use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, RendezvousKv};
     use DetKv;
     use std::sync::Arc;
 
-    /// A store whose reads are held until every racing reader has snapshotted
-    /// — or until the missing ones are provably stuck acquiring the roster
-    /// lock — plus the [`DetKv`] over it. Arm it once the test's setup writes
-    /// are done; until then reads pass straight through.
-    /// Peers parked on the roster lock: they have reached the read and cannot
-    /// proceed, so a reader waiting on them can stop waiting.
-    fn roster_lock_contenders() -> usize {
-        IDENTITY_INDEX_LOCK_CONTENDERS.load(std::sync::atomic::Ordering::SeqCst)
+    /// Hammer the roster lock from a thread attached to no probe, for as long
+    /// as the returned handle lives.
+    ///
+    /// The busy neighbour, made explicit rather than left to whatever else the
+    /// suite happens to be running: the roster lock is process-wide and shared
+    /// with every other test, so a fixture that counts *all* of its waiters
+    /// can be released by traffic its own test never created. Running that
+    /// traffic on purpose turns "does the probe ignore strangers" from a hope
+    /// about scheduling into a condition of the test.
+    struct NoisyNeighbour {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl NoisyNeighbour {
+        fn spawn() -> Self {
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop_flag = Arc::clone(&stop);
+            // Its own store, so it contends on the roster lock without ever
+            // entering the rendezvous the test under way is using.
+            let handle = std::thread::spawn(move || {
+                let kv = empty_kv();
+                let mut n = 0u8;
+                while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = index_add_identity(&kv, &id(n));
+                    let _ = index_remove_identity(&kv, &id(n));
+                    n = n.wrapping_add(1);
+                }
+            });
+            Self {
+                stop,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for NoisyNeighbour {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
     }
 
     fn rendezvous_kv() -> (Arc<RendezvousKv>, DetKv) {
@@ -2806,12 +2822,21 @@ mod tests {
     /// unserialized code loses an entry on every run, on every runner.
     #[test]
     fn concurrently_listing_two_identities_keeps_both_on_the_roster() {
+        let _neighbour = NoisyNeighbour::spawn();
         let (store, kv) = rendezvous_kv();
-        store.arm(2, roster_lock_contenders);
+        let probe = LockProbe::new();
+        let watched = probe.clone();
+        store.arm(2, move || watched.count(LockSite::RosterWait));
 
         std::thread::scope(|scope| {
-            scope.spawn(|| index_add_identity(&kv, &id(1)).expect("list the re-imported identity"));
-            scope.spawn(|| index_add_identity(&kv, &id(2)).expect("list the imported identity"));
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_add_identity(&kv, &id(1)).expect("list the re-imported identity")
+            });
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_add_identity(&kv, &id(2)).expect("list the imported identity")
+            });
         });
 
         let mut listed = load_identity_index(&kv).unwrap();
@@ -2835,12 +2860,20 @@ mod tests {
         index_add_identity(&kv, &id(2)).unwrap();
         // Armed only now: the two seeding writes above are sequential, and an
         // armed read waits for a peer that would never come.
-        store.arm(2, roster_lock_contenders);
+        let probe = LockProbe::new();
+        let watched = probe.clone();
+        store.arm(2, move || watched.count(LockSite::RosterWait));
+        let _neighbour = NoisyNeighbour::spawn();
 
         std::thread::scope(|scope| {
-            scope
-                .spawn(|| index_remove_identity(&kv, &id(1)).expect("delist the removed identity"));
-            scope.spawn(|| index_add_identity(&kv, &id(3)).expect("list the imported identity"));
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_remove_identity(&kv, &id(1)).expect("delist the removed identity")
+            });
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_add_identity(&kv, &id(3)).expect("list the imported identity")
+            });
         });
 
         let mut listed = load_identity_index(&kv).unwrap();
@@ -4176,14 +4209,16 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // Baseline taken after our own acquisition above, so the next
-        // increment can only come from the sweep.
-        let requests_before_sweep =
-            IDENTITY_RECORD_LOCK_REQUESTS.load(std::sync::atomic::Ordering::SeqCst);
+        // Only the sweep thread reports to this probe, so its count rises for
+        // the sweep and for nothing else — no baseline to subtract, and no
+        // other test's record-lock traffic can stand in for the sweep's.
+        let probe = LockProbe::new();
+        let sweep_probe = probe.clone();
 
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let sweep_ctx = Arc::clone(&staged.ctx);
         let sweep = std::thread::spawn(move || {
+            let _attached = sweep_probe.attach();
             sweep_ctx.resume_pending_vault_cleanups();
             let _ = done_tx.send(());
         });
@@ -4194,9 +4229,7 @@ mod tests {
         // parked on the lock are indistinguishable by elapsed time, so a slow
         // worker would let the assertion below pass against a sweep that never
         // took the lock at all.
-        while IDENTITY_RECORD_LOCK_REQUESTS.load(std::sync::atomic::Ordering::SeqCst)
-            == requests_before_sweep
-        {
+        while probe.count(LockSite::RecordRequest) == 0 {
             std::thread::yield_now();
         }
 
@@ -4414,8 +4447,6 @@ mod tests {
     /// decided "not unloaded" before this test writes the marker.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_discovery_parked_on_the_record_lock_still_sees_the_removal() {
-        use std::sync::atomic::Ordering::SeqCst;
-
         let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
         let mut in_flight = staged
             .ctx
@@ -4428,16 +4459,21 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
+        let probe = LockProbe::new();
+        let discovery_probe = probe.clone();
         let ctx = Arc::clone(&staged.ctx);
         let discovery = std::thread::spawn(move || {
+            let _attached = discovery_probe.attach();
             ctx.store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
         });
 
         // Unbounded on purpose: the discovery thread cannot acquire a lock this
         // test holds, so the count it is waited on only ever settles one way.
         // A bound here would be a deadline, and a deadline would let the thread
-        // be counted as parked when it had merely not started.
-        while DISCOVERY_RECORD_LOCK_CONTENDERS.load(SeqCst) == 0 {
+        // be counted as parked when it had merely not started. The count is
+        // this test's own probe, so no other test's record-lock traffic can
+        // end the wait either.
+        while probe.count(LockSite::DiscoveryRecordWait) == 0 {
             std::thread::yield_now();
         }
 

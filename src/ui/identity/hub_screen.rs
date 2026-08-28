@@ -1290,6 +1290,54 @@ mod tests {
         );
     }
 
+    /// A removal that fails before delisting sends no `RemovedIdentities`, so
+    /// its record is never consumed. That entry is inert rather than harmless
+    /// by assumption: the check is keyed on the identities a *result* removed,
+    /// never on the pending set, so a stale entry can only ever match a later
+    /// result removing that same identity — which is when the reset is wanted.
+    /// It cannot cause a spurious reset for any other identity.
+    ///
+    /// Asserted rather than argued because the alternative — clearing on the
+    /// error path — is not available: `display_message` carries a string and a
+    /// severity, no identity, so the screen cannot know which of several
+    /// in-flight unloads failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_unloads_stale_record_never_resets_another_identitys_caches() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let failed = seed_user_identity(&context, 1);
+        let elsewhere = seed_user_identity(&context, 2);
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // Dispatched, then the removal fails before delisting: no result ever
+        // arrives for it, so its record stays.
+        screen.capture_unload_dispatch(&AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::RemoveIdentity {
+                identity_id: failed,
+            },
+        )));
+
+        // Caches are warm and belong to the identity still in use.
+        assert!(screen.contacts_state.claim_load());
+
+        // An unrelated identity is removed — by another device, or by a screen
+        // that is not this one. Nothing live names it, and this screen never
+        // dispatched it.
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![elsewhere],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            !screen.contacts_state.claim_load(),
+            "a removal naming no identity this screen cares about must not reset its caches"
+        );
+        assert!(
+            screen.pending_unloads.contains(&failed),
+            "and must not consume the failed unload's record, which belongs to another identity"
+        );
+    }
+
     #[test]
     fn a_result_for_the_selected_identity_applies() {
         assert!(applies_to_selected_identity(Some(id(1)), &id(1)));

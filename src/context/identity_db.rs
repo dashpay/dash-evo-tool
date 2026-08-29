@@ -1,6 +1,7 @@
 use super::AppContext;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
+use crate::model::identity_discovery::DiscoveryIntent;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
@@ -11,11 +12,12 @@ use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 /// Identity blob slot, scoped to [`DetScope::Identity`]. One entry per
 /// identity; the identity id is carried by the scope, so the key is a
@@ -52,6 +54,88 @@ const SCHEDULED_VOTE_VOTERS_KEY: &str = "det:scheduled_vote_voters:v1";
 /// Top-up history slot, scoped to [`DetScope::Identity`]. One entry per
 /// identity; the identity id is carried by the scope.
 const TOP_UPS_KEY: &str = "det:top_ups:v1";
+
+/// Durable manifest of vault-key placements still pending deletion for one
+/// identity, keyed by that identity's id in the key itself.
+/// [`DetScope::Global`] is deliberate, not incidental: `purge_identity_scope`
+/// only ever mutates [`DetScope::Identity`], so a manifest filed there would
+/// share fate with the very state a partial `purge_identity_scope` failure
+/// can destroy — the one case this manifest exists to survive. Key shape:
+/// `det:vault_cleanup_pending:v1:<identity_b58>`.
+const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
+
+/// Per-identity marker recording that the user deliberately unloaded an
+/// identity from this device. Global-scoped for the same reason the
+/// vault-cleanup manifest is: an `Identity`-scoped key is reaped by
+/// [`purge_identity_scope`] and the upstream cascade at exactly the moment
+/// this record needs to start existing.
+const IDENTITY_UNLOADED_PREFIX: &str = "det:identity_unloaded:v1:";
+
+fn identity_unloaded_key(id: &[u8; 32]) -> String {
+    format!(
+        "{IDENTITY_UNLOADED_PREFIX}{}",
+        Identifier::from(*id).to_string(Encoding::Base58)
+    )
+}
+
+fn vault_cleanup_pending_key(id: &[u8; 32]) -> String {
+    format!(
+        "{VAULT_CLEANUP_PENDING_PREFIX}{}",
+        Identifier::from(*id).to_string(Encoding::Base58)
+    )
+}
+
+/// Recover the identity id named by a vault-cleanup manifest key, for the
+/// boot-time sweep that enumerates every manifest without already knowing
+/// which identities they belong to. `None` for anything that is not a
+/// well-formed manifest key — a corrupt or foreign entry is skipped rather
+/// than treated as fatal, so it never blocks the sweep from resuming every
+/// other pending cleanup.
+fn parse_vault_cleanup_pending_key(key: &str) -> Option<[u8; 32]> {
+    let suffix = key.strip_prefix(VAULT_CLEANUP_PENDING_PREFIX)?;
+    Identifier::from_string(suffix, Encoding::Base58)
+        .ok()
+        .map(|id| id.to_buffer())
+}
+
+/// Serializable mirror of [`PrivateKeyTarget`] for the vault-cleanup
+/// manifest. [`PrivateKeyTarget`] itself derives `bincode::{Encode, Decode}`
+/// for the vault blob's own wire format, not `serde` — the k/v sidecar is
+/// serde-based, so the manifest needs its own small serializable shape.
+///
+/// `DetKv` encodes values with `bincode::serde::encode_to_vec`, which is
+/// positional (see `wallet_backend/kv.rs`'s `SCHEMA_VERSION` doc comment):
+/// this enum's wire representation is its variants' *declaration order*,
+/// not their names. Adding a variant is fine (compiler-caught at every
+/// match site); reordering or removing an existing one silently re-labels
+/// every already-persisted manifest entry to the wrong key target —
+/// nothing decoding it would notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+enum StoredPrivateKeyTarget {
+    Main,
+    Voter,
+    Operator,
+}
+
+impl From<PrivateKeyTarget> for StoredPrivateKeyTarget {
+    fn from(target: PrivateKeyTarget) -> Self {
+        match target {
+            PrivateKeyTarget::PrivateKeyOnMainIdentity => Self::Main,
+            PrivateKeyTarget::PrivateKeyOnVoterIdentity => Self::Voter,
+            PrivateKeyTarget::PrivateKeyOnOperatorIdentity => Self::Operator,
+        }
+    }
+}
+
+impl From<StoredPrivateKeyTarget> for PrivateKeyTarget {
+    fn from(target: StoredPrivateKeyTarget) -> Self {
+        match target {
+            StoredPrivateKeyTarget::Main => Self::PrivateKeyOnMainIdentity,
+            StoredPrivateKeyTarget::Voter => Self::PrivateKeyOnVoterIdentity,
+            StoredPrivateKeyTarget::Operator => Self::PrivateKeyOnOperatorIdentity,
+        }
+    }
+}
 
 fn scheduled_vote_key(contested_name: &str) -> String {
     format!("{SCHEDULED_VOTE_KEY_PREFIX}{contested_name}")
@@ -237,8 +321,58 @@ impl From<StoredScheduledVote> for ScheduledDPNSVote {
     }
 }
 
+/// Serializes every read-modify-write of [`IDENTITY_INDEX_KEY`].
+///
+/// The roster is a single blob rewritten wholesale, so two identities being
+/// listed or delisted at the same time race on it: each pass reads the whole
+/// index, edits its own entry, and writes the result back over its peer's.
+/// The per-identity `identity_record_lock` cannot close that window — it
+/// serializes writers of the *same* identity, while this race is between
+/// writers of *different* ones.
+///
+/// A lost entry is not cosmetic. [`AppContext::resume_pending_vault_cleanups`]
+/// treats absence from this roster as proof an identity was removed and
+/// deletes its vault keys, so an import whose write is clobbered hands a live
+/// identity's private keys to the next boot's sweep. One process-wide lock
+/// rather than a per-context field because the mutators are free functions
+/// reached from contexts and bare [`DetKv`] handles alike; the writes are
+/// user-paced (import, removal), so serializing them globally costs nothing.
+///
+/// # Lock order
+///
+/// An identity's `identity_record_lock` is OUTER, this lock is INNER —
+/// [`AppContext::insert_local_qualified_identity`] and
+/// [`AppContext::delete_local_qualified_identity`] both already hold the
+/// record lock when their index write takes this one, so that is the order
+/// every path must keep. Never acquire a record lock while holding this one,
+/// and never hold it across an `await` or any call that can reach the index
+/// again — `std::sync::Mutex` is not reentrant, so a second acquisition on
+/// this thread self-deadlocks. Only
+/// [`AppContext::delete_all_local_qualified_identities_in_devnet`] holds it
+/// across other work, and every call it makes there (`clear_identity_vault_keys`,
+/// `purge_identity_scope`) touches the vault and Identity-scoped keys only,
+/// never the roster and never a record lock.
+static IDENTITY_INDEX_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire [`IDENTITY_INDEX_LOCK`]. A poisoned lock guards no invariant of its
+/// own — the k/v store holds the state — so the guard is taken regardless.
+fn lock_identity_index() -> MutexGuard<'static, ()> {
+    // Counted only for the probe the calling thread attached itself to, so a
+    // fixture waiting on "my peer is parked here" cannot be answered by an
+    // unrelated test's lock traffic. Dropped once the lock is acquired.
+    #[cfg(test)]
+    let _waiting =
+        crate::context::lock_probe::enter_wait(crate::context::lock_probe::LockSite::RosterWait);
+    IDENTITY_INDEX_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Read the Global identity-id enumeration index. Returns an empty
 /// vector when the index has never been written.
+///
+/// Callers that go on to write the index back, or that act irreversibly on
+/// the answer, must hold [`lock_identity_index`] across both halves.
 fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskError> {
     Ok(kv
         .get::<Vec<[u8; 32]>>(DetScope::Global, IDENTITY_INDEX_KEY)
@@ -246,9 +380,20 @@ fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskErr
         .unwrap_or_default())
 }
 
+/// Whether `identity_id` is on the Global enumeration index.
+///
+/// Read under [`lock_identity_index`] so the answer is never a half-written
+/// roster. Callers hold the identity's record guard, keeping the documented
+/// order — record OUTER, index INNER.
+fn identity_is_listed(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<bool, TaskError> {
+    let _index_guard = lock_identity_index();
+    Ok(load_identity_index(kv)?.contains(identity_id))
+}
+
 /// Add `identity_id` to the Global enumeration index if absent. No-op
 /// when the id is already tracked, so repeated inserts stay idempotent.
 fn index_add_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<(), TaskError> {
+    let _index_guard = lock_identity_index();
     let mut index = load_identity_index(kv)?;
     if index.contains(identity_id) {
         return Ok(());
@@ -261,6 +406,7 @@ fn index_add_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result
 /// Remove `identity_id` from the Global enumeration index. No-op when
 /// the id is not present.
 fn index_remove_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<(), TaskError> {
+    let _index_guard = lock_identity_index();
     let mut index = load_identity_index(kv)?;
     let before = index.len();
     index.retain(|id| id != identity_id);
@@ -269,6 +415,39 @@ fn index_remove_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Res
     }
     kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &index)
         .map_err(identity_err)
+}
+
+/// Run the irreversible tail of an identity removal: delete `vault_keys`
+/// from the vault, then drop the manifest that recorded them.
+///
+/// Returns `Err` only while key material may still be on the device. A vault
+/// delete that fails is propagated, never swallowed — leaving keys on a device
+/// the user asked to clear is the one part of a removal they must not be told
+/// succeeded. A manifest clear that fails afterwards is not that: the keys are
+/// already gone and only Global bookkeeping is stale, so it is logged and the
+/// removal counts as complete. Reporting it as a failure would tell the user
+/// their private keys are still here — the opposite of what happened — and
+/// would surface a cleanup-pending warning for nothing. The stale manifest is
+/// harmless: the next boot's sweep re-runs the same idempotent deletes and
+/// clears it.
+fn finish_vault_cleanup(
+    kv: &DetKv,
+    secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
+    id: &[u8; 32],
+    vault_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
+) -> std::result::Result<(), TaskError> {
+    crate::wallet_backend::IdentityKeyView::new(secret_store, *id).delete_all(vault_keys)?;
+    if let Err(error) = kv
+        .delete(DetScope::Global, &vault_cleanup_pending_key(id))
+        .map_err(identity_err)
+    {
+        tracing::warn!(
+            identity = %Identifier::from(*id),
+            %error,
+            "Identity keys deleted but their cleanup manifest could not be cleared; the next boot re-runs the deletes and clears it"
+        );
+    }
+    Ok(())
 }
 
 /// Delete every Identity-scoped child of `id` (blob, top-up history, all
@@ -621,6 +800,26 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Deliberate: asking for an identity is the one act that means the user
+        // changed their mind about unloading it, so this is the only place the
+        // unload marker is retired. Under the same guard as the write, so a
+        // discovery pass cannot observe a retired marker and a missing record.
+        self.clear_identity_unloaded(
+            &self.det_kv()?,
+            &qualified_identity.identity.id().to_buffer(),
+        )?;
+        self.insert_local_qualified_identity_locked(qualified_identity, wallet_and_identity_id_info)
+    }
+
+    /// The body of [`Self::insert_local_qualified_identity`], for a caller that
+    /// already holds this identity's
+    /// [`identity_record_lock`](Self::identity_record_lock) — the record lock is
+    /// not reentrant, so a gated caller cannot go through the public method.
+    fn insert_local_qualified_identity_locked(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+    ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let mut wallet_link = match wallet_and_identity_id_info {
             Some((seed, idx)) => Some((*seed, *idx)),
@@ -876,6 +1075,47 @@ impl AppContext {
     /// [`identity_record_lock`](Self::identity_record_lock) across a wider
     /// read-modify-write span. Calling it without that guard reopens the
     /// lost-update race the guard exists to close.
+    ///
+    /// # Declining an unloaded identity
+    ///
+    /// This method creates a record when none exists — an "update" of an
+    /// absent identity writes the blob and re-lists it on the roster. That is
+    /// deliberate and useful for a caller repairing a missing roster entry, but
+    /// it also means every update path can resurrect an identity the user
+    /// unloaded, if the removal lands between that caller's read and its write.
+    /// So a write for an identity that is **off the roster** and carries an
+    /// unload marker is declined and reported `Ok(())`.
+    ///
+    /// Roster membership, not blob presence, is what decides that. They differ
+    /// exactly where it matters: `purge_identity_scope` runs *after*
+    /// `index_remove_identity` and is three independent writes, so a removal
+    /// that stops in between leaves the identity delisted with its blob intact.
+    /// A blob-presence test passes such a write straight through, and
+    /// `index_add_identity` below then puts the identity back on the roster
+    /// after its removal was reported complete — where the boot sweep reads
+    /// that entry as proof the identity is live and spares the keys the removal
+    /// existed to destroy. Roster absence is the authority that sweep already
+    /// acts on; this guard asks the same question of the same source.
+    ///
+    /// It also settles the opposite case correctly. A marker written by a
+    /// removal that failed *before* delisting belongs to an identity still on
+    /// the roster, still on every screen, whose removal never happened — so
+    /// the write proceeds, which is what a user retrying that identity's
+    /// ordinary work expects.
+    ///
+    /// That is a completion, not a swallowed failure: the request was to bring
+    /// the stored record up to date, there is no stored record, and a marker
+    /// says the absence is what the user asked for. The requested end state —
+    /// no unwanted record — is exactly what the caller gets.
+    ///
+    /// # Invariant this rests on
+    ///
+    /// **A path that should create a record retires the marker first.** Today
+    /// that is [`Self::insert_local_qualified_identity`], which clears it under
+    /// the same record guard as the write, and
+    /// [`Self::store_discovered_identity`] for a user-requested pass. A new
+    /// deliberate-insert path that skips that step will find its writes
+    /// silently declined for any identity the user once unloaded.
     pub(crate) fn write_local_qualified_identity_locked(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -885,6 +1125,13 @@ impl AppContext {
         let scope = DetScope::Identity(&id);
         let existing: Option<StoredQualifiedIdentity> =
             kv.get(scope, IDENTITY_KEY).map_err(identity_err)?;
+        if !identity_is_listed(&kv, &id)? && self.is_identity_unloaded(&kv, &id)? {
+            tracing::debug!(
+                identity_id = %qualified_identity.identity.id(),
+                "Declined to store an identity that is off this device's roster and was unloaded from it"
+            );
+            return Ok(());
+        }
         let (wallet_hash, wallet_index) = existing
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index))
@@ -1046,6 +1293,20 @@ impl AppContext {
                 )
             })
             .collect())
+    }
+
+    /// Whether `id` is currently on the Global identity index — the roster
+    /// every screen reads. Distinct from [`Self::get_local_qualified_identity`],
+    /// which reads the per-identity blob: a [`Self::delete_local_qualified_identity`]
+    /// failure can leave the blob already gone (an early `purge_identity_scope`
+    /// step) while the index removal that actually delists the identity ran
+    /// even earlier, so only the index membership answers "is this identity
+    /// still reachable from the UI".
+    pub(crate) fn is_identity_listed(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<bool, TaskError> {
+        identity_is_listed(&self.det_kv()?, &id.to_buffer())
     }
 
     /// Read one stored qualified identity by id, hydrated like the list loads
@@ -1381,6 +1642,18 @@ impl AppContext {
     /// here is re-issued by the next boot's
     /// `AppContext::reconcile_unowned_identities`, which withdraws every
     /// unowned registration whose sidecar record is gone.
+    ///
+    /// **`Err` does not mean "nothing happened".** The Global index removal
+    /// runs before the irreversible vault-key delete, so a failure can land
+    /// strictly after `identifier` is already gone from every screen — a
+    /// durable vault-cleanup manifest survives that and the next boot's
+    /// [`Self::resume_pending_vault_cleanups`] finishes the job regardless.
+    /// A caller that turns this `Err` straight into a user-facing "removal
+    /// failed, please retry" message is wrong in exactly that case: the
+    /// identity cannot be retried (it is unlisted) and nothing is actually
+    /// still broken. Call [`Self::is_identity_listed`] first to tell the two
+    /// outcomes apart — see `AppContext::remove_identity` (in
+    /// `backend_task/identity/remove_identity.rs`) for the reference pattern.
     pub fn delete_local_qualified_identity(
         &self,
         identifier: &Identifier,
@@ -1405,9 +1678,29 @@ impl AppContext {
                 source: Arc::new(source),
             },
         )?;
-        self.clear_identity_vault_keys(&kv, &id)?;
-        purge_identity_scope(&kv, &id)?;
+        // Ordering is a safety property. The vault delete is the only step
+        // nothing can undo — Platform can re-supply the identity, but no one
+        // can re-supply its keys — so it runs last, once the identity is
+        // already unlisted and drained. Its delete set is read up front,
+        // because the blob `purge_identity_scope` drops is where that set is
+        // recorded.
+        //
+        // `purge_identity_scope` is itself not atomic (three independent k/v
+        // writes), so a failure inside it — after its own first write has
+        // already dropped the blob — would leave a retry with nothing to
+        // re-derive the delete set from. The manifest below is what survives
+        // that: persisted before any mutation runs, retained across every
+        // error, and cleared only once every listed key is confirmed absent.
+        let vault_keys = self.pending_vault_key_placements(&kv, &id)?;
+        self.persist_vault_cleanup_manifest(&kv, &id, &vault_keys)?;
+        // Before delisting, so a failure between the two leaves a marker for a
+        // still-listed identity — inert, since discovery only consults it when
+        // storage says the identity is absent. The reverse order would leave a
+        // delisted identity with no marker, which is the defect itself.
+        self.mark_identity_unloaded(&kv, &id)?;
         index_remove_identity(&kv, &id)?;
+        purge_identity_scope(&kv, &id)?;
+        finish_vault_cleanup(&kv, &self.secret_store, &id, vault_keys)?;
         // Mirror the removal into the wallet store's unowned scope, so a
         // deleted node does not linger there. Best-effort, and a no-op for a
         // wallet-owned identity, which is never registered unowned.
@@ -1421,6 +1714,157 @@ impl AppContext {
             );
         }
         Ok(())
+    }
+
+    /// Boot-time sweep for vault-cleanup manifests left behind by a
+    /// [`Self::delete_local_qualified_identity`] call that failed after
+    /// `index_remove_identity` had already run. Once an identity leaves the
+    /// Global index it renders on no screen, so nothing in the UI can ever
+    /// call that method again for it — the manifest, and this sweep, are the
+    /// only surviving path back to the orphaned vault keys.
+    ///
+    /// Resumes a manifest only while its identity is absent from that index,
+    /// re-checked fresh under that identity's record lock (see below) rather
+    /// than from one snapshot read before the loop — a snapshot would miss a
+    /// concurrent re-import that lists the identity again mid-sweep. A
+    /// manifest whose identity is listed belongs to a removal that never
+    /// reached the irreversible step, or to an identity re-imported since:
+    /// either way the identity is live and the user keeps a working retry, so
+    /// deleting its keys here would strand exactly the identity this ordering
+    /// exists to protect. That absence is only trustworthy because every
+    /// mutation of the roster is serialized ([`lock_identity_index`]) and
+    /// every mutation *of this identity* is serialized against this sweep by
+    /// its record lock: without the first, another identity's concurrent
+    /// import could silently drop this one's entry and fake the very evidence
+    /// the delete below acts on.
+    ///
+    /// Also re-runs `purge_identity_scope` before deleting vault keys: the
+    /// manifest is persisted one step *before* that purge, so a crash between
+    /// the two leaves it incomplete, and every one of its steps is a delete-
+    /// if-present or list-then-conditional-prune, so re-running it against an
+    /// already-purged scope is a safe no-op.
+    ///
+    /// Best-effort and idempotent, like every other boot reconcile
+    /// ([`super::wallet_lifecycle::bootstrap`]'s unowned-identity pass): a
+    /// failure on one manifest is logged and retried next boot, and never
+    /// blocks the sweep from resuming every other one.
+    ///
+    /// Guarded by the same `migration_run` lock and in-progress check as
+    /// [`Self::delete_local_qualified_identity`]: a storage migration can be
+    /// mid-rewrite of this same Identity scope around the same boot window
+    /// this sweep runs in, and the sweep's purge/vault-delete pair is not
+    /// safe to interleave with that.
+    pub(crate) fn resume_pending_vault_cleanups(&self) {
+        let Ok(_migration_guard) = self.migration_run.try_lock() else {
+            tracing::debug!(
+                "Pending vault-cleanup sweep skipped; a storage migration is running, will retry at next boot"
+            );
+            return;
+        };
+        if self.migration_status().state().is_in_progress() {
+            tracing::debug!(
+                "Pending vault-cleanup sweep skipped; a storage migration is in progress, will retry at next boot"
+            );
+            return;
+        }
+        let kv = match self.det_kv() {
+            Ok(kv) => kv,
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    "Pending vault-cleanup sweep skipped; k/v store not ready, will retry at next boot"
+                );
+                return;
+            }
+        };
+        let keys = match kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX)) {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Pending vault-cleanup sweep skipped; listing manifests failed, will retry at next boot"
+                );
+                return;
+            }
+        };
+        let mut resumed = 0usize;
+        for key in keys {
+            let Some(id) = parse_vault_cleanup_pending_key(&key) else {
+                tracing::warn!(%key, "Skipping an unparsable vault-cleanup manifest key");
+                continue;
+            };
+            // Held through the roster re-check, the purge, the vault delete,
+            // and the manifest clear — the same lock `insert_local_qualified_identity`
+            // takes before ever touching this identity's k/v, so a concurrent
+            // re-import cannot land between the "still listed?" check below
+            // and this sweep's own writes.
+            let lock = self.identity_record_lock(Identifier::from(id));
+            let _record_guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // The manifest is persisted one step *before* `index_remove_identity`,
+            // so its presence alone does not mean the removal ever happened. An
+            // unreadable index cannot prove any identity is gone, so resume nothing
+            // rather than guess. Read fresh, under the lock, on every iteration —
+            // never hoisted above the loop — so a re-import that lands between
+            // manifests is always seen.
+            let listed = match load_identity_index(&kv) {
+                Ok(listed) => listed,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Pending vault-cleanup sweep skipped; the identity index is unreadable, will retry at next boot"
+                    );
+                    return;
+                }
+            };
+            if listed.contains(&id) {
+                tracing::debug!(
+                    identity = %Identifier::from(id),
+                    "Pending vault-cleanup left alone; this identity is still listed and still usable, so removing it stays the user's call"
+                );
+                continue;
+            }
+            let placements: Vec<(StoredPrivateKeyTarget, KeyID)> =
+                match kv.get(DetScope::Global, &key) {
+                    Ok(Some(placements)) => placements,
+                    // Raced with another clear of the same manifest; nothing left to do.
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            identity = %Identifier::from(id),
+                            %error,
+                            "Pending vault-cleanup manifest unreadable, will retry at next boot"
+                        );
+                        continue;
+                    }
+                };
+            if let Err(error) = purge_identity_scope(&kv, &id) {
+                tracing::warn!(
+                    identity = %Identifier::from(id),
+                    %error,
+                    "Pending vault-cleanup deferred; scope purge incomplete, will retry at next boot"
+                );
+                continue;
+            }
+            let vault_keys = placements
+                .into_iter()
+                .map(|(target, key_id)| (target.into(), key_id));
+            match finish_vault_cleanup(&kv, &self.secret_store, &id, vault_keys) {
+                Ok(()) => resumed += 1,
+                Err(error) => tracing::warn!(
+                    identity = %Identifier::from(id),
+                    %error,
+                    "Pending vault-cleanup deferred; will retry at next boot"
+                ),
+            }
+        }
+        if resumed > 0 {
+            tracing::info!(
+                resumed,
+                "Resumed vault-key cleanups left behind by an interrupted identity removal"
+            );
+        }
     }
 
     /// Test-only: remove `identifier` from the Global enumeration index
@@ -1498,6 +1942,203 @@ impl AppContext {
         kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
     }
 
+    /// The vault placements holding `id`'s identity-key secrets, as recorded in
+    /// its stored blob. Empty when the identity is not stored.
+    ///
+    /// Read this before anything drops the identity blob — the blob is the
+    /// only record of which vault labels belong to `id`, so a delete set
+    /// derived after it is gone is silently empty and strands every secret
+    /// in the vault.
+    fn identity_vault_key_placements(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
+            .map_err(identity_err)?
+        else {
+            return Ok(std::collections::BTreeSet::new());
+        };
+        Ok(decode_stored_identity(&stored.qi_bytes, self.network)?
+            .private_keys
+            .keys_set())
+    }
+
+    /// The full vault-key delete set for `id`: freshly-derived placements
+    /// from the still-live blob (empty once it is gone), unioned with any
+    /// manifest left behind by an earlier failed delete. The union — never a
+    /// choice of one source over the other — means a placement discovered
+    /// by either source is never dropped, whether this is a first attempt
+    /// (manifest empty, blob live) or a retry after the blob was already
+    /// purged (blob empty, manifest live).
+    fn pending_vault_key_placements(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>, TaskError> {
+        let mut keys = self.identity_vault_key_placements(kv, id)?;
+        let manifest: Vec<(StoredPrivateKeyTarget, KeyID)> = kv
+            .get(DetScope::Global, &vault_cleanup_pending_key(id))
+            .map_err(identity_err)?
+            .unwrap_or_default();
+        keys.extend(manifest.into_iter().map(|(t, k)| (t.into(), k)));
+        Ok(keys)
+    }
+
+    /// Record that the user deliberately unloaded `id` from this device, so
+    /// automatic discovery does not silently put it back.
+    ///
+    /// Removal destroys the identity's private keys and tells the user a backup
+    /// is now the only way in. Nothing else on disk distinguishes "the user
+    /// removed this" from "this was never here": the owning wallet stays
+    /// loaded, and every automatic discovery pass re-derives the same identity
+    /// and finds it absent. Presence of this key is the whole semantic; the
+    /// stored unix timestamp is for diagnostics only.
+    ///
+    /// The set is never reaped except by a deliberate re-load, and that is
+    /// intentional — an expiring tombstone is a resurrection with a delay. It
+    /// grows by one 8-byte entry per identity the user has actually unloaded on
+    /// this network, so it is bounded by user action rather than by anything
+    /// automatic. A change that lets some automatic path write these would
+    /// break that bound and needs to be weighed here.
+    ///
+    /// # Why the migration import consults this too
+    ///
+    /// The legacy `data.db` rows are never deleted, so the material to
+    /// re-import an unloaded identity is permanent: the door does not close
+    /// when the upgrade succeeds, it needs only one failed attempt at any point
+    /// afterwards. `record_identity_deletion` covers most of that — a removal
+    /// records its id in the migration progress set, and the retry skips it —
+    /// but not all of it. That recording is a no-op once migration reports
+    /// success, and the devnet wipe clears identities without touching the
+    /// progress set at all, so a wipe followed by a resumed pass would hand
+    /// every cleared identity back. This marker is consulted independently of
+    /// migration state and of the progress key, so the guarantee does not rest
+    /// on a condition the user cannot see.
+    fn mark_identity_unloaded(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<(), TaskError> {
+        let unloaded_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since_epoch| since_epoch.as_secs());
+        kv.put(DetScope::Global, &identity_unloaded_key(id), &unloaded_at)
+            .map_err(identity_err)
+    }
+
+    /// Whether `id` was deliberately unloaded and not deliberately re-loaded
+    /// since.
+    fn is_identity_unloaded(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<bool, TaskError> {
+        Ok(kv
+            .get::<u64>(DetScope::Global, &identity_unloaded_key(id))
+            .map_err(identity_err)?
+            .is_some())
+    }
+
+    /// Retire `id`'s unload marker. Called only from the deliberate insert
+    /// path: asking for an identity back is the one thing that means the user
+    /// changed their mind.
+    fn clear_identity_unloaded(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+    ) -> std::result::Result<(), TaskError> {
+        kv.delete(DetScope::Global, &identity_unloaded_key(id))
+            .map_err(identity_err)
+    }
+
+    /// Store an identity a discovery pass produced, refreshing the existing
+    /// record when there is one.
+    ///
+    /// Returns `true` when the identity was stored, `false` when a
+    /// [`DiscoveryIntent::Automatic`] pass was refused because the user
+    /// unloaded the identity from this device. A
+    /// [`DiscoveryIntent::UserRequested`] pass is the user asking for it back,
+    /// so it retires the marker and stores.
+    ///
+    /// The whole decision — the marker read, the existing-record read whose
+    /// alias is carried onto `qualified_identity`, and the write — happens
+    /// under one acquisition of this identity's record lock. That is what makes
+    /// the refusal hold against a discovery already in flight, whichever way it
+    /// interleaves: a pass that read the record before the removal cannot write
+    /// it back afterwards, because its decision is re-taken here rather than
+    /// carried in from the caller.
+    ///
+    /// The alias carry-over lives here for the same reason. Reading it in the
+    /// caller and writing it here spans an unguarded gap, so a concurrent alias
+    /// edit would be written away.
+    pub(crate) fn store_discovered_identity(
+        &self,
+        qualified_identity: &mut QualifiedIdentity,
+        wallet: &Option<(WalletSeedHash, u32)>,
+        intent: DiscoveryIntent,
+    ) -> std::result::Result<bool, TaskError> {
+        let identity_id = qualified_identity.identity.id();
+        let lock = self.identity_record_lock(identity_id);
+        #[cfg(test)]
+        let waiting = crate::context::lock_probe::enter_wait(
+            crate::context::lock_probe::LockSite::DiscoveryRecordWait,
+        );
+        let _record_guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        drop(waiting);
+
+        let kv = self.det_kv()?;
+        let id = identity_id.to_buffer();
+        if self.is_identity_unloaded(&kv, &id)? {
+            if !intent.may_restore_unloaded() {
+                tracing::debug!(
+                    identity_id = %identity_id,
+                    "Discovery left out an identity that was unloaded from this device"
+                );
+                return Ok(false);
+            }
+            tracing::info!(
+                identity_id = %identity_id,
+                "Loading back an identity that was unloaded from this device, because the user asked for it"
+            );
+            self.clear_identity_unloaded(&kv, &id)?;
+        }
+
+        let existing: Option<StoredQualifiedIdentity> = kv
+            .get(DetScope::Identity(&id), IDENTITY_KEY)
+            .map_err(identity_err)?;
+        match existing {
+            // A record on file: refresh it, keeping the user's own alias, which
+            // a freshly built identity never carries.
+            Some(stored) => {
+                qualified_identity.alias =
+                    decode_stored_identity(&stored.qi_bytes, self.network)?.alias;
+                self.write_local_qualified_identity_locked(qualified_identity)?;
+            }
+            None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,
+        }
+        Ok(true)
+    }
+
+    /// Persist `keys` as the durable vault-cleanup manifest for `id`, so a
+    /// failure anywhere between this call and the manifest clear in
+    /// [`finish_vault_cleanup`] leaves a record a retry can recover from.
+    fn persist_vault_cleanup_manifest(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+        keys: &std::collections::BTreeSet<(PrivateKeyTarget, KeyID)>,
+    ) -> std::result::Result<(), TaskError> {
+        let stored: Vec<(StoredPrivateKeyTarget, KeyID)> =
+            keys.iter().cloned().map(|(t, k)| (t.into(), k)).collect();
+        kv.put(DetScope::Global, &vault_cleanup_pending_key(id), &stored)
+            .map_err(identity_err)
+    }
+
     /// Delete every identity-key raw secret for `id` from the vault.
     /// Idempotent when the identity or an individual vault label is absent.
     fn clear_identity_vault_keys(
@@ -1505,15 +2146,8 @@ impl AppContext {
         kv: &DetKv,
         id: &[u8; 32],
     ) -> std::result::Result<(), TaskError> {
-        let Some(stored) = kv
-            .get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
-            .map_err(identity_err)?
-        else {
-            return Ok(());
-        };
-        let qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
-        let view = crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id);
-        view.delete_all(qi.private_keys.keys_set())
+        let placements = self.identity_vault_key_placements(kv, id)?;
+        crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id).delete_all(placements)
     }
 
     /// Delete the vault secrets filed at `placements` for `identity_id`, leaving
@@ -1540,6 +2174,12 @@ impl AppContext {
     /// current network. Matches the pre-C7
     /// `delete_all_local_qualified_identities_in_devnet` guard — no-op on
     /// non-devnet networks.
+    ///
+    /// Holds [`lock_identity_index`] across the whole wipe, the read and the
+    /// index delete alike: an import that landed in between would have its
+    /// roster entry dropped by the delete while its blob and vault keys
+    /// survived — the unlisted-but-live shape the cleanup sweep destroys keys
+    /// over.
     pub fn delete_all_local_qualified_identities_in_devnet(
         &self,
     ) -> std::result::Result<(), TaskError> {
@@ -1547,10 +2187,15 @@ impl AppContext {
             return Ok(());
         }
         let kv = self.det_kv()?;
+        let _index_guard = lock_identity_index();
         let ids = load_identity_index(&kv)?;
         for id in &ids {
             self.clear_identity_vault_keys(&kv, id)?;
             purge_identity_scope(&kv, id)?;
+            // The same unload the per-identity removal records: this destroys
+            // the same keys, and the wallets stay loaded, so without it the
+            // next discovery pass restores everything the wipe just cleared.
+            self.mark_identity_unloaded(&kv, id)?;
         }
         kv.delete(DetScope::Global, IDENTITY_INDEX_KEY)
             .map_err(identity_err)
@@ -1744,12 +2389,407 @@ impl AppContext {
     }
 }
 
+/// Test-only staging fixtures for the identity-removal paths.
+///
+/// Lives outside `mod tests` so `backend_task::identity::remove_identity` can
+/// stage the same on-disk shape this module's own tests do — the classifier it
+/// owns reads exactly the state written here, and had no way to reach it while
+/// these fixtures were private to this file's test module.
+#[cfg(test)]
+pub(crate) mod test_staging {
+    use super::*;
+    use crate::model::qualified_identity::encrypted_key_storage::{
+        KeyStorage, PrivateKeyData, WalletDerivationPath,
+    };
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, PrivateKeyTarget};
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::IdentityPublicKey;
+
+    /// An offline `AppContext` over a throwaway data dir, plus the very vault it
+    /// was built on so a test can probe what the context wrote.
+    pub(crate) async fn ctx_with_vault() -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+    ) {
+        ctx_with_vault_on(Network::Testnet).await
+    }
+
+    /// [`ctx_with_vault`] on a caller-chosen network, for the devnet-only
+    /// sweep, which no-ops everywhere else.
+    pub(crate) async fn ctx_with_vault_on(
+        network: Network,
+    ) -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+    ) {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            network,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            Arc::clone(&secret_store),
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline AppContext::new");
+        (ctx, secret_store, temp_dir)
+    }
+
+    /// A `QualifiedIdentity` carrying one `Clear` (HIGH), one `AlwaysClear`
+    /// (MEDIUM), and one `AtWalletDerivationPath` key, under the default
+    /// (all-zero) identity id.
+    pub(crate) fn qi_with_plaintext_and_derived(
+        secret_high: [u8; 32],
+        secret_medium: [u8; 32],
+    ) -> QualifiedIdentity {
+        qi_with_plaintext_and_derived_at(Identifier::default(), secret_high, secret_medium)
+    }
+
+    /// [`qi_with_plaintext_and_derived`] under a caller-chosen identity id, for
+    /// the fixtures that stage two related identities at once.
+    pub(crate) fn qi_with_plaintext_and_derived_at(
+        identity_id: Identifier,
+        secret_high: [u8; 32],
+        secret_medium: [u8; 32],
+    ) -> QualifiedIdentity {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let high = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
+            (
+                QualifiedIdentityPublicKey::from(high),
+                PrivateKeyData::Clear(secret_high),
+            ),
+        );
+        let medium = IdentityPublicKey::random_key(2, Some(2), pv);
+        ks.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, medium.id()),
+            (
+                QualifiedIdentityPublicKey::from(medium),
+                PrivateKeyData::AlwaysClear(secret_medium),
+            ),
+        );
+        let derived = IdentityPublicKey::random_key(3, Some(3), pv);
+        ks.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived.id()),
+            (
+                QualifiedIdentityPublicKey::from(derived),
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: [0x07; 32],
+                    derivation_path: DerivationPath::from(vec![]),
+                }),
+            ),
+        );
+        let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// A stored identity whose plaintext keys the read path has already moved
+    /// into the vault — the state a real delete runs against. Holds the temp dir
+    /// and the event receiver so neither is dropped while the test runs.
+    pub(crate) struct StagedIdentity {
+        pub(crate) ctx: Arc<AppContext>,
+        pub(crate) store: Arc<platform_wallet_storage::secrets::SecretStore>,
+        pub(crate) id: Identifier,
+        /// The associated voter identity, staged alongside `id` and named by
+        /// its record. `None` unless the fixture staged a voter twin.
+        pub(crate) voter_id: Option<Identifier>,
+        _dir: tempfile::TempDir,
+        _events: tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    }
+
+    /// The two vault placements [`qi_with_plaintext_and_derived_at`] leaves
+    /// behind once the read path has migrated its plaintext keys.
+    const STAGED_PLACEMENTS: [(PrivateKeyTarget, dash_sdk::dpp::identity::KeyID); 2] = [
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 1),
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, 2),
+    ];
+
+    /// An offline context with its wallet backend wired — `det_kv()` is only
+    /// reachable once it is.
+    async fn staged_context() -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    ) {
+        staged_context_on(Network::Testnet).await
+    }
+
+    async fn staged_context_on(
+        network: Network,
+    ) -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    ) {
+        staged_context_with_prompt(network, None).await
+    }
+
+    /// [`staged_context_on`] with a secret-prompt host installed *before* the
+    /// wallet backend is built, which is the only point at which the prompt is
+    /// read into the `SecretAccess` chokepoint — so a test that needs a
+    /// password-protected identity has to pass it here rather than install it
+    /// afterwards.
+    async fn staged_context_with_prompt(
+        network: Network,
+        prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
+    ) -> (
+        Arc<AppContext>,
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    ) {
+        let (ctx, store, dir) = ctx_with_vault_on(network).await;
+        if let Some(prompt) = prompt {
+            ctx.install_secret_prompt(prompt);
+        }
+        let (tx, events) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+        (ctx, store, dir, events)
+    }
+
+    /// Write `qi`'s blob, list it on the roster, and read it back once so the
+    /// load path moves its plaintext keys into the vault. Asserts both keys
+    /// landed there, since every fixture below is only meaningful if they did.
+    fn stage_identity_record(
+        ctx: &Arc<AppContext>,
+        store: &Arc<platform_wallet_storage::secrets::SecretStore>,
+        qi: &QualifiedIdentity,
+    ) {
+        let id = qi.identity.id();
+        let id_buf = id.to_buffer();
+        let kv = ctx.det_kv().expect("identity kv");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                qi_bytes: qi.to_bytes(),
+                status: qi.status.as_u8(),
+                identity_type: qi.identity_type.as_tag().to_string(),
+                wallet_hash: None,
+                wallet_index: None,
+            },
+        )
+        .expect("stage the identity blob");
+        index_add_identity(&kv, &id_buf).expect("index the identity");
+        ctx.get_local_qualified_identity(&id)
+            .expect("hydrate the staged identity")
+            .expect("identity present");
+
+        let view = IdentityKeyView::new(store, id_buf);
+        for (target, key_id) in STAGED_PLACEMENTS {
+            assert!(
+                view.get(&target, key_id).unwrap().is_some(),
+                "precondition: key {key_id} must be in the vault before the delete"
+            );
+        }
+    }
+
+    /// One staged identity with no voter twin.
+    pub(crate) async fn stage_identity_with_vaulted_keys(
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        stage_identity_with_vaulted_keys_on(Network::Testnet, high, medium).await
+    }
+
+    /// [`stage_identity_with_vaulted_keys`] on a caller-chosen network.
+    pub(crate) async fn stage_identity_with_vaulted_keys_on(
+        network: Network,
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        stage_identity_with_vaulted_keys_using_prompt(network, None, high, medium).await
+    }
+
+    /// [`stage_identity_with_vaulted_keys_on`] with a secret-prompt host, for a
+    /// test that has to seal or unseal a password-protected identity key.
+    pub(crate) async fn stage_identity_with_vaulted_keys_using_prompt(
+        network: Network,
+        prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        let (ctx, store, dir, events) = staged_context_with_prompt(network, prompt).await;
+        let qi = qi_with_plaintext_and_derived(high, medium);
+        stage_identity_record(&ctx, &store, &qi);
+        StagedIdentity {
+            ctx,
+            store,
+            id: qi.identity.id(),
+            voter_id: None,
+            _dir: dir,
+            _events: events,
+        }
+    }
+
+    /// Break the Global scheduled-vote voter index, so the next
+    /// `delete_local_qualified_identity` fails at the last step of
+    /// `purge_identity_scope` — strictly *after* `index_remove_identity` has
+    /// already delisted the identity. The reachable shape of a removal that
+    /// failed past its point of no return: the identity is gone from every
+    /// screen, and only its vault cleanup is outstanding.
+    pub(crate) fn fail_removals_after_delisting(ctx: &Arc<AppContext>) {
+        ctx.det_kv()
+            .expect("identity kv")
+            .put(
+                DetScope::Global,
+                SCHEDULED_VOTE_VOTERS_KEY,
+                &"not a voter index".to_string(),
+            )
+            .expect("corrupt the scheduled-vote voter index");
+    }
+
+    /// Break `identity_id`'s vault-cleanup manifest slot, so its next
+    /// `delete_local_qualified_identity` fails while reading the delete set —
+    /// before any mutation, and before the identity is delisted. The reachable
+    /// shape of a removal that never happened and can still be retried.
+    pub(crate) fn fail_removal_before_delisting(ctx: &Arc<AppContext>, identity_id: &Identifier) {
+        ctx.det_kv()
+            .expect("identity kv")
+            .put(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&identity_id.to_buffer()),
+                &"not a cleanup manifest".to_string(),
+            )
+            .expect("corrupt the vault-cleanup manifest");
+    }
+
+    /// An evonode identity whose record names a separate voter identity, with
+    /// both staged and both holding vaulted keys — the shape
+    /// `AppContext::remove_identity` walks when one removal has to delete two
+    /// identities.
+    pub(crate) async fn stage_identity_with_voter_twin(
+        high: [u8; 32],
+        medium: [u8; 32],
+    ) -> StagedIdentity {
+        let (ctx, store, dir, events) = staged_context().await;
+
+        let voter = qi_with_plaintext_and_derived_at(Identifier::from([0x2A; 32]), high, medium);
+        stage_identity_record(&ctx, &store, &voter);
+
+        let mut primary =
+            qi_with_plaintext_and_derived_at(Identifier::from([0x1B; 32]), high, medium);
+        primary.identity_type = IdentityType::Evonode;
+        primary.associated_voter_identity = Some((
+            voter.identity.clone(),
+            IdentityPublicKey::random_key(4, Some(4), PlatformVersion::latest()),
+        ));
+        stage_identity_record(&ctx, &store, &primary);
+
+        StagedIdentity {
+            ctx,
+            store,
+            id: primary.identity.id(),
+            voter_id: Some(voter.identity.id()),
+            _dir: dir,
+            _events: events,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_staging::*;
     use super::*;
-    use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use crate::context::lock_probe::{LockProbe, LockSite};
+    use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv, RendezvousKv};
     use DetKv;
     use std::sync::Arc;
+
+    /// Hammer the roster lock from a thread attached to no probe, for as long
+    /// as the returned handle lives.
+    ///
+    /// The busy neighbour, made explicit rather than left to whatever else the
+    /// suite happens to be running: the roster lock is process-wide and shared
+    /// with every other test, so a fixture that counts *all* of its waiters
+    /// can be released by traffic its own test never created. Running that
+    /// traffic on purpose turns "does the probe ignore strangers" from a hope
+    /// about scheduling into a condition of the test.
+    struct NoisyNeighbour {
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl NoisyNeighbour {
+        fn spawn() -> Self {
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stop_flag = Arc::clone(&stop);
+            // Its own store, so it contends on the roster lock without ever
+            // entering the rendezvous the test under way is using.
+            let handle = std::thread::spawn(move || {
+                let kv = empty_kv();
+                let mut n = 0u8;
+                while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    let _ = index_add_identity(&kv, &id(n));
+                    let _ = index_remove_identity(&kv, &id(n));
+                    n = n.wrapping_add(1);
+                }
+            });
+            Self {
+                stop,
+                handle: Some(handle),
+            }
+        }
+    }
+
+    impl Drop for NoisyNeighbour {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn rendezvous_kv() -> (Arc<RendezvousKv>, DetKv) {
+        let store = Arc::new(RendezvousKv::default());
+        let kv = DetKv::from_store(store.clone());
+        (store, kv)
+    }
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -1868,6 +2908,119 @@ mod tests {
         // Removing an absent id is a no-op.
         index_remove_identity(&kv, &id(9)).unwrap();
         assert_eq!(load_identity_index(&kv).unwrap(), vec![id(2)]);
+    }
+
+    /// A roster whose entries can be lost is a roster that authorizes an
+    /// irreversible delete on false evidence: `resume_pending_vault_cleanups`
+    /// reads "absent from the index" as proof an identity was removed and
+    /// destroys its vault keys. The index is a single blob rewritten
+    /// wholesale, so listing two identities at once is a read-modify-write
+    /// race — and the entry that loses it belongs to an identity that is
+    /// live, listed everywhere else, and about to lose its private keys on
+    /// the next boot. Every mutation of the key must be serialized.
+    ///
+    /// The rendezvous store makes that failure certain rather than likely:
+    /// both adds are released only once both hold the pre-add roster, so
+    /// unserialized code loses an entry on every run, on every runner.
+    #[test]
+    fn concurrently_listing_two_identities_keeps_both_on_the_roster() {
+        let _neighbour = NoisyNeighbour::spawn();
+        let (store, kv) = rendezvous_kv();
+        let probe = LockProbe::new();
+        let watched = probe.clone();
+        store.arm(2, move || watched.count(LockSite::RosterWait));
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_add_identity(&kv, &id(1)).expect("list the re-imported identity")
+            });
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_add_identity(&kv, &id(2)).expect("list the imported identity")
+            });
+        });
+
+        let mut listed = load_identity_index(&kv).unwrap();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            vec![id(1), id(2)],
+            "neither identity may lose its roster entry to the other's write"
+        );
+    }
+
+    /// The same race in its mixed form, which corrupts the roster in both
+    /// directions at once: the removal can be undone (a delisted identity
+    /// reappears on screen with its keys already deleted) or the addition can
+    /// be dropped (a live identity is handed to the cleanup sweep). Only one
+    /// of the two writes survives unless they are serialized.
+    #[test]
+    fn a_concurrent_listing_and_delisting_both_take_effect() {
+        let (store, kv) = rendezvous_kv();
+        index_add_identity(&kv, &id(1)).unwrap();
+        index_add_identity(&kv, &id(2)).unwrap();
+        // Armed only now: the two seeding writes above are sequential, and an
+        // armed read waits for a peer that would never come.
+        let probe = LockProbe::new();
+        let watched = probe.clone();
+        store.arm(2, move || watched.count(LockSite::RosterWait));
+        let _neighbour = NoisyNeighbour::spawn();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_remove_identity(&kv, &id(1)).expect("delist the removed identity")
+            });
+            scope.spawn(|| {
+                let _attached = probe.attach();
+                index_add_identity(&kv, &id(3)).expect("list the imported identity")
+            });
+        });
+
+        let mut listed = load_identity_index(&kv).unwrap();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            vec![id(2), id(3)],
+            "the removal must not resurrect the delisted identity, and the \
+             import must not vanish from the roster"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // StoredPrivateKeyTarget: wire encoding is positional, not named.
+    // ---------------------------------------------------------------
+
+    /// `DetKv` encodes with `bincode::serde::encode_to_vec`, which is
+    /// positional — a variant's wire identity is its declaration order, not
+    /// its name. This pins today's order so a future reorder or removal
+    /// fails loudly here instead of silently re-labelling every
+    /// already-persisted vault-cleanup manifest entry to the wrong key
+    /// target. A new variant appended at the end is fine and needs no
+    /// update; an insertion, removal, or reordering must update this test
+    /// deliberately, with a migration plan for existing manifests.
+    #[test]
+    fn stored_private_key_target_wire_order_is_pinned() {
+        for (variant, expected_index) in [
+            (StoredPrivateKeyTarget::Main, 0u32),
+            (StoredPrivateKeyTarget::Voter, 1u32),
+            (StoredPrivateKeyTarget::Operator, 2u32),
+        ] {
+            let encoded =
+                bincode::serde::encode_to_vec(variant, bincode::config::standard()).unwrap();
+            // bincode's derive/serde-adapter encodes a unit-only enum's
+            // discriminant as a `u32` varint prefix, with no payload after
+            // it for a fieldless variant — decode that prefix directly
+            // rather than asserting on raw bytes, which would be brittle
+            // to bincode's own varint format.
+            let (decoded_index, _): (u32, usize) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+            assert_eq!(
+                decoded_index, expected_index,
+                "{variant:?} must encode at wire position {expected_index}"
+            );
+        }
     }
 
     // ---------------------------------------------------------------
@@ -2195,77 +3348,18 @@ mod tests {
     // Identity-key vault migration + deletion (funds-safety).
     // ---------------------------------------------------------------
 
-    use crate::model::qualified_identity::encrypted_key_storage::{
-        KeyStorage, PrivateKeyData, WalletDerivationPath,
-    };
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
     use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget};
     use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
     fn fresh_vault(dir: &std::path::Path) -> Arc<platform_wallet_storage::secrets::SecretStore> {
         let path = dir.join("secrets.pwsvault");
         Arc::new(crate::wallet_backend::single_key::open_secret_store(&path).expect("open vault"))
-    }
-
-    /// A `QualifiedIdentity` carrying one `Clear` (HIGH), one `AlwaysClear`
-    /// (MEDIUM), and one `AtWalletDerivationPath` key. Returns the QI plus the
-    /// `(target, key_id)` of each plaintext key for assertions.
-    fn qi_with_plaintext_and_derived(
-        secret_high: [u8; 32],
-        secret_medium: [u8; 32],
-    ) -> QualifiedIdentity {
-        let pv = PlatformVersion::latest();
-        let mut ks = KeyStorage::default();
-        let high = IdentityPublicKey::random_key(1, Some(1), pv);
-        ks.insert_at(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
-            (
-                QualifiedIdentityPublicKey::from(high),
-                PrivateKeyData::Clear(secret_high),
-            ),
-        );
-        let medium = IdentityPublicKey::random_key(2, Some(2), pv);
-        ks.insert_at(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, medium.id()),
-            (
-                QualifiedIdentityPublicKey::from(medium),
-                PrivateKeyData::AlwaysClear(secret_medium),
-            ),
-        );
-        let derived = IdentityPublicKey::random_key(3, Some(3), pv);
-        ks.insert_at(
-            (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived.id()),
-            (
-                QualifiedIdentityPublicKey::from(derived),
-                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
-                    wallet_seed_hash: [0x07; 32],
-                    derivation_path: DerivationPath::from(vec![]),
-                }),
-            ),
-        );
-        let identity =
-            Identity::create_basic_identity(Identifier::default(), pv).expect("basic identity");
-        QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: None,
-            private_keys: ks,
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::Active,
-            network: Network::Testnet,
-        }
     }
 
     /// Load-path migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
@@ -2745,39 +3839,6 @@ mod tests {
         );
     }
 
-    /// An offline `AppContext` over a throwaway data dir, plus the very vault it
-    /// was built on so a test can probe what the context wrote.
-    async fn ctx_with_vault() -> (
-        Arc<AppContext>,
-        Arc<platform_wallet_storage::secrets::SecretStore>,
-        tempfile::TempDir,
-    ) {
-        use crate::app_dir::ensure_env_file;
-        use crate::context::connection_status::ConnectionStatus;
-        use crate::database::test_helpers::create_database_at_path;
-        use crate::utils::tasks::TaskManager;
-
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let data_dir = temp_dir.path().to_path_buf();
-        ensure_env_file(&data_dir);
-        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
-        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
-        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
-        let ctx = AppContext::new(
-            data_dir,
-            Network::Testnet,
-            db,
-            Arc::new(TaskManager::new()),
-            Arc::new(ConnectionStatus::new()),
-            egui::Context::default(),
-            app_kv,
-            Arc::clone(&secret_store),
-            crate::model::user_role::UserRoleCell::default(),
-        )
-        .expect("offline testnet AppContext::new");
-        (ctx, secret_store, temp_dir)
-    }
-
     /// Per-key vault deletion drops the placements it is given and nothing else.
     /// That is what separates it from `clear_identity_vault_keys`, which empties
     /// the identity: dropping one key must leave the identity's remaining keys —
@@ -2818,5 +3879,1040 @@ mod tests {
 
         ctx.delete_identity_key_secrets(&victim, [(MAIN, 0)])
             .expect("deleting an already-gone placement is not an error");
+    }
+
+    /// Removal ordering is a safety property, not a style choice: the vault-key
+    /// delete is the one irreversible step (Platform can re-supply the identity,
+    /// nothing can re-supply the keys), so it must be unreachable until the
+    /// identity is already gone from local storage. Failing a step in the middle
+    /// of the delete must therefore leave every key where it was, rather than
+    /// leaving a "zombie" — an identity still on file whose keys are gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_identity_delete_never_destroys_the_vault_keys() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0xAA; 32];
+        const MEDIUM: [u8; 32] = [0xBB; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, MEDIUM).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+
+        // Break the Global enumeration index so the delete fails partway: the
+        // index read no longer decodes, which is the same shape as a store that
+        // goes away mid-operation.
+        kv.put(
+            DetScope::Global,
+            IDENTITY_INDEX_KEY,
+            &"not an identity index".to_string(),
+        )
+        .expect("corrupt the enumeration index");
+
+        let error = staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect_err("an unreadable index must fail the delete");
+        assert!(
+            !matches!(error, TaskError::WalletStorageNotReady),
+            "the delete must reach the index step, not stop at the migration guard: {error:?}"
+        );
+
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        assert_eq!(
+            *view
+                .get(&MAIN, 1)
+                .unwrap()
+                .expect("the HIGH key must survive a failed delete"),
+            HIGH,
+        );
+        assert_eq!(
+            *view
+                .get(&MAIN, 2)
+                .unwrap()
+                .expect("the MEDIUM key must survive a failed delete"),
+            MEDIUM,
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_some(),
+            "the identity record must survive a failed delete, so a retry still has something to delete"
+        );
+    }
+
+    /// `is_identity_listed` is the primitive `remove_identity` uses to tell a
+    /// benign "removed, cleanup still pending" failure apart from a real
+    /// "never removed" one: it must track the Global index, not the blob —
+    /// `purge_identity_scope`'s first step drops the blob before the index
+    /// removal that actually delists the identity has even run for the case
+    /// this distinction exists to catch (a failure strictly after delisting).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn is_identity_listed_tracks_the_index_not_the_blob() {
+        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+
+        assert!(
+            staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read listed state"),
+            "a freshly staged identity must be listed"
+        );
+
+        // Drop the blob directly, leaving the index untouched — the inverse
+        // of the failure window this helper exists to distinguish.
+        kv.delete(DetScope::Identity(&staged.id.to_buffer()), IDENTITY_KEY)
+            .expect("drop the blob");
+        assert!(
+            staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read listed state"),
+            "the index, not the blob, is authoritative: a blob-only removal \
+             must still read as listed"
+        );
+
+        index_remove_identity(&kv, &staged.id.to_buffer()).expect("remove from the index");
+        assert!(
+            !staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read listed state"),
+            "once the index entry is gone, the identity must read as unlisted"
+        );
+    }
+
+    /// The other half of the ordering contract. Deferring the vault delete must
+    /// not quietly turn it into a no-op: the delete set is read from the blob,
+    /// so reading it after `purge_identity_scope` drops that blob would strand
+    /// every private key in the vault. A completed removal leaves nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_successful_identity_delete_leaves_no_orphaned_vault_key() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+        let staged = stage_identity_with_vaulted_keys([0xCC; 32], [0xDD; 32]).await;
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("delete the staged identity");
+
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} must not be stranded in the vault after a completed delete"
+            );
+        }
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "the identity record must be gone after a completed delete"
+        );
+        assert!(
+            !load_identity_index(&staged.ctx.det_kv().expect("identity kv"))
+                .expect("read the index")
+                .contains(&staged.id.to_buffer()),
+            "the identity must be unlisted after a completed delete"
+        );
+    }
+
+    /// `purge_identity_scope` is not atomic: it can fail on its own last step
+    /// (pruning the scheduled-vote voter index) after its first step has
+    /// already deleted `IDENTITY_KEY` — the blob `identity_vault_key_placements`
+    /// needs to re-derive a delete set. Without a durable manifest, a retry
+    /// after such a failure would read an empty placement set from the (now
+    /// gone) blob and report success while every vault key stays orphaned.
+    /// The manifest persisted before the first mutation must survive that
+    /// failure and let a retry still find and delete every key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retry_after_purge_partially_fails_still_recovers_every_key() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0xEE; 32];
+        const LOW: [u8; 32] = [0xFF; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+
+        // Break the Global scheduled-vote voter index so `purge_identity_scope`
+        // fails at its LAST step (`delete_scheduled_votes_for_voter` ->
+        // `remove_vote_voter_from_index`) — strictly after `IDENTITY_KEY` (the
+        // blob) and `TOP_UPS_KEY` are already gone.
+        kv.put(
+            DetScope::Global,
+            SCHEDULED_VOTE_VOTERS_KEY,
+            &"not a voter index".to_string(),
+        )
+        .expect("corrupt the scheduled-vote voter index");
+
+        let error = staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect_err("a corrupt voter index must fail the delete");
+        assert!(
+            !matches!(error, TaskError::WalletStorageNotReady),
+            "the delete must reach purge_identity_scope, not stop at the migration guard: {error:?}"
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "purge_identity_scope's first delete must already have removed the blob \
+             before its own later step failed"
+        );
+
+        // Repair the index so the retry can actually complete.
+        kv.delete(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
+            .expect("repair the voter index");
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("the retry must complete now that the index is repaired");
+
+        let view = IdentityKeyView::new(&staged.store, staged.id.to_buffer());
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} must not be stranded: the manifest from the failed \
+                 attempt must have survived to inform the retry"
+            );
+        }
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&staged.id.to_buffer())
+            )
+            .expect("read the manifest slot")
+            .is_none(),
+            "the manifest must be cleared once every key is confirmed deleted"
+        );
+    }
+
+    /// The reachable form of the retry above: once `index_remove_identity`
+    /// has run, the identity is gone from the Global index and therefore off
+    /// every roster-backed screen — nothing in the UI can call
+    /// `delete_local_qualified_identity` again for it. The manifest must be
+    /// recoverable without that call: the boot-time sweep is the only
+    /// reachable path back to keys orphaned this way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resume_pending_vault_cleanups_recovers_a_manifest_no_ui_can_reach() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x11; 32];
+        const LOW: [u8; 32] = [0x22; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        // Simulate a crash between the manifest write and `purge_identity_scope`
+        // ever starting — the manifest is durable and the identity is already
+        // off the roster, but its blob, top-up history, and a scheduled vote
+        // are all still sitting untouched in Identity scope. Built directly
+        // (not via a failing `delete_local_qualified_identity` call) because
+        // `purge_identity_scope`'s first two steps are unconditional deletes
+        // that cannot be made to fail independently of its last step — going
+        // through the real call would always leave the blob and top-ups
+        // already gone, proving nothing about whether the sweep re-purges.
+        let vault_keys = staged
+            .ctx
+            .identity_vault_key_placements(&kv, &id_buf)
+            .expect("read the live placements before removing from the index");
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id_buf, &vault_keys)
+            .expect("persist the manifest");
+        index_remove_identity(&kv, &id_buf).expect("remove from the roster");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            TOP_UPS_KEY,
+            &std::collections::BTreeMap::from([(0u32, 5u64)]),
+        )
+        .expect("stage a top-up entry purge_identity_scope never reached");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            &scheduled_vote_key("alice"),
+            &StoredScheduledVote {
+                voter_id: id_buf,
+                contested_name: "alice".to_string(),
+                choice: StoredVoteChoice::Lock,
+                unix_timestamp: 0,
+                executed_successfully: false,
+            },
+        )
+        .expect("stage a scheduled vote purge_identity_scope never reached");
+        index_add_vote_voter(&kv, &id_buf).expect("add to the voter index");
+
+        staged.ctx.resume_pending_vault_cleanups();
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} must be recovered by the sweep even with no UI path left to reach it"
+            );
+        }
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "the sweep's purge_identity_scope re-run must leave the blob gone"
+        );
+        assert!(
+            kv.get::<std::collections::BTreeMap<u32, u64>>(
+                DetScope::Identity(&id_buf),
+                TOP_UPS_KEY
+            )
+            .expect("read top-ups")
+            .is_none(),
+            "the sweep must drain the top-up history left behind by the interrupted purge"
+        );
+        assert!(
+            kv.list(DetScope::Identity(&id_buf), Some(SCHEDULED_VOTE_KEY_PREFIX))
+                .expect("list scheduled votes")
+                .is_empty(),
+            "the sweep must drain any scheduled votes left behind by the interrupted purge"
+        );
+        assert!(
+            load_scheduled_vote_voters(&kv)
+                .expect("read the voter index")
+                .is_empty(),
+            "the sweep must prune this voter from the Global scheduled-vote index"
+        );
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_none(),
+            "the manifest must be cleared once the sweep confirms every key deleted"
+        );
+    }
+
+    /// The sweep's mirror-image hazard. `index_remove_identity` runs *after*
+    /// the manifest is persisted, so a failure in that write leaves a manifest
+    /// behind for an identity that is still on the roster, still holding a live
+    /// blob, and still fully usable. Resuming such a manifest would delete the
+    /// keys of an identity the user can still see and was told was *not*
+    /// removed — the exact zombie
+    /// `a_failed_identity_delete_never_destroys_the_vault_keys` exists to
+    /// forbid, arriving one boot later. The sweep must therefore resume only
+    /// what the roster confirms is already gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resume_pending_vault_cleanups_spares_an_identity_still_on_the_roster() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x33; 32];
+        const LOW: [u8; 32] = [0x44; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        // Fail the delete *at* `index_remove_identity`, after the manifest is
+        // already durable: an unreadable index makes its own load step error.
+        kv.put(
+            DetScope::Global,
+            IDENTITY_INDEX_KEY,
+            &"not an identity index".to_string(),
+        )
+        .expect("corrupt the identity index");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect_err("index_remove_identity must fail on an unreadable index");
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_some(),
+            "precondition: the failed delete must have left a manifest behind"
+        );
+
+        // The index write never landed, so on the next boot the identity is
+        // still listed exactly as it was — the removal never happened.
+        kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &vec![id_buf])
+            .expect("restore the untouched index");
+
+        staged.ctx.resume_pending_vault_cleanups();
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_some(),
+                "key {key_id} belongs to an identity still on the roster; the sweep \
+                 must not delete it"
+            );
+        }
+        assert!(
+            load_identity_index(&kv)
+                .expect("read the index")
+                .contains(&id_buf),
+            "the identity must still be listed, making the UI retry path reachable"
+        );
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_some(),
+            "the manifest must be retained: its keys are not confirmed absent, so \
+             clearing it here would discard the delete set a retry still needs"
+        );
+    }
+
+    /// The sweep's "still listed?" check and a concurrent re-import's write
+    /// both touch this identity's roster entry and vault keys; without a
+    /// shared lock the two could interleave so the sweep deletes keys a
+    /// re-import just wrote for a live identity. `identity_record_lock` — the
+    /// same lock [`AppContext::insert_local_qualified_identity`] takes before
+    /// touching this identity's k/v — must serialize the two: whichever one
+    /// the sweep observes after acquiring it is the ground truth, so a
+    /// re-import that lands first must be honored, never overwritten.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resume_pending_vault_cleanups_is_serialized_against_a_concurrent_reimport() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x55; 32];
+        const LOW: [u8; 32] = [0x66; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        // Leave a manifest behind for an unlisted identity — the sweep's
+        // normal entry condition — via the same crash simulation as above:
+        // the index write landed, but `purge_identity_scope` never got the
+        // chance to run.
+        let vault_keys = staged
+            .ctx
+            .identity_vault_key_placements(&kv, &id_buf)
+            .expect("read the live placements before removing from the index");
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id_buf, &vault_keys)
+            .expect("persist the manifest");
+        index_remove_identity(&kv, &id_buf).expect("remove from the roster");
+
+        // Hold this identity's own record lock ourselves, simulating a
+        // concurrent `insert_local_qualified_identity` re-import already in
+        // flight when the boot sweep starts.
+        let lock = staged.ctx.identity_record_lock(staged.id);
+        let guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // Only the sweep thread reports to this probe, so its count rises for
+        // the sweep and for nothing else — no baseline to subtract, and no
+        // other test's record-lock traffic can stand in for the sweep's.
+        let probe = LockProbe::new();
+        let sweep_probe = probe.clone();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let sweep_ctx = Arc::clone(&staged.ctx);
+        let sweep = std::thread::spawn(move || {
+            let _attached = sweep_probe.attach();
+            sweep_ctx.resume_pending_vault_cleanups();
+            let _ = done_tx.send(());
+        });
+
+        // Wait — without a deadline — for the sweep to reach the point just
+        // before it blocks on this identity's record lock. A timeout here
+        // would prove nothing: a sweep that has not started yet and a sweep
+        // parked on the lock are indistinguishable by elapsed time, so a slow
+        // worker would let the assertion below pass against a sweep that never
+        // took the lock at all.
+        while probe.count(LockSite::RecordRequest) == 0 {
+            std::thread::yield_now();
+        }
+
+        // It has asked for the lock and we hold it, so it can only be blocked
+        // acquiring it. Anything else — in particular finishing, having
+        // deleted the keys — is the bug.
+        assert!(
+            matches!(
+                done_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ),
+            "the sweep must block on this identity's record lock while a \
+             re-import holds it, not race ahead and delete its keys"
+        );
+
+        // The re-import completes: re-list the identity, then release the
+        // lock — mirroring `insert_local_qualified_identity`'s own order of
+        // operations under the same guard.
+        index_add_identity(&kv, &id_buf).expect("re-list the identity");
+        drop(guard);
+
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the sweep must proceed and finish once the lock is released");
+        sweep.join().expect("sweep thread must not panic");
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_some(),
+                "key {key_id} belongs to an identity the lock-holder re-listed \
+                 before releasing; the sweep must see that fresh state — read \
+                 after it acquires the lock, not before — and skip deleting it"
+            );
+        }
+        assert!(
+            load_identity_index(&kv)
+                .expect("read the index")
+                .contains(&id_buf),
+            "the re-import must have won: the identity is listed again"
+        );
+    }
+
+    /// A removal is reported by what happened to the keys, not by what happened
+    /// to the bookkeeping. Once the vault delete lands the keys are gone, and a
+    /// manifest clear that fails afterwards leaves only a stale Global record
+    /// the next boot's sweep drops on its own. Propagating that failure would
+    /// tell the user their private keys are still on this device — the opposite
+    /// of the truth — and would raise a cleanup-pending warning for an identity
+    /// with nothing left to clean up. The other half of the distinction, a
+    /// cleanup that really is outstanding because the keys are still there, is
+    /// asserted by `remove_identity`'s deferred-cleanup tests.
+    #[test]
+    fn a_manifest_clear_failure_after_the_keys_are_deleted_still_completes_the_removal() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_vault(dir.path());
+        let failing = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(failing.clone());
+        let id_buf = id(1);
+        let manifest_key = vault_cleanup_pending_key(&id_buf);
+
+        let view = IdentityKeyView::new(&store, id_buf);
+        view.store(&MAIN, 1, &[0x11; 32]).expect("vault the key");
+        kv.put(
+            DetScope::Global,
+            &manifest_key,
+            &vec![(StoredPrivateKeyTarget::from(MAIN), 1 as KeyID)],
+        )
+        .expect("stage the manifest the delete is meant to clear");
+
+        failing.fail_deletes(true);
+        finish_vault_cleanup(&kv, &store, &id_buf, [(MAIN, 1)])
+            .expect("the keys are gone, so only bookkeeping failed: not a failed removal");
+
+        assert!(
+            view.get(&MAIN, 1).unwrap().is_none(),
+            "the vault delete must have landed before the manifest clear was even attempted"
+        );
+        failing.fail_deletes(false);
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(DetScope::Global, &manifest_key)
+                .expect("read the manifest slot")
+                .is_some(),
+            "the manifest must survive its failed clear, so the next boot's sweep still \
+             finds it and re-runs the idempotent deletes"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Unloading is a per-device decision: automatic discovery must not
+    // undo it, and only a deliberate load may.
+    // ---------------------------------------------------------------
+
+    /// The user is told removal destroys the keys and a backup is the only way
+    /// back in. Nothing else on disk distinguishes a removed identity from one
+    /// that was never here, so without this marker the next discovery pass
+    /// re-derives it and puts it straight back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_an_identity_records_that_it_was_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id = staged.id.to_buffer();
+
+        assert!(
+            !staged
+                .ctx
+                .is_identity_unloaded(&kv, &id)
+                .expect("read the marker"),
+            "a stored identity must not carry an unload marker",
+        );
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        assert!(
+            staged
+                .ctx
+                .is_identity_unloaded(&kv, &id)
+                .expect("read the marker"),
+            "removal must record the unload, or discovery has nothing to consult",
+        );
+    }
+
+    /// The removal is only durable if the automatic passes honour it: the boot
+    /// sweep, the post-unlock pass and a wallet import all re-derive the same
+    /// identity from the still-loaded wallet.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_discovery_does_not_restore_an_unloaded_identity() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let mut rediscovered = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        let stored = staged
+            .ctx
+            .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+            .expect("a refusal is not an error");
+
+        assert!(
+            !stored,
+            "discovery must refuse an identity the user unloaded"
+        );
+        assert!(
+            staged
+                .ctx
+                .get_local_qualified_identity(&staged.id)
+                .expect("read back")
+                .is_none(),
+            "the refused identity must stay off disk",
+        );
+        assert!(
+            !staged
+                .ctx
+                .local_identity_ids()
+                .expect("read the roster")
+                .contains(&staged.id),
+            "the refused identity must stay off the roster, or it reappears on every screen",
+        );
+    }
+
+    /// A discovery pass that read the record *before* the removal takes the
+    /// refresh branch, not the insert branch, and its write lands after the
+    /// removal finished. Sequential here because that ordering is the whole
+    /// content of the race: read before, write after.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_discovery_that_read_the_record_first_cannot_write_it_back() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        // The in-flight pass's own snapshot, taken while the identity is still
+        // stored — which is what sends it down the refresh branch.
+        let mut in_flight = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        let stored = staged
+            .ctx
+            .store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+            .expect("a refusal is not an error");
+
+        assert!(
+            !stored,
+            "a snapshot taken before the removal must not outlive it",
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "the removed identity's blob must stay gone",
+        );
+    }
+
+    /// Proves the marker check is *inside* the record lock rather than before
+    /// it: the discovery thread is parked on the lock — observably, by count,
+    /// not by elapsed time — while the removal it must honour is recorded.
+    /// Move the check above the acquisition and the parked thread has already
+    /// decided "not unloaded" before this test writes the marker.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_discovery_parked_on_the_record_lock_still_sees_the_removal() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let mut in_flight = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        let lock = staged.ctx.identity_record_lock(staged.id);
+        let guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let probe = LockProbe::new();
+        let discovery_probe = probe.clone();
+        let ctx = Arc::clone(&staged.ctx);
+        let discovery = std::thread::spawn(move || {
+            let _attached = discovery_probe.attach();
+            ctx.store_discovered_identity(&mut in_flight, &None, DiscoveryIntent::Automatic)
+        });
+
+        // Unbounded on purpose: the discovery thread cannot acquire a lock this
+        // test holds, so the count it is waited on only ever settles one way.
+        // A bound here would be a deadline, and a deadline would let the thread
+        // be counted as parked when it had merely not started. The count is
+        // this test's own probe, so no other test's record-lock traffic can
+        // end the wait either.
+        while probe.count(LockSite::DiscoveryRecordWait) == 0 {
+            std::thread::yield_now();
+        }
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id = staged.id.to_buffer();
+        staged
+            .ctx
+            .mark_identity_unloaded(&kv, &id)
+            .expect("record the unload");
+        kv.delete(DetScope::Identity(&id), IDENTITY_KEY)
+            .expect("drop the record");
+        index_remove_identity(&kv, &id).expect("delist the identity");
+        drop(guard);
+
+        let stored = discovery
+            .join()
+            .expect("the discovery thread must not panic")
+            .expect("a refusal is not an error");
+
+        assert!(
+            !stored,
+            "a discovery blocked across a removal must re-read the marker, not its own \
+             earlier answer",
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "the removed identity's blob must stay gone",
+        );
+    }
+
+    /// The one thing that means the user changed their mind: asking for the
+    /// identity back. Loading it must both store it and retire the marker, so
+    /// later automatic passes keep it refreshed rather than refusing it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deliberately_loading_an_identity_retires_its_unload_marker() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let mut reloaded = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        staged
+            .ctx
+            .insert_local_qualified_identity(&reloaded, &None)
+            .expect("load the identity back");
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        assert!(
+            !staged
+                .ctx
+                .is_identity_unloaded(&kv, &staged.id.to_buffer())
+                .expect("read the marker"),
+            "a deliberate load must retire the marker",
+        );
+        assert!(
+            staged
+                .ctx
+                .store_discovered_identity(&mut reloaded, &None, DiscoveryIntent::Automatic)
+                .expect("store"),
+            "with the marker retired, discovery must keep the identity refreshed again",
+        );
+    }
+
+    /// The devnet wipe destroys the same keys the per-identity removal does,
+    /// and leaves the same wallets loaded, so it needs the same marker — or the
+    /// next discovery pass hands the developer back everything they just
+    /// cleared.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_devnet_wipe_records_every_identity_it_clears_as_unloaded() {
+        let staged =
+            stage_identity_with_vaulted_keys_on(Network::Devnet, [0xAA; 32], [0xBB; 32]).await;
+        let mut rediscovered = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        staged
+            .ctx
+            .delete_all_local_qualified_identities_in_devnet()
+            .expect("wipe the devnet identities");
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        assert!(
+            staged
+                .ctx
+                .is_identity_unloaded(&kv, &staged.id.to_buffer())
+                .expect("read the marker"),
+            "the wipe must record each identity it cleared as unloaded",
+        );
+        assert!(
+            !staged
+                .ctx
+                .store_discovered_identity(&mut rediscovered, &None, DiscoveryIntent::Automatic)
+                .expect("a refusal is not an error"),
+            "discovery must not restore what the wipe cleared",
+        );
+    }
+
+    /// The By-Wallet search is the user typing an index and pressing Search, so
+    /// it is a request for those identities — including one they unloaded
+    /// earlier. Refusing it would leave the user with a search that silently
+    /// finds nothing and no way to undo an unload.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_user_requested_search_loads_back_an_unloaded_identity() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let mut found = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        assert!(
+            staged
+                .ctx
+                .store_discovered_identity(&mut found, &None, DiscoveryIntent::UserRequested)
+                .expect("store"),
+            "a search the user started must load the identity back",
+        );
+
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        assert!(
+            !staged
+                .ctx
+                .is_identity_unloaded(&kv, &staged.id.to_buffer())
+                .expect("read the marker"),
+            "loading it back must retire the marker, or the next automatic pass \
+             stops refreshing an identity the user has again",
+        );
+    }
+
+    /// The chokepoint guard, reached through the ordinary update path rather
+    /// than through discovery: every fund-moving task (top-up, transfer,
+    /// withdrawal, add-key, DPNS registration) holds a `QualifiedIdentity` it
+    /// read earlier and writes it back when the chain work finishes. A removal
+    /// landing in that window would otherwise re-create the record — a zombie
+    /// identity, listed on every screen, whose private keys are already gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_update_cannot_resurrect_an_identity_the_user_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        // The snapshot a task in flight is holding.
+        let stale = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .expect("remove the identity");
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&stale)
+            .expect("declining is a completion, not an error");
+
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_none(),
+            "an update must not re-create the record of an unloaded identity",
+        );
+        assert!(
+            !staged
+                .ctx
+                .local_identity_ids()
+                .expect("read the roster")
+                .contains(&staged.id),
+            "and must not put it back on the roster, which is what authorizes the \
+             vault-cleanup sweep to destroy its keys",
+        );
+    }
+
+    /// The guard is narrow on purpose. Creating a record for an absent identity
+    /// is a real service to a caller repairing a lost roster entry, and only an
+    /// unload marker withdraws it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_update_still_creates_a_record_for_an_identity_never_unloaded() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let identity = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        // Gone from storage without ever being unloaded — the shape a lost
+        // write or an interrupted migration leaves behind.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id = staged.id.to_buffer();
+        kv.delete(DetScope::Identity(&id), IDENTITY_KEY)
+            .expect("drop the record");
+        index_remove_identity(&kv, &id).expect("delist the identity");
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .expect("store the identity");
+
+        assert!(
+            staged
+                .ctx
+                .local_identity_ids()
+                .expect("read the roster")
+                .contains(&staged.id),
+            "with no unload marker, an update must still restore the record",
+        );
+    }
+
+    /// R2: the chokepoint guard must ask the roster, not the blob.
+    ///
+    /// `purge_identity_scope` is documented as three independent k/v writes,
+    /// and it runs *after* `index_remove_identity`. So a removal that stops
+    /// between them — its first delete failing, or the process ending — leaves
+    /// the identity delisted with its blob still on disk. A stale snapshot
+    /// written back then finds `existing` present, sails past a guard keyed on
+    /// blob presence, and calls `index_add_identity`: the identity is back on
+    /// the roster after its removal was reported complete, and the boot sweep
+    /// reads that roster entry as authority to spare its keys.
+    ///
+    /// Roster membership is the authority this PR already established for
+    /// exactly this question. The guard has to use it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stale_update_cannot_relist_an_identity_whose_purge_did_not_finish() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        // The snapshot an in-flight task is holding across its chain round-trip.
+        let stale = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        // The removal reaches its point of no return and stops there: marker
+        // written, identity delisted, blob not yet purged. Built by calling the
+        // same steps in the same order `delete_local_qualified_identity` does,
+        // because no failure has to be injected for this state to be reachable
+        // — the three purge writes are not atomic and the code says so.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id = staged.id.to_buffer();
+        staged
+            .ctx
+            .mark_identity_unloaded(&kv, &id)
+            .expect("record the unload");
+        index_remove_identity(&kv, &id).expect("delist the identity");
+
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_some(),
+            "precondition: the blob outlives the delisting, which is what makes a \
+             blob-presence check answer the wrong question"
+        );
+        assert!(
+            !staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read the roster"),
+            "precondition: the identity is already delisted"
+        );
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&stale)
+            .expect("declining is a completion, not an error");
+
+        assert!(
+            !staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read the roster"),
+            "a stale write must not put a removed identity back on the roster — the \
+             boot sweep reads that entry as proof the identity is live and spares \
+             the keys the removal was meant to destroy"
+        );
+    }
+
+    /// The other side of the same predicate. A removal that fails *before*
+    /// delisting leaves a marker on an identity that is still on the roster and
+    /// still on every screen — its removal never happened. That identity's
+    /// ordinary work must keep working: a balance refresh after a failed unload
+    /// attempt is not a resurrection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_marker_on_a_still_listed_identity_does_not_block_its_ordinary_writes() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let identity = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the staged identity")
+            .expect("identity present");
+
+        // The shape a removal that failed at its delisting step leaves behind:
+        // marked, but never delisted.
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        staged
+            .ctx
+            .mark_identity_unloaded(&kv, &staged.id.to_buffer())
+            .expect("record the unload");
+
+        staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .expect("store the identity");
+
+        assert!(
+            staged
+                .ctx
+                .is_identity_listed(&staged.id)
+                .expect("read the roster"),
+            "an identity whose removal never got as far as delisting must keep \
+             working, marker or not"
+        );
+        assert!(
+            staged
+                .ctx
+                .stored_identity_blob(&staged.id)
+                .expect("read the blob")
+                .is_some(),
+            "and its record must still be written"
+        );
     }
 }

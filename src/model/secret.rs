@@ -39,6 +39,50 @@ impl CompareOnlyPtr {
     }
 }
 
+/// A best-effort `mlock`/`VirtualLock` on a memory region, released on drop.
+///
+/// This exists instead of [`region::LockGuard`] because that guard's `Drop`
+/// carries a `debug_assert!` on the unlock result, which aborts a debug build
+/// whenever the unlock reports the region was not locked. That is a routine
+/// occurrence here, not a bug: locks operate on whole pages, so two `Secret`
+/// buffers that share a page share a lock. Windows' `VirtualUnlock` is not
+/// reference-counted — the first `Secret` to drop unlocks the shared page, and
+/// the second then sees `ERROR_NOT_LOCKED` (158), which took the whole process
+/// down. Locking is documented as best-effort, so a failed unlock is logged and
+/// ignored.
+struct MemLock {
+    address: CompareOnlyPtr,
+    size: usize,
+}
+
+impl MemLock {
+    /// Lock `size` bytes at `address`, returning `None` if the OS refuses.
+    fn new(address: *const u8, size: usize) -> Option<Self> {
+        match region::lock(address, size) {
+            Ok(guard) => {
+                // Take the unlock away from the panicking guard; `Drop` below does it.
+                std::mem::forget(guard);
+                Some(Self {
+                    address: CompareOnlyPtr::new(address),
+                    size,
+                })
+            }
+            Err(e) => {
+                tracing::debug!("mlock failed for Secret: {e}");
+                None
+            }
+        }
+    }
+}
+
+impl Drop for MemLock {
+    fn drop(&mut self) {
+        if let Err(e) = region::unlock(self.address.0, self.size) {
+            tracing::debug!("munlock failed for Secret: {e}");
+        }
+    }
+}
+
 /// Zeroize-on-drop wrapper for sensitive strings (passwords, WIF keys, private key inputs).
 ///
 /// Debug output is redacted. Best-effort `mlock` prevents the backing memory from
@@ -59,7 +103,7 @@ pub struct Secret {
     /// Dropped first -- zeroes the bytes.
     inner: Zeroizing<String>,
     /// Dropped second -- unlocks the page.
-    _lock: Option<region::LockGuard>,
+    _lock: Option<MemLock>,
     /// Tracks the heap pointer so we can re-lock after reallocation.
     locked_ptr: CompareOnlyPtr,
 }
@@ -73,12 +117,7 @@ impl Secret {
         buf.push_str(&source);
         // Zeroize the original string before it's freed
         source.zeroize();
-        let lock = region::lock(buf.as_ptr(), buf.capacity())
-            .map_err(|e| {
-                tracing::debug!("mlock failed for Secret: {e}");
-                e
-            })
-            .ok();
+        let lock = MemLock::new(buf.as_ptr(), buf.capacity());
         let locked_ptr = CompareOnlyPtr::new(buf.as_ptr());
         Self {
             inner: Zeroizing::new(buf),
@@ -91,12 +130,7 @@ impl Secret {
     pub fn with_capacity(cap: usize) -> Self {
         let cap = cap.max(DEFAULT_CAPACITY);
         let s = String::with_capacity(cap);
-        let lock = region::lock(s.as_ptr(), s.capacity())
-            .map_err(|e| {
-                tracing::debug!("mlock failed for Secret: {e}");
-                e
-            })
-            .ok();
+        let lock = MemLock::new(s.as_ptr(), s.capacity());
         let locked_ptr = CompareOnlyPtr::new(s.as_ptr());
         Self {
             inner: Zeroizing::new(s),
@@ -144,12 +178,11 @@ impl Secret {
     /// drop the old mlock guard and create a new one for the current buffer.
     fn relock_if_moved(&mut self) {
         if !self.locked_ptr.addr_eq(self.inner.as_ptr()) {
-            self._lock = region::lock(self.inner.as_ptr(), self.inner.capacity())
-                .map_err(|e| {
-                    tracing::debug!("mlock re-lock failed after reallocation: {e}");
-                    e
-                })
-                .ok();
+            // Release the stale lock first: it covers the freed allocation, which
+            // may share a page with the new one. Locking first and dropping after
+            // would undo the lock we had just taken.
+            self._lock = None;
+            self._lock = MemLock::new(self.inner.as_ptr(), self.inner.capacity());
             self.locked_ptr = CompareOnlyPtr::new(self.inner.as_ptr());
         }
     }
@@ -468,6 +501,27 @@ mod tests {
         assert_eq!(secret.expose_secret(), "drop me safely");
         drop(secret);
         // If we get here, drop didn't panic
+    }
+
+    /// Memory locks cover whole pages, so buffers of neighbouring `Secret`s
+    /// routinely share one. Unlocking is not reference-counted, so dropping the
+    /// first releases the page for the rest — dropping those must stay silent
+    /// rather than abort the process.
+    #[test]
+    fn test_dropping_page_sharing_secrets_does_not_panic() {
+        let secrets: Vec<Secret> = (0..64).map(|i| Secret::new(format!("s{i}"))).collect();
+        drop(secrets);
+    }
+
+    /// A `Secret` that outgrows its buffer re-locks the new allocation; the
+    /// stale lock on the freed one must be released without panicking.
+    #[test]
+    fn test_reallocation_relock_does_not_panic() {
+        let mut secret = Secret::new("start");
+        let long = "x".repeat(DEFAULT_CAPACITY * 2);
+        secret.replace_with(&long);
+        assert_eq!(secret.expose_secret(), long);
+        drop(secret);
     }
 
     // Compile-time assertion that Secret has a Drop impl (not trivially droppable).

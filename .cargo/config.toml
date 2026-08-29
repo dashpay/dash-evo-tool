@@ -12,6 +12,12 @@ linker = "x86_64-w64-mingw32-gcc-posix"
 ar = "x86_64-w64-mingw32-ar"
 rustflags = ["-C", "link-args=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lpthread -Wl,-Bdynamic"]
 
+# The main thread's stack is reserved at link time, so RUST_MIN_STACK below does
+# not apply to it. MSVC reserves only 1 MiB by default, which the deep call chains
+# noted below overflow during startup. Reserve 8 MiB to match the spawned threads.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]
+
 [env]
 CC_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-gcc-posix"
 CXX_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-g++-posix"

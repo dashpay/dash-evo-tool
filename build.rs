@@ -27,9 +27,19 @@ fn main() {
         .expect("icon path must be valid UTF-8 for the resource compiler");
     res.set_icon(icon_str);
 
-    let windres_cmd = resolve_windres();
-    if let Some(cmd) = windres_cmd {
-        res.set_windres_path(&cmd);
+    // `winres` picks its resource compiler from the target environment: GNU
+    // (mingw) targets go through `windres` + `ar`, while MSVC targets go through
+    // the Windows SDK's `rc.exe`, which `winres` locates on its own. Only resolve
+    // the mingw tools when the target actually needs them, so a native MSVC build
+    // on Windows does not require a mingw toolchain.
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    if target_env != "msvc" {
+        let windres_cmd = resolve_windres().unwrap_or_else(|| {
+            panic!(
+                "Required tool not found: windres. Set WINDRES or install x86_64-w64-mingw32-windres."
+            )
+        });
+        res.set_windres_path(&windres_cmd);
         let ar_cmd = resolve_ar(&target).unwrap_or_else(|| {
             panic!(
                 "Required tool not found: ar. Set AR_{} or AR, or install x86_64-w64-mingw32-ar.",
@@ -37,10 +47,6 @@ fn main() {
             )
         });
         res.set_ar_path(&ar_cmd);
-    } else {
-        panic!(
-            "Required tool not found: windres. Set WINDRES or install x86_64-w64-mingw32-windres."
-        );
     }
 
     if let Ok(version) = env::var("CARGO_PKG_VERSION") {

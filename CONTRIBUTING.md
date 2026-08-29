@@ -2,7 +2,7 @@
 
 Contributions are welcome! This guide covers how to set up a development environment, build the project, run tests, and submit changes.
 
-> **Note:** The instructions below are written for Ubuntu x86_64. If you are building on another platform (e.g. Linux aarch64 or macOS) the same steps apply, but you may need to adjust package manager commands and download the appropriate `protoc` binary for your architecture.
+> **Note:** The instructions below are written for Ubuntu x86_64. If you are building on another platform (e.g. Linux aarch64 or macOS) the same steps apply, but you may need to adjust package manager commands and download the appropriate `protoc` binary for your architecture. Windows needs one additional step — see [Building natively on Windows (MSVC)](#building-natively-on-windows-msvc).
 
 ## Prerequisites
 
@@ -59,6 +59,33 @@ Run the application:
 ```shell
 cargo run
 ```
+
+### Building natively on Windows (MSVC)
+
+Release binaries for Windows are cross-compiled from Linux with the mingw toolchain (target `x86_64-pc-windows-gnu`), so a native MSVC build needs one extra step.
+
+The `rs-x11-hash` dependency compiles its C sources with clang and includes the POSIX header `<unistd.h>`, which the MSVC toolchain does not ship. This repository provides an empty stand-in at `build-support/windows-msvc/`. Put that directory on the compiler's include path before building:
+
+```shell
+$env:CFLAGS_x86_64_pc_windows_msvc = "-I$PWD/build-support/windows-msvc"
+```
+
+In VS Code, set the same variable in `.vscode/settings.json` so that both rust-analyzer and the integrated terminal pick it up:
+
+```json
+{
+  "rust-analyzer.cargo.extraEnv": {
+    "CFLAGS_x86_64_pc_windows_msvc": "-I${workspaceFolder}/build-support/windows-msvc"
+  },
+  "terminal.integrated.env.windows": {
+    "CFLAGS_x86_64_pc_windows_msvc": "-I${workspaceFolder}/build-support/windows-msvc"
+  }
+}
+```
+
+Note that the checkout path must not contain spaces, because the compiler splits this variable on whitespace.
+
+No mingw toolchain is required for a native MSVC build: the Windows icon resource is embedded with the Windows SDK's `rc.exe`, which `winres` locates on its own. Cross-compiling to `x86_64-pc-windows-gnu` still needs `windres` and `ar`, or the `WINDRES` and `AR_x86_64_pc_windows_gnu` variables pointing at them.
 
 ## Feature flags
 

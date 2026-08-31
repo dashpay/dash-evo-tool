@@ -740,6 +740,11 @@ impl StoragePrepGate {
             if action == STORAGE_PREP_RETRY_ACTION_ID {
                 self.failure = None;
                 self.overlay.take_and_clear();
+                // A retry re-runs the FULL sequence, not just the drain, so the
+                // network must lose any claim to being prepared — otherwise a
+                // later switch back would skip the gate on storage that never
+                // finished preparing.
+                self.prepared.remove(&network);
                 return Some(GateEvent::Retry(network));
             }
         }
@@ -845,7 +850,11 @@ impl MigrationReconciler {
         ) && app_context.prepare_gate.try_lock().is_ok();
         self.storage_startup_error.clear_if(storage_guard_resolved);
         self.update_password_prompt(ctx, app_context, &state);
-        if gate_raised && state.is_in_progress() {
+        // The gate owns every surface while it is raised, including the failed
+        // one: its overlay carries both the progress copy and the only "Try
+        // again", so a banner here would either duplicate the sentence or offer
+        // a second, competing retry that re-runs less than the gate's does.
+        if gate_raised {
             return;
         }
         if self.last_state.as_ref() == Some(&state) {
@@ -909,15 +918,6 @@ impl MigrationReconciler {
                 // (retryable, sticky) names both problems — the identities need
                 // reloading AND the app-data update must be retried — so neither
                 // silently hides the other.
-                if error.is_backend_not_ready() {
-                    // Transient app-data backend-not-ready: reset to Idle so a
-                    // retry re-runs once ready, with no failure flash.
-                    app_context
-                        .migration_status()
-                        .set_state(MigrationState::Idle);
-                    self.last_state = Some(MigrationState::Idle);
-                    return;
-                }
                 let handle = MessageBanner::set_global(
                     ctx,
                     migration_failed_with_unreadable_identities_text(count),
@@ -929,16 +929,15 @@ impl MigrationReconciler {
                 self.banner_handle = Some(handle);
             }
             MigrationState::Failed { error } => {
-                if error.is_backend_not_ready() {
-                    // Transient: the wallet backend had not finished wiring when
-                    // this run fired. Reset to Idle so no failure banner flashes
-                    // and the storage-preparation gate can re-drive it.
-                    app_context
-                        .migration_status()
-                        .set_state(MigrationState::Idle);
-                    self.last_state = Some(MigrationState::Idle);
-                    return;
-                }
+                // A backend-not-ready failure used to reset to Idle and wait for
+                // the frame loop's readiness poll to re-dispatch. That poll is
+                // gone — storage preparation wires the backend before the drain,
+                // so the gate's own path cannot produce this — and the reset
+                // would now strand the run at Idle with no banner and no retry.
+                // It reaches the retryable banner below instead, which is a
+                // recovery the user can actually reach. Still possible from the
+                // `FinishUnwire` retry task and the MCP join, neither of which
+                // wires first.
                 let task_error = migration_task_error(Arc::clone(&error));
                 let retryable = matches!(&task_error, TaskError::MigrationFailed { .. });
                 let message = if retryable {

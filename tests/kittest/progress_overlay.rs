@@ -2088,16 +2088,28 @@ fn item_a_armed_episode_blocks_and_paints_same_frame() {
             let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState")
                 .with_animations(false);
-            // Arm a user-initiated episode and force Connecting, exactly as the
-            // Connect button / boot auto-start do — but BEFORE the first frame runs.
-            let app_context = app.current_app_context().clone();
-            app_context
-                .connection_status()
-                .set_overall_state(OverallConnectionState::Connecting);
-            app.test_arm_spv_block();
+            // Boot's own gate, resolved through the seam rather than by running a
+            // real preparation: until it releases, the overlay on screen is the
+            // gate's, and its seam form starts no chain sync of its own — so the
+            // only block this test can observe is the one it arms itself.
+            app.test_raise_storage_prep_gate();
             app
         });
         harness.set_size(egui::vec2(800.0, 600.0));
+        harness.state_mut().test_complete_storage_prep_gate();
+        harness.run_steps(3);
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "the released gate leaves the screen clear before the episode is armed"
+        );
+
+        // Arm a user-initiated episode and force Connecting, exactly as the
+        // Connect button / boot auto-start do — but BETWEEN frames.
+        let app_context = harness.state().current_app_context().clone();
+        app_context
+            .connection_status()
+            .set_overall_state(OverallConnectionState::Connecting);
+        harness.state_mut().test_arm_spv_block();
 
         // Exactly ONE frame. `update_spv_overlay` runs at frame start (before the
         // input claim, the screen, and `render_global`), so the block is both raised

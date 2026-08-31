@@ -18,6 +18,17 @@ pub use data_dir::with_isolated_data_dir;
 /// preparation and intermittently panics `WalletBackendNotYetWired`.
 const STORAGE_PREP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Step `harness` until root screens exist, then let them settle.
+///
+/// A test that mounts the real `AppState` and asserts on a screen must wait for
+/// the storage-preparation gate to lift: nothing below it is rendered, and the
+/// preparation behind it does file IO, so a fixed frame budget is a race that
+/// only shows up as a flake on a loaded machine.
+pub fn wait_for_screens(harness: &mut Harness<'static, dash_evo_tool::app::AppState>) {
+    wait_for_wallet_backend(harness);
+    harness.run_steps(3);
+}
+
 /// Step `harness` until the storage-preparation gate has lifted, then return the
 /// live `AppContext`. Panics if it has not lifted within
 /// [`STORAGE_PREP_TIMEOUT`].

@@ -31,7 +31,7 @@ fn test_identities_screen_renders() {
         });
 
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
     });
 }
 
@@ -50,7 +50,7 @@ fn test_minimum_window_size() {
 
         // Test with a small window size
         harness.set_size(egui::vec2(400.0, 300.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
     });
 }
 
@@ -246,7 +246,7 @@ fn test_frame_batch_processing() {
 
         // Process frames in batches
         for batch in 0..10 {
-            harness.run_steps(10);
+            crate::support::wait_for_screens(&mut harness);
             // Just ensure we can run multiple batches without error
             let _ = batch;
         }

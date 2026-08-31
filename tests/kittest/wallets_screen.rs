@@ -900,7 +900,7 @@ fn test_wallets_screen_renders() {
         });
 
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(10);
+        crate::support::wait_for_screens(&mut harness);
     });
 }
 
@@ -920,7 +920,7 @@ fn test_app_stability_over_many_frames() {
         harness.set_size(egui::vec2(1024.0, 768.0));
 
         // Run 50 frames to test stability
-        harness.run_steps(50);
+        crate::support::wait_for_screens(&mut harness);
     });
 }
 

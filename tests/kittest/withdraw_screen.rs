@@ -140,7 +140,7 @@ fn fresh_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
             .expect("AppState builds")
             .with_animations(false)
     });
-    bootstrap.run_steps(5);
+    crate::support::wait_for_screens(&mut bootstrap);
     let app_context = bootstrap.state().current_app_context().clone();
     drop(bootstrap);
     drop(guard);

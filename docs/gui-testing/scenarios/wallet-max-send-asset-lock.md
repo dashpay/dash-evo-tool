@@ -20,6 +20,11 @@ development binaries selected for the current campaign (record their exact
 SHAs in that campaign's own artifacts, not here). Describe what you observe
 on each build without assuming which one is "correct."
 
+Before any step that spends funds, consumes a deposit, or registers a
+name, each build needs its own independently-funded equivalent fixture (or
+a restored snapshot of the same starting state) — see [A/B build comparison
+contract](../README.md#ab-build-comparison-contract).
+
 ## Prerequisites
 
 - Network: testnet

@@ -17,6 +17,11 @@ across transitions, not any single call's return value).
 development binaries selected for the current campaign (record their exact
 SHAs in that campaign's own artifacts, not here).
 
+Before any step that spends funds, consumes a deposit, or registers a
+name, each build needs its own independently-funded equivalent fixture (or
+a restored snapshot of the same starting state) — see [A/B build comparison
+contract](../README.md#ab-build-comparison-contract).
+
 ## Prerequisites
 
 - Network: testnet
@@ -41,11 +46,11 @@ DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 
 ## Procedure
 
-1. **Baseline Platform Info check.** Open Platform Info (Developer/Advanced
+1. **Initial Platform Info check.** Open Platform Info (Developer/Advanced
    view). Record the exact "Current Epoch Information" text, in particular
    whether the fee-multiplier line reads "unavailable" or states it is "a
-   fixed value, not read from the network" (or neither, if built against a
-   version predating both #936 and #950).
+   fixed value, not read from the network" (or neither, if the build under
+   test predates that line entirely).
 2. **Force repeated `Syncing`↔`Synced` transitions.** With the app running
    and initial sync complete, force several resync cycles in the same
    session — e.g. toggle network connectivity briefly (airplane-mode-style
@@ -60,10 +65,19 @@ DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 4. **Repeat the top-up attempt once more** a short time later (a minute or
    two) without additional resync cycling, to distinguish "budget recovers
    on its own" from "budget stays exhausted."
-5. **Check the logs.** Search `det.log`/`det-stderr.log` for
-   `DapiAllAddressesExhausted` or similar rate-limit/address-pool exhaustion
-   markers appearing near the resync cycles from step 2, independent of
-   whether the UI showed an error.
+5. **Check the logs.** Confirm the log targets exist first — `ls -l "$LOG"`
+   and `ls -l "$DATADIR"`, which is where the app writes `det.log` /
+   `det-stderr.log` — then search them:
+
+   ```bash
+   grep -R 'DapiAllAddressesExhausted' "$LOG" "$DATADIR"
+   ```
+
+   Look for that or similar rate-limit/address-pool exhaustion markers
+   appearing near the resync cycles from step 2, independent of whether the UI
+   showed an error. Record "not reproduced" only after confirming the files
+   exist and are non-empty — a missing log file means the check never ran, not
+   that the marker is absent.
 6. **Re-check Platform Info.** Reopen Platform Info after the resync cycling
    and top-up attempts; record whether the epoch/fee-multiplier text is
    still consistent with step 1's observation (no crash, no stuck "loading"
@@ -88,13 +102,13 @@ rule:
   banner on HEAD, or `DapiAllAddressesExhausted` (or equivalent) appears in
   HEAD's logs where it did not on baseline — or a **data-loss** outcome on
   either build.
-- **NOT blocking**: the reverse direction is the *expected improvement* this
-  PR ships — if baseline's top-up fails after repeated resync cycling (the
-  bug #950 fixes) and HEAD's succeeds, that's the intended fix working, not
-  a baseline "failure" to flag beyond noting it factually. A wording-only
-  difference in the Platform Info fee-multiplier line (`unavailable` vs `a
-  fixed value, not read from the network`) is expected and not itself a
-  defect on either build.
+- **NOT blocking**: the reverse direction — the baseline build's top-up
+  failing after repeated resync cycling while the development build's
+  succeeds. Record it factually as an observed difference between the two
+  builds; do not assume it was the intended outcome, and do not treat it as a
+  baseline "failure" to flag. A wording-only difference in the Platform Info
+  fee-multiplier line (`unavailable` vs `a fixed value, not read from the
+  network`) is not itself a defect on either build.
 - If neither build reproduces an exhaustion-triggered top-up failure within
   the attempted resync-cycle budget, record that plainly as "not reproduced
   this run" rather than asserting the fix is confirmed — a live-network

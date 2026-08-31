@@ -19,6 +19,11 @@ drive with a live contest clock and real background-task scheduling.
 development binaries selected for the current campaign (record their exact
 SHAs in that campaign's own artifacts, not here).
 
+Before any step that spends funds, consumes a deposit, or registers a
+name, each build needs its own independently-funded equivalent fixture (or
+a restored snapshot of the same starting state) — see [A/B build comparison
+contract](../README.md#ab-build-comparison-contract).
+
 ## Prerequisites
 
 - Network: testnet
@@ -100,13 +105,19 @@ rule:
   permanently stuck on HEAD where baseline cleared it; a save result gets
   attributed to the wrong identity on HEAD where baseline didn't), or a
   **data-loss** outcome (a profile edit silently lost) on either build.
-- **NOT blocking**: a timing-sensitive race that needs several attempts to
-  reproduce and only sometimes shows on either build; wording differences
-  with no functional consequence; an issue reproducing identically on both
+- **NOT blocking**: wording differences with no functional consequence; an
+  issue reproducing identically on both builds; a timing-sensitive race that
+  needs several attempts to reproduce and only sometimes shows on **both**
   builds.
-- If baseline doesn't have a pending-registration indicator at all (a new
-  feature on HEAD), record that as a feature-presence difference, not a
-  step failure on baseline.
+- **Precedence: intermittency never downgrades a wrong-identity result.** If a
+  save result is attributed to the wrong identity (step 10) on one build and
+  never on the other, it stays BLOCKING however rarely it reproduces — that
+  race is exactly what this scenario exists to catch, so being hard to land
+  inside the race window is a reason to attempt it more times, not a reason to
+  waive it under the timing-sensitive clause above.
+- If the pending-registration indicator exists on only one of the two selected
+  builds, record that as a feature-presence difference, not a step failure on
+  the build that lacks it.
 
 ## Known gotchas
 
@@ -115,6 +126,9 @@ rule:
   blocking the rest of this scenario.
 - The identity-switch race (step 10) is timing-sensitive; several attempts
   with the save action and the identity switch performed in quick succession
-  may be needed to land inside the race window on either build.
+  may be needed to land inside the race window on either build. That
+  difficulty does not soften the result: per the precedence rule in "Expected
+  outcome", a wrong-identity attribution seen on one build only is blocking
+  even if it reproduced once in many tries.
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

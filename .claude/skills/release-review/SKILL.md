@@ -28,13 +28,19 @@ instructions, the final report).
 The trigger is usually "a fix/PR landed, redo the campaign against the new HEAD" or resuming after
 a § Handling a Fixture/Infra Blocker pause. Don't rebuild from scratch:
 
-1. **Re-verify the baseline is still current** (`gh release list` — a newer pre-release may have
-   shipped since the prior run). If unchanged, the prior run's worktree/binary for it is still
-   valid — check for an existing `git worktree` and a previously-built binary under your scratch
-   root before rebuilding anything.
-2. **Only rebuild what moved.** If the baseline is unchanged and only HEAD advanced, reuse the
-   baseline binary as-is; `git fetch` + `git checkout <new-sha>` the HEAD worktree in place and
-   rebuild only that binary. This turns a two-cold-build Phase 2b into one incremental build.
+1. **Re-verify the baseline is still current** (`gh release list --repo dashpay/dash-evo-tool` — a
+   newer pre-release may have shipped since the prior run). A matching tag *name* is not enough:
+   re-resolve the canonical peeled tag commit
+   (`git ls-remote <canonical-remote> "refs/tags/<tag>^{}"`) and compare it against the baseline SHA
+   recorded in this run's `qa-run-state.md`. Only when both the tag name and that SHA are unchanged
+   is the prior run's worktree/binary for it still valid — check for an existing `git worktree` and a
+   previously-built binary under your scratch root before rebuilding anything. Fail closed on a
+   mismatch, and equally when no baseline SHA was recorded: re-establish the baseline per Phase 1 and
+   rebuild its binary rather than reusing an artifact you can't prove.
+2. **Only rebuild what moved.** If the baseline is unchanged *by that SHA comparison* and only HEAD
+   advanced, reuse the baseline binary as-is; `git fetch` + `git checkout <new-sha>` the HEAD
+   worktree in place and rebuild only that binary. This turns a two-cold-build Phase 2b into one
+   incremental build.
 3. **Archive, don't overwrite, the prior run's output.** Before writing fresh Phase 1-5 artifacts,
    move the previous run's files into a subfolder (e.g. `run-vs-<old-head-short-sha>/`) under the
    same artifacts location. Both runs stay comparable/auditable, and nothing silently clobbers a
@@ -42,10 +48,10 @@ a § Handling a Fixture/Infra Blocker pause. Don't rebuild from scratch:
 4. **Reuse scenario files and prior findings as a starting point, not from scratch.** A changelog
    pass can diff the prior run's verified commit list against the new range instead of re-deriving
    the whole thing; a GUI pass can decide per-scenario whether the flow is unchanged enough to reuse
-   the prior run's OLD-side (baseline) screenshots rather than recapturing them — an unchanged
-   baseline binary means its screenshots are still valid evidence. Always capture fresh NEW-side
-   screenshots (HEAD moved), and log explicitly which screenshots were reused vs freshly captured so
-   it's auditable rather than assumed.
+   the prior run's OLD-side (baseline) screenshots rather than recapturing them — a baseline binary
+   unchanged by step 1's peeled-SHA comparison (not merely by tag name) still has valid screenshots.
+   Always capture fresh NEW-side screenshots (HEAD moved), and log explicitly which screenshots were
+   reused vs freshly captured so it's auditable rather than assumed.
 5. If any part of this run is delegated (to a sub-agent or a fresh session), give it the prior run's
    key facts (SHAs, decisions already made, artifact paths) explicitly — it has no memory of a prior
    or paused run and will otherwise re-derive, and burn time on, things already verified.
@@ -72,8 +78,13 @@ separate test binary, not this GUI). As of this writing, the scenarios under
   check, not "it was funded last time"). If empty, get a faucet drop (a testnet faucet — web, CLI,
   or whatever this project's e2e docs point at) or a fresh funded fixture BEFORE starting Phase 4 —
   don't discover this after a long SPV sync.
+- `E2E_IDENTITY_ID`: the identity the top-up check in
+  `docs/gui-testing/scenarios/dapi-budget-resilience-after-resync.md` funds. Preflight it with a live
+  identity lookup (does the ID still resolve, and can it receive a top-up?), or decide explicitly and
+  up front that provisioning will create the identity ad hoc — that costs credits and GUI time, so
+  it's a decision to make before Phase 4, not to discover mid-scenario.
 
-If either fixture is broken and can't be fixed quickly: stop here, log it (see § Handling a
+If any of these fixtures is broken and can't be fixed quickly: stop here, log it (see § Handling a
 Fixture/Infra Blocker below), and don't burn hours running non-fund-dependent checks only — check
 with the user whether a partial (navigation-only) pass is worth doing now or the whole campaign
 should wait.
@@ -99,9 +110,14 @@ or a `MasternodeNotFound` as a real fixture problem.
    checkout, `origin` commonly points at a contributor's fork, not the canonical repo — using it
    unconditionally can silently sync tags/branches from the wrong place with no error (confirmed: in
    one checkout, `origin` resolved the development branch to a materially different commit than the
-   canonical repo did). Find the remote whose fetch URL actually matches the canonical repo, e.g.
-   `git remote -v | grep dashpay/dash-evo-tool`; if none exists, add one
-   (`git remote add upstream https://github.com/dashpay/dash-evo-tool.git`) or fetch directly by URL.
+   canonical repo did). Find the remote whose *fetch URL* is exactly the canonical repo: read the URL
+   itself (`git remote get-url <remote>` per remote, or the `(fetch)` line of `git remote -v`) and
+   require an exact match on `github.com/dashpay/dash-evo-tool` — HTTPS or SSH form, with or without
+   the `.git` suffix. A loose `git remote -v | grep dashpay/dash-evo-tool` is not that check: it also
+   matches a push-only line and any fork whose URL merely contains the string. If no remote matches,
+   add a **named** one (`git remote add upstream https://github.com/dashpay/dash-evo-tool.git`) and
+   fetch through that name — never fetch directly by bare URL, since step 4 resolves
+   `<canonical-remote>/<base-branch>` and a URL leaves no remote-tracking ref to rev-parse.
    Call this `<canonical-remote>` below and use it consistently for every step in this skill — never
    assume `origin` is it, and don't re-derive it more than once per run.
 2. **Find the baseline release**: `gh release list --repo dashpay/dash-evo-tool` filtered to
@@ -113,24 +129,38 @@ or a `MasternodeNotFound` as a real fixture problem.
    `git fetch <canonical-remote> "+refs/tags/<tag>:refs/tags/<tag>"`, then
    `git rev-parse <tag>^{commit}`. **Confirmed gotcha**: a local tag ref can silently diverge from the
    remote (stale from an earlier fetch/session) and point at an *ancestor* commit, producing a diff
-   range that's wrong (larger than reality) without any error. Always re-verify against
-   `git ls-remote --tags <canonical-remote> <tag>` before computing any diff range from a tag.
+   range that's wrong (larger than reality) without any error. Always re-verify against the remote
+   before computing any diff range from a tag — and compare peeled commit to peeled commit:
+   `git ls-remote <canonical-remote> "refs/tags/<tag>^{}"` returns the commit a tag points at, whereas
+   `git ls-remote --tags <canonical-remote> <tag>` returns the *tag object* SHA for an annotated tag.
+   This project's release tags are annotated, so comparing the local peeled commit against the
+   unpeeled remote line mismatches on every healthy tag — that mismatch is an artifact of the wrong
+   comparison, not evidence of drift. (If the remote prints no `^{}` line the tag is lightweight and
+   its single SHA is already the commit. To check both forms explicitly, compare tag object against
+   `git rev-parse <tag>` and peeled commit against `git rev-parse <tag>^{commit}` as two separate
+   assertions.)
 4. **Determine the active development branch and resolve it to a commit SHA — record that SHA, don't
    carry a branch name or bare `HEAD` forward.** Check the repo's own contribution docs (e.g.
    `CLAUDE.md`, `CONTRIBUTING.md`) rather than assuming `main`/`master`; this project may use a
-   dedicated long-lived dev branch instead. Resolve it once:
-   `git rev-parse <canonical-remote>/<base-branch>`, and treat that output as **the development SHA**
-   for the rest of this run — every later phase (the diff range, Phase 2b's second worktree,
-   screenshots, the final report) uses this exact SHA. Never substitute a bare `HEAD` for it (that's
-   the invoking checkout's HEAD, not necessarily the development branch's — wrong whenever this
-   procedure is run from a feature/PR checkout, which is common) and never re-resolve the branch ref
-   later in the run, since it can move while you're still working. Compute the range:
+   dedicated long-lived dev branch instead. Fetch that branch before resolving it — Phase 1's other
+   fetch syncs tags only, and a stale remote-tracking ref freezes a wrong development SHA into every
+   later phase with no error (confirmed: a checkout's `<canonical-remote>/<base-branch>` sat behind
+   the canonical head that `git ls-remote` reported). Resolve it once:
+   `git fetch <canonical-remote> "+refs/heads/<base-branch>:refs/remotes/<canonical-remote>/<base-branch>"`
+   then `git rev-parse <canonical-remote>/<base-branch>`, and treat that output as
+   **the development SHA** for the rest of this run — every later phase (the diff range, Phase 2b's
+   second worktree, screenshots, the final report) uses this exact SHA. Never substitute a bare
+   `HEAD` for it (that's the invoking checkout's HEAD, not necessarily the development branch's —
+   wrong whenever this procedure is run from a feature/PR checkout, which is common) and never
+   re-resolve the branch ref later in the run, since it can move while you're still working. Compute
+   the range:
    `git log <tag>..<development-sha> --oneline`.
 5. **Don't trust `CHANGELOG.md` alone.** Its unreleased section can contain stale/premature entries
    or miss real changes. For every commit in range, resolve its PR number and read the actual PR body
-   (`gh pr view <n>`) — not just the commit subject, which can undersell what a PR really changed
-   (confirmed: one PR's CHANGELOG entry omitted two of its own later review-round fixes). Cross-check
-   both directions: CHANGELOG claims with no backing PR, and merged PRs with no CHANGELOG entry.
+   (`gh pr view <n> --repo dashpay/dash-evo-tool`) — not just the commit subject, which can undersell
+   what a PR really changed (confirmed: one PR's CHANGELOG entry omitted two of its own later
+   review-round fixes). Cross-check both directions: CHANGELOG claims with no backing PR, and merged
+   PRs with no CHANGELOG entry.
 6. **Confirm things are actually in-range, not pre-existing**: `git merge-base --is-ancestor <sha>
    <baseline-tag>` for anything you suspect might already be shipped — don't regression-test
    pre-existing behavior as if it were new. This one check is necessary but not sufficient on its
@@ -178,7 +208,7 @@ wrote the changelog against) — never inside the repo's own tracked working tre
 spawned sub-agent create worktrees on its own initiative if you're coordinating multiple agents
 (create them yourself first, hand the paths out). Build each with:
 
-```
+```shell
 CARGO_TARGET_DIR=<scratch-root>/<name>-target cargo build --bin dash-evo-tool --manifest-path <worktree>/Cargo.toml
 ```
 
@@ -250,19 +280,24 @@ DPNS name, or moves credits mutates shared on-chain/live-network fixture state; 
 binary through it and then the development binary through the identical flow means the second run
 starts from state the first run already changed (an already-consumed deposit, a spent UTXO set, a
 name that's no longer available), which can produce a false regression or a false pass. For any
-scenario step that mutates fund-moving or name-registering state, do one of: give each build its
-own independently-funded/equivalent fixture (separate wallet or identity per side) rather than
-sharing one; or explicitly record each side's starting balances/UTXOs/deposits/identities/DPNS names
-before that step and account for the difference when judging the result. Steps that only read state
-(navigation, display checks) aren't affected — reserve this for anything that actually spends or
-registers something.
+scenario step that mutates fund-moving or name-registering state, give each build its own
+independently-funded/equivalent fixture — a separate wallet, identity, or name per side, or a fixture
+restored to an equivalent starting state between the two runs — rather than sharing one. Recording
+each side's starting balances/UTXOs/deposits/identities/DPNS names and "accounting for the
+difference" afterwards is not an alternative: you cannot account your way past a DPNS name that no
+longer exists or a deposit the first run already consumed, because the second build can't execute the
+flow at all. Steps that only read state (navigation, display checks) aren't affected — reserve this
+for anything that actually spends or registers something.
 
 **Blocker rule** (confirm with the user for each run — the default below is a starting point, not a
 universal constant):
 - **Blocking**: new version worse than old from the user's perspective **in the happy flow**, or a
   **data-loss** scenario.
-- **Not blocking**: concurrency/timing glitches; anything reproduced identically on **both**
-  builds (pre-existing — note it, don't flag as a regression).
+- **Not blocking**: timing noise with no user-visible effect; anything reproduced identically on
+  **both** builds (pre-existing — note it, don't flag as a regression). Read that exemption
+  narrowly — a *new* intermittent race stays blocking whenever it breaks the happy flow, crashes the
+  app, or loses data. "It's a race" never downgrades those; intermittency only means you reproduce it
+  more times before confirming.
 - Reproduce anything about to be marked blocking at least twice before confirming.
 - If a repro attempt genuinely can't be reproduced after several tries, don't leave it open
   indefinitely — write up the negative evidence, downgrade to backlog, and say explicitly that repro
@@ -336,6 +371,24 @@ apply — but check rather than assume on a shared machine.
 
 ## Security incidents during GUI testing
 
+**Prevent first — every control below is cheaper than the incident response after it.** When a run
+handles a real secret (a testnet mnemonic, a password fixture):
+- Enter it through the GUI's own masked/protected input wherever one exists, rather than any path
+  that echoes the value back on screen.
+- **Never pass a real mnemonic, password, or private key as a bare command-line argument** — it lands
+  in process listings, shell history, and this session's transcript, all of which outlive the run.
+  Pass it via an environment variable the app reads, or a file with restrictive permissions.
+- Don't dump the environment (`env`, `printenv`, `set`) into a transcript, and redact fixture secrets
+  out of any log output before quoting it; check what a raised log level actually prints before
+  capturing it wholesale.
+- **Check before saving or embedding, not after**: eyeball each screenshot for visible secret text,
+  and grep transcripts, logs, and generated artifacts for the fixture's own patterns (the mnemonic's
+  words, the password string, `xprv`/`tprv`/WIF prefixes) before they reach the artifacts location.
+  Repeat that check immediately before Phase 5's base64-inline step — inlining bakes the image into a
+  self-contained, trivially forwardable HTML file that is far harder to un-publish than a stray PNG.
+- Restrict filesystem permissions where secrets and captures land (`chmod 700` the scratch/artifacts
+  directories, `chmod 600` any file holding a secret) — on the machine they actually land on.
+
 If GUI testing handles real secrets (a testnet mnemonic, a password fixture) and something goes
 wrong — a screenshot with the secret visible, a secret typed into a visible log/transcript — the
 self-report is not the end of it:
@@ -357,7 +410,9 @@ self-report is not the end of it:
 
 Build a self-contained HTML page (`visual-changelog.html`) presenting old/new screenshot pairs side
 by side per scenario/story, with a verdict badge and a one-line rationale each — inline the images
-(e.g. base64) so the page has no external file dependencies. Save it to your artifacts location.
+(e.g. base64) so the page has no external file dependencies. Run the pre-embedding secret check from
+§ Security incidents during GUI testing over every image and caption first: once inlined, a leaked
+secret travels with every copy of the page. Save it to your artifacts location.
 Merge Phase 4's findings into Phase 2's report as an additional section, re-validate the combined
 report against whatever schema/format it uses, and re-render any human-readable version. The
 combined report is then ready to hand to the user for triage — code-review and GUI-regression
@@ -380,13 +435,16 @@ not an app bug), don't push through with silent scope cuts:
 
 ## Artifact conventions
 
-Pick one consistent, git-ignored location outside the tracked repo for everything durable in a given
-run (a dated directory under your scratch root, or wherever your own setup keeps generated reports)
-and use it for: the verified changelog, the code-review report (JSON/Markdown or whatever format is
+Pick one consistent location outside the tracked repo for everything durable in a given run (a dated
+directory under your scratch root, or wherever your own setup keeps generated reports) and use it
+for: the verified changelog, the code-review report (JSON/Markdown or whatever format is
 in use), GUI findings, the GUI test log, `visual-changelog.html`, screenshots, and the user-stories
 checklist. If your environment has a way to share generated files with the user (a hosting mechanism,
 an upload/artifact tool, or simply pointing at local paths they can open), use whatever's actually
-available — don't assume a specific serving mechanism exists.
+available — don't assume a specific serving mechanism exists. Note that "git-ignored" is not a safety
+property here: `.gitignore` only governs paths inside the repository, so a directory outside it needs
+its own access controls (restrictive permissions, and not sitting under anything published or synced)
+rather than an ignore rule.
 
 Keep a small `qa-run-state.md` at the top of that location as a durable scratchpad: verified SHAs,
 worktree/binary paths, a phase checklist, and an explicit "open items for the user" list. That's what

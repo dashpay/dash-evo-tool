@@ -18,6 +18,11 @@ not on what actually renders.
 development binaries selected for the current campaign (record their exact
 SHAs in that campaign's own artifacts, not here).
 
+Before any step that spends funds, consumes a deposit, or registers a
+name, each build needs its own independently-funded equivalent fixture (or
+a restored snapshot of the same starting state) — see [A/B build comparison
+contract](../README.md#ab-build-comparison-contract).
+
 ## Prerequisites
 
 - Network: testnet
@@ -63,9 +68,18 @@ DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
    Record the exact message shown — does it say the deposit cannot be
    reused and to choose/start a different one, or does it suggest retrying?
 6. **Deposit verification stability.** Perform several deposit verifications
-   in a row (fund an identity via deposit two or three times). Record
-   whether the app crashes, and check `det-stderr.log`/`det.log` for a
-   panic marker (`location=...`) even if the UI appeared fine.
+   in a row (fund an identity via deposit two or three times). Record whether
+   the app crashes, then check the logs for a panic marker even if the UI
+   appeared fine. Confirm the log targets exist first — `ls -l "$LOG"` and
+   `ls -l "$DATADIR"`, which is where the app writes `det.log` /
+   `det-stderr.log` — then search them:
+
+   ```bash
+   grep -R -e 'panicked' -e 'location=' "$LOG" "$DATADIR"
+   ```
+
+   Record "no panic" only after confirming the files exist and are non-empty —
+   a missing log file means the check never ran, not that the app was clean.
 7. **Format-validation consistency.** DPNS names, contract keywords, and
    DashPay account labels each have their own documented length limit (they
    are different fields with different rules by design — do not expect them
@@ -101,8 +115,7 @@ rule:
   wording differences with no functional consequence; an issue reproducing
   identically on both builds (e.g. if baseline also shows 6 duplicate
   buttons and HEAD also does — note it, don't block).
-- If baseline's button row differs in count/labels from HEAD's by design
-  (this PR's whole purpose is to collapse duplicates), record both
+- If the two builds' button rows differ in count or labels, record both
   observations plainly rather than treating either as automatically wrong —
   apply the blocker rule based on functional correctness (do all buttons
   work, are destinations distinguishable), not on matching layouts.
@@ -113,9 +126,9 @@ rule:
   at Identity Home, the identities-list popup, or the Withdrawal screen
   directly — these three surfaces historically used different gating
   criteria; note which surface any discrepancy is on.
-- This PR range touches many files across validation, fee estimation, error
-  banners, and identity removal — if a defect surfaces, compare directly
-  against the baseline build's behavior for the same step before concluding
-  it's new.
+- The change range this scenario covers touches many files across validation,
+  fee estimation, error banners, and identity removal — if a defect surfaces,
+  compare directly against the baseline build's behavior for the same step
+  before concluding it's new.
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

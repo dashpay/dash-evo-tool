@@ -15,6 +15,11 @@ protocol-version-detection round trip.
 development binaries selected for the current campaign (record their exact
 SHAs in that campaign's own artifacts, not here).
 
+Before any step that spends funds, consumes a deposit, or registers a
+name, each build needs its own independently-funded equivalent fixture (or
+a restored snapshot of the same starting state) — see [A/B build comparison
+contract](../README.md#ab-build-comparison-contract).
+
 ## Prerequisites
 
 - Network: testnet
@@ -76,10 +81,10 @@ rule:
   available when the network supports them, generic error banner absent) is
   the same or better on HEAD; an issue reproducing identically on both
   builds.
-- If baseline's shielded features never activate at all after sync (the bug
-  this PR fixes), and HEAD's do — that's the expected direction of
-  improvement, not something to flag as a baseline "failure" beyond noting
-  it factually.
+- If shielded features never activate after sync on one of the two selected
+  builds but do on the other, record that factually as an observed difference
+  between the builds — do not assume either direction was intended, and apply
+  the blocker rule to the user-visible outcome rather than to a presumed fix.
 
 ## Known gotchas
 

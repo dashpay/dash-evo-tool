@@ -19,6 +19,11 @@ SHAs in that campaign's own artifacts, not here) — do not skip or alter
 steps between runs. Record what actually happens on each build; do not
 presuppose which behaviors are "the fix."
 
+Before any step that spends funds, consumes a deposit, or registers a
+name, each build needs its own independently-funded equivalent fixture (or
+a restored snapshot of the same starting state) — see [A/B build comparison
+contract](../README.md#ab-build-comparison-contract).
+
 ## Prerequisites
 
 - Network: testnet
@@ -111,13 +116,15 @@ step above, then apply this rule:
   now corrupts or loses a key on HEAD), or if any step reveals a **data-loss**
   outcome (a key's private half becoming permanently unrecoverable) on
   either build.
-- **NOT blocking**: a timing-dependent race that only sometimes reproduces;
-  a UI glitch with no functional consequence; or an issue that reproduces
-  identically on both builds (pre-existing — note it, don't block on it).
-- If a step's affordance doesn't exist at all on baseline (e.g. the Keys
-  screen or the restore offer are new features introduced within this
-  diff), that's expected — record it as "not present on baseline, present
-  on HEAD" rather than a failure of the baseline run.
+- **NOT blocking**: a timing-dependent race *with no data-loss consequence*
+  that only sometimes reproduces; a UI glitch with no functional consequence;
+  or an issue that reproduces identically on both builds (pre-existing — note
+  it, don't block on it). A race that strands or destroys a key's private half
+  stays blocking under the rule above, however rarely it reproduces.
+- If a step's affordance exists on only one of the two selected builds (e.g.
+  the Keys screen or the restore offer is absent on one side), that is a
+  feature-presence difference, not a step failure on the build that lacks it
+  — record which build has it and compare the behavior only where both do.
 
 ## Known gotchas
 
@@ -127,10 +134,14 @@ step above, then apply this rule:
   identity correctly being listed as "cannot be restored automatically" is
   expected, not a defect.
 - A voting key stored directly on the identity's own record (rather than a
-  separate voting identity) has a documented residual on HEAD: saving/
-  removing it by hand can affect a same-numbered voting key on a linked
-  voting identity. After doing so, re-open the keys list and check every key
-  still reads as expected before treating anything odd here as a new
-  regression.
+  separate voting identity) can, when saved/removed by hand, affect a
+  same-numbered voting key on a linked voting identity. Never treat that as
+  expected upfront on either build: if it leaves a key's private half
+  unrecoverable it is the data-loss outcome step 8 exists to catch, and stays
+  **BLOCKING** regardless of which build shows it. Compare the observed
+  behavior across the two selected build SHAs, and record any confirmed
+  exception — with the evidence for it — in that campaign's own artifacts. In
+  every case, re-open the keys list after such a save/removal and check every
+  key still reads as expected.
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

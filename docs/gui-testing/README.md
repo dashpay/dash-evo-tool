@@ -251,13 +251,50 @@ one scenario silently invalidating another:
   run spanning hours, set `CARGO_TARGET_DIR` to a private path before building
   and hash-verify (`sha256sum`) before each relaunch.
 
+## A/B build comparison contract
+
+Every scenario in this library is run twice with the identical procedure: once
+against the **baseline** binary and once against the **development** binary
+selected for the current campaign. Both are roles, not specific versions —
+record the two exact commit SHAs in that campaign's own artifacts, never in a
+scenario file, so the library stays valid for the next campaign too.
+
+**Judge by observation, not by expectation.** Record what each build actually
+does at every step before classifying anything. Never assume which build is
+"correct", which behavior a given change was meant to introduce, or which
+direction a difference is supposed to point.
+
+**Blocker rule** (a campaign may narrow this, never silently widen it):
+
+- **Blocking**: the development build is worse than the baseline build from the
+  user's perspective in the happy flow, or a **data-loss** outcome on either
+  build.
+- **Not blocking**: a purely cosmetic difference, or behavior reproduced
+  identically on **both** builds (pre-existing — note it, don't flag it as a
+  regression). Intermittency is not an exemption: a race that reproduces on one
+  build and not the other is still a regression, and timing sensitivity only
+  changes how many attempts a repro needs. Reproduce anything about to be
+  marked blocking at least twice before confirming it.
+
+**Equivalent fixture state per build.** Isolated data directories give the two
+builds separate *local* state, but not separate *live-network* state. Any step
+that spends a UTXO, consumes a deposit, registers a DPNS name, or moves credits
+mutates shared on-chain state, so the second build's run would otherwise start
+from whatever the first run left behind — an already-consumed deposit, a spent
+UTXO set, a name that is no longer available — producing a false regression or
+a false pass. Before any such step, give each build either its own
+independently-funded, equivalent fixture (a separate wallet/identity per side)
+or a restored snapshot of the same starting state, and record each side's
+starting balances/deposits/identities/names first. Recording the difference and
+accounting for it afterwards is **not** sufficient. Steps that only read state
+(navigation, display checks) are unaffected.
+
 ## Scenario index
 
-These six scenarios are written **version-agnostic**: the same procedure
-runs unmodified against both the baseline release build and the current
-`v1.0-dev` build for an A/B comparison, with the blocker rule (worse than
-baseline in the happy flow, or data loss, is blocking; concurrency/glitches
-and issues present on both builds are not) baked into each file's own
+These six scenarios are written **build-neutral**: the same procedure runs
+unmodified against either binary of an A/B campaign, with the blocker rule and
+the fixture requirement from the [A/B build comparison
+contract](#ab-build-comparison-contract) above applied in each file's own
 "Expected outcome" section.
 
 | Scenario | What it verifies |

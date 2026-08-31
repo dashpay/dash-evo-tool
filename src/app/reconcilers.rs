@@ -562,6 +562,16 @@ impl StoragePrepGate {
         }
     }
 
+    /// Test seam: resolve the raised gate's preparation successfully, so a
+    /// kittest can drive the REAL terminal transition — screen construction,
+    /// route re-resolution, chain-sync start — without waiting on real storage.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_complete(&mut self) {
+        if let Some(tx) = self.test_hold.take() {
+            let _ = tx.send(Ok(()));
+        }
+    }
+
     /// Drive the gate for one frame: poll the in-flight preparation, keep the
     /// overlay's copy in step with the published progress, and drain the
     /// terminal surface's buttons.

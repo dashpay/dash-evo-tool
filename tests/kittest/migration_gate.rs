@@ -29,6 +29,7 @@ use dash_evo_tool::context::migration_status::{MigrationState, MigrationStep};
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+use dash_evo_tool::ui::RootScreenType;
 use dash_evo_tool::ui::components::ProgressOverlay;
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
@@ -386,6 +387,74 @@ fn spv_stays_idle_for_every_frame_of_preparation() {
             harness.step();
         }
         panic!("the storage-preparation gate did not lift within {MAX_GATE_FRAMES} frames");
+    });
+}
+
+/// Task results arriving mid-preparation must be swallowed, not fatal, and the
+/// user's persisted route must survive the wait.
+///
+/// The task-result poll loop calls `visible_screen_mut()` at ~25 sites and runs
+/// BEFORE the gate driver on every frame — including the gate's own failure
+/// routing. With root screens deferred, every one of those is a lookup into a
+/// map holding nothing but the network chooser. Resolving to the chooser
+/// *without* rewriting `selected_main_screen` is what keeps both properties:
+/// no panic now, and the persisted route still there when screens are built.
+#[test]
+fn results_arriving_mid_preparation_are_swallowed_and_the_route_survives() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_with_raised_gate();
+        // A route that is NOT the chooser, so a fallback that rewrote the
+        // selection would be visible rather than coincidentally correct.
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenWalletsBalances;
+        harness.run_steps(3);
+
+        // The two accessors every poll-loop site funnels through, called while
+        // no root screen exists. A bare `.expect()` on the selected route — the
+        // shape before the gate — panics on both.
+        harness.state_mut().visible_screen_mut();
+        harness.state_mut().active_root_screen_mut();
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenWalletsBalances,
+            "a result handled mid-preparation must not spend the user's persisted route",
+        );
+
+        // Same for the Masternodes live de-gating branch, which rewrites the
+        // selection to a fallback that is itself not built yet.
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
+        harness.state_mut().active_root_screen_mut();
+        harness.run_steps(2);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenMasternodes,
+            "live de-gating must not fire while the gate is up — its fallback screen \
+             does not exist yet, so the rewrite would spend the route for nothing",
+        );
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenWalletsBalances;
+
+        // Release the gate: the deferred screens are built and the route is honoured.
+        harness.state_mut().test_complete_storage_prep_gate();
+        step_until(&mut harness, "the gate lifting", |app| {
+            app.boot_phase() == BootPhase::Ready
+        });
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenWalletsBalances,
+            "the terminal transition must land on the route the user had saved",
+        );
+        assert!(
+            harness
+                .state()
+                .main_screens
+                .contains_key(&RootScreenType::RootScreenWalletsBalances),
+            "the terminal transition builds the deferred root screens",
+        );
     });
 }
 

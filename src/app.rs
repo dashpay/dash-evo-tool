@@ -1975,16 +1975,22 @@ impl AppState {
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
         // Live de-gating (§10.11): if the role dropped below Power while the
         // Masternodes tab was active, fall back to `FALLBACK_ROOT_SCREEN` so the
-        // gated screen is never shown without its gate. That screen is always
-        // registered once the gate has lifted.
-        if self.selected_main_screen == RootScreenType::RootScreenMasternodes
+        // gated screen is never shown without its gate. Skipped while the
+        // storage-preparation gate is up: `FALLBACK_ROOT_SCREEN` is not built
+        // yet, and rewriting the selection there would spend the user's
+        // persisted route to reach a screen that does not exist. Nothing is
+        // rendering behind the gate, so there is no gated screen to hide.
+        if self.boot.phase().renders_screens()
+            && self.selected_main_screen == RootScreenType::RootScreenMasternodes
             && !FeatureGate::Masternodes.is_available(self.current_app_context())
         {
             self.select_main_screen(FALLBACK_ROOT_SCREEN);
         }
-        // Before the storage-preparation gate lifts, the chooser is the only
-        // screen that exists. Resolve to it WITHOUT rewriting the selection —
-        // the user's persisted route must survive the wait.
+        // Before the gate lifts, the chooser is the only screen that exists.
+        // Resolve to it WITHOUT rewriting the selection, so a task result
+        // arriving mid-preparation lands somewhere harmless instead of
+        // panicking, and the user's persisted route survives the wait —
+        // `finish_boot_phase` re-resolves it once the map is real.
         let root = if self.main_screens.contains_key(&self.selected_main_screen) {
             self.selected_main_screen
         } else {
@@ -2186,6 +2192,13 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn test_fail_storage_prep_gate(&mut self, error: TaskError) {
         self.boot.test_fail(error);
+    }
+
+    /// Test seam: resolve the raised storage-preparation gate successfully, so a
+    /// kittest can drive the REAL terminal transition without real storage.
+    #[cfg(feature = "testing")]
+    pub fn test_complete_storage_prep_gate(&mut self) {
+        self.boot.test_complete();
     }
 
     /// Which boot phase the app is in. Root screens exist only in
@@ -3058,6 +3071,10 @@ impl App for AppState {
                 tracing::info!(?network, "User retried storage preparation");
                 let app_ctx = self.current_app_context().clone();
                 let auto_start = app_ctx.get_app_settings().auto_start_spv;
+                // Clear the terminal status the failed run published, so the
+                // retry announces its own progress instead of being taken for a
+                // second call on an already prepared network and running silent.
+                app_ctx.migration_status().set_state(MigrationState::Idle);
                 let result = Self::spawn_storage_prepare(
                     &self.subtasks,
                     self.task_result_sender.clone(),

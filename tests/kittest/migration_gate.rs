@@ -838,3 +838,77 @@ fn a_gate_raised_over_nothing_still_offers_an_exit() {
         );
     });
 }
+
+/// A retry withdraws its network's claim to being prepared.
+///
+/// "Try again" re-runs the FULL sequence, so the network it targets is no
+/// longer known-good storage until that run finishes. Without the withdrawal a
+/// later switch back consults a stale claim, skips the gate entirely, and hands
+/// the user an app running on storage whose preparation never completed — a
+/// silent failure with no surface at all, which is why the line needs a test
+/// rather than a comment.
+#[test]
+fn a_retry_withdraws_the_networks_prepared_claim() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let data_dir = std::env::var("DASH_EVO_DATA_DIR").expect("the isolated data dir");
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/.env.example"),
+            std::path::Path::new(&data_dir).join(".env"),
+        )
+        .expect("seed the isolated data dir with a full network config");
+
+        let mut harness = mount_with_raised_gate();
+        let app_context = harness.state().current_app_context().clone();
+        let first = app_context.network();
+        let second = if first == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+        app_context
+            .update_auto_start_spv(false)
+            .expect("turn chain sync off for the switch");
+
+        // Prepare `first`, so it holds a claim for the retry to withdraw.
+        harness.state_mut().test_complete_storage_prep_gate();
+        step_until(&mut harness, "the first preparation to finish", |state| {
+            state.boot_phase() == BootPhase::Ready
+        });
+
+        // Fail it again, then park the retry's real preparation on the gate: a
+        // retry that runs to completion would re-file the claim it just
+        // withdrew, and prove nothing.
+        harness.state_mut().test_raise_storage_prep_gate();
+        harness
+            .state_mut()
+            .test_fail_storage_prep_gate(TaskError::WalletStorageNotReady);
+        harness.run_steps(3);
+        let parked = rt.block_on(app_context.test_hold_prepare_gate());
+        harness.get_by_label("Try again").click();
+        harness.run_steps(3);
+
+        // Leave and come back. The gate must re-raise: this network's storage
+        // has an unfinished preparation behind it.
+        harness.state_mut().change_network(second);
+        poll_until(&mut harness, "the switch away to complete", |state| {
+            state.current_app_context().network() == second
+                && state.boot_phase() == BootPhase::Ready
+        });
+        harness.state_mut().change_network(first);
+        harness.run_steps(3);
+
+        assert!(
+            matches!(harness.state().boot_phase(), BootPhase::Preparing { .. }),
+            "returning to a network whose retry never finished must re-raise the \
+             gate, not hand back an app running on unprepared storage",
+        );
+
+        drop(parked);
+        step_until(&mut harness, "the parked preparation to finish", |state| {
+            state.boot_phase() == BootPhase::Ready
+        });
+    });
+}

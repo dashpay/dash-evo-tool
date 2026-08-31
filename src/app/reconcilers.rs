@@ -817,12 +817,18 @@ impl StoragePrepGate {
     /// Drop every surface and in-flight preparation belonging to the outgoing
     /// network, and settle the phase for `incoming`.
     ///
-    /// Call this *before* attaching `incoming`'s preparation — it clears
-    /// `pending`, so the reverse order discards the very preparation the gate is
-    /// waiting on and leaves it raised over nothing to poll. A network this
-    /// process has already prepared needs no preparation at all, so the phase
-    /// goes straight to [`BootPhase::Ready`]; otherwise the caller's attach sets
-    /// [`BootPhase::Preparing`].
+    /// The invariant, which is what a future change breaks without noticing:
+    /// **this must run before the incoming network's `attach`, and every call
+    /// must be followed by an attach or by [`BootPhase::Ready`] — a raised gate
+    /// must always have something to wait for.** It clears `pending`, so the
+    /// reverse order discards the very preparation the gate is waiting on and
+    /// leaves it raised over nothing to poll, with no screen beneath it and no
+    /// button on it.
+    ///
+    /// `prepared` is preserved: it is per-process knowledge that outlives any
+    /// one network. A network already in it needs no preparation at all, so the
+    /// phase goes straight to [`BootPhase::Ready`]; otherwise the caller's
+    /// attach sets [`BootPhase::Preparing`].
     pub(super) fn reset_for_switch(&mut self, incoming: Network) {
         self.overlay.take_and_clear();
         self.pending = None;

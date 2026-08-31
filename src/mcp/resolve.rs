@@ -128,7 +128,10 @@ pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(),
     ctx.prepare_storage(sender)
         .await
         .map_err(McpToolError::TaskFailed)?;
-    ensure_legacy_storage_migrated(ctx).await
+    // Only the join remains: `prepare_storage` has already run the drain, and
+    // it publishes a terminal state on every path that returns `Ok`, so a
+    // dispatch here could only re-run work that just finished.
+    ensure_storage_ready(ctx).await
 }
 
 /// Poll until the cold-start storage update is fully complete.
@@ -180,28 +183,6 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
             Err(McpToolError::StorageNotReady)
         }
     }
-}
-
-/// Dispatch or join the legacy-data migration before wallet reads.
-///
-/// Standalone/headless MCP has no GUI frame loop to dispatch `FinishUnwire`.
-/// Embedded MCP may race the GUI dispatch, so the AppContext run gate safely
-/// joins that run and the task's sentinel keeps repeated dispatch idempotent.
-async fn ensure_legacy_storage_migrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
-    let migration_state = ctx.migration_status().state();
-    if matches!(
-        migration_state.as_ref(),
-        crate::context::migration_status::MigrationState::Idle
-            | crate::context::migration_status::MigrationState::Failed { .. }
-    ) {
-        use crate::backend_task::migration::MigrationTask;
-        if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
-            tracing::warn!(error = ?e, "Standalone cold-start storage update failed");
-            return Err(McpToolError::TaskFailed(e));
-        }
-    }
-
-    ensure_storage_ready(ctx).await
 }
 
 /// Wait for SPV to reach the `Running` state (chain headers + filters synced).
@@ -281,7 +262,7 @@ async fn ensure_spv_ready(
     // D4: the headless binary has no frame loop and therefore no gate, so the
     // `WalletStorageNotReady` fast-fail and this join stay. It now covers only a
     // run another process or the embedded GUI started concurrently.
-    ensure_legacy_storage_migrated(ctx).await?;
+    ensure_storage_ready(ctx).await?;
 
     wait_for_spv_and_refresh_platform_info(ctx, protocol_refresh).await
 }

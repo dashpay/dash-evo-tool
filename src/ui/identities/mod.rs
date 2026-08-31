@@ -19,6 +19,75 @@ pub mod top_up_identity_screen;
 pub mod transfer_screen;
 pub mod withdraw_screen;
 
+/// Confirmation shown once an identity is removed from this device.
+pub const IDENTITY_REMOVED: &str = "The identity was removed from this device.";
+
+/// Shown when the identity's removal succeeded — it is already gone from
+/// every list — but a step that runs after delisting, including the one that
+/// clears its private keys from this device's vault, did not finish.
+///
+/// Framed as a completed removal, since there is no retry control left for the
+/// user to reach the identity with, and hedged on both things the
+/// `cleanup_deferred` flag does not actually establish. It does not establish
+/// that keys are present: the failing step may be a scope purge for a keyless
+/// identity, whose manifest names no placements at all. It does not establish
+/// that any particular launch fixes it: the boot sweep returns before doing
+/// anything while a storage update holds the migration lock or is in progress,
+/// and also when the k/v store or the manifest list cannot be read. Since this
+/// banner does not survive a restart, naming "the next time you open it" would
+/// spend the user's only warning on a launch that may make no attempt at all.
+///
+/// So the message promises a continuing automatic effort — which is true, the
+/// manifest is retained until every listed key is confirmed gone — and neither
+/// a schedule nor completion. It still names the one precaution the user can
+/// act on now, because a warning that only hedges gives them nothing to do.
+pub const IDENTITY_REMOVED_CLEANUP_PENDING: &str = "The identity was removed from this device, but its private keys may still be stored here. The app will keep trying to clear them automatically. Until then, treat this device as if it still holds them.";
+
+/// Shown when the identity was removed but the voter identity tied to it was
+/// not. Naming the leftover matters: the user sees one entry disappear and one
+/// stay, and this is what tells them the remaining entry is not a mistake.
+pub const IDENTITY_REMOVED_VOTER_LEFT: &str = "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.";
+
+/// Shown when both leftover outcomes above apply at once: the associated
+/// voter identity failed to remove *and* a post-delisting step for at least
+/// one of the two identities this call touched did not finish. A
+/// single-outcome banner would silently drop one of the two — the voter
+/// identity looking like a clean failure with nothing else wrong, or the
+/// possible key residue going unmentioned entirely — so this names both, under
+/// the same hedge as [`IDENTITY_REMOVED_CLEANUP_PENDING`].
+///
+/// It carries that constant's precaution too. This is the worse of the two
+/// outcomes, so it must not be the one that tells the user less: the same
+/// uncertainty about key material applies, and the same thing can be done
+/// about it now.
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed — retry after restarting the app. Private keys for one or both of them may still be stored on this device. The app will keep trying to clear them automatically. Until then, treat this device as if it still holds them.";
+
+/// Shown when a removal is refused because the storage update is still running.
+pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
+    "The storage update is still running. Wait for it to finish before removing an identity.";
+
+/// Which banner to show for a `BackendTaskSuccessResult::RemovedIdentities`
+/// result, and how urgently. Shared by the Identity Hub and the legacy
+/// identities screen so the two, which handle the same result type, don't
+/// carry two independently-maintained copies of this 4-way decision — the
+/// combined-flags case in particular is easy to get wrong by handling each
+/// flag in isolation (see the `both` test case below).
+pub fn removed_identities_banner(
+    associated_cleanup_failed: bool,
+    cleanup_deferred: bool,
+) -> (&'static str, crate::ui::MessageType) {
+    use crate::ui::MessageType;
+    match (associated_cleanup_failed, cleanup_deferred) {
+        (true, true) => (
+            IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING,
+            MessageType::Warning,
+        ),
+        (true, false) => (IDENTITY_REMOVED_VOTER_LEFT, MessageType::Warning),
+        (false, true) => (IDENTITY_REMOVED_CLEANUP_PENDING, MessageType::Warning),
+        (false, false) => (IDENTITY_REMOVED, MessageType::Success),
+    }
+}
+
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
 /// # Description
@@ -96,6 +165,109 @@ pub fn get_selected_wallet(
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::*;
+    use crate::ui::MessageType;
+
+    /// The one case a naive if/else-if chain gets wrong: when the associated
+    /// voter identity's cleanup failed *and* the primary or voter's own
+    /// vault-key delete is separately still pending, both must surface —
+    /// picking only the voter-failure message silently drops the still-live
+    /// private key residue, and picking only the cleanup-pending message
+    /// silently drops the unretryable voter failure.
+    #[test]
+    fn removed_identities_banner_names_both_outcomes_when_both_apply() {
+        let (message, message_type) = removed_identities_banner(true, true);
+        assert_eq!(message, IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING);
+        // Case-insensitive: which clause opens a sentence is a copy decision,
+        // and this assertion is about both outcomes being named, not casing.
+        let message_lowercase = message.to_lowercase();
+        assert!(
+            message_lowercase.contains("voter identity")
+                && message_lowercase.contains("private keys"),
+            "the combined message must name both the voter failure and the key residue"
+        );
+        assert_eq!(message_type, MessageType::Warning);
+    }
+
+    /// `cleanup_deferred` records that a step failed *after* delisting. It does
+    /// not establish that key material is present — `purge_identity_scope` can
+    /// fail for a keyless identity whose manifest holds no placements — and it
+    /// cannot promise that any particular launch fixes it, because the boot
+    /// sweep returns before doing anything while a storage update runs or when
+    /// the store cannot be read, and retains the manifest if the purge or vault
+    /// delete fails again. A banner that asserts either reads as a guarantee,
+    /// and the one thing worse than warning a user about key residue is telling
+    /// them it has been handled when it has not.
+    #[test]
+    fn cleanup_pending_banners_claim_no_more_than_the_flag_establishes() {
+        for message in [
+            IDENTITY_REMOVED_CLEANUP_PENDING,
+            IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING,
+        ] {
+            assert!(
+                !message.contains("are still stored"),
+                "presence is not established, so the message must not assert it: {message}"
+            );
+            assert!(
+                message.contains("may still be stored"),
+                "the message must say the keys may be present, not that they are: {message}"
+            );
+            assert!(
+                !message.contains("will be cleared"),
+                "completion is not guaranteed, so the message must not promise it: {message}"
+            );
+            assert!(
+                message.contains("try"),
+                "the message must promise another attempt in place of the completion it \
+                 cannot promise: {message}"
+            );
+            assert!(
+                !message.contains("next time"),
+                "the sweep can return without attempting anything, and this banner does not \
+                 survive a restart — tying the attempt to one launch spends the user's only \
+                 warning on a launch that may do nothing: {message}"
+            );
+        }
+    }
+
+    /// Honest uncertainty still has to leave the user something to do. A
+    /// message that only hedges is its own failure — it reports a risk and
+    /// hands over no way to act on it.
+    ///
+    /// With no launch to point at, the precaution *is* that action: it is the
+    /// only part of these messages the user can act on immediately, and it does
+    /// not depend on anything the app manages to do later.
+    #[test]
+    fn cleanup_pending_banners_still_give_the_user_something_to_do() {
+        for message in [
+            IDENTITY_REMOVED_CLEANUP_PENDING,
+            IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING,
+        ] {
+            assert!(
+                message.contains("treat this device as if it still holds"),
+                "the safe assumption under uncertainty is the precaution the user can take \
+                 now, and the combined outcome is the worse one — it must not be the banner \
+                 that says less: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_identities_banner_covers_every_single_flag_combination() {
+        assert_eq!(
+            removed_identities_banner(true, false),
+            (IDENTITY_REMOVED_VOTER_LEFT, MessageType::Warning)
+        );
+        assert_eq!(
+            removed_identities_banner(false, true),
+            (IDENTITY_REMOVED_CLEANUP_PENDING, MessageType::Warning)
+        );
+        assert_eq!(
+            removed_identities_banner(false, false),
+            (IDENTITY_REMOVED, MessageType::Success)
+        );
+    }
+
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -103,7 +275,6 @@ mod tests {
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
 
-    use super::*;
     use crate::model::qualified_identity::encrypted_key_storage::{
         KeyStorage, PrivateKeyData, WalletDerivationPath,
     };

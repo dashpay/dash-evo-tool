@@ -812,6 +812,23 @@ pub enum BackendTaskSuccessResult {
     RemovedIdentities {
         identity_ids: Vec<Identifier>,
         associated_cleanup_failed: bool,
+        /// Set when the primary identity's, the associated voter identity's,
+        /// or both ones' cleanup failed strictly after they were already
+        /// delisted (index removal succeeded), so removal itself is done and
+        /// irreversible; only a k/v drain — which includes, but is not limited
+        /// to, the vault-key delete — is unfinished.
+        ///
+        /// `true` means every identity named in `identity_ids` is already gone
+        /// from every screen and there is no "try again" affordance left for
+        /// the user to reach one with. It does NOT establish that key material
+        /// is still present: the step that failed may be the scope purge for a
+        /// keyless identity, whose cleanup manifest names no placements. Nor
+        /// does it establish that the residue will be gone by the next launch:
+        /// the boot sweep is best-effort, skipped while a storage update runs,
+        /// and retains the manifest whenever the purge or vault delete fails
+        /// again. Callers may promise another automatic attempt; they may not
+        /// promise presence or completion.
+        cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),

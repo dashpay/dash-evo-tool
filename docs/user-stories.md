@@ -713,6 +713,25 @@ As a user whose identity was already in the app before the upgrade — a mastern
 - The previous version's data is never modified, so restoring can be repeated safely; repeating it reports that there was nothing left to restore and changes nothing.
 - Restoring keeps the app usable while it waits for the identity password: other identities can still be removed, and anything else saved for this identity while the password prompt is open survives the restore.
 
+### IDN-021: Unload an identity from this device [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to remove an identity from this device from the identity's own Settings tab, so that I can clear out an identity I no longer use without hunting for a separate screen.
+
+- The identity's Settings tab has an "Unload this identity from this device" action in its Danger zone, and it is usable rather than announced as a coming feature.
+- The confirmation names the identity it is about to unload and states plainly that this permanently deletes that identity's private keys stored on this device, and that using it here again needs the user's own backup — the identity record itself stays on Dash Platform, but "stays on Platform" is not "keys survive".
+- While the confirmation is open the controls behind it, including the identity switcher, cannot be used, so the answer is always given for the identity the confirmation names.
+- Confirming removes the identity, its top-up history, and its scheduled DPNS votes from this device.
+- The removal applies to the identity that was on screen when the action was chosen, even if the selected identity changes while the confirmation is open.
+- Choosing "Keep", or dismissing the confirmation, changes nothing.
+- While a storage update is running the removal is refused with an explanation and can be retried once it finishes.
+- Once the identity is gone, where the app lands depends on what is left: with no identities remaining it shows first-run onboarding, with exactly one it opens that identity, and with two or more it shows the identity picker so the user chooses which one to continue with rather than being dropped onto an arbitrary one.
+- The outcome is reported: a plain success, a success noting a voter identity tied to it stayed behind, or — when the identity is delisted but a later step of the removal did not finish — a success noting its private keys may still be on this device, that the app will keep trying to clear them automatically, and that until then the device should be treated as still holding them. The report claims no more than that: not that keys are definitely present (the unfinished step may have had no keys to clear), and not that any particular launch clears them (the automatic attempt can return without doing anything, or can fail again). It names no launch at all, because this message does not survive a restart and the launch it named might make no attempt. Keys that were deleted are reported as deleted, whatever internal bookkeeping failed afterwards.
+- A removal that cannot be completed at all leaves the identity's private keys intact, so a retry still has everything it needs; no identity is ever left listed without its keys, and no identity is ever reported as still removable once it is already gone from every list.
+- The unload sticks. The wallet that derives the identity stays loaded, and the app re-derives and looks up that wallet's identities on its own — at start-up, after a wallet is unlocked, and when a wallet is imported — but none of those automatic passes put back an identity the user unloaded, whether the pass starts before, during, or after the removal. The same holds for the developer-only devnet "clear all identities" sweep.
+- Adding a key to an identity that is unloaded while the key is being registered on the network does not leave that key's private half on this device. The key exists on Dash Platform and the app says so plainly, naming what to do — load the identity again, then add the key again — rather than reporting a save that did not happen.
+- Loading the identity again is always available and always works: choosing it explicitly, or searching for it by wallet index, loads it back and ends the exclusion, so a later automatic pass keeps it up to date again like any other identity.
+
 ---
 
 ## DPNS (DPN)

@@ -64,46 +64,60 @@ cargo run
 
 Windows binaries are built for the `x86_64-pc-windows-gnu` target — that is what the release workflow cross-compiles from Linux with the mingw toolchain, and a native Windows build uses the same target so that developers exercise the configuration that ships. The MSVC target is not supported: `rs-x11-hash` compiles its C sources with clang and includes the POSIX header `<unistd.h>`, which the MSVC toolchain does not provide.
 
-Install the mingw-w64 toolchain and the matching Rust target. `pacman` is [MSYS2](https://www.msys2.org/)'s package manager and is not on `PATH` by default — run it from the MSYS2 shell (`C:\msys64\msys2_shell.cmd`) or by full path:
+#### 1. Install the toolchain
+
+`pacman` is [MSYS2](https://www.msys2.org/)'s package manager and is not on `PATH` by default — run it from the MSYS2 shell (`C:\msys64\msys2_shell.cmd`) or by full path:
 
 ```shell
 C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
 rustup target add x86_64-pc-windows-gnu
 ```
 
-Add the toolchain to `PATH` (`C:\msys64\mingw64\bin` for a default MSYS2 install) so that `gcc`, `ar` and `windres` are found.
+Add `C:\msys64\mingw64\bin` to `PATH` so that `gcc`, `ar`, `windres` and `dlltool` are found. Building also needs `clang` (for `bindgen`) and `protoc`, which are covered by the prerequisites above.
 
-`.cargo/config.toml` names the Debian cross-compilers used by the release workflow (`x86_64-w64-mingw32-gcc-posix` and friends). MSYS2 ships no `-posix` variants — its `gcc` already uses the posix thread model — and provides `ar` and `windres` under their unprefixed names only. Point the toolchain variables at the local names before building:
+#### 2. Create the cross-compiler aliases
+
+`.cargo/config.toml` names the Debian cross-compilers the release workflow uses, because the shipped binaries are cross-compiled from Linux:
+
+```toml
+linker = "x86_64-w64-mingw32-gcc-posix"
+ar = "x86_64-w64-mingw32-ar"
+```
+
+MSYS2 uses different names for the same tools. The `-posix` suffix is Debian's `update-alternatives` naming for choosing between the posix and win32 threading models; MSYS2 does not have that fork at all, because its `gcc` already uses posix threads. It also ships no prefixed `ar`. No package provides these names, so create them as symlinks:
 
 ```shell
-$env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "gcc"
-$env:CC_x86_64_pc_windows_gnu = "gcc"
-$env:CXX_x86_64_pc_windows_gnu = "g++"
-$env:AR_x86_64_pc_windows_gnu = "ar"
+$bin = "C:\msys64\mingw64\bin"; New-Item -ItemType SymbolicLink -Path "$bin\x86_64-w64-mingw32-gcc-posix.exe" -Target "$bin\gcc.exe"; New-Item -ItemType SymbolicLink -Path "$bin\x86_64-w64-mingw32-g++-posix.exe" -Target "$bin\g++.exe"; New-Item -ItemType SymbolicLink -Path "$bin\x86_64-w64-mingw32-ar.exe" -Target "$bin\ar.exe"
+```
+
+Creating symlinks requires an elevated PowerShell, or Developer Mode enabled under *Settings → System → For developers*.
+
+Use symlinks rather than copies or hard links. `pacman` upgrades a package by extracting and renaming over the old file, so a copy or hard link would keep pointing at the previous binary and silently build with a stale compiler after the next `pacman -Syu`. A symlink follows the new file.
+
+Without these aliases the build fails in `cc-rs` with:
+
+```
+error occurred in cc-rs: failed to find tool "x86_64-w64-mingw32-gcc-posix": program not found
+```
+
+The alternative is to override the toolchain variables per session instead of creating the symlinks: `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER`, `CC_x86_64_pc_windows_gnu`, `CXX_x86_64_pc_windows_gnu` and `AR_x86_64_pc_windows_gnu`, pointed at `gcc`, `g++` and `ar`. Cargo's `[env]` entries do not force, so a real environment variable wins over the config file.
+
+#### 3. Build
+
+```shell
 cargo build --target x86_64-pc-windows-gnu
 ```
 
-In VS Code, set the same variables in `.vscode/settings.json` so that both rust-analyzer and the integrated terminal pick them up:
+Because `x86_64-pc-windows-gnu` is not the host's default target, pass `--target` to every cargo command, or set `CARGO_BUILD_TARGET` once for the session. In VS Code, `.vscode/settings.json` can set both that and rust-analyzer's target:
 
 ```json
 {
   "rust-analyzer.cargo.target": "x86_64-pc-windows-gnu",
-  "rust-analyzer.cargo.extraEnv": {
-    "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER": "gcc",
-    "CC_x86_64_pc_windows_gnu": "gcc",
-    "CXX_x86_64_pc_windows_gnu": "g++",
-    "AR_x86_64_pc_windows_gnu": "ar"
-  },
   "terminal.integrated.env.windows": {
-    "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER": "gcc",
-    "CC_x86_64_pc_windows_gnu": "gcc",
-    "CXX_x86_64_pc_windows_gnu": "g++",
-    "AR_x86_64_pc_windows_gnu": "ar"
+    "CARGO_BUILD_TARGET": "x86_64-pc-windows-gnu"
   }
 }
 ```
-
-Because `x86_64-pc-windows-gnu` is not the host's default target, pass `--target x86_64-pc-windows-gnu` to every cargo command, or set `CARGO_BUILD_TARGET` once for the session.
 
 ## Feature flags
 

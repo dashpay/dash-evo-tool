@@ -831,7 +831,7 @@ fn tc_ovl_051_designated_escape_activates_on_enter() {
         &harness.ctx,
         "Syncing with the Dash network.",
         OverlayConfig::new()
-            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
     // Settle: focus the escape and let the focus lock take effect (it is a no-op
@@ -840,9 +840,7 @@ fn tc_ovl_051_designated_escape_activates_on_enter() {
     harness.step();
     harness.step();
     assert!(
-        harness
-            .get_by_label("Continue in the background")
-            .is_focused(),
+        harness.get_by_label("Cancel").is_focused(),
         "the designated escape button holds focus"
     );
 
@@ -868,17 +866,13 @@ fn tc_ovl_052_designated_escape_activates_on_space() {
         &harness.ctx,
         "Syncing with the Dash network.",
         OverlayConfig::new()
-            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
     harness.step();
     harness.step();
     harness.step();
-    assert!(
-        harness
-            .get_by_label("Continue in the background")
-            .is_focused()
-    );
+    assert!(harness.get_by_label("Cancel").is_focused());
 
     harness.key_press(egui::Key::Space);
     harness.step();
@@ -910,16 +904,14 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
         &harness.ctx,
         "Syncing with the Dash network.",
         OverlayConfig::new()
-            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
     harness.step();
     harness.step();
     harness.step();
     assert!(
-        harness
-            .get_by_label("Continue in the background")
-            .is_focused(),
+        harness.get_by_label("Cancel").is_focused(),
         "focus is pinned to the escape, not the field beneath"
     );
 
@@ -927,9 +919,7 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
     harness.key_press(egui::Key::Tab);
     harness.step();
     assert!(
-        harness
-            .get_by_label("Continue in the background")
-            .is_focused(),
+        harness.get_by_label("Cancel").is_focused(),
         "Tab cannot move focus to the field beneath"
     );
 
@@ -940,9 +930,7 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
     harness.drop_at(over_field);
     harness.step();
     assert!(
-        harness
-            .get_by_label("Continue in the background")
-            .is_focused(),
+        harness.get_by_label("Cancel").is_focused(),
         "a click over the field beneath cannot move focus off the escape"
     );
 
@@ -986,7 +974,7 @@ fn sec002_escape_block_strips_enter_from_focus_independent_handler_beneath() {
         &harness.ctx,
         "Syncing with the Dash network.",
         OverlayConfig::new()
-            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
     harness.step();
@@ -1021,7 +1009,7 @@ fn tc_ovl_054_escape_clickable_after_backdrop_press() {
         &harness.ctx,
         "Syncing with the Dash network.",
         OverlayConfig::new()
-            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_secondary_action("Cancel", "spv:escape")
             .with_keyboard_escape("spv:escape"),
     );
     // Settle the centered card (anchored CENTER_CENTER moves for a couple of frames
@@ -1029,11 +1017,7 @@ fn tc_ovl_054_escape_clickable_after_backdrop_press() {
     harness.step();
     harness.step();
     harness.step();
-    assert!(
-        harness
-            .query_by_label("Continue in the background")
-            .is_some()
-    );
+    assert!(harness.query_by_label("Cancel").is_some());
 
     // Press the dim backdrop, well outside the card. This is what trapped the
     // button: the sink area auto-raises to the top of Foreground on the press.
@@ -1043,7 +1027,7 @@ fn tc_ovl_054_escape_clickable_after_backdrop_press() {
     harness.step();
 
     // A real mouse click at the escape button's own position must still reach it.
-    harness.get_by_label("Continue in the background").click();
+    harness.get_by_label("Cancel").click();
     harness.step();
     assert_eq!(
         handle.take_actions(),
@@ -1636,10 +1620,8 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
         harness.step();
         harness.step();
         assert!(
-            harness
-                .query_by_label("Continue in the background")
-                .is_some(),
-            "the secondary 'Continue in the background' escape button renders"
+            harness.query_by_label("Cancel").is_some(),
+            "the secondary Cancel button renders"
         );
         // F-SPV-B: no blockchain jargon leaks into the description.
         assert!(
@@ -1665,8 +1647,8 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
             "ambient syncing after the episode disarmed must NOT re-block"
         );
 
-        // C2 escape: arm a fresh episode, block, click escape → lowers and stays
-        // down for the rest of THIS episode even though sync is still in progress.
+        // C2 escape: arm a fresh episode, block, then Cancel → the block stays up
+        // showing the confirmation, and only "Stop syncing" ends the episode.
         app.test_arm_spv_block();
         set_state(OverallConnectionState::Connecting);
         app.test_drive_spv_overlay(&harness.ctx);
@@ -1674,17 +1656,59 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
         harness.step();
         harness.step();
         assert!(ProgressOverlay::has_global(&harness.ctx));
-        harness.get_by_label("Continue in the background").click();
+
+        // The driver runs every frame in production; two passes here mirror that —
+        // one drains the click and swaps the row, the next re-raises the block.
+        let drive = |app: &mut dash_evo_tool::app::AppState, harness: &mut Harness<'_>| {
+            let action = app.test_drive_spv_overlay(&harness.ctx);
+            harness.step();
+            app.test_drive_spv_overlay(&harness.ctx);
+            harness.step();
+            harness.step();
+            action
+        };
+
+        harness.get_by_label("Cancel").click();
         harness.step();
-        app.test_drive_spv_overlay(&harness.ctx);
         assert!(
-            !ProgressOverlay::has_global(&harness.ctx),
-            "the escape lowers the block (user never trapped)"
+            drive(&mut app, &mut harness).is_none(),
+            "Cancel only asks — it must not stop sync on its own"
         );
-        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            ProgressOverlay::has_global(&harness.ctx),
+            "the block stays up while the cancel confirmation is showing"
+        );
+        assert!(
+            harness.query_by_label_contains("Stop syncing?").is_some(),
+            "the confirmation names what stopping costs and the way back"
+        );
+
+        // "Keep syncing" returns to the progress copy without stopping anything.
+        harness.get_by_label("Keep syncing").click();
+        harness.step();
+        assert!(drive(&mut app, &mut harness).is_none());
+        assert!(
+            harness.query_by_label("Cancel").is_some(),
+            "declining the confirmation restores the progress action row"
+        );
+
+        // Cancel again, then confirm: the block lowers and StopSpv is returned for
+        // the frame loop to dispatch.
+        harness.get_by_label("Cancel").click();
+        harness.step();
+        drive(&mut app, &mut harness);
+        harness.get_by_label("Stop syncing").click();
+        harness.step();
+        assert!(
+            matches!(
+                app.test_drive_spv_overlay(&harness.ctx),
+                Some(dash_evo_tool::app::AppAction::StopSpv)
+            ),
+            "confirming cancel disconnects — the reconciler hands StopSpv to the loop"
+        );
         assert!(
             !ProgressOverlay::has_global(&harness.ctx),
-            "the block is not re-raised within the dismissed episode"
+            "confirming cancel lowers the block"
         );
 
         // Only a fresh ARMED episode re-blocks; an ambient one still does not.
@@ -1760,14 +1784,17 @@ fn fspv_a_onboarding_auto_start_arms_spv_block() {
     });
 }
 
-/// Task 9 — the REAL SPV block's "Continue in the background"
-/// escape is keyboard-activatable: pressing **Enter** while it holds focus enqueues
-/// its action, which the driver drains to lower the block. Guards the app.rs wiring
-/// (`with_keyboard_escape(SPV_CONTINUE_BACKGROUND_ACTION)`) so a keyboard-only /
-/// assistive-tech user is never stranded behind the unbounded SPV block.
+/// Task 9 / D2 — the REAL SPV block's keyboard escape stays reachable, and is
+/// **non-destructive at every step**. Enter on the focused Cancel button opens the
+/// confirmation rather than stopping sync; the confirmation focuses "Keep syncing",
+/// so a second reflexive Enter returns to the block instead of disconnecting.
+///
+/// This is the D2 accessibility guard: Cancel replaced "Cancel"
+/// on the one key a user who cannot see the screen will press, so the two-step
+/// confirm is what keeps that key from being a destructive shortcut.
 #[cfg(feature = "testing")]
 #[test]
-fn task9_spv_escape_is_keyboard_activatable() {
+fn task9_spv_escape_is_keyboard_activatable_and_never_destructive() {
     use dash_evo_tool::context::connection_status::OverallConnectionState;
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -1796,25 +1823,47 @@ fn task9_spv_escape_is_keyboard_activatable() {
         harness.step();
         harness.step();
         assert!(
-            harness
-                .get_by_label("Continue in the background")
-                .is_focused(),
+            harness.get_by_label("Cancel").is_focused(),
             "the SPV escape button holds focus"
         );
 
-        // Enter activates the escape; the next driver pass drains it and lowers the
-        // block for the rest of the episode (sync keeps running in the background).
+        // The driver runs every frame in production; two passes here mirror that —
+        // one drains the activation and swaps the row, the next re-raises the block
+        // and lets its new button settle focus.
+        let drive = |app: &mut dash_evo_tool::app::AppState, harness: &mut Harness<'_>| {
+            let action = app.test_drive_spv_overlay(&harness.ctx);
+            harness.step();
+            app.test_drive_spv_overlay(&harness.ctx);
+            harness.step();
+            harness.step();
+            harness.step();
+            action
+        };
+
+        // Enter activates Cancel. It must ASK, not stop: no StopSpv, block still up.
         harness.key_press(egui::Key::Enter);
         harness.step();
-        app.test_drive_spv_overlay(&harness.ctx);
         assert!(
-            !ProgressOverlay::has_global(&harness.ctx),
-            "Enter on the SPV escape lowers the block — a keyboard-only user is never trapped"
+            drive(&mut app, &mut harness).is_none(),
+            "one reflexive Enter must never disconnect the wallet"
         );
-        app.test_drive_spv_overlay(&harness.ctx);
         assert!(
-            !ProgressOverlay::has_global(&harness.ctx),
-            "the block stays lowered within the dismissed episode"
+            ProgressOverlay::has_global(&harness.ctx),
+            "the block stays up to host the confirmation"
+        );
+        assert!(
+            harness.get_by_label("Keep syncing").is_focused(),
+            "the confirmation focuses the non-destructive choice"
+        );
+
+        // A second Enter therefore keeps syncing, and the block returns to progress.
+        harness.key_press(egui::Key::Enter);
+        harness.step();
+        assert!(drive(&mut app, &mut harness).is_none());
+        assert!(
+            harness.query_by_label("Cancel").is_some(),
+            "Enter on the confirmation keeps syncing — a keyboard-only user cannot \
+             disconnect by reflex, and is still not trapped"
         );
     });
 }
@@ -1858,9 +1907,7 @@ fn item_a_armed_episode_blocks_and_paints_same_frame() {
             "the armed episode raises the block"
         );
         assert!(
-            harness
-                .query_by_label("Continue in the background")
-                .is_some(),
+            harness.query_by_label("Cancel").is_some(),
             "the block is PAINTED on the same frame it is armed+observed — under the \
              pre-fix order (raise after render_global) it would only paint next frame, \
              leaving this frame interactive (the one-frame gap)"

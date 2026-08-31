@@ -240,17 +240,34 @@ fn clear_confirmed_vote_recovery_cutoff(
     }
 }
 
-/// Action id for the SPV-sync block's "Continue in the background" escape button.
+/// Action id for the SPV-sync block's "Cancel" button.
+///
 /// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
 /// with no terminal signal — so a button-less hard block would trap the user
-/// (violating the overlay's C1/C2 contract). This escape lowers the block while
-/// sync continues safely in the background — a read-only operation that strands
-/// nothing if backgrounded. It is also designated the block's single
-/// keyboard-reachable escape (`with_keyboard_escape`), so a keyboard-only /
-/// assistive-tech user can activate it with Enter or Space.
+/// (violating the overlay's C1/C2 contract). Cancel is also designated the
+/// block's single keyboard-reachable escape (`with_keyboard_escape`), so a
+/// keyboard-only / assistive-tech user can activate it with Enter or Space.
+///
+/// Because that makes a *destructive* action reachable by the universal dismiss
+/// key, for users who may not be able to see what they are dismissing, Cancel
+/// does not stop sync: it swaps the action row for the confirmation below. One
+/// reflexive keypress is therefore never destructive.
 /// Colon-namespaced per the overlay action-id convention. Exposed for kittest
 /// coverage.
-pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
+pub const SPV_CANCEL_ACTION_ID: &str = "spv:sync:cancel";
+
+/// Action id for the "Stop syncing" button of the Cancel confirmation.
+/// Activating it disconnects; it is deliberately NOT the keyboard escape.
+pub const SPV_CANCEL_CONFIRM_ACTION_ID: &str = "spv:sync:cancel_confirm";
+
+/// Action id for the "Keep syncing" button of the Cancel confirmation — the
+/// non-destructive default, and the confirmation's keyboard escape, so Enter or
+/// Space returns to the block rather than disconnecting.
+pub const SPV_CANCEL_KEEP_ACTION_ID: &str = "spv:sync:cancel_keep";
+
+/// The Cancel confirmation's question. Names the consequence and the way back,
+/// so the choice is answerable without seeing the screen behind it.
+pub const SPV_CANCEL_QUESTION: &str = "Stop syncing? You can start again from the Network screen.";
 
 /// The root screen every fallback route lands on: an unregistered persisted
 /// screen at startup, and live de-gating of a role-gated tab.
@@ -272,20 +289,17 @@ const SPV_CONNECTING_DESCRIPTION: &str = "Connecting to the Dash network.";
 const SPV_SYNCING_DESCRIPTION: &str = "Syncing with the Dash network.";
 
 /// What the per-frame SPV-sync block driver should do with the overlay this
-/// frame, given whether a startup/Connect sync is **armed**, whether the user
-/// chose to continue in the background, and the current connection state. Pure so
-/// the policy is unit-testable in isolation from `AppState`.
+/// frame, given whether a startup/Connect sync is **armed** and the current
+/// connection state. Pure so the policy is unit-testable in isolation from
+/// `AppState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpvBlockStep {
-    /// Armed, not dismissed, still connecting/syncing: raise (or keep + update).
+    /// Armed and still connecting/syncing: raise (or keep + update).
     Block,
     /// Armed episode reached a terminal state (Synced/Error): lower the block and
     /// DISARM, so subsequent ambient Connecting/Syncing (reconnect, per-block
     /// catch-up) never re-blocks (F-SPV-A).
     Disarm,
-    /// Armed but the user chose to continue in the background: keep the block
-    /// lowered without ending the episode (C2 escape).
-    Stand,
     /// Not armed (ambient sync, or already disarmed): ensure no block is shown.
     Idle,
 }
@@ -617,7 +631,7 @@ mod backend_task_join_tests {
 /// button — so an ambient reconnect or the SPV engine flipping Synced→Syncing on
 /// each new block never hard-blocks a working user. Once an armed episode reaches
 /// a terminal state it disarms and stays disarmed until the next Connect/startup.
-fn spv_block_step(armed: bool, dismissed: bool, state: OverallConnectionState) -> SpvBlockStep {
+fn spv_block_step(armed: bool, state: OverallConnectionState) -> SpvBlockStep {
     use OverallConnectionState as S;
     if !armed {
         return SpvBlockStep::Idle;
@@ -625,16 +639,9 @@ fn spv_block_step(armed: bool, dismissed: bool, state: OverallConnectionState) -
     match state {
         // Terminal for an armed episode: lower and disarm (banner surfaces Error).
         S::Synced | S::Error => SpvBlockStep::Disarm,
-        // Still getting connected/synced for this episode: block unless the user
-        // is waiting in the background. Disconnected stays blocking while armed —
-        // it just means we are still trying to connect.
-        S::Connecting | S::Syncing | S::Disconnected => {
-            if dismissed {
-                SpvBlockStep::Stand
-            } else {
-                SpvBlockStep::Block
-            }
-        }
+        // Still getting connected/synced for this episode. Disconnected stays
+        // blocking while armed — it just means we are still trying to connect.
+        S::Connecting | S::Syncing | S::Disconnected => SpvBlockStep::Block,
     }
 }
 
@@ -2192,9 +2199,9 @@ impl AppState {
     /// throttled frame loop. Lets a kittest assert that an armed episode blocks,
     /// disarms on a terminal state, and that ambient (un-armed) sync never blocks.
     #[cfg(feature = "testing")]
-    pub fn test_drive_spv_overlay(&mut self, ctx: &egui::Context) {
+    pub fn test_drive_spv_overlay(&mut self, ctx: &egui::Context) -> Option<AppAction> {
         let app_context = self.current_app_context().clone();
-        self.spv_block.update(ctx, &app_context);
+        self.spv_block.update(ctx, &app_context)
     }
 
     /// Test seam (F-SPV-A): run the REAL post-onboarding auto-start path
@@ -3011,7 +3018,7 @@ impl App for AppState {
         // takes effect a frame later — the one-frame interactive gap. The connection
         // banner still reads the block state afterwards (it suppresses its redundant
         // Connecting/Syncing copy while the block is up).
-        self.spv_block.update(ctx, &active_context);
+        let spv_block_action = self.spv_block.update(ctx, &active_context);
 
         // Promote a queued prompt before the overlay input/render decision so
         // its first visible frame never shares a pointer sink or focus trap.
@@ -3106,6 +3113,10 @@ impl App for AppState {
         // runs before the connection banner, which suppresses its redundant
         // Connecting/Syncing text while the overlay is up.
         let spv_overlaying = self.spv_block.is_overlaying();
+        // The block's own Cancel confirmation resolves to a real disconnect, but
+        // stopping sync is dispatch work this loop owns — so it joins the frame's
+        // action list rather than being applied inside the reconciler.
+        actions.extend(spv_block_action);
         if let Some(task) = self.connection_banner.update(
             ctx,
             &active_context,
@@ -3527,6 +3538,7 @@ mod migration_banner_tests {
             STORAGE_PREP_FAILED_MESSAGE,
             STORAGE_PREP_STUCK_MESSAGE,
             STORAGE_PREP_PASSWORD_DESCRIPTION,
+            SPV_CANCEL_QUESTION,
         ] {
             assert!(
                 text.ends_with('.') || text.ends_with('?'),
@@ -3552,11 +3564,18 @@ mod migration_banner_tests {
         );
     }
 
-    /// The gate's action ids are distinct, so a click can never be attributed to
-    /// the wrong button.
+    /// Every gate and cancel action id is distinct, so a click can never be
+    /// attributed to the wrong button — the confirm/keep pair especially, where
+    /// a collision would turn "Keep syncing" into a disconnect.
     #[test]
     fn overlay_action_ids_are_distinct() {
-        let ids = [STORAGE_PREP_RETRY_ACTION_ID, STORAGE_PREP_CLOSE_ACTION_ID];
+        let ids = [
+            SPV_CANCEL_ACTION_ID,
+            SPV_CANCEL_CONFIRM_ACTION_ID,
+            SPV_CANCEL_KEEP_ACTION_ID,
+            STORAGE_PREP_RETRY_ACTION_ID,
+            STORAGE_PREP_CLOSE_ACTION_ID,
+        ];
         let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
         assert_eq!(unique.len(), ids.len(), "duplicate overlay action id");
     }
@@ -3612,23 +3631,24 @@ mod spv_overlay_tests {
     ];
 
     /// F-SPV-A — UN-armed (ambient sync, or already disarmed): NEVER block, for
-    /// every state and dismissal. This is the regression guard: a mid-session
-    /// reconnect or per-block Synced→Syncing flip must not hard-block.
+    /// every state. This is the regression guard: a mid-session reconnect or
+    /// per-block Synced→Syncing flip must not hard-block.
     #[test]
     fn unarmed_never_blocks() {
-        for dismissed in [false, true] {
-            for state in ALL_STATES {
-                assert_eq!(
-                    spv_block_step(false, dismissed, state),
-                    SpvBlockStep::Idle,
-                    "un-armed {state:?} (dismissed={dismissed}) must not block"
-                );
-            }
+        for state in ALL_STATES {
+            assert_eq!(
+                spv_block_step(false, state),
+                SpvBlockStep::Idle,
+                "un-armed {state:?} must not block"
+            );
         }
     }
 
-    /// Armed + getting-connected (Connecting/Syncing/Disconnected) + not dismissed
-    /// → hard block.
+    /// Armed + getting-connected (Connecting/Syncing/Disconnected) → hard block.
+    ///
+    /// There is no longer a "stand down without disarming" row: the background
+    /// escape it modelled is gone. Cancel stops sync outright (after a confirm),
+    /// which lands on Disarm through the reconciler, not on a third step.
     #[test]
     fn armed_blocks_while_getting_connected() {
         for state in [
@@ -3636,45 +3656,30 @@ mod spv_overlay_tests {
             OverallConnectionState::Connecting,
             OverallConnectionState::Syncing,
         ] {
-            assert_eq!(spv_block_step(true, false, state), SpvBlockStep::Block);
+            assert_eq!(spv_block_step(true, state), SpvBlockStep::Block);
         }
     }
 
-    /// C2 escape — armed + dismissed + getting-connected → Stand (no block, episode
-    /// kept armed so sync keeps running and the user is just not trapped).
-    #[test]
-    fn armed_dismissed_stands_down_without_disarming() {
-        for state in [
-            OverallConnectionState::Disconnected,
-            OverallConnectionState::Connecting,
-            OverallConnectionState::Syncing,
-        ] {
-            assert_eq!(spv_block_step(true, true, state), SpvBlockStep::Stand);
-        }
-    }
-
-    /// C1 / F-SPV-A — armed + terminal (Synced/Error) → Disarm, regardless of
-    /// dismissal: lower and disarm so ambient sync afterwards never re-blocks.
+    /// C1 / F-SPV-A — armed + terminal (Synced/Error) → Disarm: lower and disarm
+    /// so ambient sync afterwards never re-blocks.
     #[test]
     fn armed_terminal_state_disarms() {
-        for dismissed in [false, true] {
-            for state in [
-                OverallConnectionState::Synced,
-                OverallConnectionState::Error,
-            ] {
-                assert_eq!(spv_block_step(true, dismissed, state), SpvBlockStep::Disarm);
-            }
+        for state in [
+            OverallConnectionState::Synced,
+            OverallConnectionState::Error,
+        ] {
+            assert_eq!(spv_block_step(true, state), SpvBlockStep::Disarm);
         }
     }
 
-    /// The escape action id is stable — production raises it and the SPV-sync
-    /// block reconciler matches on it; a typo would drop the click.
+    /// The cancel action ids are stable — production raises them and the
+    /// SPV-sync block reconciler matches on them; a typo would drop the click,
+    /// and on the confirm pair it could drop it onto the wrong button.
     #[test]
-    fn continue_background_action_id_is_stable() {
-        assert_eq!(
-            SPV_CONTINUE_BACKGROUND_ACTION,
-            "spv:sync:continue_background"
-        );
+    fn cancel_action_ids_are_stable() {
+        assert_eq!(SPV_CANCEL_ACTION_ID, "spv:sync:cancel");
+        assert_eq!(SPV_CANCEL_CONFIRM_ACTION_ID, "spv:sync:cancel_confirm");
+        assert_eq!(SPV_CANCEL_KEEP_ACTION_ID, "spv:sync:cancel_keep");
     }
 
     /// F-SPV-B — the block descriptions are jargon-free complete sentences (no

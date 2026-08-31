@@ -35,9 +35,10 @@ use crate::ui::components::{
 };
 
 use super::{
-    BootPhase, MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
-    MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID, SPV_CONNECTING_DESCRIPTION,
-    SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION, STORAGE_PREP_CLOSE_ACTION_ID,
+    AppAction, BootPhase, MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
+    MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID, SPV_CANCEL_ACTION_ID,
+    SPV_CANCEL_CONFIRM_ACTION_ID, SPV_CANCEL_KEEP_ACTION_ID, SPV_CANCEL_QUESTION,
+    SPV_CONNECTING_DESCRIPTION, SPV_SYNCING_DESCRIPTION, STORAGE_PREP_CLOSE_ACTION_ID,
     STORAGE_PREP_FAILED_MESSAGE, STORAGE_PREP_PASSWORD_DESCRIPTION, STORAGE_PREP_RETRY_ACTION_ID,
     STORAGE_PREP_STUCK_MESSAGE, STORAGE_PREP_STUCK_TIMEOUT, SpvBlockStep,
     migration_failed_with_unreadable_identities_text, migration_running_text,
@@ -90,16 +91,16 @@ impl AccessibilityActivator {
     }
 }
 
-/// Drives the blocking SPV-sync overlay (F-SPV-A). Owns the overlay handle and
-/// the armed/dismissed episode flags so an ambient reconnect never hard-blocks
-/// a working user.
+/// Drives the blocking SPV-sync overlay (F-SPV-A). Owns the overlay handle, the
+/// armed-episode flag so an ambient reconnect never hard-blocks a working user,
+/// and whether the block is currently asking the user to confirm cancelling.
 pub(super) struct SpvBlockReconciler {
     /// The blocking overlay raised while an armed sync is connecting.
     overlay: Option<OverlayHandle>,
     /// Whether a user-initiated sync episode is armed for blocking.
     armed: bool,
-    /// Whether the user chose "Continue in the background" for this episode.
-    dismissed: bool,
+    /// Whether the block is showing the Cancel confirmation rather than progress.
+    confirming_cancel: bool,
 }
 
 impl SpvBlockReconciler {
@@ -107,15 +108,15 @@ impl SpvBlockReconciler {
         Self {
             overlay: None,
             armed,
-            dismissed: false,
+            confirming_cancel: false,
         }
     }
 
     /// Arm a fresh user-initiated episode (boot auto-start, Connect button,
-    /// post-onboarding auto-start), re-arming the background escape.
+    /// post-onboarding auto-start).
     pub(super) fn arm(&mut self) {
         self.armed = true;
-        self.dismissed = false;
+        self.confirming_cancel = false;
     }
 
     /// Whether an episode is currently armed (test seam / observation).
@@ -134,16 +135,25 @@ impl SpvBlockReconciler {
     pub(super) fn reset(&mut self) {
         self.overlay = None;
         self.armed = false;
-        self.dismissed = false;
+        self.confirming_cancel = false;
     }
 
     /// Drive the blocking SPV-sync overlay for one frame (see the field docs on
     /// [`AppState`](super::AppState) for the F-SPV-A / C1-C2 contract). Raises
     /// at most once per episode, then updates content in place.
-    pub(super) fn update(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+    ///
+    /// Returns [`AppAction::StopSpv`] on the frame the user confirms cancelling.
+    /// The action travels back to the frame loop rather than being applied here
+    /// because stopping sync is dispatch work `AppState` owns; the reconciler
+    /// only decides that it was asked for.
+    pub(super) fn update(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+    ) -> Option<AppAction> {
         let cs = app_context.connection_status();
         let state = cs.overall_state();
-        match spv_block_step(self.armed, self.dismissed, state) {
+        match spv_block_step(self.armed, state) {
             SpvBlockStep::Block => {
                 // F-SPV-B: plain, jargon-free copy — the determinate granularity
                 // is the "Step N of 5" counter, NOT raw phase names / heights.
@@ -153,23 +163,16 @@ impl SpvBlockReconciler {
                 // height so a slow-but-advancing phase never trips the
                 // no-progress watchdog. It is never rendered.
                 let token = progress.as_ref().and_then(spv_progress_token);
-                let description = if step.is_some() {
+                let description = if self.confirming_cancel {
+                    SPV_CANCEL_QUESTION
+                } else if step.is_some() {
                     SPV_SYNCING_DESCRIPTION
                 } else {
                     SPV_CONNECTING_DESCRIPTION
                 };
                 if self.overlay.is_none() {
-                    // The escape is the single keyboard-reachable exit: the
-                    // overlay focus-pins this button and lets Enter/Space
-                    // activate it, so a keyboard-only / assistive-tech user is
-                    // never stranded behind the UNBOUNDED SPV block.
-                    let mut config = OverlayConfig::new()
-                        .with_description(description)
-                        .with_secondary_action(
-                            "Continue in the background",
-                            SPV_CONTINUE_BACKGROUND_ACTION,
-                        )
-                        .with_keyboard_escape(SPV_CONTINUE_BACKGROUND_ACTION);
+                    let mut config = OverlayConfig::new().with_description(description);
+                    config = Self::apply_actions(config, self.confirming_cancel);
                     if let Some(n) = step {
                         config = config.with_step(n, SPV_SYNC_PHASE_COUNT);
                     }
@@ -194,37 +197,68 @@ impl SpvBlockReconciler {
             }
             SpvBlockStep::Disarm => {
                 // Armed episode ended (Synced/Error): lower and disarm so
-                // ambient Connecting/Syncing never re-blocks (F-SPV-A). Re-arm
-                // the escape for the next user-initiated sync.
+                // ambient Connecting/Syncing never re-blocks (F-SPV-A).
                 self.overlay.take_and_clear();
                 self.armed = false;
-                self.dismissed = false;
-            }
-            SpvBlockStep::Stand => {
-                // User chose to continue in the background: stay lowered, but
-                // keep the episode armed + dismissed so we don't re-raise (C2).
-                self.overlay.take_and_clear();
+                self.confirming_cancel = false;
             }
             SpvBlockStep::Idle => {
                 // Not armed (ambient sync, or already disarmed): never block.
                 self.overlay.take_and_clear();
+                self.confirming_cancel = false;
             }
         }
 
-        // Drain this overlay's own clicks: the "Continue in the background"
-        // escape lowers the block for the rest of this episode.
+        self.drain_actions()
+    }
+
+    /// Put the action row for the current step on `config`.
+    ///
+    /// The keyboard escape is bound to the *non-destructive* choice in both
+    /// rows: Cancel (which only asks) while syncing, "Keep syncing" while
+    /// confirming. That is what keeps the block keyboard-reachable without
+    /// making Enter or Space disconnect the wallet.
+    fn apply_actions(config: OverlayConfig, confirming_cancel: bool) -> OverlayConfig {
+        if confirming_cancel {
+            config
+                .with_action("Stop syncing", SPV_CANCEL_CONFIRM_ACTION_ID)
+                .with_secondary_action("Keep syncing", SPV_CANCEL_KEEP_ACTION_ID)
+                .with_keyboard_escape(SPV_CANCEL_KEEP_ACTION_ID)
+        } else {
+            config
+                .with_secondary_action("Cancel", SPV_CANCEL_ACTION_ID)
+                .with_keyboard_escape(SPV_CANCEL_ACTION_ID)
+        }
+    }
+
+    /// Drain this overlay's own clicks and apply the two-step cancel.
+    ///
+    /// Switching between the progress row and the confirmation row lowers the
+    /// overlay so the next frame re-raises it: an [`OverlayHandle`]'s button
+    /// methods append, and re-asserting a row per frame would stack duplicates.
+    fn drain_actions(&mut self) -> Option<AppAction> {
         let actions = self
             .overlay
             .as_ref()
             .map(|handle| handle.take_actions())
             .unwrap_or_default();
-        if actions
-            .iter()
-            .any(|id| id == SPV_CONTINUE_BACKGROUND_ACTION)
-        {
-            self.dismissed = true;
-            self.overlay.take_and_clear();
+
+        for action in actions {
+            if action == SPV_CANCEL_ACTION_ID {
+                self.confirming_cancel = true;
+                self.overlay.take_and_clear();
+            } else if action == SPV_CANCEL_KEEP_ACTION_ID {
+                self.confirming_cancel = false;
+                self.overlay.take_and_clear();
+            } else if action == SPV_CANCEL_CONFIRM_ACTION_ID {
+                tracing::info!("User cancelled chain sync from the startup block");
+                self.confirming_cancel = false;
+                self.overlay.take_and_clear();
+                self.armed = false;
+                return Some(AppAction::StopSpv);
+            }
         }
+        None
     }
 }
 

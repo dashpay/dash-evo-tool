@@ -5,7 +5,9 @@ use std::fs;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+#[cfg(unix)]
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -15,6 +17,7 @@ static INIT_LOGGER: Once = Once::new();
 /// to the crash sidecar. Lets [`report_startup_failure_to_terminal`] surface a
 /// user-facing notice on the terminal even while fd 2 points at the log file.
 /// `-1` means no handle was preserved (capture skipped or `dup` failed).
+#[cfg(unix)]
 static ORIGINAL_STDERR_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Whether the tracing subscriber writes to the on-disk log file (`det.log`).

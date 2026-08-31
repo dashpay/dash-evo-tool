@@ -3,7 +3,8 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::identity_discovery::{
-    DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP, should_continue_scan,
+    DiscoveryIntent, DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP,
+    should_continue_scan,
 };
 use crate::model::qualified_identity::DPNSNameInfo;
 use crate::model::wallet::Wallet;
@@ -14,6 +15,21 @@ use std::sync::{Arc, RwLock};
 /// Number of authentication-key indices probed per identity index before
 /// concluding no identity is registered there.
 const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
+
+/// The settings one gap-limited scan holds constant across every index it
+/// probes, so a per-index call takes one argument instead of four.
+struct ScanSettings<'a> {
+    sdk: &'a dash_sdk::Sdk,
+    /// The network the scan started on. A store is skipped if the active
+    /// network changed since — defense-in-depth against an in-flight pass
+    /// writing under the wrong network scope.
+    scan_network: dash_sdk::dpp::dashcore::Network,
+    /// Whether a cold auth-key cache miss may prompt for the passphrase.
+    allow_prompt: bool,
+    /// Whether the user asked for these identities, which decides whether the
+    /// scan may store one they unloaded from this device.
+    intent: DiscoveryIntent,
+}
 
 impl AppContext {
     /// Discover and load identities derived from a wallet by checking the
@@ -32,6 +48,11 @@ impl AppContext {
     /// `false` (the background sweep) a locked, protected wallet is skipped
     /// instead of prompting.
     ///
+    /// `intent` is a separate question from `allow_prompt` — whether the user
+    /// asked for these identities, which decides whether a pass may store one
+    /// they previously unloaded from this device. The post-unlock pass prompts
+    /// for nothing and is still automatic, so the two are not interchangeable.
+    ///
     /// When `progress` is `Some`, a [`BackendTaskSuccessResult::Progress`] event
     /// is sent before each probed index.
     pub(crate) async fn discover_identities_gap_limited(
@@ -39,13 +60,19 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         seed_from_index: u32,
         allow_prompt: bool,
+        intent: DiscoveryIntent,
         progress: Option<&SenderAsync<TaskResult>>,
     ) -> Result<DiscoverySummary, TaskError> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
 
         let sdk = self.sdk.load().as_ref().clone();
-        let scan_network = self.network;
+        let settings = ScanSettings {
+            sdk: &sdk,
+            scan_network: self.network,
+            allow_prompt,
+            intent,
+        };
         let seed_hash = wallet.read()?.seed_hash();
 
         // Seed the rolling window from the explicit seed index and from any
@@ -65,6 +92,7 @@ impl AppContext {
             seed = %hex::encode(seed_hash),
             seed_window = ?seed_window,
             allow_prompt,
+            ?intent,
             "Starting gap-limited identity discovery for wallet"
         );
 
@@ -163,17 +191,17 @@ impl AppContext {
                 highest_found = Some(highest_found.map_or(current_index, |h| h.max(current_index)));
 
                 match self
-                    .upsert_discovered_identity(
-                        &sdk,
-                        identity,
-                        wallet,
-                        scan_network,
-                        allow_prompt,
-                        current_index,
-                    )
+                    .upsert_discovered_identity(&settings, identity, wallet, current_index)
                     .await
                 {
-                    Ok(()) => summary.stored = summary.stored.saturating_add(1),
+                    Ok(true) => summary.stored = summary.stored.saturating_add(1),
+                    // Found but deliberately not stored: an identity the user
+                    // unloaded, or a network switch mid-scan. `found` still
+                    // counts it, so the two numbers differ and the log says so.
+                    Ok(false) => tracing::debug!(
+                        identity_id = %identity_id,
+                        "Discovered identity left unstored"
+                    ),
                     Err(e) => tracing::warn!(
                         identity_id = %identity_id,
                         error = %e,
@@ -205,36 +233,41 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         max_identity_index: u32,
     ) -> Result<(), TaskError> {
-        self.discover_identities_gap_limited(wallet, max_identity_index, true, None)
-            .await?;
+        self.discover_identities_gap_limited(
+            wallet,
+            max_identity_index,
+            true,
+            DiscoveryIntent::Automatic,
+            None,
+        )
+        .await?;
         Ok(())
     }
 
-    /// Fetch, build, and store one discovered identity, preserving DET-only
-    /// metadata (the user alias) from any existing stored record.
+    /// Fetch, build, and store one discovered identity. Returns whether it was
+    /// stored.
     ///
-    /// The freshly-built [`QualifiedIdentity`](crate::model::qualified_identity::QualifiedIdentity)
-    /// carries `alias: None`; before storing, the existing record's alias is
-    /// copied onto it so a re-discovery refreshes keys and DPNS names without
-    /// wiping a user-assigned alias. Wallet association and top-up history are
-    /// preserved by [`AppContext::update_local_qualified_identity`] /
-    /// the separate top-up KV key, respectively.
+    /// The store itself is
+    /// [`AppContext::store_discovered_identity`], which decides between
+    /// refreshing an existing record and inserting a new one, carries the
+    /// user's alias onto the freshly built identity (which never has one), and
+    /// refuses an identity the user unloaded from this device unless `intent`
+    /// says the user asked for it. Top-up history lives under a separate k/v
+    /// key that no write here touches.
     ///
     /// `scan_network` is the network the scan started on. If the active network
     /// changed mid-scan, the store is skipped — defense-in-depth so an in-flight
     /// pass never writes a discovered identity under the wrong network scope.
     async fn upsert_discovered_identity(
         self: &Arc<Self>,
-        sdk: &dash_sdk::Sdk,
+        settings: &ScanSettings<'_>,
         identity: dash_sdk::platform::Identity,
         wallet: &Arc<RwLock<Wallet>>,
-        scan_network: dash_sdk::dpp::dashcore::Network,
-        allow_prompt: bool,
         identity_index: u32,
-    ) -> Result<(), TaskError> {
-        if self.network != scan_network {
+    ) -> Result<bool, TaskError> {
+        if self.network != settings.scan_network {
             tracing::debug!("Network changed mid-scan; skipping store of discovered identity");
-            return Ok(());
+            return Ok(false);
         }
 
         let identity_id = identity.id();
@@ -242,41 +275,33 @@ impl AppContext {
 
         let mut qualified_identity = self
             .build_qualified_identity_from_wallet(
-                sdk,
+                settings.sdk,
                 identity,
                 wallet,
-                allow_prompt,
+                settings.allow_prompt,
                 identity_index,
             )
             .await?;
 
-        match self.get_identity_by_id(&identity_id)? {
-            Some(existing) => {
-                // Carry DET-only metadata onto the refreshed identity, then
-                // update in place — `update_local_qualified_identity` keeps the
-                // stored wallet association, and top-ups live under a separate
-                // KV key untouched by this write.
-                qualified_identity.alias = existing.alias;
-                self.update_local_qualified_identity(&qualified_identity)?;
-            }
-            None => {
-                self.insert_local_qualified_identity(
-                    &qualified_identity,
-                    &Some((seed_hash, identity_index)),
-                )?;
-            }
-        }
+        // One guarded call for both the refresh and the insert: the choice
+        // between them, the unload check and the alias carry-over all happen
+        // under a single hold of the identity's record lock, so a removal
+        // cannot land between this pass's read and its write.
+        let stored = self.store_discovered_identity(
+            &mut qualified_identity,
+            &Some((seed_hash, identity_index)),
+            settings.intent,
+        )?;
 
-        if let Ok(mut wallet_guard) = wallet.write() {
-            wallet_guard
-                .identities
-                .insert(identity_index, qualified_identity.identity.clone());
+        adopt_discovered_identity(wallet, identity_index, &qualified_identity.identity, stored);
+
+        if stored {
+            tracing::info!(
+                identity_id = %identity_id,
+                "Successfully loaded discovered identity"
+            );
         }
-        tracing::info!(
-            identity_id = %identity_id,
-            "Successfully loaded discovered identity"
-        );
-        Ok(())
+        Ok(stored)
     }
 
     /// Build a QualifiedIdentity from a fetched Identity with wallet key derivation paths.
@@ -437,5 +462,82 @@ impl AppContext {
             status: IdentityStatus::Unknown,
             network: self.network,
         })
+    }
+}
+
+/// Adopt a discovered identity into the wallet's in-memory identity map, but
+/// only when the store actually kept it.
+///
+/// The map is a second place a refused identity comes back. The wallet views
+/// read it directly, so an identity the user unloaded would reappear there for
+/// the rest of the session even with storage correctly refusing it — a gate
+/// whose answer the caller ignores is a check-then-act with extra steps. The
+/// outcome is a parameter rather than a caller-side `if` so the coupling is
+/// enforced in one place and can be tested without a network.
+fn adopt_discovered_identity(
+    wallet: &Arc<RwLock<Wallet>>,
+    identity_index: u32,
+    identity: &dash_sdk::platform::Identity,
+    stored: bool,
+) {
+    if !stored {
+        return;
+    }
+    if let Ok(mut wallet_guard) = wallet.write() {
+        wallet_guard
+            .identities
+            .insert(identity_index, identity.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::wallet::test_support::open_wallet;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    fn identity(byte: u8) -> Identity {
+        Identity::create_basic_identity(Identifier::from([byte; 32]), PlatformVersion::latest())
+            .expect("basic identity")
+    }
+
+    /// A refusal the caller ignores is not a refusal. Storage declining an
+    /// unloaded identity is undone if the wallet's in-memory map adopts it
+    /// anyway: the wallet views read that map directly, so the identity the
+    /// user unloaded is back on screen until the app restarts.
+    #[test]
+    fn a_refused_discovery_leaves_the_wallets_identity_map_untouched() {
+        let wallet = Arc::new(RwLock::new(open_wallet()));
+
+        adopt_discovered_identity(&wallet, 3, &identity(7), false);
+
+        assert!(
+            wallet
+                .read()
+                .expect("read the wallet")
+                .identities
+                .is_empty(),
+            "an identity the store refused must not enter the wallet's identity map",
+        );
+    }
+
+    #[test]
+    fn a_stored_discovery_is_adopted_at_its_derivation_index() {
+        let wallet = Arc::new(RwLock::new(open_wallet()));
+
+        adopt_discovered_identity(&wallet, 3, &identity(7), true);
+
+        assert_eq!(
+            wallet
+                .read()
+                .expect("read the wallet")
+                .identities
+                .get(&3)
+                .map(|identity| identity.id()),
+            Some(Identifier::from([7u8; 32])),
+            "a stored identity must be adopted under the index it was found at",
+        );
     }
 }

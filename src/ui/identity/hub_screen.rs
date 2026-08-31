@@ -11,6 +11,7 @@ use super::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::dashpay::UnreadableContactInfoPolicy;
@@ -25,7 +26,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Context};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::home::HomeState;
@@ -57,6 +58,29 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
+    /// Identities this screen dispatched an unload for, each retained until its
+    /// own result lands. Neither selection pointer survives that wait: a frame
+    /// can render before the result arrives and reconcile both of them onto the
+    /// identity that replaced this one.
+    ///
+    /// A set rather than one slot, because unloads overlap. The confirmation
+    /// blocks input only while it is open; it closes on confirm and the task
+    /// runs async, so the user can confirm A, switch to B and confirm B before
+    /// A's result lands. A single slot would then hold B, and A's caches — its
+    /// contact rows, load guard, pending tasks and cached profile — would never
+    /// be reset, which is the original bug with an extra step.
+    ///
+    /// An entry whose removal failed is never consumed — a failure before
+    /// delisting sends no result, and the screen's failure signal names no
+    /// identity, so it cannot know which of several in-flight unloads to drop.
+    /// The set therefore grows by one `Identifier` per failed attempt and never
+    /// shrinks for one, for the life of the screen. Bounded by user action and
+    /// gone when the screen is, so the size is not the concern; that a stale
+    /// entry cannot misfire is, and it cannot: the check is keyed on the
+    /// identities a *result* removed, never on this set, so a stale entry can
+    /// only ever match a later result removing that same identity — precisely
+    /// when the reset is wanted anyway.
+    pending_unloads: BTreeSet<Identifier>,
     /// Contacts-tab state. Owned here to debounce
     /// [`crate::backend_task::dashpay::DashPayTask::LoadContacts`] to a
     /// single dispatch per tab entry, instead of firing every frame.
@@ -94,6 +118,7 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
+            pending_unloads: BTreeSet::new(),
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
             selection: HubSelection::default(),
@@ -112,6 +137,23 @@ impl IdentityHubScreen {
         {
             self.pending_contact_info_tasks
                 .insert(key, task.as_ref().clone());
+        }
+    }
+
+    /// Remember the identity an unload was dispatched for.
+    ///
+    /// The removal is answered frames later, and `SettingsTab::ensure_selected`
+    /// reconciles its retained identity to the effective one on every frame in
+    /// between — so by the time the result lands, both the explicit selection
+    /// and the tab's identity can name the replacement, and nothing left in the
+    /// screen would say which identity's caches are now stale. This is that
+    /// record, and the reconciler cannot move it.
+    fn capture_unload_dispatch(&mut self, action: &AppAction) {
+        if let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+            identity_id,
+        })) = action
+        {
+            self.pending_unloads.insert(*identity_id);
         }
     }
 
@@ -460,6 +502,7 @@ impl ScreenLike for IdentityHubScreen {
             }
         });
         self.capture_contact_info_update(&action);
+        self.capture_unload_dispatch(&action);
 
         // A picker card click sets the active identity and routes to Home.
         if let Some(id_str) = picked_identity
@@ -573,6 +616,55 @@ impl ScreenLike for IdentityHubScreen {
                         "This contact is back in your list.",
                         MessageType::Success,
                     );
+                }
+            }
+            // The Settings tab's unload lands here. The tab re-resolves its own
+            // selection next frame, so this only has to report the outcome —
+            // including the case where the identity went but its voter twin
+            // stayed, which the user would otherwise read as a failed removal.
+            BackendTaskSuccessResult::RemovedIdentities {
+                identity_ids,
+                associated_cleanup_failed,
+                cleanup_deferred,
+            } => {
+                // Two separate questions with two separate answers. The
+                // app-wide selection is dropped only when it is the thing that
+                // was removed, so the hub falls back deliberately instead of
+                // resolving around a pointer to a deleted identity.
+                let explicit_selection = self.app_context.selected_identity_id();
+                if explicit_selection.is_some_and(|active| identity_ids.contains(&active)) {
+                    self.app_context.set_selected_identity(None);
+                }
+                // The caches follow the *effective* identity, which is a
+                // fallback whenever no selection is stored, so they are reset
+                // on the wider condition — contacts, pending contact
+                // confirmations, and the profile cache — matching every other
+                // identity-switch path, so a resolve to the next identity next
+                // frame does not inherit state that still belongs to the one
+                // just removed.
+                if removal_invalidates_identity_caches(
+                    explicit_selection,
+                    self.settings_tab
+                        .selected_identity()
+                        .map(|identity| identity.identity.id()),
+                    &self.pending_unloads,
+                    identity_ids,
+                ) {
+                    self.reset_contacts_for_identity_change();
+                    self.profile_cache.reset();
+                }
+                // Only the identities this result answers for; another unload
+                // still in flight keeps its own record.
+                self.pending_unloads
+                    .retain(|pending| !identity_ids.contains(pending));
+                let (message, message_type) = crate::ui::identities::removed_identities_banner(
+                    *associated_cleanup_failed,
+                    *cleanup_deferred,
+                );
+                let handle =
+                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
+                if message_type == MessageType::Warning {
+                    handle.disable_auto_dismiss();
                 }
             }
             _ => {}
@@ -775,6 +867,40 @@ fn applies_to_selected_identity(
     selected.as_ref() == Some(result_identity)
 }
 
+/// Whether a completed removal leaves the Hub's identity-scoped caches holding
+/// data for an identity that no longer exists.
+///
+/// The caches follow the *effective* identity — the explicit selection when
+/// there is one, a fallback otherwise — so the explicit pointer alone does not
+/// answer this: a single-identity account never stores one, and its unload
+/// would reset nothing. Re-resolving the fallback cannot answer it either,
+/// because by the time this result arrives the removed identity is gone from
+/// storage and the resolver names whichever identity replaced it.
+///
+/// Nor is the Settings tab's retained identity enough on its own, which is
+/// what an earlier version of this got wrong: it is itself reconciled to the
+/// effective identity on every frame, and a frame can render between the
+/// dispatch and the result, leaving all three of storage, the selection and
+/// the tab naming the replacement. Only the id captured when the unload was
+/// dispatched survives that, so it is checked alongside the two live pointers
+/// — any of the three naming a removed id invalidates the caches.
+///
+/// `dispatched_unloads` is a set because unloads overlap: a result answers for
+/// one of them while the others are still in flight, so matching against a
+/// single remembered id would miss every removal but the most recent.
+fn removal_invalidates_identity_caches(
+    explicit_selection: Option<Identifier>,
+    settings_identity: Option<Identifier>,
+    dispatched_unloads: &BTreeSet<Identifier>,
+    removed: &[Identifier],
+) -> bool {
+    removed.iter().any(|identity| {
+        explicit_selection == Some(*identity)
+            || settings_identity == Some(*identity)
+            || dispatched_unloads.contains(identity)
+    })
+}
+
 fn handle_profile_updated(
     settings: &mut SettingsTab,
     profiles: &mut super::profile_cache::ProfileCache,
@@ -927,6 +1053,294 @@ mod tests {
         assert!(
             screen.result_is_for_selected_identity(&explicitly_selected),
             "a result for the explicitly selected identity must apply after a switch"
+        );
+    }
+
+    /// The Hub's identity-scoped caches follow the *effective* identity, which
+    /// is a fallback whenever no explicit selection is stored — the ordinary
+    /// state for a single-identity account, where the user never touches the
+    /// picker. Unloading that identity must therefore reset the caches even
+    /// though `selected_identity_id()` names nothing, or Contacts keeps the
+    /// removed identity's rows and its spent one-shot load guard while every
+    /// action resolves under whichever identity became the fallback.
+    ///
+    /// Re-resolving the fallback here cannot answer the question: by the time
+    /// this result lands the removed identity is gone from storage, so the
+    /// resolver names its replacement. The Settings tab's retained identity is
+    /// the surviving record of which identity the unload was started for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unloading_a_fallback_selected_identity_resets_the_identity_caches() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let fallback = seed_user_identity(&context, 1);
+        let fallback_identity = context
+            .get_local_qualified_identity(&fallback)
+            .expect("read the seeded identity")
+            .expect("identity present");
+        let mut screen = IdentityHubScreen::new(&context);
+        screen
+            .settings_tab
+            .select_identity_for_test(fallback_identity.clone());
+
+        assert_eq!(
+            context.selected_identity_id(),
+            None,
+            "precondition: the identity is effective by fallback, not by an explicit selection"
+        );
+        assert!(
+            screen.contacts_state.claim_load(),
+            "precondition: the one-shot load guard starts unclaimed"
+        );
+        screen.profile_cache.record_saved(
+            fallback,
+            crate::ui::identity::profile_cache::ProfileFields {
+                display_name: "Alicia".into(),
+                bio: String::new(),
+                avatar_url: String::new(),
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![fallback],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            screen.contacts_state.claim_load(),
+            "the load guard must be re-armed, or Contacts renders the removed identity's \
+             rows and never re-fetches for the identity that replaced it"
+        );
+        assert!(
+            screen
+                .profile_cache
+                .get_or_request(&fallback_identity)
+                .is_none(),
+            "the removed identity's cached profile must be dropped"
+        );
+    }
+
+    /// The frame ordering the previous fix missed. The unload is answered
+    /// frames after dispatch, and `SettingsTab::ensure_selected` reconciles the
+    /// tab's retained identity to the effective one on every frame in between —
+    /// so a single render before the result lands leaves the explicit selection,
+    /// the tab, and storage all naming the identity that replaced the removed
+    /// one. Checking live pointers alone then finds nothing to reset and leaves
+    /// contact rows, the one-shot load guard, pending tasks and confirmations,
+    /// and the profile cache bound to an identity that no longer exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unload_answered_after_a_reconciling_frame_still_resets_the_caches() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let unloaded = seed_user_identity(&context, 1);
+        let replacement = seed_user_identity(&context, 2);
+        let replacement_identity = context
+            .get_local_qualified_identity(&replacement)
+            .expect("read the seeded identity")
+            .expect("identity present");
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // The user confirms the unload: the screen dispatches it for `unloaded`.
+        screen.capture_unload_dispatch(&AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::RemoveIdentity {
+                identity_id: unloaded,
+            },
+        )));
+
+        // A frame renders before the result arrives, and the tab reconciles
+        // onto the identity that is now effective. Both live pointers now name
+        // the replacement, or nothing.
+        screen
+            .settings_tab
+            .select_identity_for_test(replacement_identity);
+        assert_eq!(
+            context.selected_identity_id(),
+            None,
+            "precondition: no explicit selection, so only the dispatch record names the target"
+        );
+
+        assert!(screen.contacts_state.claim_load());
+        screen.profile_cache.record_saved(
+            unloaded,
+            crate::ui::identity::profile_cache::ProfileFields {
+                display_name: "Alicia".into(),
+                bio: String::new(),
+                avatar_url: String::new(),
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![unloaded],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            screen.contacts_state.claim_load(),
+            "the load guard must be re-armed even though no live pointer still names the \
+             removed identity"
+        );
+        let unloaded_identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(unloaded, PlatformVersion::latest())
+                .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        };
+        assert!(
+            screen
+                .profile_cache
+                .get_or_request(&unloaded_identity)
+                .is_none(),
+            "the removed identity's cached profile must be dropped"
+        );
+    }
+
+    /// Two unloads in flight at once. The confirmation blocks input only while
+    /// it is open, so the user can confirm A, switch to B and confirm B before
+    /// A's result lands — and A's result then arrives second, when nothing live
+    /// names A any more. A single remembered id would have been overwritten by
+    /// B, leaving A's caches bound to an identity that no longer exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_unload_dispatched_first_does_not_erase_the_first_ones_record() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let first = seed_user_identity(&context, 1);
+        let second = seed_user_identity(&context, 2);
+        let survivor = seed_user_identity(&context, 3);
+        let survivor_identity = context
+            .get_local_qualified_identity(&survivor)
+            .expect("read the seeded identity")
+            .expect("identity present");
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // Both confirmed before either result arrives.
+        for identity_id in [first, second] {
+            screen.capture_unload_dispatch(&AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::RemoveIdentity { identity_id },
+            )));
+        }
+
+        // Frames render in between, so every live pointer names the survivor.
+        screen
+            .settings_tab
+            .select_identity_for_test(survivor_identity);
+
+        // The second unload is answered first, and must not take the first
+        // one's record with it.
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![second],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+        assert!(
+            screen.pending_unloads.contains(&first),
+            "answering one unload must not discard the record of another still in flight"
+        );
+
+        // Now the first one's result lands, with nothing live naming it.
+        assert!(screen.contacts_state.claim_load());
+        screen.profile_cache.record_saved(
+            first,
+            crate::ui::identity::profile_cache::ProfileFields {
+                display_name: "Alicia".into(),
+                bio: String::new(),
+                avatar_url: String::new(),
+            },
+        );
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![first],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            screen.contacts_state.claim_load(),
+            "the first unload's caches must be reset when its own result arrives"
+        );
+        let first_identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(first, PlatformVersion::latest())
+                .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        };
+        assert!(
+            screen
+                .profile_cache
+                .get_or_request(&first_identity)
+                .is_none(),
+            "the first unloaded identity's cached profile must be dropped"
+        );
+        assert!(
+            screen.pending_unloads.is_empty(),
+            "each answered unload must retire its own record"
+        );
+    }
+
+    /// A removal that fails before delisting sends no `RemovedIdentities`, so
+    /// its record is never consumed. That entry is inert rather than harmless
+    /// by assumption: the check is keyed on the identities a *result* removed,
+    /// never on the pending set, so a stale entry can only ever match a later
+    /// result removing that same identity — which is when the reset is wanted.
+    /// It cannot cause a spurious reset for any other identity.
+    ///
+    /// Asserted rather than argued because the alternative — clearing on the
+    /// error path — is not available: `display_message` carries a string and a
+    /// severity, no identity, so the screen cannot know which of several
+    /// in-flight unloads failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_unloads_stale_record_never_resets_another_identitys_caches() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let failed = seed_user_identity(&context, 1);
+        let elsewhere = seed_user_identity(&context, 2);
+        let mut screen = IdentityHubScreen::new(&context);
+
+        // Dispatched, then the removal fails before delisting: no result ever
+        // arrives for it, so its record stays.
+        screen.capture_unload_dispatch(&AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::RemoveIdentity {
+                identity_id: failed,
+            },
+        )));
+
+        // Caches are warm and belong to the identity still in use.
+        assert!(screen.contacts_state.claim_load());
+
+        // An unrelated identity is removed — by another device, or by a screen
+        // that is not this one. Nothing live names it, and this screen never
+        // dispatched it.
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![elsewhere],
+            associated_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            !screen.contacts_state.claim_load(),
+            "a removal naming no identity this screen cares about must not reset its caches"
+        );
+        assert!(
+            screen.pending_unloads.contains(&failed),
+            "and must not consume the failed unload's record, which belongs to another identity"
         );
     }
 

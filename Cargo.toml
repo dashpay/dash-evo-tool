@@ -35,8 +35,13 @@ platform-wallet = { git = "https://github.com/dashpay/platform", rev = "67d4ef3f
     "serde",
     "shielded",
 ] }
+# `secret-serde` backs `model::secret::Secret`'s `Deserialize`: the upstream
+# visitor copies a borrowed `&str` straight into guarded memory instead of
+# routing through a transient `String`. `secret-schemars` is enabled by the
+# `mcp`/`cli` features, which are the only ones that generate tool schemas.
 platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "67d4ef3f6340a1e983229b6870ef60cf7573602a", features = [
     "shielded",
+    "secret-serde",
 ] }
 zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
@@ -100,14 +105,11 @@ tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
-# INTENTIONAL(memsec-exact-pin): guarded allocator for `model::secret::Secret`; it
-# holds passphrases and private keys, so a version change deserves a human read of
-# the diff rather than an automatic pickup. Pure Rust (libc / windows-sys), no C
-# toolchain or libsodium.
-memsec = "=0.7.0"
 rmcp = { version = "1.2", optional = true, default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
-subtle = { version = "2.6", optional = true }
+# Constant-time equality for `model::secret::Secret` (unconditional) and the
+# MCP API-key check. Not optional: `PartialEq for Secret` is always compiled.
+subtle = "2.6"
 clap = { version = "4", features = ["derive"], optional = true }
 clap_complete = { version = "4", optional = true }
 
@@ -122,14 +124,11 @@ raw-cpuid = "11.5.0"
 default = []
 testing = []
 bench = []
-mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
-cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
+mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "platform-wallet-storage/secret-schemars"]
+cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete", "platform-wallet-storage/secret-schemars"]
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
-# Page-size query for the `Secret` page-isolation test only; `memsec` owns the
-# locking itself, so nothing in the shipped binary needs this.
-region = "3.0.2"
 egui_kittest = { version = "0.35.0", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
 criterion = "0.5.1"

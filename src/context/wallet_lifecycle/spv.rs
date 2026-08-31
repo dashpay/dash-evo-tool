@@ -138,18 +138,20 @@ impl AppContext {
         Ok(())
     }
 
-    /// Wire the wallet backend (idempotent) and then start chain sync.
+    /// Prepare this network's storage (idempotent) and then start chain sync.
     ///
     /// This is the single chokepoint for "start SPV" across every entry path:
     /// GUI boot auto-start, the manual Connect button, MCP/CLI standalone boot,
-    /// and the post-network-switch restart. Wiring happens first, so the
-    /// historical `WalletBackendNotYetWired` fast-fail race — callers invoking
-    /// [`Self::start_spv`] before [`Self::ensure_wallet_backend`] had a chance
-    /// to complete — cannot occur.
+    /// and the post-network-switch restart. Chain sync is a *continuation* of a
+    /// completed [`Self::prepare_storage`] — a data dependency inside one
+    /// function, not a timing coincidence — so neither the historical
+    /// `WalletBackendNotYetWired` fast-fail race nor a start that outruns the
+    /// legacy drain is reachable from any of them.
     ///
-    /// Both steps are idempotent: the backend is wired at most once (first
-    /// writer wins) and the upstream run loop is spawned at most once (guarded
-    /// by the backend's start latch). Chain sync runs asynchronously — progress
+    /// Both steps are idempotent: storage is prepared at most once per network
+    /// (later calls fast-path through wiring and short-circuit the drain on its
+    /// sentinel) and the upstream run loop is spawned at most once (guarded by
+    /// the backend's start latch). Chain sync runs asynchronously — progress
     /// and success arrive via the `EventBridge`.
     ///
     /// On failure the SPV connection indicator is flipped to
@@ -163,7 +165,7 @@ impl AppContext {
         self: &Arc<Self>,
         sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
-        if let Err(e) = self.ensure_wallet_backend(sender).await {
+        if let Err(e) = self.prepare_storage(sender).await {
             self.mark_spv_error(&e);
             return Err(e);
         }

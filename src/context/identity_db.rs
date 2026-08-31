@@ -1659,7 +1659,7 @@ impl AppContext {
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
         let _migration_guard = self
-            .migration_run
+            .prepare_gate
             .try_lock()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
         if self.migration_status().state().is_in_progress() {
@@ -1749,13 +1749,13 @@ impl AppContext {
     /// failure on one manifest is logged and retried next boot, and never
     /// blocks the sweep from resuming every other one.
     ///
-    /// Guarded by the same `migration_run` lock and in-progress check as
+    /// Guarded by the same `prepare_gate` lock and in-progress check as
     /// [`Self::delete_local_qualified_identity`]: a storage migration can be
     /// mid-rewrite of this same Identity scope around the same boot window
     /// this sweep runs in, and the sweep's purge/vault-delete pair is not
     /// safe to interleave with that.
     pub(crate) fn resume_pending_vault_cleanups(&self) {
-        let Ok(_migration_guard) = self.migration_run.try_lock() else {
+        let Ok(_migration_guard) = self.prepare_gate.try_lock() else {
             tracing::debug!(
                 "Pending vault-cleanup sweep skipped; a storage migration is running, will retry at next boot"
             );

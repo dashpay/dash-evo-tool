@@ -643,6 +643,7 @@ fn spv_block_step(armed: bool, dismissed: bool, state: OverallConnectionState) -
 /// coverage so a regression in the label table fails the test suite.
 pub fn migration_running_text(step: MigrationStep) -> &'static str {
     match step {
+        MigrationStep::Wiring => "The app is opening your saved data.",
         MigrationStep::Detecting => "The app is checking your wallet data.",
         MigrationStep::AppData => "The app is restoring your scheduled votes.",
         MigrationStep::SingleKey => "The app is updating your imported keys.",
@@ -3267,16 +3268,7 @@ mod migration_banner_tests {
     /// translation unit (no concatenation).
     #[test]
     fn migration_running_text_is_sentence_for_every_step() {
-        for step in [
-            MigrationStep::Detecting,
-            MigrationStep::AppData,
-            MigrationStep::SingleKey,
-            MigrationStep::Shielded,
-            MigrationStep::WalletSeeds,
-            MigrationStep::WalletMeta,
-            MigrationStep::Identities,
-            MigrationStep::Finalize,
-        ] {
+        for step in MigrationStep::ALL {
             let text = migration_running_text(step);
             assert!(!text.is_empty(), "{step:?} has empty banner text");
             assert!(
@@ -3291,16 +3283,7 @@ mod migration_banner_tests {
     /// alone (`set_global` is idempotent for matching text).
     #[test]
     fn migration_running_text_distinct_per_step() {
-        let labels = [
-            migration_running_text(MigrationStep::Detecting),
-            migration_running_text(MigrationStep::AppData),
-            migration_running_text(MigrationStep::SingleKey),
-            migration_running_text(MigrationStep::Shielded),
-            migration_running_text(MigrationStep::WalletSeeds),
-            migration_running_text(MigrationStep::WalletMeta),
-            migration_running_text(MigrationStep::Identities),
-            migration_running_text(MigrationStep::Finalize),
-        ];
+        let labels = MigrationStep::ALL.map(migration_running_text);
         let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
         assert_eq!(
             unique.len(),

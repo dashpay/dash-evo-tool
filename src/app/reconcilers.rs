@@ -534,7 +534,7 @@ impl MigrationReconciler {
             MigrationState::Idle
                 | MigrationState::Running { .. }
                 | MigrationState::AwaitingWalletPasswords { .. }
-        ) && app_context.migration_run.try_lock().is_ok();
+        ) && app_context.prepare_gate.try_lock().is_ok();
         self.storage_startup_error.clear_if(storage_guard_resolved);
         self.update_password_prompt(ctx, app_context, &state);
         if self.last_state.as_ref() == Some(&state) {
@@ -1031,7 +1031,7 @@ mod tests {
         assert!(harness.query_by_label(&message).is_some());
 
         let migration_guard = app_context
-            .migration_run
+            .prepare_gate
             .try_lock()
             .expect("migration guard");
         app_context

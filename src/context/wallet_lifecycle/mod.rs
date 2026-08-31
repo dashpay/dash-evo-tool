@@ -7,9 +7,9 @@
 //!
 //! The `impl AppContext` methods are grouped by responsibility across
 //! submodules, mirroring the multi-impl-of-one-struct layout `wallet_backend`
-//! uses: [`spv`] (backend wiring / chain-storage), [`registration`],
-//! [`removal`], [`bootstrap`] (address derivation + post-unlock warmup), and
-//! [`unlock`] (lock/unlock handling). Shared imports, constants, the free
+//! uses: [`prepare`] (the storage-preparation gate), [`spv`] (backend wiring /
+//! chain-storage), [`registration`], [`removal`], [`bootstrap`] (address
+//! derivation + post-unlock warmup), and [`unlock`] (lock/unlock handling). Shared imports, constants, the free
 //! helpers, and the [`AppContext::wallet_arc`] lookup live here in `mod.rs`.
 
 use super::AppContext;
@@ -105,6 +105,7 @@ fn clear_spv_chain_storage(spv_dir: &Path) -> Result<(), TaskError> {
 }
 
 mod bootstrap;
+mod prepare;
 mod registration;
 mod removal;
 mod spv;

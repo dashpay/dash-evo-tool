@@ -40,6 +40,19 @@ use dash_evo_tool::ui::components::{
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
+#[cfg(feature = "testing")]
+use dash_evo_tool::context::migration_status::MigrationState;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::secret::Secret;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::wallet::Wallet;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+#[cfg(feature = "testing")]
+use dash_sdk::dpp::dashcore::Network;
+#[cfg(feature = "testing")]
+use std::cell::Cell as StdCell;
+
 const SPINNER_ROLE: egui::accesskit::Role = egui::accesskit::Role::ProgressIndicator;
 
 /// Build a harness whose per-frame closure mirrors `AppState::update`: claim
@@ -1533,6 +1546,102 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
     });
 }
 
+/// Migration password collection owns the full interaction surface while an
+/// SPV block remains active underneath it. The prompt accepts keyboard input,
+/// its secondary action is pointer-hittable, and the overlay's card and pointer
+/// sink are not painted until the prompt resolves.
+#[cfg(feature = "testing")]
+#[test]
+fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let seed_hash = Rc::new(StdCell::new([0; 32]));
+        let seed_hash_for_app = Rc::clone(&seed_hash);
+        let mut harness = Harness::builder()
+            .with_max_steps(100)
+            .build_eframe(move |ctx| {
+                let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                    .expect("Failed to create AppState")
+                    .with_animations(false);
+                app.show_welcome_screen = false;
+                app.welcome_screen = None;
+
+                let password = Secret::new("correct password");
+                let seed = [0xA7; 64];
+                let wallet = Wallet::new_from_seed(
+                    seed,
+                    Network::Testnet,
+                    Some("Savings".to_string()),
+                    Some(&password),
+                )
+                .expect("build protected wallet");
+                let (seed_hash, wallet) = app
+                    .current_app_context()
+                    .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                    .expect("register protected wallet fixture");
+                wallet.write().expect("wallet lock").wallet_seed.close();
+                seed_hash_for_app.set(seed_hash);
+                app
+            });
+        harness.set_size(egui::vec2(800.0, 600.0));
+        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+        harness.run_steps(5);
+        app_context
+            .migration_status()
+            .set_state(MigrationState::AwaitingWalletPasswords {
+                wallets: vec![seed_hash.get()],
+            });
+
+        let _spv_overlay = ProgressOverlay::set_global(
+            &harness.ctx,
+            "Syncing with the Dash network.",
+            OverlayConfig::new()
+                .with_secondary_action("Cancel", "spv:background")
+                .with_keyboard_escape("spv:background"),
+        );
+        harness.run_steps(5);
+
+        assert!(ProgressOverlay::has_global(&harness.ctx));
+        assert!(
+            harness
+                .query_by_label("Enter the password for \"Savings\" to update this wallet now.")
+                .is_some(),
+        );
+        assert!(
+            harness
+                .query_by_label("Syncing with the Dash network.")
+                .is_none(),
+            "the active SPV block stays stored but does not cover the password prompt",
+        );
+
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("wrong password".to_string()));
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label_contains("That password did not match")
+                .is_some(),
+            "the password field remains typeable while the SPV block is active",
+        );
+
+        harness.get_by_label("Skip this wallet").click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().current_app_context().migration_status().state().as_ref(),
+                MigrationState::AwaitingWalletPasswords { wallets } if wallets.is_empty()
+            ),
+            "the overlay pointer sink must not swallow the migration prompt's secondary action",
+        );
+    });
+}
+
 /// A non-dismissible migration password prompt absorbs clicks everywhere
 /// outside its own window while leaving the prompt controls interactive.
 #[test]
@@ -1572,6 +1681,79 @@ fn migration_password_prompt_blocks_underlying_clicks() {
         harness.query_by_label("Skip this wallet").is_some(),
         "the migration prompt remains interactive above its click barrier",
     );
+}
+
+/// Drives the REAL `AppState::update` loop with BOTH a passphrase
+/// prompt active AND a `with_keyboard_escape` block beneath it (the SPV-sync pattern).
+/// The escape must NOT steal focus from the prompt: the prompt stays focused across
+/// several frames, a typed passphrase + Enter SUBMITS (closing the prompt), and the
+/// escape action is NEVER enqueued. Under the pre-fix code `render_buttons` re-requested
+/// the escape's focus every frame — and ran (`render_global`) BEFORE `render_secret_prompt`
+/// — so the escape stole the prompt's focus: keystrokes hit the focused button and Enter
+/// fired the escape instead of submitting. The submit + empty escape queue both detect
+/// that regression.
+#[cfg(feature = "testing")]
+#[test]
+fn sec001_keyboard_escape_block_does_not_steal_focus_from_secret_prompt() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false);
+            // A secret prompt is active (renders above the overlay, needs keyboard).
+            app.test_set_secret_prompt_active(true);
+            app
+        });
+        harness.set_size(egui::vec2(800.0, 600.0));
+
+        // Raise a keyboard-escape block (the unbounded SPV-sync pattern) beneath the
+        // prompt, holding its handle so we can inspect whether the escape ever fired.
+        let handle = ProgressOverlay::set_global(
+            &harness.ctx,
+            "Syncing with the Dash network.",
+            OverlayConfig::new()
+                .with_secondary_action("Cancel", dash_evo_tool::app::SPV_CANCEL_ACTION_ID)
+                .with_keyboard_escape(dash_evo_tool::app::SPV_CANCEL_ACTION_ID),
+        );
+        harness.run_steps(5);
+
+        // The prompt renders above the escape block and KEEPS keyboard focus across
+        // multiple frames — the escape never re-grabs it while a prompt is up.
+        for _ in 0..3 {
+            harness.step();
+            assert!(
+                harness.query_by_label_contains("Test prompt").is_some(),
+                "the secret prompt stays up above the escape block"
+            );
+            assert!(
+                harness.ctx.memory(|m| m.focused()).is_some(),
+                "focus is held (by the prompt) every frame, not surrendered to nothing"
+            );
+        }
+
+        // The prompt ACCEPTS typed text and submits on Enter — proving IT held focus,
+        // not the escape button.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("pw".to_string()));
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(5);
+        assert!(
+            harness.query_by_label_contains("Test prompt").is_none(),
+            "the prompt accepted the passphrase and submitted on Enter (the escape did \
+             not steal focus, so the keystrokes reached the field)"
+        );
+        // ...and the escape action was NEVER enqueued — Enter went to the passphrase.
+        assert!(
+            handle.take_actions().is_empty(),
+            "Enter must submit the passphrase, never activate a focus-stolen escape"
+        );
+    });
 }
 
 // ── Task 9: SPV-sync blocking overlay (startup + Connect) ────────────────────
@@ -1781,6 +1963,24 @@ fn fspv_a_onboarding_auto_start_arms_spv_block() {
             ProgressOverlay::has_global(&harness.ctx),
             "the armed post-onboarding sync raises the blocking overlay"
         );
+
+        // Arming alone proves nothing about the START. `try_auto_start_spv` also
+        // has to reach `spawn_spv_start`, and a pure-function test of the boot
+        // auto-start predicate cannot see that wire come loose. Offline, the
+        // spawned task fails and the chokepoint flips the indicator to Error —
+        // so the status leaving Idle is proof the task actually ran.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = app_context.connection_status().spv_status();
+            if status != dash_evo_tool::model::spv_status::SpvStatus::Idle {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the post-onboarding auto-start never spawned a chain-sync start",
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
     });
 }
 
@@ -1789,9 +1989,10 @@ fn fspv_a_onboarding_auto_start_arms_spv_block() {
 /// confirmation rather than stopping sync; the confirmation focuses "Keep syncing",
 /// so a second reflexive Enter returns to the block instead of disconnecting.
 ///
-/// This is the D2 accessibility guard: Cancel replaced "Cancel"
-/// on the one key a user who cannot see the screen will press, so the two-step
-/// confirm is what keeps that key from being a destructive shortcut.
+/// This is the D2 accessibility guard: Cancel replaced "Continue in the
+/// background" on the one key a user who cannot see the screen will press, so
+/// the two-step confirm is what keeps that key from being a destructive
+/// shortcut.
 #[cfg(feature = "testing")]
 #[test]
 fn task9_spv_escape_is_keyboard_activatable_and_never_destructive() {

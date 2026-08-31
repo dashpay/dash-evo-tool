@@ -69,13 +69,14 @@ impl AppContext {
 
         let drain = crate::backend_task::migration::finish_unwire::run_gated(self, &gate).await;
 
-        // Run the sweep on the drain's failure path too, not only its success
-        // path: keys orphaned by an earlier interrupted removal do not become
-        // less orphaned because this launch's drain failed, and a drain that
-        // fails deterministically would otherwise postpone the sweep forever.
-        // The manifests it consumes are written by identity removal, never by a
-        // migration, so they always predate this run — there is no half-written
-        // state for a failed drain to leave behind here.
+        // Run the sweep on the drain's failure path too: a deterministic drain
+        // failure would otherwise postpone the only recovery path for orphaned
+        // vault keys forever. A partially applied import cannot fake the roster
+        // absence the sweep's irreversible delete acts on — it only ever adds
+        // roster entries, and it declines every identity a manifest belongs to,
+        // because removal records the deletion and sets the Global unload
+        // marker that `purge_identity_scope` (Identity scope only) leaves
+        // standing.
         self.run_pending_vault_cleanup_sweep(&gate);
 
         drain?;

@@ -617,21 +617,26 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
-    run_gated(app_context).await
+    run_gated(app_context, &_run_guard).await
 }
 
 /// The drain body, for a caller that already owns
-/// [`AppContext::prepare_gate`](crate::context::AppContext).
+/// [`AppContext::prepare_gate`](crate::context::AppContext), proved by the
+/// borrowed guard.
 ///
 /// [`AppContext::prepare_storage`] holds the gate across wiring *and* the drain
 /// so the two are one ordering rather than two racing claims; it therefore
-/// cannot go through [`run`], whose own acquire would deadlock against it. Every
-/// other caller must use [`run`].
+/// cannot go through [`run`], whose own acquire would deadlock against it. The
+/// guard parameter is proof, not decoration: without it this function is a
+/// silently unguarded copy of [`run`] that any future caller could reach.
 ///
 /// # Errors
 ///
 /// Same as [`run`].
-pub(crate) async fn run_gated(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+pub(crate) async fn run_gated(
+    app_context: &Arc<AppContext>,
+    _gate: &tokio::sync::MutexGuard<'_, ()>,
+) -> Result<bool, TaskError> {
     match run_under_guard(app_context).await {
         Ok(did_work) => Ok(did_work),
         Err(task_error) => {

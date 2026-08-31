@@ -1601,6 +1601,10 @@ impl WalletBackend {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "PlatformWalletError is an upstream type we cannot shrink"
+    )]
     async fn start_once(&self) -> Result<(), PlatformWalletError> {
         let config = self.build_client_config();
 

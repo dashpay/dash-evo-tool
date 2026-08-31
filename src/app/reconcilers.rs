@@ -120,6 +120,7 @@ impl SpvBlockReconciler {
     }
 
     /// Whether an episode is currently armed (test seam / observation).
+    #[cfg(feature = "testing")]
     pub(super) fn armed(&self) -> bool {
         self.armed
     }

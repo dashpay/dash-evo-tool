@@ -418,7 +418,7 @@ impl WalletSendScreen {
             .filter(|(addr, _, _)| destination != Some(addr))
             .cloned()
             .collect();
-        sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+        sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
         let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
         if usable_count == 0 {
@@ -755,7 +755,7 @@ impl WalletSendScreen {
             .filter(|(_, balance)| *balance > 0)
             .collect();
         // Sort by balance descending for better UX
-        addresses.sort_by(|a, b| b.1.cmp(&a.1));
+        addresses.sort_by_key(|a| std::cmp::Reverse(a.1));
         addresses
     }
 
@@ -2633,7 +2633,7 @@ impl WalletSendScreen {
                     .filter(|(addr, _, _)| destination.as_ref() != Some(addr))
                     .cloned()
                     .collect();
-                sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+                sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
                 // Sum balances from top addresses, limited by MAX_PLATFORM_INPUTS.
                 let total: u64 = sorted_addresses

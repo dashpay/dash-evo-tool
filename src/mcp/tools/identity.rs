@@ -218,7 +218,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
                     }
                 })
                 .collect();
-            balances.sort_by(|a, b| b.1.cmp(&a.1));
+            balances.sort_by_key(|a| std::cmp::Reverse(a.1));
             balances
         };
 

@@ -958,13 +958,15 @@ impl AddNewIdentityScreen {
                                             Purpose::ENCRYPTION | Purpose::DECRYPTION => {
                                                 entry.security_level = SecurityLevel::MEDIUM;
                                             }
-                                            Purpose::AUTHENTICATION => {
-                                                if entry.security_level != SecurityLevel::CRITICAL
-                                                    && entry.security_level != SecurityLevel::HIGH
-                                                    && entry.security_level != SecurityLevel::MEDIUM
-                                                {
-                                                    entry.security_level = SecurityLevel::CRITICAL;
-                                                }
+                                            Purpose::AUTHENTICATION
+                                                if entry.security_level
+                                                    != SecurityLevel::CRITICAL
+                                                    && entry.security_level
+                                                        != SecurityLevel::HIGH
+                                                    && entry.security_level
+                                                        != SecurityLevel::MEDIUM =>
+                                            {
+                                                entry.security_level = SecurityLevel::CRITICAL;
                                             }
                                             _ => {}
                                         }

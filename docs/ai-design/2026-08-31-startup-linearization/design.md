@@ -219,13 +219,31 @@ consequence of the gate's own locking, silently disabling a recovery path
 that existed for exactly this kind of interrupted-operation cleanup.
 
 The fix re-drives the sweep explicitly, under the gate `prepare_storage`
-already holds, once wiring and the drain both succeed:
-`self.resume_pending_vault_cleanups_gated(&gate)` — a `_gate:
-&MutexGuard<'_, ()>` parameter that exists as compile-time proof of "callable
-only under the gate", not documentation. It has to run *before* the gate
-releases, not after: the drain's own detached DAPI-node refresh is queued
-behind the same `prepare_gate` and would very likely win a post-release
-`try_lock` race, reproducing the identical skip on a different code path.
+already holds, via a `_gate: &MutexGuard<'_, ()>` parameter that exists as
+compile-time proof of "callable only under the gate", not documentation. It
+has to run *before* the gate releases, not after: the drain's own detached
+DAPI-node refresh is queued behind the same `prepare_gate` and would very
+likely win a post-release `try_lock` race, reproducing the identical skip on
+a different code path.
+
+**Not success-only.** The first version of this fix ran the sweep only after
+the drain succeeded, which reintroduces the same permanent-skip failure by a
+different route: a drain that fails *deterministically* — a version-window
+mismatch (`SavedDataTooOld`/`SavedDataTooNew`) fails identically on every
+future launch of this install — would postpone the sweep forever, same as
+the bug being fixed. The manifests the sweep consumes are written by
+identity removal, never by a migration, so they always predate whatever run
+of `prepare_storage` is currently failing; there is no half-written drain
+state for the sweep to trip over. The sweep therefore runs on **both** the
+drain's success and failure paths, with one deliberate exception: a **wiring**
+failure still skips it, because the sweep reads through the same backend k/v
+store that wiring just failed to open — it could only bail on its own
+"not ready" branch, so running it there is not a broader safety net, only a
+duplicate no-op. The call also stopped tolerating a non-terminal
+`MigrationStatus` silently: by the point it runs, the drain has published a
+terminal state either way, so an in-progress status means an unpublished step
+would make the sweep skip unnoticed — the exact failure mode this fix
+closes — and it now logs a warning instead of passing quietly.
 
 ## 8. Related, not covered here
 

@@ -234,36 +234,78 @@ caller's hold on it silently starves every other caller that only ever
 `try_lock`s. Nothing short of tracing every `try_lock` on a mutex before
 widening any one caller's hold on it would have caught this by inspection.
 
-**Not success-only, and not without an open question.** Running the sweep
-only after the drain *succeeds* reintroduces the same permanent-skip failure
-by a different route: a drain that fails *deterministically* — a
-version-window mismatch (`SavedDataTooOld`/`SavedDataTooNew`) rejects the
-saved data before the drain does any row-level work, on every future launch
-of this install — would postpone the sweep forever, exactly like the bug
-being fixed. For that specific failure the sweep is safe to run: the
-manifests it consumes are written by identity removal, never by a migration,
-and a pre-write rejection leaves no drain state at all for the sweep to
-interact with. The sweep therefore runs on **both** the drain's success and
-failure paths, with one deliberate exception: a **wiring** failure still
-skips it, because the sweep reads through the same backend k/v store that
-wiring just failed to open — it could only bail on its own "not ready"
-branch, so running it there would be a duplicate no-op, not a broader net.
-The call also stopped tolerating a non-terminal `MigrationStatus` silently:
-by the point it runs, the drain has published a terminal state either way,
-so an in-progress status means an unpublished step would make the sweep skip
-unnoticed — the exact failure mode this fix closes — and it now logs a
-warning instead of passing quietly.
+**Not success-only.** Running the sweep only after the drain *succeeds*
+reintroduces the same permanent-skip failure by a different route: a drain
+that fails *deterministically* — a version-window mismatch
+(`SavedDataTooOld`/`SavedDataTooNew`) — would postpone the sweep forever on
+every future launch of this install, exactly like the bug being fixed. The
+sweep therefore runs on **both** the drain's success and failure paths, with
+one deliberate exception: a **wiring** failure still skips it, because the
+sweep reads through the same backend k/v store that wiring just failed to
+open — it could only bail on its own "not ready" branch, so running it there
+would be a duplicate no-op, not a broader net. The call also stopped
+tolerating a non-terminal `MigrationStatus` silently: by the point it runs,
+the drain has published a terminal state either way, so an in-progress
+status means an unpublished step would make the sweep skip unnoticed — the
+exact failure mode this fix closes — and it now logs a warning instead of
+passing quietly.
 
-**Open, not resolved:** whether running the sweep is safe after a drain
-failure that happens *mid-drain* — after some rows have already been
-rewritten, rather than the pre-write version-window rejection above — is
-under active review as of this writing. A partially rewritten identity
-roster combined with the sweep's irreversible vault-key deletes is a real
-hazard if the two interact; this document does not assert it is fine. Treat
-that combination as unverified until this section is updated with a
-resolution.
+**Why that is safe even for a drain that failed part-way through, not just
+one that failed before writing anything.** The sweep's irreversible delete
+acts on one piece of evidence: the identity is **off the roster**. The
+question is whether a partially applied import — the drain died after adding
+some rows but before finishing — could ever put back a roster entry for an
+identity the sweep is about to act on, and so falsify that evidence. It
+cannot, for a reason narrower than "the drain never deletes":
 
-## 8. Related, not covered here
+- The drain's import path can only *add* roster entries; nothing in it
+  removes one. So a partial drain leaves the roster more populated than it
+  started, never less — absence can only predate the drain, never be created
+  by a failure inside it.
+- More specifically, the import path cannot even **resurrect** the one
+  roster entry that would matter: `write_local_qualified_identity_locked`
+  declines any write for an identity that is off the roster and carries an
+  unload marker (`identity_db.rs:1118-1131`). `delete_local_qualified_identity`
+  persists the vault-cleanup manifest (`identity_db.rs:1695`), then writes
+  that same Global-scope unload marker (`mark_identity_unloaded`,
+  `identity_db.rs:1700`) — both *before* the roster delisting that follows
+  — so every identity a pending manifest belongs to already carries the
+  marker that blocks its own reimport by the time the manifest exists.
+  `purge_identity_scope` only ever touches `DetScope::Identity(id)`
+  (`identity_db.rs:620`), so no step the drain runs can clear a Global-scope
+  marker it does not touch.
+- The sweep's absence check therefore does not depend on the drain being
+  correct or complete — it depends on the drain being structurally unable to
+  write in the one direction (resurrecting a specifically-manifested
+  identity) that would matter, regardless of where in its own sequence it
+  stopped.
+
+That property is the tripwire for the next maintainer: it holds only as long
+as nothing makes the drain (or any future import path) remove a roster entry,
+or write an identity record without first consulting the unload marker the
+way `write_local_qualified_identity_locked` does. A change that adds either
+capability invalidates this analysis and reopens the hazard, silently, the
+same way the gate's own locking silently disabled the sweep in the first
+place.
+
+The one path that *does* clear the whole roster —
+`delete_all_local_qualified_identities_in_devnet` — does not threaten this
+either: it hard-returns off Devnet, is reachable only from an explicit
+user action (`SystemTask::WipePlatformData`, wired from the network chooser),
+and purges each identity's vault keys itself before removing it, so it
+leaves no orphan behind for the sweep to find.
+
+## 8. Risks and limitations
+
+- **Network switching through the gate had essentially no dedicated test
+  coverage when this shipped** — the kittest suite (`migration_gate.rs`,
+  `startup.rs`) exercises the gate's happy path and its password-prompt
+  contract, but not a switch-triggered re-raise. Review found a real wedge in
+  exactly that gap. The lesson worth keeping: for a state machine like this
+  one, the untested surface is the escapes (retry, close, network switch),
+  not the happy path — that is where to look first in any future change here.
+
+## 9. Related, not covered here
 
 - The Cancel/confirm replacement for SPV sync's "Continue in the background"
   button is a related but separate UX change to the *chain-sync* overlay

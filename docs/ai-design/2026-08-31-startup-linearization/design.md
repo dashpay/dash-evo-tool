@@ -226,24 +226,42 @@ DAPI-node refresh is queued behind the same `prepare_gate` and would very
 likely win a post-release `try_lock` race, reproducing the identical skip on
 a different code path.
 
-**Not success-only.** The first version of this fix ran the sweep only after
-the drain succeeded, which reintroduces the same permanent-skip failure by a
-different route: a drain that fails *deterministically* — a version-window
-mismatch (`SavedDataTooOld`/`SavedDataTooNew`) fails identically on every
-future launch of this install — would postpone the sweep forever, same as
-the bug being fixed. The manifests the sweep consumes are written by
-identity removal, never by a migration, so they always predate whatever run
-of `prepare_storage` is currently failing; there is no half-written drain
-state for the sweep to trip over. The sweep therefore runs on **both** the
-drain's success and failure paths, with one deliberate exception: a **wiring**
-failure still skips it, because the sweep reads through the same backend k/v
-store that wiring just failed to open — it could only bail on its own
-"not ready" branch, so running it there is not a broader safety net, only a
-duplicate no-op. The call also stopped tolerating a non-terminal
-`MigrationStatus` silently: by the point it runs, the drain has published a
-terminal state either way, so an in-progress status means an unpublished step
-would make the sweep skip unnoticed — the exact failure mode this fix
-closes — and it now logs a warning instead of passing quietly.
+**The trap, restated:** a mutex introduced purely to sequence startup silently
+disabled a recovery path two layers below it, with no relationship in the type
+system, a call graph, or a test to flag the interaction — `prepare_gate` and
+`resume_pending_vault_cleanups`'s own guard are the same lock, so widening one
+caller's hold on it silently starves every other caller that only ever
+`try_lock`s. Nothing short of tracing every `try_lock` on a mutex before
+widening any one caller's hold on it would have caught this by inspection.
+
+**Not success-only, and not without an open question.** Running the sweep
+only after the drain *succeeds* reintroduces the same permanent-skip failure
+by a different route: a drain that fails *deterministically* — a
+version-window mismatch (`SavedDataTooOld`/`SavedDataTooNew`) rejects the
+saved data before the drain does any row-level work, on every future launch
+of this install — would postpone the sweep forever, exactly like the bug
+being fixed. For that specific failure the sweep is safe to run: the
+manifests it consumes are written by identity removal, never by a migration,
+and a pre-write rejection leaves no drain state at all for the sweep to
+interact with. The sweep therefore runs on **both** the drain's success and
+failure paths, with one deliberate exception: a **wiring** failure still
+skips it, because the sweep reads through the same backend k/v store that
+wiring just failed to open — it could only bail on its own "not ready"
+branch, so running it there would be a duplicate no-op, not a broader net.
+The call also stopped tolerating a non-terminal `MigrationStatus` silently:
+by the point it runs, the drain has published a terminal state either way,
+so an in-progress status means an unpublished step would make the sweep skip
+unnoticed — the exact failure mode this fix closes — and it now logs a
+warning instead of passing quietly.
+
+**Open, not resolved:** whether running the sweep is safe after a drain
+failure that happens *mid-drain* — after some rows have already been
+rewritten, rather than the pre-write version-window rejection above — is
+under active review as of this writing. A partially rewritten identity
+roster combined with the sweep's irreversible vault-key deletes is a real
+hazard if the two interact; this document does not assert it is fine. Treat
+that combination as unverified until this section is updated with a
+resolution.
 
 ## 8. Related, not covered here
 

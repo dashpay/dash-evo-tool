@@ -506,15 +506,14 @@ impl ScreenLike for AddKeyScreen {
                             Purpose::TRANSFER => {
                                 self.security_level = SecurityLevel::CRITICAL;
                             }
-                            Purpose::AUTHENTICATION => {
-                                // AUTHENTICATION allows multiple levels, keep current if valid
-                                // otherwise default to CRITICAL
+                            // AUTHENTICATION allows multiple levels, keep current if valid
+                            // otherwise default to CRITICAL
+                            Purpose::AUTHENTICATION
                                 if self.security_level != SecurityLevel::CRITICAL
                                     && self.security_level != SecurityLevel::HIGH
-                                    && self.security_level != SecurityLevel::MEDIUM
-                                {
-                                    self.security_level = SecurityLevel::CRITICAL;
-                                }
+                                    && self.security_level != SecurityLevel::MEDIUM =>
+                            {
+                                self.security_level = SecurityLevel::CRITICAL;
                             }
                             _ => {}
                         }

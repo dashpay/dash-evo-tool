@@ -878,6 +878,10 @@ impl QualifiedIdentity {
     /// wallet exists (best-effort recovery — the caller falls back to the
     /// originally resolved key). Chokepoint failures (e.g. a cancelled
     /// passphrase prompt) surface as a [`ProtocolError`].
+    #[expect(
+        clippy::result_large_err,
+        reason = "returns dpp::ProtocolError, an upstream type we cannot shrink"
+    )]
     async fn sign_via_hash160_path_scan(
         &self,
         data: &[u8],
@@ -1027,14 +1031,15 @@ impl QualifiedIdentity {
                         keys.push(public_key);
                     }
                 }
-                (IdentityType::Masternode | IdentityType::Evonode, target_type) => {
-                    if target_type == &PrivateKeyTarget::PrivateKeyOnMainIdentity {
-                        if public_key.identity_public_key.purpose() == Purpose::OWNER {
-                            keys.push(public_key);
-                        }
-                        if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
-                            keys.push(public_key);
-                        }
+                (
+                    IdentityType::Masternode | IdentityType::Evonode,
+                    PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                ) => {
+                    if public_key.identity_public_key.purpose() == Purpose::OWNER {
+                        keys.push(public_key);
+                    }
+                    if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
+                        keys.push(public_key);
                     }
                 }
                 _ => {}

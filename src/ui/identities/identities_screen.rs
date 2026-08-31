@@ -12,6 +12,7 @@ use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, isla
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::identities::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -950,7 +951,7 @@ impl IdentitiesScreen {
                         if self.app_context.migration_status().state().is_in_progress() {
                             MessageBanner::set_global(
                                 self.app_context.egui_ctx(),
-                                "The storage update is still running. Wait for it to finish before removing an identity.",
+                                IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE,
                                 MessageType::Warning,
                             );
                             return AppAction::None;
@@ -1135,25 +1136,21 @@ impl ScreenLike for IdentitiesScreen {
             crate::ui::BackendTaskSuccessResult::RemovedIdentities {
                 identity_ids,
                 associated_cleanup_failed,
+                cleanup_deferred,
             } => {
                 let mut identities = self.identities.lock_recover();
                 for identity_id in identity_ids {
                     identities.shift_remove(&identity_id);
                 }
                 drop(identities);
-                if associated_cleanup_failed {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "The identity was removed, but its associated voter identity could not be removed. Retry after restarting the app.",
-                        MessageType::Warning,
-                    )
-                    .disable_auto_dismiss();
-                } else {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "The identity was removed from this device.",
-                        MessageType::Success,
-                    );
+                let (message, message_type) = crate::ui::identities::removed_identities_banner(
+                    associated_cleanup_failed,
+                    cleanup_deferred,
+                );
+                let handle =
+                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
+                if message_type == MessageType::Warning {
+                    handle.disable_auto_dismiss();
                 }
             }
             _ => {}

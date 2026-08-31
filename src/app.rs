@@ -1,6 +1,7 @@
 mod reconcilers;
 use reconcilers::{
-    AccessibilityActivator, ConnectionBanner, MigrationReconciler, SpvBlockReconciler,
+    AccessibilityActivator, ConnectionBanner, MigrationReconciler, PendingConfirmation,
+    SpvBlockReconciler,
 };
 
 #[cfg(not(feature = "testing"))]
@@ -17,6 +18,7 @@ use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 use crate::model::settings::AppSettings;
+use crate::model::wallet::{TransactionConfirmation, TransactionStatus};
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
@@ -24,6 +26,7 @@ use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScr
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
+use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
@@ -40,7 +43,7 @@ use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::{TaskManager, TaskShutdownOutcome};
 use crate::wallet_backend::{DetScope, WalletBackend};
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{Network, Txid};
 use dash_sdk::platform::Identifier;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
@@ -796,6 +799,119 @@ fn cold_start_backend_wait_timed_out(waited: Option<Duration>, timeout: Duration
     waited.is_some_and(|elapsed| elapsed >= timeout)
 }
 
+/// How often a pending-confirmation watch re-reads the display snapshot. The
+/// snapshot only changes when a wallet event lands, so a faster tick would buy
+/// nothing but a repeated scan of every wallet's history.
+const PENDING_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long a watch stays unconfirmed before its banner is re-worded once.
+/// dash-spv rebroadcasts a pending transaction every 600 s and Dash targets a
+/// block every 2.5 min, so by eleven minutes the network has had a full retry
+/// cycle and several block windows — past which "wait a moment" is no longer
+/// true. The watch itself continues; only the copy changes.
+const PENDING_STALE_AFTER: Duration = Duration::from_secs(11 * 60);
+
+/// Cap on simultaneously watched transactions, so a pathological run of
+/// ambiguous sends cannot grow the watch list without bound. The oldest watch
+/// is retired to [`PENDING_STALE_MESSAGE`], which points at the durable
+/// transaction-history row rather than going silent.
+const MAX_PENDING_WATCHES: usize = 8;
+
+/// Replaces the ambiguous-outcome banner once the network has demonstrably
+/// taken the transaction. Everyday-User copy: the whole outcome in one plain
+/// sentence, with nothing left for the user to do.
+///
+/// Names the transaction because up to [`MAX_PENDING_WATCHES`] payments can be
+/// waiting at once and the warning for the others stays up beside this. An
+/// unattributed "your transaction is confirmed" next to an unattributed "could
+/// not be verified" leaves the user to guess which is which, and guessing wrong
+/// in either direction ends in paying the same person twice. The id is
+/// shortened the way every other identifier in the app is, and its head and
+/// tail still match by eye against the full id in the transaction history the
+/// stale copy points at.
+fn pending_confirmed_message(txid: &Txid) -> String {
+    let transaction = shorten_id(&txid.to_string());
+    format!("Your transaction {transaction} is confirmed.")
+}
+
+/// Replaces the ambiguous-outcome banner once a watch passes
+/// [`PENDING_STALE_AFTER`]. Deliberately promises nothing about the funds
+/// becoming spendable again — upstream releases them on a block-height
+/// schedule this app does not measure — and hands the user the transaction
+/// history, which tracks the same data live, instead of an instruction to act
+/// blind. It names no status either: this copy is reached for every
+/// non-confirmed observation, including one no loaded wallet has seen at all,
+/// so the history row it points at may not exist and may not read the way a
+/// named status would promise. Complete sentences so i18n extracts it as one
+/// unit.
+const PENDING_STALE_MESSAGE: &str = "The app still cannot verify whether your transaction was confirmed. Check the transaction history for the wallet you sent from before sending it again, because sending now could pay the same person twice if the first one arrives later.";
+
+/// What the pending-confirmation watch should do about one watched transaction
+/// this tick. Pure so the policy is unit-testable in isolation from `AppState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingStep {
+    /// No verdict yet: keep the ambiguous-outcome banner and keep watching.
+    Waiting,
+    /// The network took it: replace the banner and retire the watch.
+    Confirmed,
+    /// Unconfirmed for long enough that the original advice has expired:
+    /// re-word the banner once and keep watching.
+    Stale,
+}
+
+/// Pure pending-confirmation policy. `confirmation` is the watched
+/// transaction's state in the display snapshot (`None` when no loaded wallet
+/// has seen it), `elapsed` how long the watch has been open, and
+/// `already_stale` whether the re-wording has already happened — so the copy
+/// changes at most once.
+///
+/// There is deliberately no failure outcome. Modern Dash Core has no rejection
+/// signal on the wire, so an invalid transaction and a slow one are
+/// indistinguishable; a synthesised "failed" would eventually tell someone
+/// their money is safe to send again when it is not.
+///
+/// TODO(R-1, docs/gui-testing/scenarios/pending-broadcast-auto-reconcile.md):
+/// still unverified against a live network — no funded testnet wallet is
+/// available in this environment. `network_took_transaction`'s
+/// `height.is_some()` guard is the code-side mitigation for a locally-injected
+/// transaction reaching `Confirmed` without a real network verdict, and that
+/// guard is what the scenario exists to exercise. Unit tests cover the policy
+/// against a synthetic snapshot; what is outstanding is confirming that a real
+/// dash-spv mempool injection is in fact reported height-less, which only a
+/// funded run can show. Also closes R-4 (no-change-output send shape).
+fn pending_step(
+    confirmation: Option<TransactionConfirmation>,
+    elapsed: Duration,
+    already_stale: bool,
+) -> PendingStep {
+    if confirmation.is_some_and(network_took_transaction) {
+        PendingStep::Confirmed
+    } else if !already_stale && elapsed >= PENDING_STALE_AFTER {
+        PendingStep::Stale
+    } else {
+        PendingStep::Waiting
+    }
+}
+
+/// Whether a snapshot entry is evidence the network actually took the
+/// transaction, rather than evidence this app tried to send it.
+///
+/// Presence alone proves nothing: dash-spv injects a broadcast transaction into
+/// its own mempool before any peer verdict, so an `Unconfirmed` entry appears
+/// even for one no peer ever accepted. An InstantSend lock is driven only by a
+/// real lock message, and a genuinely mined transaction carries the height of
+/// the block holding it — a mined tier without one is not evidence worth
+/// spending a funds message on.
+fn network_took_transaction(confirmation: TransactionConfirmation) -> bool {
+    match confirmation.status {
+        TransactionStatus::Unconfirmed => false,
+        TransactionStatus::InstantSendLocked => true,
+        TransactionStatus::Confirmed | TransactionStatus::ChainLocked => {
+            confirmation.height.is_some()
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum TaskResult {
     Repaint,
@@ -964,6 +1080,9 @@ pub struct AppState {
     spv_block: SpvBlockReconciler,
     /// Data-migration banner + cold-start `FinishUnwire` dispatch reconciler.
     migration: MigrationReconciler,
+    /// Watches payments whose broadcast outcome came back unverified and
+    /// replaces their banner once the network demonstrably takes them.
+    pending_confirmation: PendingConfirmation,
     /// Async shutdown receiver. `Some` until a graceful shutdown reaches a
     /// terminal state; the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<ShutdownOutcome>>,
@@ -1646,6 +1765,7 @@ impl AppState {
             // scoped to user-initiated sync, not ambient reconnect).
             spv_block: SpvBlockReconciler::new(boot_auto_start_spv),
             migration: MigrationReconciler::new(),
+            pending_confirmation: PendingConfirmation::new(),
             shutdown_receiver: None,
             shutdown_started: None,
             shutdown_finished: false,
@@ -1773,7 +1893,7 @@ impl AppState {
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&mut self, task: BackendTask) {
-        let context = BackendTaskContext::from(&task);
+        let context = BackendTaskContext::for_task_on(&task, self.current_app_context().network);
         self.handle_backend_task_with_context(task, context);
     }
 
@@ -1812,11 +1932,11 @@ impl AppState {
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
+        let app_context = self.current_app_context().clone();
         let contexts = tasks
             .iter()
-            .map(BackendTaskContext::from)
+            .map(|task| BackendTaskContext::for_task_on(task, app_context.network))
             .collect::<Vec<_>>();
-        let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
 
         let _ = self.subtasks.spawn_blocking_sync(
@@ -1995,6 +2115,10 @@ impl AppState {
         // must re-evaluate from scratch (otherwise a stale `Success` from the
         // previous network would suppress the new network's `Running` banner).
         self.migration.reset_for_switch();
+
+        // Watched transactions belong to the previous network's snapshot, which
+        // the new context does not publish — nothing here could ever resolve.
+        self.pending_confirmation.reset();
 
         // Persist the network choice.
         match app_context.update_settings(RootScreenType::RootScreenNetworkChooser) {
@@ -2792,6 +2916,23 @@ impl App for AppState {
                             TaskError::MasternodeListNotReady { .. } => {
                                 self.connection_banner.track_quorum_startup_error(handle);
                             }
+                            TaskError::TransactionConfirmationUnknown {
+                                txid: Some(txid), ..
+                            } => {
+                                self.pending_confirmation.track(
+                                    ctx,
+                                    *txid,
+                                    context.payment_broadcast_network(),
+                                    self.chosen_network,
+                                    handle,
+                                );
+                            }
+                            // No transaction id, so nothing can be watched —
+                            // the reconciler only holds the banner so another
+                            // payment's verdict cannot clear it.
+                            TaskError::TransactionConfirmationUnknown { txid: None, .. } => {
+                                self.pending_confirmation.track_unwatchable(handle);
+                            }
                             _ => {}
                         }
                         if !is_database_clear {
@@ -2934,6 +3075,7 @@ impl App for AppState {
         ) {
             self.handle_backend_task(task);
         }
+        self.pending_confirmation.update(ctx, &active_context);
         if !self.network_selection_required
             && let Some(task) = self.migration.dispatch_cold_start(&active_context)
         {
@@ -3442,6 +3584,198 @@ mod contact_request_routing_tests {
             RootScreenType::RootScreenIdentityHub,
             true
         ));
+    }
+}
+
+#[cfg(test)]
+mod pending_confirmation_tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+
+    fn seen(status: TransactionStatus, height: Option<u32>) -> Option<TransactionConfirmation> {
+        Some(TransactionConfirmation { status, height })
+    }
+
+    /// The window the whole feature lives in: the transaction is in the
+    /// snapshot because this app injected it locally, which says nothing about
+    /// whether any peer took it. Keep the ambiguous banner, keep watching.
+    #[test]
+    fn a_mempool_only_transaction_keeps_waiting() {
+        assert_eq!(
+            pending_step(
+                seen(TransactionStatus::Unconfirmed, None),
+                Duration::from_secs(5),
+                false
+            ),
+            PendingStep::Waiting,
+        );
+    }
+
+    /// A transaction no loaded wallet has seen at all is likewise no verdict.
+    #[test]
+    fn an_unseen_transaction_keeps_waiting() {
+        assert_eq!(
+            pending_step(None, Duration::from_secs(5), false),
+            PendingStep::Waiting,
+        );
+    }
+
+    /// An InstantSend lock is driven only by a real lock message from the
+    /// network, and arrives before any block — so it confirms on its own, with
+    /// no height to wait for.
+    #[test]
+    fn an_instant_send_lock_confirms_without_a_height() {
+        assert_eq!(
+            pending_step(
+                seen(TransactionStatus::InstantSendLocked, None),
+                Duration::from_secs(5),
+                false
+            ),
+            PendingStep::Confirmed,
+        );
+    }
+
+    /// A mined transaction carries the height of the block holding it.
+    #[test]
+    fn a_mined_transaction_confirms() {
+        for status in [TransactionStatus::Confirmed, TransactionStatus::ChainLocked] {
+            assert_eq!(
+                pending_step(seen(status, Some(1_234)), Duration::from_secs(5), false),
+                PendingStep::Confirmed,
+                "{status:?} at a known height must confirm"
+            );
+        }
+    }
+
+    /// The phantom guard. A record reported at a mined tier but carrying no
+    /// block height is not evidence of a block, and this verdict becomes a
+    /// message about someone's money — so withhold it and keep watching.
+    #[test]
+    fn a_mined_tier_without_a_height_keeps_waiting() {
+        for status in [TransactionStatus::Confirmed, TransactionStatus::ChainLocked] {
+            assert_eq!(
+                pending_step(seen(status, None), Duration::from_secs(5), false),
+                PendingStep::Waiting,
+                "{status:?} without a height must not be treated as mined"
+            );
+        }
+    }
+
+    /// Past the threshold, "wait a moment, then refresh" has expired and the
+    /// user needs different advice.
+    #[test]
+    fn a_long_unconfirmed_watch_goes_stale() {
+        assert_eq!(
+            pending_step(
+                seen(TransactionStatus::Unconfirmed, None),
+                PENDING_STALE_AFTER,
+                false
+            ),
+            PendingStep::Stale,
+        );
+    }
+
+    /// The re-wording happens once. Repeating it every tick would keep
+    /// rebuilding a banner the user is trying to read, or dismiss.
+    #[test]
+    fn an_already_stale_watch_does_not_re_word_itself() {
+        assert_eq!(
+            pending_step(
+                seen(TransactionStatus::Unconfirmed, None),
+                PENDING_STALE_AFTER * 4,
+                true
+            ),
+            PendingStep::Waiting,
+        );
+    }
+
+    /// The watch never expires: a confirmation long after the copy changed
+    /// still resolves it, so a slow network ends in the truth rather than in
+    /// the warning.
+    #[test]
+    fn a_late_confirmation_still_beats_a_stale_watch() {
+        assert_eq!(
+            pending_step(
+                seen(TransactionStatus::Confirmed, Some(9_001)),
+                PENDING_STALE_AFTER * 4,
+                true
+            ),
+            PendingStep::Confirmed,
+        );
+    }
+
+    /// Both pending messages are written for the Everyday User: no jargon, and
+    /// no promise about the funds becoming spendable again, which this app
+    /// cannot verify.
+    #[test]
+    fn pending_copy_stays_jargon_free_and_promises_nothing_about_the_funds() {
+        let confirmed = pending_confirmed_message(&Txid::from_byte_array([0xab; 32]));
+        for message in [confirmed.as_str(), PENDING_STALE_MESSAGE] {
+            for jargon in [
+                "mempool",
+                "broadcast",
+                "InstantSend",
+                "SPV",
+                "nonce",
+                "state transition",
+                "txid",
+                "UTXO",
+            ] {
+                assert!(
+                    !message.contains(jargon),
+                    "Expected no jargon ({jargon}) in: {message}"
+                );
+            }
+            assert!(
+                !message.contains("safe"),
+                "the copy must not vouch for the safety of a resend: {message}"
+            );
+        }
+    }
+
+    /// The confirmation has to name the payment it answers for. Several can be
+    /// waiting at once and the others keep their warning on screen beside it,
+    /// so an unattributed "your transaction is confirmed" leaves the user to
+    /// guess which one landed — and either guess ends in paying twice.
+    #[test]
+    fn the_confirmation_copy_names_the_payment_it_answers_for() {
+        let first = Txid::from_byte_array([0x11; 32]);
+        let second = Txid::from_byte_array([0x22; 32]);
+
+        let message = pending_confirmed_message(&first);
+        assert_ne!(
+            message,
+            pending_confirmed_message(&second),
+            "two payments must not produce the same confirmation, or the shared \
+             banner list collapses them into one indistinguishable message"
+        );
+
+        let full = first.to_string();
+        let head = &full[..5];
+        assert!(
+            message.contains(head),
+            "the copy must carry enough of the id to match the transaction \
+             history row it sends the user to: {message}"
+        );
+    }
+
+    /// The stale copy is reached for every non-confirmed observation, including
+    /// one no loaded wallet has seen at all and one reported at a mined tier
+    /// with no block height. Naming a status asserts a transaction-history row
+    /// the app has not established — and, in the mined-tier case, one the
+    /// wallet would render under a different word entirely.
+    #[test]
+    fn the_stale_copy_names_no_transaction_status_it_cannot_establish() {
+        for status in ["Pending", "Unconfirmed", "Confirmed", "ChainLocked"] {
+            assert!(
+                !PENDING_STALE_MESSAGE.contains(status),
+                "the copy must not name the {status} status: {PENDING_STALE_MESSAGE}"
+            );
+        }
+        assert!(
+            PENDING_STALE_MESSAGE.contains("transaction history"),
+            "the copy must still hand the user the durable surface: {PENDING_STALE_MESSAGE}"
+        );
     }
 }
 

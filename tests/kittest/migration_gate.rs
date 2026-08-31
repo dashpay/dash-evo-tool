@@ -57,6 +57,48 @@ fn mount_with_raised_gate() -> Harness<'static, AppState> {
     harness
 }
 
+/// Step until `predicate` holds, giving background work real time to run.
+///
+/// The frame-count-based [`step_until`] spins too fast to wait on anything that
+/// is not frame-driven — building a network's `AppContext` is a backend task, so
+/// its test has to wait on the clock instead.
+fn poll_until(
+    harness: &mut Harness<'static, AppState>,
+    what: &str,
+    mut predicate: impl FnMut(&AppState) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        harness.step();
+        if predicate(harness.state()) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what} did not happen in time (boot phase {:?}, network {:?})",
+            harness.state().boot_phase(),
+            harness.state().current_app_context().network(),
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Mount `AppState` and let its boot preparation finish, so the app is on a
+/// screen with the gate released — the state every switch test starts from.
+fn mount_prepared_app() -> Harness<'static, AppState> {
+    let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+        let mut app = AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false);
+        app.show_welcome_screen = false;
+        app.welcome_screen = None;
+        app
+    });
+    harness.set_size(egui::vec2(800.0, 600.0));
+    crate::support::wait_for_screens(&mut harness);
+    harness
+}
+
 /// Step until `predicate` holds, panicking with `what` after [`MAX_GATE_FRAMES`].
 /// Bounded on purpose: an unbounded wait turns a gate regression from a red test
 /// into a hung CI job.
@@ -285,23 +327,39 @@ fn gate_defers_its_card_to_a_blocking_password_prompt() {
 
 // ── What the gate blocks, and for how long ───────────────────────────────────
 
-/// T3 — a real boot reaches [`BootPhase::Ready`] within a bounded number of
-/// frames. A gate that never lifts is the failure mode with no other symptom, so
-/// the bound is the assertion: a regression fails CI rather than hanging it.
+/// T3 — a raised gate lifts when its preparation completes, and the app it hands
+/// back is a working one.
+///
+/// The bound is part of the assertion: a gate that never lifts has no other
+/// symptom, so a regression must fail CI rather than hang it. But the phase alone
+/// proves too little — a boot whose preparation finished before the first frame
+/// reports `Ready` without the driver having done anything. So the gate is held
+/// up first, and the release is asserted through what it must produce: root
+/// screens, which exist only once `finish_boot_phase` has built them.
 #[test]
-fn boot_reaches_ready_within_a_bounded_frame_count() {
+fn a_completed_preparation_lifts_the_gate_and_builds_the_screens() {
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            AppState::new(ctx.egui_ctx.clone())
-                .expect("Failed to create AppState")
-                .with_animations(false)
-        });
-        harness.set_size(egui::vec2(800.0, 600.0));
+        let mut harness = mount_with_raised_gate();
+        assert!(
+            matches!(harness.state().boot_phase(), BootPhase::Preparing { .. }),
+            "the gate is up, so what follows is a release and not a no-op",
+        );
+        assert_eq!(
+            harness
+                .state()
+                .main_screens
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![RootScreenType::RootScreenNetworkChooser],
+            "the chooser is the only screen that exists while the gate is up",
+        );
 
         let started = Instant::now();
+        harness.state_mut().test_complete_storage_prep_gate();
         step_until(
             &mut harness,
             "the storage-preparation gate lifting",
@@ -309,7 +367,14 @@ fn boot_reaches_ready_within_a_bounded_frame_count() {
         );
         assert!(
             started.elapsed() < Duration::from_secs(30),
-            "a fresh install must prepare its storage promptly",
+            "a completed preparation must hand the app back promptly",
+        );
+        assert!(
+            harness
+                .state()
+                .main_screens
+                .contains_key(&RootScreenType::RootScreenWalletsBalances),
+            "the release builds the root screens the gate was withholding",
         );
     });
 }
@@ -351,9 +416,14 @@ fn preparing_offers_no_background_escape_and_swallows_screen_clicks() {
     });
 }
 
-/// T6 — chain sync does not start behind the gate. `SpvStatus` stays `Idle` on
-/// every frame while preparing; it may leave `Idle` only after the gate lifts.
-/// This is D2's actual guarantee: SPV starts as a *continuation* of preparation.
+/// T6 — chain sync does not start behind the gate. This is D2's actual
+/// guarantee: SPV starts as a *continuation* of preparation, never alongside it.
+///
+/// The gate is held up for the whole window and the window is measured in wall
+/// time, not frames: a start dispatched from the frame loop lands on a tokio
+/// task, so a frame-only loop can outrun it and see `Idle` for reasons that have
+/// nothing to do with the guarantee. The closing phase assertion is what keeps
+/// the loop honest — every iteration above it happened while the gate was up.
 #[test]
 fn spv_stays_idle_for_every_frame_of_preparation() {
     use dash_evo_tool::model::spv_status::SpvStatus;
@@ -361,20 +431,13 @@ fn spv_stays_idle_for_every_frame_of_preparation() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            let mut app = AppState::new(ctx.egui_ctx.clone())
-                .expect("Failed to create AppState")
-                .with_animations(false);
-            app.show_welcome_screen = false;
-            app.welcome_screen = None;
-            app
-        });
-        harness.set_size(egui::vec2(800.0, 600.0));
+        let mut harness = mount_with_raised_gate();
+        assert!(
+            matches!(harness.state().boot_phase(), BootPhase::Preparing { .. }),
+            "the gate is up, so the frames below are preparing frames",
+        );
 
-        for _ in 0..MAX_GATE_FRAMES {
-            if harness.state().boot_phase() == BootPhase::Ready {
-                return;
-            }
+        for _ in 0..25 {
             assert_eq!(
                 harness
                     .state()
@@ -385,8 +448,13 @@ fn spv_stays_idle_for_every_frame_of_preparation() {
                 "chain sync must not start while storage preparation is still running",
             );
             harness.step();
+            std::thread::sleep(Duration::from_millis(20));
         }
-        panic!("the storage-preparation gate did not lift within {MAX_GATE_FRAMES} frames");
+
+        assert!(
+            matches!(harness.state().boot_phase(), BootPhase::Preparing { .. }),
+            "the gate never lifted, so no frame above was measured after the lift",
+        );
     });
 }
 
@@ -497,12 +565,34 @@ fn saved_data_too_new_is_terminal_with_no_retry() {
         );
 
         harness.get_by_label("Close the app").click();
-        harness.run_steps(2);
+        // The click lands as an event on the next frame; the frame after it is
+        // where the gate drains the action.
+        let requested = (0..3).any(|_| {
+            harness.step();
+            close_was_requested(&harness)
+        });
+        assert!(
+            requested,
+            "the button must actually ask the app to quit — on this surface it is \
+             the only exit, so a wire that does nothing leaves the user stuck",
+        );
         assert!(
             harness.state().boot_phase() != BootPhase::Ready,
             "closing must not silently release the app instead",
         );
     });
+}
+
+/// Whether the last frame asked the window to close. `send_viewport_cmd` is
+/// delivered through the frame's viewport output, which is the only place a test
+/// can see it: nothing in `AppState` records that it fired.
+fn close_was_requested(harness: &Harness<'static, AppState>) -> bool {
+    harness
+        .output()
+        .viewport_output
+        .values()
+        .flat_map(|viewport| viewport.commands.iter())
+        .any(|command| matches!(command, egui::ViewportCommand::Close))
 }
 
 /// A retryable failure offers both actions, and "Try again" re-raises the gate
@@ -597,6 +687,125 @@ fn try_again_reruns_the_preparation_it_advertises() {
             harness.query_by_label("Try again").is_none(),
             "the failure surface is gone because preparation succeeded, not \
              because the button repainted",
+        );
+    });
+}
+
+/// W7 — a network switch must hand the app back. The switch attaches a fresh
+/// preparation for the incoming network and then drops the outgoing network's
+/// surfaces; if the second step also drops the first step's work, the gate is
+/// left `Preparing` with nothing to poll, no screen below it and no button on
+/// it, and killing the process is the only way out.
+///
+/// Drives the real `change_network`, which is how both the network chooser and
+/// the MCP switch path reach it — including on first launch, where confirming a
+/// network on the chooser is a switch like any other.
+#[test]
+fn switching_networks_hands_the_app_back() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        // The app builds a context for exactly one network at boot; the switch
+        // target's context is created by a backend task, which needs that
+        // network configured. The shipped example config has every network.
+        let data_dir = std::env::var("DASH_EVO_DATA_DIR").expect("the isolated data dir");
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/.env.example"),
+            std::path::Path::new(&data_dir).join(".env"),
+        )
+        .expect("seed the isolated data dir with a full network config");
+
+        let mut harness = mount_prepared_app();
+        let first = harness.state().current_app_context().network();
+        // Chain sync is not what this test is about, and the switch task awaits
+        // its start — offline that never returns.
+        harness
+            .state()
+            .current_app_context()
+            .update_auto_start_spv(false)
+            .expect("turn chain sync off for the switch");
+        let second = if first == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+
+        harness.state_mut().change_network(second);
+        // Deadline rather than a frame count: the incoming network's context is
+        // built by a backend task, so this waits on wall-clock work, not on
+        // frames.
+        poll_until(
+            &mut harness,
+            "the switched-to network to take over and release the app",
+            |state| {
+                state.current_app_context().network() == second
+                    && state.boot_phase() == BootPhase::Ready
+            },
+        );
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "a finished switch leaves no blocking overlay behind",
+        );
+
+        // Back to a network this process already prepared: the gate must not
+        // re-raise over storage that is known good.
+        harness.state_mut().change_network(first);
+        harness.run_steps(3);
+        assert_eq!(
+            harness.state().boot_phase(),
+            BootPhase::Ready,
+            "returning to an already prepared network must not re-raise the gate",
+        );
+    });
+}
+
+/// The stuck-preparation watchdog measures unattended work, not the user.
+///
+/// `AwaitingWalletPasswords` is the one state designed to wait indefinitely: a
+/// migrated wallet's password can only come from the person at the keyboard. A
+/// watchdog that counts that wait tells a user whose preparation is progressing
+/// perfectly that it is "taking longer than usual" and offers to close the app —
+/// and because the flag latches, it keeps saying so for the rest of the run.
+#[test]
+fn a_password_prompt_does_not_trip_the_stuck_watchdog() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_with_raised_gate();
+        let app_context = harness.state().current_app_context().clone();
+
+        app_context
+            .migration_status()
+            .set_state(MigrationState::AwaitingWalletPasswords {
+                wallets: vec![[0x11; 32]],
+            });
+        // A user who takes longer than the whole budget to find their password
+        // manager. The gate paints nothing while the prompt owns the frame, so
+        // the damage is only observable after the prompt clears.
+        harness
+            .state_mut()
+            .test_backdate_storage_prep(Duration::from_secs(60));
+        harness.run_steps(3);
+
+        app_context
+            .migration_status()
+            .set_state(MigrationState::Running {
+                step: MigrationStep::Wiring,
+            });
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Close the app").is_none(),
+            "answering a prompt must not leave the gate offering to quit over a \
+             preparation that is progressing",
+        );
+        assert!(
+            harness
+                .query_by_label_contains("The app is opening your saved data")
+                .is_some(),
+            "the gate goes back to its progress copy, not the stuck copy",
         );
     });
 }

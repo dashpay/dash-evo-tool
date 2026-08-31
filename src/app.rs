@@ -2074,6 +2074,12 @@ impl AppState {
         // check; chain sync then starts as the gate's continuation, covering
         // both the slow path (which started SPV inside `SwitchNetwork`) and the
         // fast cached-context path, idempotently.
+        //
+        // Ordered before the attach below, never after: the reset drops the
+        // outgoing network's pending preparation and overlay, so running it
+        // afterwards would throw away the incoming network's freshly attached
+        // preparation and leave the gate raised over nothing to poll.
+        self.boot.reset_for_switch(network);
         let auto_start_spv = app_context.get_app_settings().auto_start_spv;
         if self.boot.is_prepared(network) {
             if auto_start_spv {
@@ -2127,7 +2133,6 @@ impl AppState {
         // must re-evaluate from scratch (otherwise a stale `Success` from the
         // previous network would suppress the new network's `Running` banner).
         self.migration.reset_for_switch();
-        self.boot.reset_for_switch();
 
         // Persist the network choice.
         match app_context.update_settings(RootScreenType::RootScreenNetworkChooser) {
@@ -2199,6 +2204,13 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn test_complete_storage_prep_gate(&mut self) {
         self.boot.test_complete();
+    }
+
+    /// Test clock seam: age the in-flight storage preparation by `by`, so a
+    /// kittest can reach the stuck-preparation threshold without waiting.
+    #[cfg(feature = "testing")]
+    pub fn test_backdate_storage_prep(&mut self, by: std::time::Duration) {
+        self.boot.test_backdate_preparation(by);
     }
 
     /// Which boot phase the app is in. Root screens exist only in

@@ -553,6 +553,15 @@ impl StoragePrepGate {
         self.attach(network, false, rx);
     }
 
+    /// Test clock seam: shift the in-flight preparation's start into the past,
+    /// so a kittest can cross the stuck threshold without waiting it out.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_backdate_preparation(&mut self, by: std::time::Duration) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.started = pending.started.checked_sub(by).unwrap_or(pending.started);
+        }
+    }
+
     /// Test seam: resolve the raised gate's preparation as `error`, so a kittest
     /// can drive the REAL terminal-failure surface for an error the test picks.
     #[cfg(feature = "testing")]
@@ -673,7 +682,7 @@ impl StoragePrepGate {
             return;
         }
 
-        let stuck = self.mark_stuck_if_overdue();
+        let stuck = self.mark_stuck_if_overdue(migration_state);
         let description = if stuck {
             STORAGE_PREP_STUCK_MESSAGE
         } else {
@@ -700,7 +709,25 @@ impl StoragePrepGate {
     /// Whether preparation has been running long enough to surface the stuck
     /// copy. On the transition, logs once and lowers the overlay so the branch
     /// above re-raises it carrying the "Close the app" exit.
-    fn mark_stuck_if_overdue(&mut self) -> bool {
+    ///
+    /// The budget covers unattended work only. A password prompt is preparation
+    /// waiting for the person at the keyboard, which it is designed to do for as
+    /// long as it takes, so the clock restarts when they answer — and a prompt
+    /// that outlives the budget never leaves the stuck copy latched behind it.
+    fn mark_stuck_if_overdue(&mut self, migration_state: &MigrationState) -> bool {
+        if MigrationReconciler::is_prompting(migration_state) {
+            let latched = match self.pending.as_mut() {
+                Some(pending) => {
+                    pending.started = Instant::now();
+                    std::mem::take(&mut pending.stuck)
+                }
+                None => false,
+            };
+            if latched {
+                self.overlay.take_and_clear();
+            }
+            return false;
+        }
         let Some(pending) = self.pending.as_mut() else {
             return false;
         };
@@ -751,12 +778,22 @@ impl StoragePrepGate {
         None
     }
 
-    /// Forget the current network's preparation so a switch back re-raises the
-    /// gate, and drop any surface belonging to the outgoing network.
-    pub(super) fn reset_for_switch(&mut self) {
+    /// Drop every surface and in-flight preparation belonging to the outgoing
+    /// network, and settle the phase for `incoming`.
+    ///
+    /// Call this *before* attaching `incoming`'s preparation — it clears
+    /// `pending`, so the reverse order discards the very preparation the gate is
+    /// waiting on and leaves it raised over nothing to poll. A network this
+    /// process has already prepared needs no preparation at all, so the phase
+    /// goes straight to [`BootPhase::Ready`]; otherwise the caller's attach sets
+    /// [`BootPhase::Preparing`].
+    pub(super) fn reset_for_switch(&mut self, incoming: Network) {
         self.overlay.take_and_clear();
         self.pending = None;
         self.failure = None;
+        if self.prepared.contains(&incoming) {
+            self.phase = BootPhase::Ready;
+        }
     }
 }
 

@@ -537,3 +537,66 @@ fn a_retryable_failure_offers_try_again_and_close() {
         );
     });
 }
+
+/// The retry button's *behaviour*, not its label: clicking "Try again" must
+/// clear the stale terminal status and dispatch a real preparation.
+///
+/// Both halves are load-bearing and neither is visible in a surface-swap
+/// assertion. Without the status reset the fresh run reads as a second call on
+/// an already prepared network and announces nothing, leaving the user watching
+/// a silent gate; without the dispatch the failure surface simply disappears and
+/// the app never leaves `Preparing`. The gate is held across the click so the
+/// spawned run parks on its first line — what the retry published is then
+/// observable before the run itself moves it on.
+#[test]
+fn try_again_reruns_the_preparation_it_advertises() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_with_raised_gate();
+        let app_context = harness.state().current_app_context().clone();
+        let network = app_context.network();
+        // The terminal status a finished run leaves behind: `prepare_storage`
+        // announces its own progress only from `Idle`, so a retry that does not
+        // clear this one runs silent.
+        app_context
+            .migration_status()
+            .set_state(MigrationState::Ready);
+
+        harness
+            .state_mut()
+            .test_fail_storage_prep_gate(TaskError::WalletStorageNotReady);
+        harness.run_steps(5);
+
+        let gate = rt.block_on(app_context.test_hold_prepare_gate());
+        harness.get_by_label("Try again").click();
+        harness.run_steps(3);
+
+        assert!(
+            matches!(
+                app_context.migration_status().state().as_ref(),
+                MigrationState::Idle
+            ),
+            "the retry must clear the finished run's terminal status before \
+             dispatching, or its own preparation announces no progress",
+        );
+        assert_eq!(
+            harness.state().boot_phase(),
+            BootPhase::Preparing { network },
+            "a retry re-raises the gate rather than releasing the app",
+        );
+
+        drop(gate);
+        step_until(
+            &mut harness,
+            "the retried preparation to release the app",
+            |state| state.boot_phase() == BootPhase::Ready,
+        );
+        assert!(
+            harness.query_by_label("Try again").is_none(),
+            "the failure surface is gone because preparation succeeded, not \
+             because the button repainted",
+        );
+    });
+}

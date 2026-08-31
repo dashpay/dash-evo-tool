@@ -83,6 +83,15 @@ impl AppContext {
         Ok(())
     }
 
+    /// Test seam: take the storage-preparation gate and hold it, pinning any
+    /// [`Self::prepare_storage`] a test dispatches at its first line. Lets a
+    /// test observe what a dispatch site left behind before the run it spawned
+    /// can overwrite it.
+    #[cfg(feature = "testing")]
+    pub async fn test_hold_prepare_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.prepare_gate.lock().await
+    }
+
     /// Drive the pending vault-cleanup sweep once, under the held gate.
     ///
     /// The sweep is the only recovery path for vault keys an interrupted

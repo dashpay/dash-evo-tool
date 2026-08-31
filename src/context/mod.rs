@@ -664,8 +664,10 @@ impl AppContext {
             passphrase,
         )
         .map(Arc::new)
-        .map_err(|source| TaskError::SecretStore {
-            source: Box::new(source),
+        .map_err(|source| {
+            crate::backend_task::error::vault_error(source, |source| TaskError::SecretStore {
+                source,
+            })
         })
     }
 

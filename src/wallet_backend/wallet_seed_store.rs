@@ -261,9 +261,9 @@ fn scope_for(seed_hash: &WalletSeedHash) -> SecretWalletId {
 }
 
 fn map_err(source: SecretStoreError) -> TaskError {
-    TaskError::WalletSeedStorage {
-        source: Box::new(source),
-    }
+    crate::backend_task::error::vault_error(source, |source| TaskError::WalletSeedStorage {
+        source,
+    })
 }
 
 #[cfg(test)]

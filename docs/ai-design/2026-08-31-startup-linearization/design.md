@@ -289,10 +289,11 @@ same way the gate's own locking silently disabled the sweep in the first
 place.
 
 The one path that *does* clear the whole roster —
-`delete_all_local_qualified_identities_in_devnet` — does not threaten this
-either: it hard-returns off Devnet, is reachable only from an explicit
-user action (`SystemTask::WipePlatformData`, wired from the network chooser),
-and purges each identity's vault keys itself before removing it, so it
+`delete_all_local_qualified_identities_in_devnet` (`identity_db.rs:2199`) —
+does not threaten this either: it hard-returns unless `network == Network::Devnet`
+(`:2202-2204`), is reachable only from an explicit user action on the network
+chooser (`network_chooser_screen.rs:1384,1561`, via `SystemTask::WipePlatformData`),
+and purges each identity's vault keys itself before removing it — so it
 leaves no orphan behind for the sweep to find.
 
 ## 8. Risks and limitations

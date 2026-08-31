@@ -7,16 +7,19 @@ rustflags = ["-C", "target-feature=-crt-static", "-C", "target-cpu=x86-64"]
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=-crt-static", "-C", "target-cpu=x86-64"]
 
+# The tool names here are the Debian/Ubuntu cross-compiler ones, because the
+# release artifacts are cross-compiled from Linux. A native Windows build uses
+# the unprefixed MSYS2 names and overrides them through the environment - see
+# the "Building natively on Windows" section of CONTRIBUTING.md.
+#
+# `-Wl,--stack` sets the main thread's stack reserve. That reserve is fixed at
+# link time, so RUST_MIN_STACK below does not apply to it, and the linker
+# default of 2 MiB is not enough for the deep call chains noted there. Reserve
+# 8 MiB to match the spawned threads.
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc-posix"
 ar = "x86_64-w64-mingw32-ar"
-rustflags = ["-C", "link-args=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lpthread -Wl,-Bdynamic"]
-
-# The main thread's stack is reserved at link time, so RUST_MIN_STACK below does
-# not apply to it. MSVC reserves only 1 MiB by default, which the deep call chains
-# noted below overflow during startup. Reserve 8 MiB to match the spawned threads.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/STACK:8388608"]
+rustflags = ["-C", "link-args=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lpthread -Wl,-Bdynamic -Wl,--stack,8388608"]
 
 [env]
 CC_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-gcc-posix"

@@ -2,7 +2,7 @@
 
 Contributions are welcome! This guide covers how to set up a development environment, build the project, run tests, and submit changes.
 
-> **Note:** The instructions below are written for Ubuntu x86_64. If you are building on another platform (e.g. Linux aarch64 or macOS) the same steps apply, but you may need to adjust package manager commands and download the appropriate `protoc` binary for your architecture. Windows needs one additional step — see [Building natively on Windows (MSVC)](#building-natively-on-windows-msvc).
+> **Note:** The instructions below are written for Ubuntu x86_64. If you are building on another platform (e.g. Linux aarch64 or macOS) the same steps apply, but you may need to adjust package manager commands and download the appropriate `protoc` binary for your architecture. Windows needs a few extra steps — see [Building natively on Windows](#building-natively-on-windows).
 
 ## Prerequisites
 
@@ -60,32 +60,50 @@ Run the application:
 cargo run
 ```
 
-### Building natively on Windows (MSVC)
+### Building natively on Windows
 
-Release binaries for Windows are cross-compiled from Linux with the mingw toolchain (target `x86_64-pc-windows-gnu`), so a native MSVC build needs one extra step.
+Windows binaries are built for the `x86_64-pc-windows-gnu` target — that is what the release workflow cross-compiles from Linux with the mingw toolchain, and a native Windows build uses the same target so that developers exercise the configuration that ships. The MSVC target is not supported: `rs-x11-hash` compiles its C sources with clang and includes the POSIX header `<unistd.h>`, which the MSVC toolchain does not provide.
 
-The `rs-x11-hash` dependency compiles its C sources with clang and includes the POSIX header `<unistd.h>`, which the MSVC toolchain does not ship. This repository provides an empty stand-in at `build-support/windows-msvc/`. Put that directory on the compiler's include path before building:
+Install the mingw-w64 toolchain and the matching Rust target. `pacman` is [MSYS2](https://www.msys2.org/)'s package manager and is not on `PATH` by default — run it from the MSYS2 shell (`C:\msys64\msys2_shell.cmd`) or by full path:
 
 ```shell
-$env:CFLAGS_x86_64_pc_windows_msvc = "-I$PWD/build-support/windows-msvc"
+C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+rustup target add x86_64-pc-windows-gnu
 ```
 
-In VS Code, set the same variable in `.vscode/settings.json` so that both rust-analyzer and the integrated terminal pick it up:
+Add the toolchain to `PATH` (`C:\msys64\mingw64\bin` for a default MSYS2 install) so that `gcc`, `ar` and `windres` are found.
+
+`.cargo/config.toml` names the Debian cross-compilers used by the release workflow (`x86_64-w64-mingw32-gcc-posix` and friends). MSYS2 ships no `-posix` variants — its `gcc` already uses the posix thread model — and provides `ar` and `windres` under their unprefixed names only. Point the toolchain variables at the local names before building:
+
+```shell
+$env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = "gcc"
+$env:CC_x86_64_pc_windows_gnu = "gcc"
+$env:CXX_x86_64_pc_windows_gnu = "g++"
+$env:AR_x86_64_pc_windows_gnu = "ar"
+cargo build --target x86_64-pc-windows-gnu
+```
+
+In VS Code, set the same variables in `.vscode/settings.json` so that both rust-analyzer and the integrated terminal pick them up:
 
 ```json
 {
+  "rust-analyzer.cargo.target": "x86_64-pc-windows-gnu",
   "rust-analyzer.cargo.extraEnv": {
-    "CFLAGS_x86_64_pc_windows_msvc": "-I${workspaceFolder}/build-support/windows-msvc"
+    "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER": "gcc",
+    "CC_x86_64_pc_windows_gnu": "gcc",
+    "CXX_x86_64_pc_windows_gnu": "g++",
+    "AR_x86_64_pc_windows_gnu": "ar"
   },
   "terminal.integrated.env.windows": {
-    "CFLAGS_x86_64_pc_windows_msvc": "-I${workspaceFolder}/build-support/windows-msvc"
+    "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER": "gcc",
+    "CC_x86_64_pc_windows_gnu": "gcc",
+    "CXX_x86_64_pc_windows_gnu": "g++",
+    "AR_x86_64_pc_windows_gnu": "ar"
   }
 }
 ```
 
-Note that the checkout path must not contain spaces, because the compiler splits this variable on whitespace.
-
-No mingw toolchain is required for a native MSVC build: the Windows icon resource is embedded with the Windows SDK's `rc.exe`, which `winres` locates on its own. Cross-compiling to `x86_64-pc-windows-gnu` still needs `windres` and `ar`, or the `WINDRES` and `AR_x86_64_pc_windows_gnu` variables pointing at them.
+Because `x86_64-pc-windows-gnu` is not the host's default target, pass `--target x86_64-pc-windows-gnu` to every cargo command, or set `CARGO_BUILD_TARGET` once for the session.
 
 ## Feature flags
 

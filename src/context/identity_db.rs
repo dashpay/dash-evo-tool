@@ -4277,6 +4277,74 @@ mod tests {
         );
     }
 
+    /// The same guarantee on the drain's FAILURE path.
+    ///
+    /// Keys orphaned by an earlier interrupted removal do not become less
+    /// orphaned because this launch's storage update failed — and a drain that
+    /// fails deterministically (a version-window mismatch is exactly that) would
+    /// otherwise postpone the sweep on every future launch too. The manifests it
+    /// consumes are written by identity removal, never by a migration, so they
+    /// always predate the run that failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepare_storage_runs_the_sweep_even_when_the_drain_fails() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x55; 32];
+        const LOW: [u8; 32] = [0x66; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        let vault_keys = staged
+            .ctx
+            .identity_vault_key_placements(&kv, &id_buf)
+            .expect("read the live placements before removing from the index");
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id_buf, &vault_keys)
+            .expect("persist the manifest");
+        index_remove_identity(&kv, &id_buf).expect("remove from the roster");
+
+        // Force the drain to fail before it does any work: a stored version
+        // below the direct-upgrade window is rejected by
+        // `validate_saved_data_for_migration`, deterministically, every launch.
+        staged
+            .ctx
+            .db
+            .execute(
+                "INSERT INTO settings (id, database_version) VALUES (1, 1)
+                 ON CONFLICT(id) DO UPDATE SET database_version = 1",
+                [],
+            )
+            .expect("write a too-old legacy database version");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+        let outcome = staged.ctx.prepare_storage(sender).await;
+        assert!(
+            outcome.is_err(),
+            "the fixture must actually fail the drain, or this proves nothing",
+        );
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} is still in the vault: a failed drain must not also \
+                 strand the keys an earlier removal orphaned",
+            );
+        }
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_none(),
+            "the manifest must be cleared even though the drain failed",
+        );
+    }
+
     /// The sweep's mirror-image hazard. `index_remove_identity` runs *after*
     /// the manifest is persisted, so a failure in that write leaves a manifest
     /// behind for an identity that is still on the roster, still holding a live

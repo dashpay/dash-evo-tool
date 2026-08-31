@@ -61,30 +61,58 @@ impl AppContext {
             if announce {
                 status.set_state(MigrationState::Idle);
             }
+            // The sweep is deliberately NOT attempted here: it reads through the
+            // backend's k/v store, which is the thing that just failed to open,
+            // so it could only bail on its own "k/v store not ready" branch.
             return Err(error);
         }
 
-        crate::backend_task::migration::finish_unwire::run_gated(self, &gate).await?;
+        let drain = crate::backend_task::migration::finish_unwire::run_gated(self, &gate).await;
 
-        // The pending vault-cleanup sweep — the only recovery path for vault keys
-        // an interrupted identity removal orphaned, and one with no user-visible
-        // signal when it does not run.
-        //
-        // It normally rides `bootstrap_loaded_wallets` inside `ensure_wallet_backend`
-        // above, where it is now guaranteed to skip: its `try_lock` loses to the
-        // gate this function holds, and its in-progress check sees the `Wiring`
-        // step this function published. Both would fail identically on the next
-        // boot, and the one after — so it is re-driven here, explicitly, rather
-        // than left to an incidental call that this gate permanently disabled.
-        //
-        // Run under the gate we already hold, not after releasing it: the drain's
-        // detached DAPI refresh is queued on this same gate and would very likely
-        // win the handoff, failing a post-release `try_lock` and reproducing the
-        // bug. The sweep's guard exists to exclude a *concurrent* migration, and
-        // holding the gate satisfies that strictly harder than racing for it.
-        // Reached only on the success path, where the drain has published a
-        // terminal state, so the in-progress check passes.
-        self.resume_pending_vault_cleanups_gated(&gate);
+        // Run the sweep on the drain's failure path too, not only its success
+        // path: keys orphaned by an earlier interrupted removal do not become
+        // less orphaned because this launch's drain failed, and a drain that
+        // fails deterministically would otherwise postpone the sweep forever.
+        // The manifests it consumes are written by identity removal, never by a
+        // migration, so they always predate this run — there is no half-written
+        // state for a failed drain to leave behind here.
+        self.run_pending_vault_cleanup_sweep(&gate);
+
+        drain?;
         Ok(())
+    }
+
+    /// Drive the pending vault-cleanup sweep once, under the held gate.
+    ///
+    /// The sweep is the only recovery path for vault keys an interrupted
+    /// identity removal orphaned, and it is silent when it does not run. It
+    /// normally rides `bootstrap_loaded_wallets` inside
+    /// [`Self::ensure_wallet_backend`], where the gate guarantees it skips: its
+    /// `try_lock` loses to the gate this call chain holds, and its in-progress
+    /// check sees the [`MigrationStep::Wiring`] this sequence published. Both
+    /// would fail identically on the next boot, and the one after — so it is
+    /// driven explicitly here rather than left to a call the gate disabled.
+    ///
+    /// Run under the gate already held rather than after releasing it: the
+    /// drain's detached DAPI refresh is queued on this same gate and would very
+    /// likely win the handoff, so a post-release `try_lock` would fail and
+    /// reproduce the bug — while waiting the refresh out would hold the gate up
+    /// across a network call. The sweep's guard exists to exclude a *concurrent*
+    /// migration; holding the gate satisfies that strictly harder than racing
+    /// for it. No other lock is held across it, and its own per-identity record
+    /// guards are taken in the documented `prepare_gate` → record order.
+    fn run_pending_vault_cleanup_sweep(&self, gate: &tokio::sync::MutexGuard<'_, ()>) {
+        // By here the drain has published a terminal state either way, so an
+        // in-progress status means someone published a step this function does
+        // not know about — the sweep would skip silently on it, which is the
+        // exact failure being fixed. Say so instead of letting it pass.
+        if self.migration_status().state().is_in_progress() {
+            tracing::warn!(
+                state = ?self.migration_status().state(),
+                "Storage preparation finished on a non-terminal status; the pending \
+                 vault-cleanup sweep will skip and orphaned identity keys stay unrecovered"
+            );
+        }
+        self.resume_pending_vault_cleanups_gated(gate);
     }
 }

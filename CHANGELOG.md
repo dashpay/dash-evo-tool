@@ -101,6 +101,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The app now opens maximized the very first time it runs**: on a fresh
+  install, the window used to open at a small default size that didn't fit
+  the onboarding page. It now opens maximized on first launch; any size or
+  position you set afterward is remembered and used on every later start, as
+  before.
+
 - **A sent payment whose confirmation couldn't be verified no longer tells you
   to retry it**: when the network doesn't confirm a payment quickly enough,
   the app used to show a generic "please retry" message — but the payment may

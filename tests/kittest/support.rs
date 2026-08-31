@@ -3,6 +3,7 @@
 #[path = "../common/data_dir.rs"]
 mod data_dir;
 
+use dash_evo_tool::app::BootPhase;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
@@ -11,35 +12,34 @@ use std::time::{Duration, Instant};
 
 pub use data_dir::with_isolated_data_dir;
 
-/// Upper bound a mount helper waits for the wallet backend to finish wiring.
+/// Upper bound a mount helper waits for storage preparation to finish.
 /// Generous on purpose: the poll runs under whole-suite CPU/swap contention
-/// (dozens of parallel tests), where a fixed frame count races the async init
-/// and intermittently panics `WalletBackendNotYetWired`.
-const WALLET_BACKEND_WIRE_TIMEOUT: Duration = Duration::from_secs(30);
+/// (dozens of parallel tests), where a fixed frame count races the async
+/// preparation and intermittently panics `WalletBackendNotYetWired`.
+const STORAGE_PREP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Step `harness` until its live `AppContext` has a wired wallet backend, then
-/// return that context. Panics if the backend is not wired within
-/// [`WALLET_BACKEND_WIRE_TIMEOUT`].
+/// Step `harness` until the storage-preparation gate has lifted, then return the
+/// live `AppContext`. Panics if it has not lifted within
+/// [`STORAGE_PREP_TIMEOUT`].
 ///
-/// `AppState::new` spawns wallet-backend wiring as a background tokio task, so a
-/// fixed `run_steps(N)` gives no guarantee it has completed. Tests that seed the
-/// DB via `insert_local_qualified_identity` (which reaches through the backend's
-/// k/v store) must gate on this instead of a fixed step count to close the race
-/// deterministically — `wallet_backend().is_ok()` is the exact precondition that
-/// seeding needs.
+/// `AppState::new` spawns preparation as a background tokio task and the frame
+/// loop polls it, so a fixed `run_steps(N)` gives no guarantee it has completed.
+/// Gate on [`BootPhase::Ready`] rather than on `wallet_backend().is_ok()`: root
+/// screens do not exist before that point, and tests that seed the DB via
+/// `insert_local_qualified_identity` (which reaches through the backend's k/v
+/// store) need the whole sequence done, not just its first step.
 pub fn wait_for_wallet_backend(
     harness: &mut Harness<'static, dash_evo_tool::app::AppState>,
 ) -> Arc<AppContext> {
-    let deadline = Instant::now() + WALLET_BACKEND_WIRE_TIMEOUT;
+    let deadline = Instant::now() + STORAGE_PREP_TIMEOUT;
     loop {
         harness.step();
-        let ctx = harness.state().current_app_context().clone();
-        if ctx.wallet_backend().is_ok() {
-            return ctx;
+        if harness.state().boot_phase() == BootPhase::Ready {
+            return harness.state().current_app_context().clone();
         }
         assert!(
             Instant::now() < deadline,
-            "wallet backend was not wired within {WALLET_BACKEND_WIRE_TIMEOUT:?}"
+            "storage preparation did not finish within {STORAGE_PREP_TIMEOUT:?}"
         );
         std::thread::sleep(Duration::from_millis(20));
     }

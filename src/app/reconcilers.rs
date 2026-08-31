@@ -10,7 +10,7 @@
 //! module can read its parent's private items, so no visibility widening is
 //! needed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -35,12 +35,13 @@ use crate::ui::components::{
 };
 
 use super::{
-    COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_IDENTITIES_ACK_ACTION_ID,
-    MIGRATION_RETRY_ACTION_ID, MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
-    SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION,
-    SpvBlockStep, cold_start_backend_wait_timed_out,
+    BootPhase, MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
+    MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID, SPV_CONNECTING_DESCRIPTION,
+    SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION, STORAGE_PREP_CLOSE_ACTION_ID,
+    STORAGE_PREP_FAILED_MESSAGE, STORAGE_PREP_PASSWORD_DESCRIPTION, STORAGE_PREP_RETRY_ACTION_ID,
+    STORAGE_PREP_STUCK_MESSAGE, STORAGE_PREP_STUCK_TIMEOUT, SpvBlockStep,
     migration_failed_with_unreadable_identities_text, migration_running_text,
-    migration_unreadable_data_text, should_dispatch_cold_start, spv_block_step,
+    migration_unreadable_data_text, spv_block_step,
 };
 
 /// Drives platform-level accessibility (AccessKit) activation on the first
@@ -389,6 +390,342 @@ impl ConnectionBanner {
     }
 }
 
+/// Drives the blocking storage-preparation gate: the one place boot decides a
+/// network's storage is usable.
+///
+/// Backend wiring, the legacy drain and chain sync used to race; the gate makes
+/// them a sequence by refusing to hand the app back to the user — or to chain
+/// sync — until [`AppContext::prepare_storage`] has returned. A thread-blocking
+/// gate is impossible (the main thread already sits inside `runtime.block_on`),
+/// so the block is on the *user*: preparation runs as a spawned task and this
+/// reconciler polls it, owning the whole interaction surface meanwhile.
+///
+/// The overlay is raised through [`ProgressOverlay`], not a bespoke surface, so
+/// it inherits the four-point contract that lets the storage update's own
+/// password prompt render, focus and type *above* the block — without which the
+/// gate would deadlock on the frame loop its own completion depends on.
+pub(super) struct StoragePrepGate {
+    /// What may render this frame. The frame loop reads it; only this reconciler
+    /// advances it.
+    phase: BootPhase,
+    /// Networks whose storage this process has already prepared. Returning to
+    /// one never re-raises the gate — sentinels are per-network, but the work
+    /// behind them is done for this run.
+    prepared: BTreeSet<Network>,
+    /// The in-flight preparation, if any.
+    pending: Option<PendingPrepare>,
+    /// Terminal failure surface, once preparation has failed.
+    failure: Option<PrepareFailure>,
+    /// The blocking overlay raised for the current phase.
+    overlay: Option<OverlayHandle>,
+    /// Whether to start chain sync once the current preparation completes.
+    auto_start_spv: bool,
+    #[cfg(feature = "testing")]
+    test_hold: Option<tokio::sync::oneshot::Sender<Result<(), TaskError>>>,
+}
+
+/// One spawned [`AppContext::prepare_storage`] run.
+struct PendingPrepare {
+    network: Network,
+    started: Instant,
+    result: tokio::sync::oneshot::Receiver<Result<(), TaskError>>,
+    /// Whether the stuck-preparation copy has already been surfaced.
+    stuck: bool,
+}
+
+/// A preparation that failed, held so the terminal surface survives re-renders.
+struct PrepareFailure {
+    network: Network,
+    /// Whether retrying can plausibly help. A version-window mismatch cannot be
+    /// retried into success, so its surface offers only "Close the app".
+    retryable: bool,
+    error: TaskError,
+}
+
+/// What the frame loop must do after driving the gate for one frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GateEvent {
+    /// Preparation completed: build the root screens and release the app.
+    Prepared { network: Network, start_spv: bool },
+    /// The user chose "Try again" on a failed preparation.
+    Retry(Network),
+    /// The user chose "Close the app" on a terminal failure.
+    Close,
+}
+
+impl StoragePrepGate {
+    /// A gate parked on the network chooser: boot could not decide a network,
+    /// so nothing may be prepared until the user picks one.
+    pub(super) fn awaiting_network_choice() -> Self {
+        Self::with_phase(BootPhase::AwaitingNetworkChoice)
+    }
+
+    /// A gate already raised for `network`. The caller spawns the preparation
+    /// and hands the result channel over with [`Self::attach`].
+    pub(super) fn preparing(network: Network) -> Self {
+        Self::with_phase(BootPhase::Preparing { network })
+    }
+
+    fn with_phase(phase: BootPhase) -> Self {
+        Self {
+            phase,
+            prepared: BTreeSet::new(),
+            pending: None,
+            failure: None,
+            overlay: None,
+            auto_start_spv: false,
+            #[cfg(feature = "testing")]
+            test_hold: None,
+        }
+    }
+
+    pub(super) fn phase(&self) -> BootPhase {
+        self.phase
+    }
+
+    /// Whether this network's storage was already prepared in this process.
+    pub(super) fn is_prepared(&self, network: Network) -> bool {
+        self.prepared.contains(&network)
+    }
+
+    /// Raise the gate for `network` and adopt the result channel of the
+    /// preparation the caller just spawned. `auto_start_spv` is carried through
+    /// to the [`GateEvent::Prepared`] that lifts it, so chain sync starts as a
+    /// continuation of preparation rather than alongside it.
+    pub(super) fn attach(
+        &mut self,
+        network: Network,
+        auto_start_spv: bool,
+        result: tokio::sync::oneshot::Receiver<Result<(), TaskError>>,
+    ) {
+        self.phase = BootPhase::Preparing { network };
+        self.auto_start_spv = auto_start_spv;
+        self.failure = None;
+        self.pending = Some(PendingPrepare {
+            network,
+            started: Instant::now(),
+            result,
+            stuck: false,
+        });
+    }
+
+    /// Test seam: raise the gate with no preparation behind it, so a kittest can
+    /// drive the REAL frame loop against a gate that never completes and assert
+    /// what renders above it. Mirrors `AppState::test_arm_spv_block`.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_raise(&mut self, network: Network) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.test_hold = Some(tx);
+        self.attach(network, false, rx);
+    }
+
+    /// Test seam: resolve the raised gate's preparation as `error`, so a kittest
+    /// can drive the REAL terminal-failure surface for an error the test picks.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_fail(&mut self, error: TaskError) {
+        if let Some(tx) = self.test_hold.take() {
+            let _ = tx.send(Err(error));
+        }
+    }
+
+    /// Drive the gate for one frame: poll the in-flight preparation, keep the
+    /// overlay's copy in step with the published progress, and drain the
+    /// terminal surface's buttons.
+    pub(super) fn update(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+        migration_state: &MigrationState,
+    ) -> Option<GateEvent> {
+        if !matches!(self.phase, BootPhase::Preparing { .. }) {
+            self.overlay.take_and_clear();
+            return None;
+        }
+
+        if let Some(event) = self.poll_pending() {
+            return Some(event);
+        }
+
+        self.render(ctx, migration_state);
+        self.drain_actions(app_context)
+    }
+
+    /// Resolve the in-flight preparation if it has finished.
+    fn poll_pending(&mut self) -> Option<GateEvent> {
+        let pending = self.pending.as_mut()?;
+        let network = pending.network;
+        match pending.result.try_recv() {
+            Ok(Ok(())) => {
+                self.pending = None;
+                self.overlay.take_and_clear();
+                self.prepared.insert(network);
+                self.phase = BootPhase::Ready;
+                tracing::info!(?network, "Storage preparation finished; releasing the app");
+                Some(GateEvent::Prepared {
+                    network,
+                    start_spv: self.auto_start_spv,
+                })
+            }
+            Ok(Err(error)) => {
+                self.pending = None;
+                self.overlay.take_and_clear();
+                tracing::error!(?network, error = %error, "Storage preparation failed");
+                self.failure = Some(PrepareFailure {
+                    network,
+                    retryable: !matches!(
+                        error,
+                        TaskError::SavedDataTooOld { .. } | TaskError::SavedDataTooNew { .. }
+                    ),
+                    error,
+                });
+                None
+            }
+            // The preparation task was dropped without reporting — treat it as a
+            // retryable failure rather than blocking forever on a dead channel.
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.pending = None;
+                self.overlay.take_and_clear();
+                tracing::error!(
+                    ?network,
+                    "Storage preparation ended without a result; offering a retry"
+                );
+                self.failure = Some(PrepareFailure {
+                    network,
+                    retryable: true,
+                    error: TaskError::WalletStorageNotReady,
+                });
+                None
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+        }
+    }
+
+    /// Raise or update the overlay for this frame.
+    fn render(&mut self, ctx: &egui::Context, migration_state: &MigrationState) {
+        // A repaint every frame: the gate's only progress signal is a background
+        // task, so egui would otherwise go idle and never poll it again.
+        ctx.request_repaint();
+
+        if let Some(failure) = &self.failure {
+            let mut config = OverlayConfig::new();
+            if failure.retryable {
+                config = config
+                    .with_action("Try again", STORAGE_PREP_RETRY_ACTION_ID)
+                    .with_secondary_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID);
+            } else {
+                config = config.with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID);
+            }
+            let message = if failure.retryable {
+                STORAGE_PREP_FAILED_MESSAGE.to_string()
+            } else {
+                failure.error.to_string()
+            };
+            config = config
+                .with_description(message)
+                .with_keyboard_escape(STORAGE_PREP_CLOSE_ACTION_ID);
+            if self.overlay.is_none() {
+                self.overlay.raise(ctx, "", config);
+            }
+            return;
+        }
+
+        let stuck = self.mark_stuck_if_overdue();
+        let description = if stuck {
+            STORAGE_PREP_STUCK_MESSAGE
+        } else {
+            storage_prep_description(migration_state)
+        };
+
+        if let Some(handle) = &self.overlay {
+            handle.set_description(description);
+        } else {
+            // No escape while preparation is healthy: D2 replaces "continue in
+            // the background" with no background at all. Only the stuck branch
+            // adds an exit, and it re-raises to do so — an `OverlayHandle`'s
+            // button methods append, so attaching per frame would stack copies.
+            let mut config = OverlayConfig::new().with_description(description);
+            if stuck {
+                config = config
+                    .with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID)
+                    .with_keyboard_escape(STORAGE_PREP_CLOSE_ACTION_ID);
+            }
+            self.overlay.raise(ctx, "", config);
+        }
+    }
+
+    /// Whether preparation has been running long enough to surface the stuck
+    /// copy. On the transition, logs once and lowers the overlay so the branch
+    /// above re-raises it carrying the "Close the app" exit.
+    fn mark_stuck_if_overdue(&mut self) -> bool {
+        let Some(pending) = self.pending.as_mut() else {
+            return false;
+        };
+        if pending.started.elapsed() < STORAGE_PREP_STUCK_TIMEOUT {
+            return false;
+        }
+        if !pending.stuck {
+            pending.stuck = true;
+            tracing::warn!(
+                network = ?pending.network,
+                timeout_secs = STORAGE_PREP_STUCK_TIMEOUT.as_secs(),
+                "Storage preparation exceeded its expected duration; offering to close the app",
+            );
+            self.overlay.take_and_clear();
+        }
+        true
+    }
+
+    /// Drain the overlay's own button clicks.
+    fn drain_actions(&mut self, app_context: &Arc<AppContext>) -> Option<GateEvent> {
+        let actions = self
+            .overlay
+            .as_ref()
+            .map(|handle| handle.take_actions())
+            .unwrap_or_default();
+        let network = self
+            .failure
+            .as_ref()
+            .map(|f| f.network)
+            .or_else(|| self.pending.as_ref().map(|p| p.network))
+            .unwrap_or(app_context.network);
+
+        for action in actions {
+            if action == STORAGE_PREP_CLOSE_ACTION_ID {
+                return Some(GateEvent::Close);
+            }
+            if action == STORAGE_PREP_RETRY_ACTION_ID {
+                self.failure = None;
+                self.overlay.take_and_clear();
+                return Some(GateEvent::Retry(network));
+            }
+        }
+        None
+    }
+
+    /// Forget the current network's preparation so a switch back re-raises the
+    /// gate, and drop any surface belonging to the outgoing network.
+    pub(super) fn reset_for_switch(&mut self) {
+        self.overlay.take_and_clear();
+        self.pending = None;
+        self.failure = None;
+    }
+}
+
+/// The gate's own progress copy for the current published storage state.
+///
+/// Progress rides the one [`MigrationStatus`](crate::context::migration_status::MigrationStatus)
+/// the banner already reads, so there is one step vocabulary rather than two.
+/// States that publish no step (the sentinel short-circuit, a terminal outcome
+/// reached before the frame loop caught up) fall back to the opening sentence
+/// rather than leaving the card wordless.
+fn storage_prep_description(state: &MigrationState) -> &'static str {
+    match state {
+        MigrationState::Running { step } => migration_running_text(*step),
+        MigrationState::AwaitingWalletPasswords { .. } => STORAGE_PREP_PASSWORD_DESCRIPTION,
+        _ => migration_running_text(crate::context::migration_status::MigrationStep::Wiring),
+    }
+}
+
 /// Reconciles the data-migration banner and drives the cold-start
 /// `FinishUnwire` dispatch per network.
 pub(super) struct MigrationReconciler {
@@ -398,12 +735,6 @@ pub(super) struct MigrationReconciler {
     storage_startup_error: TransientBanner,
     /// Last-seen migration state so reconciliation fires only on change.
     last_state: Option<MigrationState>,
-    /// Networks whose cold-start `FinishUnwire` has been dispatched this process.
-    dispatched: BTreeSet<Network>,
-    /// Per network, when the readiness gate first observed an unwired backend.
-    backend_wait_since: BTreeMap<Network, Instant>,
-    /// Networks whose stuck-preparation timeout was already logged (dedupe).
-    timeout_signaled: BTreeSet<Network>,
     /// Reused password-entry component for the current migrated wallet.
     wallet_unlock_popup: WalletUnlockPopup,
     /// Migrated wallet currently shown in the password prompt.
@@ -416,9 +747,6 @@ impl MigrationReconciler {
             banner_handle: None,
             storage_startup_error: TransientBanner::default(),
             last_state: None,
-            dispatched: BTreeSet::new(),
-            backend_wait_since: BTreeMap::new(),
-            timeout_signaled: BTreeSet::new(),
             wallet_unlock_popup: WalletUnlockPopup::new(),
             prompt_wallet: None,
         }
@@ -447,86 +775,22 @@ impl MigrationReconciler {
         matches!(state, MigrationState::AwaitingWalletPasswords { .. })
     }
 
-    /// Dispatch the cold-start migration once per network, gated on the wallet
-    /// backend being wired. Returns the `FinishUnwire` task when it fires;
-    /// otherwise surfaces the stuck-preparation banner past the readiness
-    /// timeout. See `finish_unwire` for the per-network scoping rationale.
-    pub(super) fn dispatch_cold_start(
-        &mut self,
-        app_context: &Arc<AppContext>,
-    ) -> Option<BackendTask> {
-        let network = app_context.network;
-        let already_dispatched = self.dispatched.contains(&network);
-        // Readiness gate: after a network SWITCH the switched-to backend wires
-        // a few frames later; dispatching before it is ready aborts the first
-        // step with a transient error AND burns the per-network guard. Poll
-        // readiness (a cheap ArcSwap load) and only dispatch once wired.
-        let backend_ready = app_context.wallet_backend().is_ok();
-        if should_dispatch_cold_start(already_dispatched, backend_ready) {
-            // Backend wired: retire any stuck-preparation watchdog before
-            // burning the guard and dispatching.
-            self.clear_backend_wait(app_context);
-            self.dispatched.insert(network);
-            tracing::info!(
-                target = "migration::cold_start",
-                ?network,
-                "Dispatching FinishUnwire migration at cold start",
-            );
-            return Some(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
-        }
-
-        if already_dispatched {
-            return None;
-        }
-
-        // Not dispatched because the wallet backend has not wired yet. Record
-        // when the wait began and, once it exceeds the readiness timeout,
-        // surface a visible, actionable banner. Recovery stays automatic: if the
-        // backend wires later, the dispatch branch above clears the banner.
-        let now = Instant::now();
-        let waited = now.duration_since(*self.backend_wait_since.entry(network).or_insert(now));
-        if cold_start_backend_wait_timed_out(Some(waited), COLD_START_BACKEND_READY_TIMEOUT) {
-            let handle = MessageBanner::set_global(
-                app_context.egui_ctx(),
-                COLD_START_STUCK_MESSAGE,
-                MessageType::Error,
-            );
-            handle.disable_auto_dismiss();
-            // Log + attach the last wiring error once per network; the banner is
-            // re-asserted every frame (idempotent) so it survives a switch.
-            if self.timeout_signaled.insert(network) {
-                if let Some(detail) = app_context.connection_status().spv_last_error() {
-                    handle.with_details(detail);
-                }
-                tracing::warn!(
-                    target = "migration::cold_start",
-                    ?network,
-                    waited_secs = waited.as_secs(),
-                    "Wallet backend did not finish wiring within the readiness timeout; showing the wallet-preparation banner. Restart the app if this persists.",
-                );
-            }
-        }
-        None
-    }
-
-    /// Retire the stuck-preparation watchdog for the active network: drop the
-    /// wait timer and, if the timeout banner was raised, remove it.
-    fn clear_backend_wait(&mut self, app_context: &Arc<AppContext>) {
-        let network = app_context.network;
-        self.backend_wait_since.remove(&network);
-        if self.timeout_signaled.remove(&network) {
-            MessageBanner::clear_global_message(app_context.egui_ctx(), COLD_START_STUCK_MESSAGE);
-        }
-    }
-
     /// Update the migration banner to reflect the current [`MigrationState`].
     /// Each step / outcome surfaces a single i18n-ready sentence. Retryable
     /// failures get a "Retry now" action button.
+    ///
+    /// `gate_raised` means the storage-preparation gate owns the frame. Its
+    /// overlay already carries the in-progress copy — reading it from the same
+    /// [`MigrationState`] — so the banner's in-progress arms stand down rather
+    /// than printing the identical sentence twice. Terminal outcomes still
+    /// surface: the gate lifts on those, and they carry the recovery actions.
+    /// The password prompt is driven either way; it is what lets the gate finish.
     pub(super) fn update_banner(
         &mut self,
         ctx: &egui::Context,
         app_context: &Arc<AppContext>,
         frame_state: &MigrationState,
+        gate_raised: bool,
     ) {
         let state = frame_state.clone();
         let storage_guard_resolved = !matches!(
@@ -537,6 +801,9 @@ impl MigrationReconciler {
         ) && app_context.prepare_gate.try_lock().is_ok();
         self.storage_startup_error.clear_if(storage_guard_resolved);
         self.update_password_prompt(ctx, app_context, &state);
+        if gate_raised && state.is_in_progress() {
+            return;
+        }
         if self.last_state.as_ref() == Some(&state) {
             return;
         }
@@ -599,9 +866,8 @@ impl MigrationReconciler {
                 // reloading AND the app-data update must be retried — so neither
                 // silently hides the other.
                 if error.is_backend_not_ready() {
-                    // Transient app-data backend-not-ready: reset to Idle so the
-                    // frame loop re-dispatches once ready, no failure flash.
-                    self.dispatched.remove(&app_context.network);
+                    // Transient app-data backend-not-ready: reset to Idle so a
+                    // retry re-runs once ready, with no failure flash.
                     app_context
                         .migration_status()
                         .set_state(MigrationState::Idle);
@@ -621,10 +887,8 @@ impl MigrationReconciler {
             MigrationState::Failed { error } => {
                 if error.is_backend_not_ready() {
                     // Transient: the wallet backend had not finished wiring when
-                    // this run fired. Drop the per-network dispatch guard so the
-                    // frame loop re-dispatches once ready, and reset to Idle so
-                    // no failure banner flashes — the retry is automatic.
-                    self.dispatched.remove(&app_context.network);
+                    // this run fired. Reset to Idle so no failure banner flashes
+                    // and the storage-preparation gate can re-drive it.
                     app_context
                         .migration_status()
                         .set_state(MigrationState::Idle);
@@ -755,11 +1019,9 @@ impl MigrationReconciler {
                     ?network,
                     "User clicked migration Retry — re-dispatching FinishUnwire",
                 );
-                // Reset the reconciler so the new run's Running banner overwrites
-                // the stale Failed one, and drop the per-network dispatch guard
-                // so a future `dispatch_cold_start` for the same network re-fires.
+                // Reset the reconciler so the new run's Running banner
+                // overwrites the stale Failed one.
                 self.last_state = None;
-                self.dispatched.remove(&network);
                 task = Some(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
             } else if action_id == MIGRATION_VOTES_ACK_ACTION_ID {
                 tracing::info!(
@@ -844,7 +1106,7 @@ mod tests {
             .build_ui(MessageBanner::show_global);
 
         let frame_state = app_context.migration_status().state();
-        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref(), false);
         harness.run();
         harness.get_by_label(label).click();
         harness.run();
@@ -870,7 +1132,7 @@ mod tests {
             ),
         };
 
-        reconciler.update_banner(&harness.ctx, &app_context, &state);
+        reconciler.update_banner(&harness.ctx, &app_context, &state, false);
         harness.run();
 
         assert!(harness.query_by_label(message).is_some());
@@ -1026,7 +1288,7 @@ mod tests {
         handle.disable_auto_dismiss();
         reconciler.track_storage_startup_error(handle);
         let state = app_context.migration_status().state();
-        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref(), false);
         harness.run();
         assert!(harness.query_by_label(&message).is_some());
 
@@ -1038,7 +1300,7 @@ mod tests {
             .migration_status()
             .set_state(MigrationState::Ready);
         let state = app_context.migration_status().state();
-        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref(), false);
         harness.run();
         assert!(
             harness.query_by_label(&message).is_some(),
@@ -1046,7 +1308,7 @@ mod tests {
         );
 
         drop(migration_guard);
-        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref(), false);
         harness.run();
         assert!(
             harness.query_by_label(&message).is_none(),

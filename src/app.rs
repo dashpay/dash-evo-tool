@@ -1,6 +1,7 @@
 mod reconcilers;
 use reconcilers::{
-    AccessibilityActivator, ConnectionBanner, MigrationReconciler, SpvBlockReconciler,
+    AccessibilityActivator, ConnectionBanner, GateEvent, MigrationReconciler, SpvBlockReconciler,
+    StoragePrepGate,
 };
 
 #[cfg(not(feature = "testing"))]
@@ -759,42 +760,76 @@ pub fn migration_unreadable_data_text(identities: u32, votes: u32, top_ups: u32)
     }
 }
 
-/// How long the cold-start readiness gate waits for the wallet backend to wire
-/// before it stops retrying silently and surfaces a visible, actionable banner.
+/// How long storage preparation may run before the gate offers a way out.
 ///
-/// Wiring is a local, non-network operation (open the SQLite sidecar, hydrate
-/// wallets, bootstrap addresses) that normally completes within a few frames of
-/// boot / a network switch — sub-second in the common case. 30 seconds is ~two
-/// orders of magnitude past the expected completion, generous enough never to
-/// false-positive on a slow disk or a large wallet set, yet short enough that a
-/// genuinely wedged backend surfaces within half a minute instead of never. It
-/// sits well below the network-bound waits (the 120 s SPV no-progress watchdog,
-/// the 10 min MCP sync gate), matching that this wait is local, not on the wire.
-const COLD_START_BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Preparation is local, non-network work (open the SQLite sidecar, run the
+/// schema ladder, hydrate wallets, drain the previous version's rows) that
+/// normally completes within a few frames of boot — sub-second in the common
+/// case. 30 seconds is ~two orders of magnitude past that, generous enough never
+/// to false-positive on a slow disk or a large wallet set, yet short enough that
+/// a genuinely wedged persister (or a second process holding the file lock)
+/// surfaces within half a minute instead of never. It sits well below the
+/// network-bound waits (the 120 s SPV no-progress watchdog, the 10 min MCP sync
+/// gate), matching that this wait is local, not on the wire. The bound matters
+/// more than it used to: the gate has no background escape, so a hang here would
+/// otherwise be unrecoverable.
+const STORAGE_PREP_STUCK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// User-facing banner shown when the wallet backend never finishes wiring within
-/// [`COLD_START_BACKEND_READY_TIMEOUT`], so the cold-start migration can never
-/// run. Everyday-User copy (no "backend"/"wiring"/"SPV" jargon): what happened +
-/// a self-serviceable action. Complete sentences so i18n extracts it as one unit.
-const COLD_START_STUCK_MESSAGE: &str =
-    "We couldn't finish preparing your wallet. Try restarting the app.";
+/// Overlay copy once preparation exceeds [`STORAGE_PREP_STUCK_TIMEOUT`].
+/// Everyday-User copy (no "backend"/"wiring"/"SPV" jargon): what happened plus
+/// the two self-serviceable choices. Complete sentences so i18n extracts each as
+/// one unit.
+const STORAGE_PREP_STUCK_MESSAGE: &str = "Preparing your saved data is taking longer than usual. \
+     Wait a little longer, or close the app and open it again.";
 
-/// Decide whether to dispatch the cold-start migration for the active network
-/// this frame: only when it has not already been dispatched AND its wallet
-/// backend is wired. The migration's first step needs a wired backend; firing
-/// before it is wired aborts with a transient `WalletBackendUnavailable` and
-/// burns the per-network dispatch guard, so the readiness gate keeps the guard
-/// pending and retries on a later frame once the backend wires.
-fn should_dispatch_cold_start(already_dispatched: bool, backend_ready: bool) -> bool {
-    !already_dispatched && backend_ready
+/// Overlay copy for a preparation that failed and can be retried. Names what
+/// happened, reassures about the data, and offers both actions the surface has.
+const STORAGE_PREP_FAILED_MESSAGE: &str = "We couldn't finish updating your saved data. Your \
+     wallets and keys are unchanged. Try again, or close the app and open it later.";
+
+/// Overlay copy while preparation waits for a migrated wallet's password. The
+/// password prompt itself renders above the gate and carries the controls; this
+/// is what the card says once the prompt closes. Exposed for kittest coverage:
+/// the gate's contract is that this is NOT painted while the prompt is up, and a
+/// test asserting that has to name the exact string the card would show.
+pub const STORAGE_PREP_PASSWORD_DESCRIPTION: &str =
+    "Enter your wallet password to continue the storage update.";
+
+/// Action id for the storage-preparation gate's "Try again" button.
+pub const STORAGE_PREP_RETRY_ACTION_ID: &str = "storage:prepare:retry";
+
+/// Action id for the storage-preparation gate's "Close the app" button. Also the
+/// gate's single keyboard-reachable exit, so a keyboard-only / assistive-tech
+/// user is never stranded behind a block with no background escape.
+pub const STORAGE_PREP_CLOSE_ACTION_ID: &str = "storage:prepare:close";
+
+/// Where boot has got to, and therefore what may render.
+///
+/// The app is three things that used to race — wiring, the legacy drain, chain
+/// sync — and this is the ordering that replaced the guards. Only [`Self::Ready`]
+/// has root screens; the other two own the frame outright.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootPhase {
+    /// Boot could not determine a network (the legacy-settings import failed),
+    /// so only the network chooser renders until the user confirms one.
+    AwaitingNetworkChoice,
+    /// Storage preparation is in flight for this network. The gate overlay and
+    /// the storage update's own password prompt are the whole interaction
+    /// surface — there is no background escape.
+    Preparing { network: Network },
+    /// Storage is prepared and the app renders normally.
+    Ready,
 }
 
-/// Whether the readiness gate has been waiting on an unwired wallet backend long
-/// enough to surface the stuck-preparation banner. Pure so the timeout is
-/// unit-testable with synthetic durations. `waited == None` means we are not (or
-/// no longer) waiting — that never times out.
-fn cold_start_backend_wait_timed_out(waited: Option<Duration>, timeout: Duration) -> bool {
-    waited.is_some_and(|elapsed| elapsed >= timeout)
+impl BootPhase {
+    /// Whether root screens exist and may be rendered and driven this frame.
+    ///
+    /// False only while [`Self::Preparing`]: root screens are constructed at the
+    /// terminal transition, so before it the screen map holds nothing but the
+    /// network chooser.
+    pub fn renders_screens(self) -> bool {
+        !matches!(self, BootPhase::Preparing { .. })
+    }
 }
 
 #[derive(Debug)]
@@ -963,8 +998,13 @@ pub struct AppState {
     /// to continue in the background. Ambient reconnects are never armed, so
     /// they never hard-block a working user (F-SPV-A).
     spv_block: SpvBlockReconciler,
-    /// Data-migration banner + cold-start `FinishUnwire` dispatch reconciler.
+    /// Data-migration banner reconciler (also hosts the storage update's
+    /// wallet-password prompt).
     migration: MigrationReconciler,
+    /// The blocking storage-preparation gate. Owns the frame until this
+    /// network's storage is prepared, so wiring, the legacy drain and chain sync
+    /// are one ordering instead of three racing tasks.
+    boot: StoragePrepGate,
     /// Async shutdown receiver. `Some` until a graceful shutdown reaches a
     /// terminal state; the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<ShutdownOutcome>>,
@@ -1089,15 +1129,15 @@ impl BitOrAssign for AppAction {
     }
 }
 
-/// Why the wallet backend is being wired, selecting the spawned task's label
-/// and its log/banner wording. The single shape behind boot, network switch,
-/// post-onboarding auto-start, and the manual Connect button (see
-/// [`AppState::spawn_backend_init`]).
+/// Why chain sync is being started, selecting the spawned task's label and its
+/// log/banner wording. The single shape behind the post-gate boot auto-start,
+/// a network switch, post-onboarding auto-start, and the manual Connect button
+/// (see [`AppState::spawn_spv_start`]).
 #[derive(Debug, Clone, Copy)]
 enum BackendInitReason {
-    /// Eager per-network wiring at process start.
+    /// Auto-start once boot's storage preparation completes.
     Boot,
-    /// Eager wiring after a network switch.
+    /// Auto-start once a network switch's storage preparation completes.
     NetworkSwitch,
     /// Post-onboarding chain-sync opt-in.
     OnboardingAutoStart,
@@ -1109,9 +1149,7 @@ impl BackendInitReason {
     /// Label for the spawned subtask.
     fn task_name(self) -> &'static str {
         match self {
-            BackendInitReason::Boot | BackendInitReason::NetworkSwitch => {
-                "wallet-backend-eager-init"
-            }
+            BackendInitReason::Boot | BackendInitReason::NetworkSwitch => "spv_start",
             BackendInitReason::OnboardingAutoStart => "spv_auto_start",
             BackendInitReason::ManualConnect => "spv_manual_start",
         }
@@ -1142,16 +1180,16 @@ impl BackendInitReason {
         }
     }
 
-    /// Handle a failed wire+start. Every path except `ManualConnect` warns and
-    /// relies on the lazy backend-task fallback to retry; the manual Connect
-    /// surfaces an actionable error banner because the user is waiting.
+    /// Handle a failed start. Every path except `ManualConnect` warns and relies
+    /// on the lazy backend-task fallback to retry; the manual Connect surfaces
+    /// an actionable error banner because the user is waiting.
     fn on_spv_start_error(self, egui_ctx: &egui::Context, error: &TaskError) {
         match self {
             BackendInitReason::Boot => {
-                tracing::warn!(error = %error, "eager wallet-backend init + SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires");
+                tracing::warn!(error = %error, "Boot SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires");
             }
             BackendInitReason::NetworkSwitch => {
-                tracing::warn!(error = %error, "eager wallet-backend init + SPV auto-start after network switch failed; lazy fallback will retry");
+                tracing::warn!(error = %error, "SPV auto-start after a network switch failed; the lazy backend-task fallback will retry");
             }
             BackendInitReason::OnboardingAutoStart => {
                 tracing::warn!(error = %error, "Failed to auto-start SPV sync after onboarding");
@@ -1167,20 +1205,6 @@ impl BackendInitReason {
                 );
                 handle.disable_auto_dismiss();
                 handle.with_details(error);
-            }
-        }
-    }
-
-    /// Handle a failed wire-only init (no chain-sync start requested).
-    fn on_wire_error(self, error: &TaskError) {
-        match self {
-            BackendInitReason::Boot => {
-                tracing::warn!(error = %error, "eager wallet-backend init failed; SDK proof verification will retry once the lazy backend-task fallback fires");
-            }
-            // Only Boot / NetworkSwitch ever wire without starting SPV; the
-            // opt-in paths always start.
-            _ => {
-                tracing::warn!(error = %error, "eager wallet-backend init after network switch failed; lazy fallback will retry");
             }
         }
     }
@@ -1384,38 +1408,7 @@ impl AppState {
             ctx.enable_accesskit();
         }
 
-        // All screens are initialized with the active context (chosen_network).
-        // They will get the right context via change_context() on network switch.
-        let identities_screen = IdentitiesScreen::new(&active_context);
-        let dpns_active_contests_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Active);
-        let dpns_past_contests_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Past);
-        let dpns_my_usernames_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Owned);
-        let dpns_scheduled_votes_screen =
-            DPNSScreen::new(&active_context, DPNSSubscreen::ScheduledVotes);
-        let transition_visualizer_screen = TransitionVisualizerScreen::new(&active_context);
-        let proof_visualizer_screen = ProofVisualizerScreen::new(&active_context);
-        let document_visualizer_screen = DocumentVisualizerScreen::new(&active_context);
-        let contract_visualizer_screen = ContractVisualizerScreen::new(&active_context);
-        let platform_info_screen = PlatformInfoScreen::new(&active_context);
-        let address_balance_screen = AddressBalanceScreen::new(&active_context);
-        let grovestark_screen = GroveSTARKScreen::new(&active_context);
-        let document_query_screen = DocumentQueryScreen::new(&active_context);
-        let tokens_balances_screen = TokensScreen::new(&active_context, TokensSubscreen::MyTokens);
-        let token_search_screen = TokensScreen::new(&active_context, TokensSubscreen::SearchTokens);
-        let token_creator_screen =
-            TokensScreen::new(&active_context, TokensSubscreen::TokenCreator);
-        let contracts_dashpay_screen =
-            DashPayScreen::new(&active_context, DashPaySubscreen::Profile);
-        let dashpay_contacts_screen =
-            DashPayScreen::new(&active_context, DashPaySubscreen::Contacts);
-        let dashpay_profile_screen = DashPayScreen::new(&active_context, DashPaySubscreen::Profile);
-        let dashpay_payments_screen =
-            DashPayScreen::new(&active_context, DashPaySubscreen::Payments);
-        let dashpay_profile_search_screen = ProfileSearchScreen::new(active_context.clone());
-
         let network_chooser_screen = NetworkChooserScreen::new(&network_contexts, chosen_network);
-
-        let wallets_balances_screen = WalletsBalancesScreen::new(&active_context);
 
         // Persisted setting; the effective `selected_main_screen` is computed
         // after the screen map is built (below) so we can fall back to a
@@ -1440,35 +1433,24 @@ impl AppState {
             app_ctx.install_secret_prompt(Arc::clone(&secret_prompt_host));
         }
 
-        // Eagerly build the wallet seam for every pre-created network context
-        // (typically just the active one) so the SpvProvider can serve
-        // chain-only lookups (e.g. `get_quorum_public_key`) before any
-        // wallet is unlocked. Without this, the SDK retry loop tight-loops
-        // at 10ms on `WalletBackendNotYetWired`. `PlatformWalletManager` is
-        // wallet-independent at construction (Case B); persisted wallets
-        // load watch-only via `load_from_persistor_seedless`, no unlock required
-        // to display funds — the seed enters memory only on unlock.
-        //
-        // Auto-start of chain sync rides on wiring completion: for the active
-        // network, when onboarding is done and the user opted in, the same
-        // task that wires the backend goes on to start SPV. Folding the start
-        // into the spawned init closes the boot race where a synchronous
-        // `start_spv()` fired before the fire-and-forget wiring could finish.
+        // Storage preparation for the active network. Everything the app needs
+        // before it can serve a user — the wallet seam (without which the SDK
+        // retry loop tight-loops at 10 ms on `WalletBackendNotYetWired`), the
+        // upstream schema ladder, wallet hydration, the previous version's data
+        // — happens inside this one call, and the gate below holds the frame
+        // until it returns. Chain sync starts afterwards, as a continuation.
         let boot_auto_start_spv = boot_auto_start_spv(
             onboarding_completed,
             settings.auto_start_spv,
             network_selection_required,
         );
-        for (&net, app_ctx) in network_contexts.iter() {
-            let auto_start = boot_auto_start_spv && net == chosen_network;
-            Self::spawn_backend_init(
+        let boot_prepare = (!network_selection_required).then(|| {
+            Self::spawn_storage_prepare(
                 &subtasks,
                 task_result_sender.clone(),
-                app_ctx.clone(),
-                BackendInitReason::Boot,
-                auto_start,
-            );
-        }
+                active_context.clone(),
+            )
+        });
 
         // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
         #[cfg(feature = "mcp")]
@@ -1494,7 +1476,175 @@ impl AppState {
             }
         };
 
-        let main_screens: BTreeMap<RootScreenType, Screen> = [
+        // Only the network chooser is built here. Every other root screen is
+        // constructed at the storage-preparation gate's terminal transition, so
+        // it sees hydrated wallets and identities rather than the empty maps
+        // `AppContext::new` starts with.
+        let main_screens: BTreeMap<RootScreenType, Screen> = [(
+            RootScreenType::RootScreenNetworkChooser,
+            Screen::NetworkChooserScreen(network_chooser_screen),
+        )]
+        .into_iter()
+        .collect();
+
+        // The persisted route is carried as-is: the screen map holds only the
+        // chooser until the gate lifts, so registration cannot be checked yet.
+        // `finish_boot_phase` re-resolves it through `initial_root_screen` once
+        // the map exists, and `active_root_screen_mut` guards the interim.
+        let selected_main_screen = if network_selection_required {
+            RootScreenType::RootScreenNetworkChooser
+        } else {
+            persisted_main_screen
+        };
+
+        let mut app_state = Self {
+            main_screens,
+            selected_main_screen,
+            screen_stack: vec![],
+            chosen_network,
+            connection_status,
+            network_contexts,
+            network_switch_pending: None,
+            network_switch_banner: None,
+            network_selection_required,
+            task_result_sender,
+            task_result_receiver,
+            theme: ThemeState::new(theme_preference),
+            last_scheduled_vote_check: Instant::now(),
+            scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
+            scheduled_vote_sweeps_in_progress: BTreeSet::new(),
+            scheduled_vote_recovery_last_attempt: BTreeMap::new(),
+            last_repaint_request: Instant::now(),
+            subtasks,
+            show_welcome_screen: show_welcome_screen(
+                onboarding_completed,
+                network_selection_required,
+            ),
+            welcome_screen: None,
+            connection_banner: ConnectionBanner::new(),
+            // The block is armed at the gate's terminal transition, together
+            // with the sync it covers (F-SPV-A: scoped to user-initiated sync,
+            // not ambient reconnect).
+            spv_block: SpvBlockReconciler::new(false),
+            migration: MigrationReconciler::new(),
+            boot: if network_selection_required {
+                StoragePrepGate::awaiting_network_choice()
+            } else {
+                StoragePrepGate::preparing(chosen_network)
+            },
+            shutdown_receiver: None,
+            shutdown_started: None,
+            shutdown_finished: false,
+            accessibility: AccessibilityActivator::new(accessibility_enforced),
+            #[cfg(feature = "mcp")]
+            mcp_app_context,
+            #[cfg(feature = "mcp")]
+            mcp_server_pending_config,
+            secret_prompt_host,
+            secret_prompt_receiver,
+            active_secret_prompt: None,
+            prompt_was_blocking: false,
+        };
+
+        // Initialize welcome screen if needed (uses whichever context is active)
+        if app_state.show_welcome_screen {
+            app_state.welcome_screen =
+                Some(WelcomeScreen::new(app_state.current_app_context().clone()));
+        }
+
+        // Root-screen construction and their first refresh both happen at the
+        // gate's terminal transition, against hydrated data.
+        if let Some(result) = boot_prepare {
+            app_state
+                .boot
+                .attach(chosen_network, boot_auto_start_spv, result);
+        }
+
+        // The Orchard proving key is now owned by the upstream shielded
+        // coordinator (`CachedOrchardProver`), warmed lazily on the first
+        // shielded operation — DET no longer builds or caches it here.
+
+        Ok(app_state)
+    }
+
+    /// Force UI animations off (or lift that override) for every network context.
+    ///
+    /// No override by default. Lifting one does not *guarantee* animation: the
+    /// Power and Developer roles keep the UI still on their own.
+    pub fn with_animations(self, enabled: bool) -> Self {
+        for context in self.network_contexts.values() {
+            context.set_animations_disabled(!enabled);
+        }
+        self
+    }
+
+    pub fn current_app_context(&self) -> &Arc<AppContext> {
+        self.network_contexts
+            .get(&self.chosen_network)
+            .unwrap_or_else(|| {
+                panic!(
+                    "BUG: chosen network is {:?} but its AppContext is missing",
+                    self.chosen_network
+                )
+            })
+    }
+
+    fn context_available_for_network(&self, network: Network) -> bool {
+        self.network_contexts.contains_key(&network)
+    }
+
+    fn enforce_network_context_invariant(&mut self) {
+        if self.context_available_for_network(self.chosen_network) {
+            return;
+        }
+
+        panic!(
+            "BUG: selected network {:?} has no AppContext. Refusing to auto-switch networks.",
+            self.chosen_network
+        );
+    }
+
+    /// Construct every root screen except the network chooser.
+    ///
+    /// Deferred to the storage-preparation gate's terminal transition: several
+    /// of these constructors read `ctx.wallets` and the identity store, which
+    /// `AppContext::new` leaves empty on purpose — hydration happens inside
+    /// backend wiring. Building them at construction time guaranteed each one
+    /// saw nothing and had to be refreshed afterwards anyway.
+    ///
+    /// The chooser is excluded because it is the one screen that must exist
+    /// before the gate: an install that cannot determine its network has to
+    /// render it to get one.
+    fn build_main_screens(active_context: &Arc<AppContext>) -> BTreeMap<RootScreenType, Screen> {
+        let identities_screen = IdentitiesScreen::new(active_context);
+        let dpns_active_contests_screen = DPNSScreen::new(active_context, DPNSSubscreen::Active);
+        let dpns_past_contests_screen = DPNSScreen::new(active_context, DPNSSubscreen::Past);
+        let dpns_my_usernames_screen = DPNSScreen::new(active_context, DPNSSubscreen::Owned);
+        let dpns_scheduled_votes_screen =
+            DPNSScreen::new(active_context, DPNSSubscreen::ScheduledVotes);
+        let transition_visualizer_screen = TransitionVisualizerScreen::new(active_context);
+        let proof_visualizer_screen = ProofVisualizerScreen::new(active_context);
+        let document_visualizer_screen = DocumentVisualizerScreen::new(active_context);
+        let contract_visualizer_screen = ContractVisualizerScreen::new(active_context);
+        let platform_info_screen = PlatformInfoScreen::new(active_context);
+        let address_balance_screen = AddressBalanceScreen::new(active_context);
+        let grovestark_screen = GroveSTARKScreen::new(active_context);
+        let document_query_screen = DocumentQueryScreen::new(active_context);
+        let tokens_balances_screen = TokensScreen::new(active_context, TokensSubscreen::MyTokens);
+        let token_search_screen = TokensScreen::new(active_context, TokensSubscreen::SearchTokens);
+        let token_creator_screen = TokensScreen::new(active_context, TokensSubscreen::TokenCreator);
+        let contracts_dashpay_screen =
+            DashPayScreen::new(active_context, DashPaySubscreen::Profile);
+        let dashpay_contacts_screen =
+            DashPayScreen::new(active_context, DashPaySubscreen::Contacts);
+        let dashpay_profile_screen = DashPayScreen::new(active_context, DashPaySubscreen::Profile);
+        let dashpay_payments_screen =
+            DashPayScreen::new(active_context, DashPaySubscreen::Payments);
+        let dashpay_profile_search_screen = ProfileSearchScreen::new(active_context.clone());
+
+        let wallets_balances_screen = WalletsBalancesScreen::new(active_context);
+
+        [
             (
                 RootScreenType::RootScreenIdentities,
                 Screen::IdentitiesScreen(identities_screen),
@@ -1556,10 +1706,6 @@ impl AppState {
                 Screen::DashPayScreen(contracts_dashpay_screen),
             ),
             (
-                RootScreenType::RootScreenNetworkChooser,
-                Screen::NetworkChooserScreen(network_chooser_screen),
-            ),
-            (
                 RootScreenType::RootScreenMyTokenBalances,
                 Screen::TokensScreen(Box::new(tokens_balances_screen)),
             ),
@@ -1594,164 +1740,125 @@ impl AppState {
                 // is on. Live de-gating falls back to `FALLBACK_ROOT_SCREEN`.
                 RootScreenType::RootScreenMasternodes,
                 Screen::MasternodesScreen(crate::ui::masternodes::MasternodesScreen::new(
-                    &active_context,
+                    active_context,
                 )),
             ),
         ]
         .into_iter()
         .chain({
             // Register the unified Identities hub screen.
-            let hub = crate::ui::identity::IdentityHubScreen::new(&active_context);
+            let hub = crate::ui::identity::IdentityHubScreen::new(active_context);
             [(
                 RootScreenType::RootScreenIdentityHub,
                 Screen::IdentityHubScreen(hub),
             )]
         })
-        .collect();
+        .collect()
+    }
 
-        // Resolve the effective selected root screen. If the persisted value is
-        // no longer registered, fall back to `FALLBACK_ROOT_SCREEN` so
-        // `active_root_screen_mut()` does not panic on first frame.
-        let selected_main_screen = initial_root_screen(
-            persisted_main_screen,
-            main_screens.contains_key(&persisted_main_screen),
-            network_selection_required,
-        );
-
-        let mut app_state = Self {
-            main_screens,
-            selected_main_screen,
-            screen_stack: vec![],
-            chosen_network,
-            connection_status,
-            network_contexts,
-            network_switch_pending: None,
-            network_switch_banner: None,
-            network_selection_required,
-            task_result_sender,
-            task_result_receiver,
-            theme: ThemeState::new(theme_preference),
-            last_scheduled_vote_check: Instant::now(),
-            scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
-            scheduled_vote_sweeps_in_progress: BTreeSet::new(),
-            scheduled_vote_recovery_last_attempt: BTreeMap::new(),
-            last_repaint_request: Instant::now(),
-            subtasks,
-            show_welcome_screen: show_welcome_screen(
-                onboarding_completed,
-                network_selection_required,
-            ),
-            welcome_screen: None,
-            connection_banner: ConnectionBanner::new(),
-            // Arm the block for the boot SPV sync when it auto-starts (F-SPV-A:
-            // scoped to user-initiated sync, not ambient reconnect).
-            spv_block: SpvBlockReconciler::new(boot_auto_start_spv),
-            migration: MigrationReconciler::new(),
-            shutdown_receiver: None,
-            shutdown_started: None,
-            shutdown_finished: false,
-            accessibility: AccessibilityActivator::new(accessibility_enforced),
-            #[cfg(feature = "mcp")]
-            mcp_app_context,
-            #[cfg(feature = "mcp")]
-            mcp_server_pending_config,
-            secret_prompt_host,
-            secret_prompt_receiver,
-            active_secret_prompt: None,
-            prompt_was_blocking: false,
-        };
-
-        // Initialize welcome screen if needed (uses whichever context is active)
-        if app_state.show_welcome_screen {
-            app_state.welcome_screen =
-                Some(WelcomeScreen::new(app_state.current_app_context().clone()));
-        } else {
-            // Boot-time SPV auto-start is folded into the eager wallet-backend
-            // init above (so it cannot fire before the backend is wired).
-
-            // Refresh ALL main screens so they load data properly
-            // This ensures screens like DashPay Profile have identities loaded
-            // even if they're not the initially selected screen
-            for screen in app_state.main_screens.values_mut() {
-                screen.refresh_on_arrival();
+    /// Spawn [`AppContext::prepare_storage`] for `app_ctx` and hand back the
+    /// channel its outcome arrives on.
+    ///
+    /// The frame loop polls that channel through [`StoragePrepGate`], which is
+    /// what turns "a background task is running" into "the user is blocked" —
+    /// a thread-blocking gate is impossible here, because the main thread is
+    /// already inside `runtime.block_on`.
+    ///
+    /// Associated (not `&mut self`) so the constructor can call it before
+    /// `AppState` exists.
+    fn spawn_storage_prepare(
+        subtasks: &Arc<TaskManager>,
+        sender: egui_mpsc::SenderAsync<TaskResult>,
+        app_ctx: Arc<AppContext>,
+    ) -> tokio::sync::oneshot::Receiver<Result<(), TaskError>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = subtasks.spawn_sync("storage-prepare", async move {
+            let network = app_ctx.network;
+            let result = app_ctx.prepare_storage(sender).await;
+            if tx.send(result).is_err() {
+                tracing::debug!(
+                    ?network,
+                    "Storage preparation finished after its gate was dropped"
+                );
             }
-        }
-
-        // The Orchard proving key is now owned by the upstream shielded
-        // coordinator (`CachedOrchardProver`), warmed lazily on the first
-        // shielded operation — DET no longer builds or caches it here.
-
-        Ok(app_state)
+        });
+        rx
     }
 
-    /// Force UI animations off (or lift that override) for every network context.
+    /// Spawn chain sync for `app_ctx` — the single shape behind every start site
+    /// (post-gate boot auto-start, network switch, post-onboarding auto-start,
+    /// manual Connect). `reason` selects the task label and the log/banner
+    /// wording.
     ///
-    /// No override by default. Lifting one does not *guarantee* animation: the
-    /// Power and Developer roles keep the UI still on their own.
-    pub fn with_animations(self, enabled: bool) -> Self {
-        for context in self.network_contexts.values() {
-            context.set_animations_disabled(!enabled);
-        }
-        self
-    }
-
-    pub fn current_app_context(&self) -> &Arc<AppContext> {
-        self.network_contexts
-            .get(&self.chosen_network)
-            .unwrap_or_else(|| {
-                panic!(
-                    "BUG: chosen network is {:?} but its AppContext is missing",
-                    self.chosen_network
-                )
-            })
-    }
-
-    fn context_available_for_network(&self, network: Network) -> bool {
-        self.network_contexts.contains_key(&network)
-    }
-
-    fn enforce_network_context_invariant(&mut self) {
-        if self.context_available_for_network(self.chosen_network) {
-            return;
-        }
-
-        panic!(
-            "BUG: selected network {:?} has no AppContext. Refusing to auto-switch networks.",
-            self.chosen_network
-        );
-    }
-
-    /// Spawn wallet-backend wiring for `app_ctx` and, when `start_spv`, chain
-    /// sync — the single shape behind every eager-init site (boot, network
-    /// switch, post-onboarding auto-start, manual Connect). Folding the start
-    /// into the same spawned task closes the boot race where a synchronous
-    /// `start_spv()` could fire before the fire-and-forget wiring finished.
-    /// `reason` selects the task label and the log/banner wording.
+    /// Storage preparation is idempotent and happens inside
+    /// [`AppContext::ensure_wallet_backend_and_start_spv`], so a start can never
+    /// outrun wiring or the legacy drain regardless of which site fires it.
     ///
-    /// Associated (not `&mut self`) so the constructor's per-network loop can
-    /// call it before `AppState` exists; the block-arming that user-initiated
-    /// starts need stays at those callsites.
-    fn spawn_backend_init(
+    /// Associated (not `&mut self`) so the constructor can call it before
+    /// `AppState` exists; the block-arming that user-initiated starts need stays
+    /// at those callsites.
+    fn spawn_spv_start(
         subtasks: &Arc<TaskManager>,
         sender: egui_mpsc::SenderAsync<TaskResult>,
         app_ctx: Arc<AppContext>,
         reason: BackendInitReason,
-        start_spv: bool,
     ) {
         let _ = subtasks.spawn_sync(reason.task_name(), async move {
-            if start_spv {
-                let already_running = app_ctx
-                    .wallet_backend()
-                    .map(|b| b.is_started())
-                    .unwrap_or(false);
-                match app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                    Ok(()) => reason.log_spv_started(&app_ctx, already_running),
-                    Err(e) => reason.on_spv_start_error(app_ctx.egui_ctx(), &e),
-                }
-            } else if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
-                reason.on_wire_error(&e);
+            let already_running = app_ctx
+                .wallet_backend()
+                .map(|b| b.is_started())
+                .unwrap_or(false);
+            match app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
+                Ok(()) => reason.log_spv_started(&app_ctx, already_running),
+                Err(e) => reason.on_spv_start_error(app_ctx.egui_ctx(), &e),
             }
         });
+    }
+
+    /// Start chain sync for the active context.
+    fn start_spv_for(&mut self, reason: BackendInitReason) {
+        Self::spawn_spv_start(
+            &self.subtasks,
+            self.task_result_sender.clone(),
+            self.current_app_context().clone(),
+            reason,
+        );
+    }
+
+    /// Lift the storage-preparation gate: build the root screens against the
+    /// now-hydrated context, settle the startup route, and start chain sync if
+    /// the user opted in.
+    ///
+    /// This is where boot's ordering pays off — every screen's
+    /// `refresh_on_arrival` runs against populated wallet and identity maps, and
+    /// chain sync starts as a continuation of completed preparation rather than
+    /// alongside it.
+    fn finish_boot_phase(&mut self, start_spv: bool) {
+        let active_context = self.current_app_context().clone();
+        for (root, screen) in Self::build_main_screens(&active_context) {
+            self.main_screens.insert(root, screen);
+        }
+
+        // Now that the map exists, an unregistered persisted route can finally
+        // be detected and replaced.
+        self.selected_main_screen = initial_root_screen(
+            self.selected_main_screen,
+            self.main_screens.contains_key(&self.selected_main_screen),
+            self.network_selection_required,
+        );
+
+        // Every root screen refreshes, not just the visible one, so screens the
+        // user has not opened yet (e.g. DashPay Profile) already hold their data.
+        for screen in self.main_screens.values_mut() {
+            screen.refresh_on_arrival();
+        }
+
+        if start_spv {
+            // A user-initiated sync (the user opted into auto-start), so the
+            // SPV block covers it — F-SPV-A.
+            self.spv_block.arm();
+            self.start_spv_for(BackendInitReason::Boot);
+        }
     }
 
     #[cfg(feature = "mcp")]
@@ -1862,15 +1969,23 @@ impl AppState {
         // Live de-gating (§10.11): if the role dropped below Power while the
         // Masternodes tab was active, fall back to `FALLBACK_ROOT_SCREEN` so the
         // gated screen is never shown without its gate. That screen is always
-        // registered, so the subsequent lookup cannot fail.
+        // registered once the gate has lifted.
         if self.selected_main_screen == RootScreenType::RootScreenMasternodes
             && !FeatureGate::Masternodes.is_available(self.current_app_context())
         {
             self.select_main_screen(FALLBACK_ROOT_SCREEN);
         }
+        // Before the storage-preparation gate lifts, the chooser is the only
+        // screen that exists. Resolve to it WITHOUT rewriting the selection —
+        // the user's persisted route must survive the wait.
+        let root = if self.main_screens.contains_key(&self.selected_main_screen) {
+            self.selected_main_screen
+        } else {
+            RootScreenType::RootScreenNetworkChooser
+        };
         self.main_screens
-            .get_mut(&self.selected_main_screen)
-            .expect("expected to get screen")
+            .get_mut(&root)
+            .expect("invariant: the network chooser is registered from construction")
     }
 
     /// Make `root_screen_type` the selected root screen, telling the screen being
@@ -1939,23 +2054,26 @@ impl AppState {
             self.welcome_screen = Some(WelcomeScreen::new(app_context.clone()));
         }
 
-        // Same eager wallet-backend init as at app start (Case B): chain-
-        // only SDK lookups must work pre-unlock on the freshly-switched
-        // context too, otherwise the SDK tight-loops on WalletBackendNotYetWired.
-        //
-        // Chain sync auto-starts on wiring completion (mirrors boot). The slow
-        // path already started SPV inside the `SwitchNetwork` task, but the fast
-        // path (cached context) reaches here without ever having started it — so
-        // the auto-start must live here to cover both. All steps are idempotent:
-        // re-wiring is a no-op and the backend's start latch prevents a second
-        // run loop.
-        Self::spawn_backend_init(
-            &self.subtasks,
-            self.task_result_sender.clone(),
-            app_context.clone(),
-            BackendInitReason::NetworkSwitch,
-            app_context.get_app_settings().auto_start_spv,
-        );
+        // Re-raise the gate for the switched-to network unless this process has
+        // already prepared it: completion sentinels are per-network, so a
+        // never-visited network still has a drain ahead of it. A return to a
+        // prepared one must not flash the overlay, hence the `is_prepared`
+        // check; chain sync then starts as the gate's continuation, covering
+        // both the slow path (which started SPV inside `SwitchNetwork`) and the
+        // fast cached-context path, idempotently.
+        let auto_start_spv = app_context.get_app_settings().auto_start_spv;
+        if self.boot.is_prepared(network) {
+            if auto_start_spv {
+                self.start_spv_for(BackendInitReason::NetworkSwitch);
+            }
+        } else {
+            let result = Self::spawn_storage_prepare(
+                &self.subtasks,
+                self.task_result_sender.clone(),
+                app_context.clone(),
+            );
+            self.boot.attach(network, auto_start_spv, result);
+        }
 
         // Update MCP server's context to follow network switch
         #[cfg(feature = "mcp")]
@@ -1996,6 +2114,7 @@ impl AppState {
         // must re-evaluate from scratch (otherwise a stale `Success` from the
         // previous network would suppress the new network's `Running` banner).
         self.migration.reset_for_switch();
+        self.boot.reset_for_switch();
 
         // Persist the network choice.
         match app_context.update_settings(RootScreenType::RootScreenNetworkChooser) {
@@ -2038,6 +2157,34 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn test_arm_spv_block(&mut self) {
         self.spv_block.arm();
+    }
+
+    /// Test seam: raise the storage-preparation gate with nothing behind it, so
+    /// a kittest can drive the REAL `update()` loop against a gate that never
+    /// completes. Mirrors [`Self::test_arm_spv_block`].
+    ///
+    /// Without this seam the gate's own contract — that it feeds
+    /// `has_blocking_secret_prompt`, so the storage update's password prompt
+    /// renders, focuses and types above it — is untestable, and a regression
+    /// deadlocks production while every test still passes.
+    #[cfg(feature = "testing")]
+    pub fn test_raise_storage_prep_gate(&mut self) {
+        let network = self.chosen_network;
+        self.boot.test_raise(network);
+    }
+
+    /// Test seam: resolve the raised storage-preparation gate as a failure, so a
+    /// kittest can drive the REAL terminal surface for a chosen error without
+    /// having to corrupt a database to produce it.
+    #[cfg(feature = "testing")]
+    pub fn test_fail_storage_prep_gate(&mut self, error: TaskError) {
+        self.boot.test_fail(error);
+    }
+
+    /// Which boot phase the app is in. Root screens exist only in
+    /// [`BootPhase::Ready`], so tests that mount a screen must step until then.
+    pub fn boot_phase(&self) -> BootPhase {
+        self.boot.phase()
     }
 
     /// Test seam (Task 9): run the REAL SPV-sync block driver once against the
@@ -2170,13 +2317,7 @@ impl AppState {
             // Fresh user-initiated episode: arm the block and re-arm the escape,
             // mirroring AppAction::StartSpv.
             self.spv_block.arm();
-            Self::spawn_backend_init(
-                &self.subtasks,
-                self.task_result_sender.clone(),
-                self.current_app_context().clone(),
-                BackendInitReason::OnboardingAutoStart,
-                true,
-            );
+            self.start_spv_for(BackendInitReason::OnboardingAutoStart);
         }
     }
 
@@ -2893,9 +3034,47 @@ impl App for AppState {
         // secret prompt is active above the overlay (it needs the keyboard).
         self.claim_overlay_input(ctx, migration_state.as_ref());
 
+        // Drive the storage-preparation gate before anything renders. While it is
+        // up it owns the frame: no root screen exists yet, and the only surface
+        // above it is the storage update's own password prompt, which the
+        // `has_blocking_secret_prompt` contract above has already excused from
+        // the input claim. Its outcome is applied here rather than after the
+        // render, because the frame preparation completes on is the first frame
+        // that may show a screen — building them later would flash the network
+        // chooser (the only screen that exists until then) for one frame.
+        match self
+            .boot
+            .update(ctx, &active_context, migration_state.as_ref())
+        {
+            Some(GateEvent::Prepared { start_spv, .. }) => self.finish_boot_phase(start_spv),
+            Some(GateEvent::Retry(network)) => {
+                tracing::info!(?network, "User retried storage preparation");
+                let app_ctx = self.current_app_context().clone();
+                let auto_start = app_ctx.get_app_settings().auto_start_spv;
+                let result = Self::spawn_storage_prepare(
+                    &self.subtasks,
+                    self.task_result_sender.clone(),
+                    app_ctx,
+                );
+                self.boot.attach(network, auto_start, result);
+            }
+            Some(GateEvent::Close) => {
+                // The same door every other in-app exit uses, so `on_exit` runs
+                // vault teardown. Nothing was written on this path: the
+                // completion sentinel stays unwritten and the previous version's
+                // database is open read-only, so the next launch retries from an
+                // unchanged state.
+                tracing::info!("User closed the app from the storage-preparation gate");
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            None => {}
+        }
+
         // Show welcome screen if onboarding not completed
         let mut actions = Vec::new();
-        if self.show_welcome_screen
+        if !self.boot.phase().renders_screens() {
+            // Preparing: the gate is the entire interaction surface.
+        } else if self.show_welcome_screen
             && let Some(welcome_screen) = &mut self.welcome_screen
         {
             actions.push(welcome_screen.ui(ui));
@@ -2935,14 +3114,13 @@ impl App for AppState {
         ) {
             self.handle_backend_task(task);
         }
-        if !self.network_selection_required
-            && let Some(task) = self.migration.dispatch_cold_start(&active_context)
-        {
-            self.handle_backend_task(task);
-        }
         if !self.network_selection_required {
-            self.migration
-                .update_banner(ctx, &active_context, migration_state.as_ref());
+            self.migration.update_banner(
+                ctx,
+                &active_context,
+                migration_state.as_ref(),
+                !self.boot.phase().renders_screens(),
+            );
             self.migration.handle_esc(ctx);
             if let Some(task) = self.migration.drain_actions(ctx, self.chosen_network) {
                 self.handle_backend_task(task);
@@ -3019,13 +3197,7 @@ impl App for AppState {
                     // (F-SPV-E: a dropped Info-banner handle could not be cleared
                     // by the overlay's banner suppression).
                     self.spv_block.arm();
-                    Self::spawn_backend_init(
-                        &self.subtasks,
-                        self.task_result_sender.clone(),
-                        self.current_app_context().clone(),
-                        BackendInitReason::ManualConnect,
-                        true,
-                    );
+                    self.start_spv_for(BackendInitReason::ManualConnect);
                 }
                 AppAction::StopSpv => {
                     let app_ctx = self.current_app_context().clone();
@@ -3345,64 +3517,63 @@ mod migration_banner_tests {
         assert!(text.ends_with('.'), "one complete sentence-shaped message");
     }
 
-    /// Cold-start dispatch gate (the startup-race fix): dispatch only when the
-    /// network has NOT already been dispatched AND its wallet backend is wired.
-    /// The not-ready row is the regression guard — a switched-to network whose
-    /// backend is still wiring must NOT dispatch (and so must not burn its
-    /// per-network guard), so a later frame retries once the backend wires.
+    /// The gate's copy must be self-contained, actionable Everyday-User text:
+    /// what happened plus what the user can do, in complete sentences so i18n
+    /// extracts each as one unit. No jargon — these surface behind a block the
+    /// user cannot dismiss, so a vague sentence has no screen to fall back to.
     #[test]
-    fn cold_start_dispatch_gate_truth_table() {
+    fn storage_prep_copy_is_actionable_and_jargon_free() {
+        for text in [
+            STORAGE_PREP_FAILED_MESSAGE,
+            STORAGE_PREP_STUCK_MESSAGE,
+            STORAGE_PREP_PASSWORD_DESCRIPTION,
+        ] {
+            assert!(
+                text.ends_with('.') || text.ends_with('?'),
+                "`{text}` is not a sentence"
+            );
+            for jargon in [
+                "SPV",
+                "backend",
+                "wiring",
+                "migration",
+                "sentinel",
+                "persister",
+            ] {
+                assert!(
+                    !text.contains(jargon),
+                    "`{text}` leaks the internal term `{jargon}`",
+                );
+            }
+        }
         assert!(
-            should_dispatch_cold_start(false, true),
-            "fresh network with a wired backend must dispatch",
-        );
-        assert!(
-            !should_dispatch_cold_start(false, false),
-            "fresh network whose backend is still wiring must wait, not dispatch",
-        );
-        assert!(
-            !should_dispatch_cold_start(true, true),
-            "an already-dispatched network must not re-dispatch",
-        );
-        assert!(
-            !should_dispatch_cold_start(true, false),
-            "already-dispatched and not-ready must not dispatch",
+            STORAGE_PREP_FAILED_MESSAGE.contains("unchanged"),
+            "a failed update must say the user's wallets and keys are untouched",
         );
     }
 
-    /// Readiness-timeout watchdog: the gate surfaces the stuck-preparation
-    /// banner only after the backend has been unwired for at least the timeout,
-    /// never before (premature firing would flash the banner on a normal boot,
-    /// where wiring lags dispatch by a few frames). Synthetic durations so the
-    /// test needs no real clock.
+    /// The gate's action ids are distinct, so a click can never be attributed to
+    /// the wrong button.
     #[test]
-    fn cold_start_backend_wait_timeout_fires_only_after_grace() {
-        let timeout = COLD_START_BACKEND_READY_TIMEOUT;
+    fn overlay_action_ids_are_distinct() {
+        let ids = [STORAGE_PREP_RETRY_ACTION_ID, STORAGE_PREP_CLOSE_ACTION_ID];
+        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate overlay action id");
+    }
 
-        // Not waiting at all never times out.
+    /// Root screens exist only once preparation is done, so only `Ready` may
+    /// render them. `AwaitingNetworkChoice` still renders — the chooser is the
+    /// one screen built before the gate, and the user needs it to get past it.
+    #[test]
+    fn only_a_prepared_or_chooser_phase_renders_screens() {
+        assert!(BootPhase::Ready.renders_screens());
+        assert!(BootPhase::AwaitingNetworkChoice.renders_screens());
         assert!(
-            !cold_start_backend_wait_timed_out(None, timeout),
-            "a network that is not waiting must never time out",
-        );
-
-        // Inside the grace window: keep waiting silently.
-        assert!(
-            !cold_start_backend_wait_timed_out(Some(Duration::ZERO), timeout),
-            "a just-started wait must not fire immediately",
-        );
-        assert!(
-            !cold_start_backend_wait_timed_out(Some(timeout - Duration::from_millis(1)), timeout),
-            "a wait one tick short of the timeout must not fire prematurely",
-        );
-
-        // At or past the window: fire.
-        assert!(
-            cold_start_backend_wait_timed_out(Some(timeout), timeout),
-            "a wait that reaches the timeout must fire",
-        );
-        assert!(
-            cold_start_backend_wait_timed_out(Some(timeout * 4), timeout),
-            "a wait well past the timeout must fire",
+            !BootPhase::Preparing {
+                network: Network::Testnet
+            }
+            .renders_screens(),
+            "no root screen exists while storage preparation is in flight",
         );
     }
 }

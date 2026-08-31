@@ -83,6 +83,26 @@ fn poll_until(
     }
 }
 
+/// Step until `predicate` holds against what is actually painted.
+///
+/// The rendered surface lags the state that drives it by a frame or more, and
+/// under suite contention that lag is not a fixed number of frames — a fixed
+/// `run_steps(N)` before a paint assertion is a race, and a green from a race
+/// means as little as a green from a test that cannot fail.
+fn step_until_painted(
+    harness: &mut Harness<'static, AppState>,
+    what: &str,
+    mut predicate: impl FnMut(&Harness<'static, AppState>) -> bool,
+) {
+    for _ in 0..MAX_GATE_FRAMES {
+        if predicate(harness) {
+            return;
+        }
+        harness.step();
+    }
+    panic!("{what} did not happen within {MAX_GATE_FRAMES} frames");
+}
+
 /// Mount `AppState` and let its boot preparation finish, so the app is on a
 /// screen with the gate released — the state every switch test starts from.
 fn mount_prepared_app() -> Harness<'static, AppState> {
@@ -295,12 +315,14 @@ fn gate_defers_its_card_to_a_blocking_password_prompt() {
             .set_state(MigrationState::Running {
                 step: MigrationStep::Wiring,
             });
-        harness.run_steps(3);
-        assert!(
-            harness
-                .query_by_label_contains("The app is opening your saved data")
-                .is_some(),
-            "the gate paints its progress copy when nothing blocks above it",
+        step_until_painted(
+            &mut harness,
+            "the gate to paint its progress copy when nothing blocks above it",
+            |harness| {
+                harness
+                    .query_by_label_contains("The app is opening your saved data")
+                    .is_some()
+            },
         );
 
         // With a blocking prompt state published, the same gate paints nothing —
@@ -311,7 +333,18 @@ fn gate_defers_its_card_to_a_blocking_password_prompt() {
             .set_state(MigrationState::AwaitingWalletPasswords {
                 wallets: vec![[0x11; 32]],
             });
-        harness.run_steps(3);
+        // Wait for the published state to reach the surface — the gate's own copy
+        // going away is the only positive signal that it has, since the prompt
+        // paints nothing in its place.
+        step_until_painted(
+            &mut harness,
+            "the gate to hand its surface to the blocking prompt",
+            |harness| {
+                harness
+                    .query_by_label_contains("The app is opening your saved data")
+                    .is_none()
+            },
+        );
         assert!(
             ProgressOverlay::has_global(&harness.ctx),
             "the gate is still raised — it is suppressed, not lowered",

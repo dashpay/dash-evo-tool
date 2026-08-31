@@ -15,7 +15,39 @@
 use super::*;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 
+/// Proof that the storage-preparation gate is held.
+///
+/// A `&PrepareGateGuard` parameter is a fact the compiler checks: only
+/// [`AppContext::lock_prepare_gate`] and [`AppContext::try_lock_prepare_gate`]
+/// can produce one. A bare `&MutexGuard<'_, ()>` would not be — every
+/// `Mutex<()>` in the crate hands out the same type, and there is another.
+pub struct PrepareGateGuard<'a> {
+    /// Held for its `Drop`; the gate is released when this value is.
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+
 impl AppContext {
+    /// Take the storage-preparation gate, waiting for whoever holds it.
+    pub(crate) async fn lock_prepare_gate(&self) -> PrepareGateGuard<'_> {
+        PrepareGateGuard {
+            _guard: self.prepare_gate.lock().await,
+        }
+    }
+
+    /// Take the storage-preparation gate if it is free right now.
+    ///
+    /// # Errors
+    ///
+    /// [`tokio::sync::TryLockError`] when a preparation, migration or another
+    /// gate-guarded operation holds it.
+    pub(crate) fn try_lock_prepare_gate(
+        &self,
+    ) -> Result<PrepareGateGuard<'_>, tokio::sync::TryLockError> {
+        self.prepare_gate
+            .try_lock()
+            .map(|guard| PrepareGateGuard { _guard: guard })
+    }
+
     /// Prepare this network's storage: wire the wallet backend (which runs the
     /// upstream schema ladder and rehydrates the wallets it finds), then drain
     /// the previous version's `data.db`.
@@ -48,7 +80,7 @@ impl AppContext {
         self: &Arc<Self>,
         task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
-        let gate = self.prepare_gate.lock().await;
+        let gate = self.lock_prepare_gate().await;
         let status = self.migration_status();
         let announce = matches!(*status.state(), MigrationState::Idle);
         if announce {
@@ -88,8 +120,8 @@ impl AppContext {
     /// test observe what a dispatch site left behind before the run it spawned
     /// can overwrite it.
     #[cfg(feature = "testing")]
-    pub async fn test_hold_prepare_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.prepare_gate.lock().await
+    pub async fn test_hold_prepare_gate(&self) -> PrepareGateGuard<'_> {
+        self.lock_prepare_gate().await
     }
 
     /// Drive the pending vault-cleanup sweep once, under the held gate.
@@ -111,7 +143,7 @@ impl AppContext {
     /// migration; holding the gate satisfies that strictly harder than racing
     /// for it. No other lock is held across it, and its own per-identity record
     /// guards are taken in the documented `prepare_gate` → record order.
-    fn run_pending_vault_cleanup_sweep(&self, gate: &tokio::sync::MutexGuard<'_, ()>) {
+    fn run_pending_vault_cleanup_sweep(&self, gate: &PrepareGateGuard<'_>) {
         // By here the drain has published a terminal state either way, so an
         // in-progress status means someone published a step this function does
         // not know about — the sweep would skip silently on it, which is the

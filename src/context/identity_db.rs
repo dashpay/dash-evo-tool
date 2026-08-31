@@ -1755,7 +1755,7 @@ impl AppContext {
     /// this sweep runs in, and the sweep's purge/vault-delete pair is not
     /// safe to interleave with that.
     pub(crate) fn resume_pending_vault_cleanups(&self) {
-        let Ok(guard) = self.prepare_gate.try_lock() else {
+        let Ok(guard) = self.try_lock_prepare_gate() else {
             tracing::debug!(
                 "Pending vault-cleanup sweep skipped; a storage migration is running, will retry at next boot"
             );
@@ -1775,7 +1775,7 @@ impl AppContext {
     /// a comment.
     pub(crate) fn resume_pending_vault_cleanups_gated(
         &self,
-        _gate: &tokio::sync::MutexGuard<'_, ()>,
+        _gate: &crate::context::PrepareGateGuard<'_>,
     ) {
         if self.migration_status().state().is_in_progress() {
             tracing::debug!(

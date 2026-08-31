@@ -13,6 +13,7 @@ mod settings_db;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod wallet_lifecycle;
+pub use wallet_lifecycle::PrepareGateGuard;
 
 pub use wallet_lifecycle::WalletUnlockRetention;
 

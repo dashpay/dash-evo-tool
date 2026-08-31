@@ -106,6 +106,7 @@ fn clear_spv_chain_storage(spv_dir: &Path) -> Result<(), TaskError> {
 
 mod bootstrap;
 mod prepare;
+pub use prepare::PrepareGateGuard;
 mod registration;
 mod removal;
 mod spv;

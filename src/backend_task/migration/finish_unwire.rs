@@ -598,10 +598,10 @@ fn write_dapi_refresh_completion(
 /// both signals) rather than an `Err` that this boundary would publish as a
 /// plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
-    let _run_guard = match app_context.prepare_gate.try_lock() {
+    let _run_guard = match app_context.try_lock_prepare_gate() {
         Ok(guard) => guard,
         Err(_) => {
-            let guard = app_context.prepare_gate.lock().await;
+            let guard = app_context.lock_prepare_gate().await;
             match app_context.migration_status().state().as_ref() {
                 MigrationState::Failed { error } => {
                     let result = Err(super::migration_task_error(Arc::clone(error)));
@@ -635,7 +635,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
 /// Same as [`run`].
 pub(crate) async fn run_gated(
     app_context: &Arc<AppContext>,
-    _gate: &tokio::sync::MutexGuard<'_, ()>,
+    _gate: &crate::context::PrepareGateGuard<'_>,
 ) -> Result<bool, TaskError> {
     match run_under_guard(app_context).await {
         Ok(did_work) => Ok(did_work),

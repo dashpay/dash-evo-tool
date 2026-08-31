@@ -809,3 +809,32 @@ fn a_password_prompt_does_not_trip_the_stuck_watchdog() {
         );
     });
 }
+
+/// Belt and braces for the failure mode with no way out: a gate raised over
+/// nothing must still offer an exit.
+///
+/// No code path may produce this state — every reset of the gate is followed by
+/// an attach or by `Ready`. But it is the one gate bug a user cannot work
+/// around: no screen renders beneath the overlay, and a wedge that predates this
+/// guard left them with a buttonless card and no option but to kill the process.
+/// So the invariant is enforced where the user is, not only where the bug was.
+#[test]
+fn a_gate_raised_over_nothing_still_offers_an_exit() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_with_raised_gate();
+        harness.state_mut().test_orphan_storage_prep_gate();
+        harness.run_steps(3);
+
+        assert!(
+            matches!(harness.state().boot_phase(), BootPhase::Preparing { .. }),
+            "the gate is still up — this is the trapped state, not a released one",
+        );
+        assert!(
+            harness.query_by_label("Close the app").is_some(),
+            "a gate with nothing to wait for must still let the user out",
+        );
+    });
+}

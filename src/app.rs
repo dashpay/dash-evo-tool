@@ -2206,6 +2206,13 @@ impl AppState {
         self.boot.test_complete();
     }
 
+    /// Test seam: strand the raised gate with no preparation behind it — the
+    /// shape a reset that outran its attach used to leave.
+    #[cfg(feature = "testing")]
+    pub fn test_orphan_storage_prep_gate(&mut self) {
+        self.boot.test_orphan();
+    }
+
     /// Test clock seam: age the in-flight storage preparation by `by`, so a
     /// kittest can reach the stuck-preparation threshold without waiting.
     #[cfg(feature = "testing")]

@@ -454,6 +454,9 @@ pub(super) struct StoragePrepGate {
     overlay: Option<OverlayHandle>,
     /// Whether to start chain sync once the current preparation completes.
     auto_start_spv: bool,
+    /// Whether the "raised over nothing" surface has already been armed, so its
+    /// log and its overlay swap happen once rather than every frame.
+    orphaned: bool,
     #[cfg(feature = "testing")]
     test_hold: Option<tokio::sync::oneshot::Sender<Result<(), TaskError>>>,
 }
@@ -504,6 +507,7 @@ impl StoragePrepGate {
         Self {
             phase,
             prepared: BTreeSet::new(),
+            orphaned: false,
             pending: None,
             failure: None,
             overlay: None,
@@ -535,6 +539,7 @@ impl StoragePrepGate {
         self.phase = BootPhase::Preparing { network };
         self.auto_start_spv = auto_start_spv;
         self.failure = None;
+        self.orphaned = false;
         self.pending = Some(PendingPrepare {
             network,
             started: Instant::now(),
@@ -551,6 +556,13 @@ impl StoragePrepGate {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.test_hold = Some(tx);
         self.attach(network, false, rx);
+    }
+
+    /// Test seam: drop the in-flight preparation while leaving the gate raised,
+    /// reproducing the state a reset-after-attach used to leave behind.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_orphan(&mut self) {
+        self.pending = None;
     }
 
     /// Test clock seam: shift the in-flight preparation's start into the past,
@@ -682,7 +694,7 @@ impl StoragePrepGate {
             return;
         }
 
-        let stuck = self.mark_stuck_if_overdue(migration_state);
+        let stuck = self.mark_stuck_if_overdue(migration_state) || self.raise_if_orphaned();
         let description = if stuck {
             STORAGE_PREP_STUCK_MESSAGE
         } else {
@@ -704,6 +716,30 @@ impl StoragePrepGate {
             }
             self.overlay.raise(ctx, "", config);
         }
+    }
+
+    /// Whether the gate is up with nothing behind it, which no code path is
+    /// allowed to produce.
+    ///
+    /// A raised gate with no preparation to poll and no failure to show is
+    /// unreachable by design — every reset is followed by an attach or by
+    /// `Ready` — but it is also the one gate bug the user cannot work around:
+    /// no screen renders beneath it and, without this, no button appears on it.
+    /// Treating it as stuck costs a wrong-ish sentence in a state that should
+    /// never occur and buys an exit that is never missing.
+    fn raise_if_orphaned(&mut self) -> bool {
+        if self.pending.is_some() || !matches!(self.phase, BootPhase::Preparing { .. }) {
+            return false;
+        }
+        if !self.orphaned {
+            self.orphaned = true;
+            tracing::error!(
+                phase = ?self.phase,
+                "Storage-preparation gate is raised with nothing to wait for; offering to close the app",
+            );
+            self.overlay.take_and_clear();
+        }
+        true
     }
 
     /// Whether preparation has been running long enough to surface the stuck

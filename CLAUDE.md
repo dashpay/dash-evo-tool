@@ -42,7 +42,7 @@ Test locations:
 
 Driving the actual compiled binary through a real display — for flows that need real navigation, real async/network timing, or visual verification beyond what `kittest` (no display) or `backend-e2e` (no UI) can cover. Read `docs/gui-testing/README.md` before running this kind of test — it has the safety rules (isolated data dir, credential handling, fund-movement caps) and the reusable scenario library under `docs/gui-testing/scenarios/`.
 
-Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.92), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
+Always run `cargo fmt --all` when finalizing your work — this honors the `rust-toolchain.toml` pin (1.98), matching what `clippy.yml`'s `cargo fmt --all -- --check` actually validates. For `cargo clippy`, see the scope guidance below.
 
 ### Local vs CI — avoid duplicate test runs
 
@@ -258,7 +258,7 @@ What each verifies:
 - `egui/eframe 0.35` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
-- Rust edition 2024, minimum rust-version 1.92
+- Rust edition 2024, minimum rust-version 1.98
 
 ### Configuration
 

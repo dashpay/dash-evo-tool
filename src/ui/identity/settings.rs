@@ -15,14 +15,10 @@
 //! - **Delete social profile** — no `DashPayTask::DeleteProfile` variant.
 //! - **Add / remove alias** and **Make primary** — no `IdentityTask::AddAlias`
 //!   / `RemoveAlias` / `MakePrimaryAlias` variants.
-//! - **Unload this identity from this device** — no identity-unload task; the
-//!   existing `wallet_lifecycle` unload path is wallet-scoped, not identity-
-//!   scoped, and wiring it here would bypass the dashpay / DPNS state cleanup
-//!   the operation implies.
 //!
 //! These appear as `Gated(missing_task)` non-interactive rows with the copy
-//! from design-spec §D (tooltip catalog entries #49 and #59). A TODO comment
-//! marks each one so the backend follow-up can search for the flag.
+//! from design-spec §D (tooltip catalog entry #49). A TODO comment marks each
+//! one so the backend follow-up can search for the flag.
 
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
@@ -35,6 +31,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill;
+use crate::ui::identities::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
@@ -86,8 +83,9 @@ const TIP_ADD_KEY: &str =
 const TIP_MANAGE_KEYS: &str = "View this identity's keys and their security settings.";
 const TIP_VIEW_USERNAMES: &str = "Open the complete list of your registered usernames.";
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
-const TIP_UNLOAD: &str = "Remove this identity from this device. It remains on Dash Platform — you can load it \
-     again later.";
+const TIP_UNLOAD: &str = "Remove this identity from this device and permanently delete the private keys \
+     stored here. It remains on Dash Platform, but you will need your own backup to use it on this \
+     device again.";
 const TIP_SAVE_ALIAS: &str = "Save this name on this device.";
 const TIP_ID_COPY: &str = "Copy the full identity ID to your clipboard.";
 
@@ -113,6 +111,48 @@ use crate::model::dashpay::{
     MAX_AVATAR_URL_CHARS as MAX_AVATAR_URL, MAX_BIO_CHARS as MAX_BIO,
     MAX_DISPLAY_NAME_CHARS as MAX_DISPLAY_NAME, ProfileFieldError, validate_profile_fields,
 };
+
+// ---------------------------------------------------------------------------
+// Unload flow
+// ---------------------------------------------------------------------------
+
+/// An open unload confirmation, bound to the identity that was on screen when
+/// the button was clicked.
+///
+/// Binding the two together is the whole point: the confirmation is answered
+/// frames later, and the hub's selection can move in between. Re-reading the
+/// selected identity at confirm time would unload whichever identity happens to
+/// be selected by then, not the one the user was looking at.
+struct PendingIdentityUnload {
+    dialog: ConfirmationDialog,
+    target: Identifier,
+}
+
+/// The unload prompt's body, naming the identity it is about to unload.
+///
+/// The identity is named because the answer permanently deletes its private
+/// keys: a prompt that says only "this identity" gives the user nothing to
+/// check it against.
+fn unload_confirmation_message(identity_id: &Identifier) -> String {
+    format!(
+        "This removes the identity {identity_id} from this device and permanently deletes \
+         the private keys stored here. It remains on Dash Platform, but using it again on \
+         this device will require your own backup — such as your wallet's recovery phrase \
+         or the key you imported.",
+        identity_id = identity_id.to_string(Encoding::Base58),
+    )
+}
+
+/// What a confirmed unload resolves to.
+#[derive(Debug, PartialEq, Eq)]
+enum UnloadDecision {
+    /// Remove the identity snapshotted when the button was clicked.
+    Remove(Identifier),
+    /// Refuse: the storage update is still running.
+    StorageBusy,
+    /// No unload was pending — nothing to do.
+    Nothing,
+}
 
 // ---------------------------------------------------------------------------
 // Stateful tab component
@@ -154,8 +194,8 @@ pub struct SettingsTab {
     advanced_open: bool,
     /// Confirmation dialog for the (gated) "Delete social profile" action.
     confirm_delete_profile: Option<ConfirmationDialog>,
-    /// Confirmation dialog for the (gated) "Unload this identity" action.
-    confirm_unload: Option<ConfirmationDialog>,
+    /// Open "Unload this identity" confirmation, bound to its target.
+    confirm_unload: Option<PendingIdentityUnload>,
     /// Track whether we have loaded the cached profile for the current
     /// identity. Reset on identity change.
     profile_loaded: bool,
@@ -232,7 +272,7 @@ impl SettingsTab {
             });
 
         // Dialogs on top.
-        action |= self.show_gated_dialogs(ui);
+        action |= self.show_confirmation_dialogs(ui, app_context);
 
         action
     }
@@ -746,26 +786,15 @@ impl SettingsTab {
                     .color(DashColors::text_secondary(dark_mode)),
                 );
                 ui.add_space(6.0);
-                // TODO(identity-hub): wire once an identity-scoped unload task
-                // exists. Wallet-scoped unload (wallet_lifecycle) is too broad
-                // — it would silently drop sibling identities on the same wallet.
                 let unload = ui
-                    .add_enabled(
-                        false,
-                        ComponentStyles::danger_button("Unload this identity from this device"),
-                    )
-                    .disabled_tooltip(format!("{TIP_UNLOAD} {GATED_COMING_SOON}"));
+                    .add(ComponentStyles::danger_button(
+                        "Unload this identity from this device",
+                    ))
+                    .clickable_tooltip(TIP_UNLOAD);
                 if unload.clicked() {
-                    self.confirm_unload = Some(
-                        ConfirmationDialog::new(
-                            "Unload this identity",
-                            "This removes the identity from this device. It remains on Dash \
-                             Platform — you can load it again later.",
-                        )
-                        .confirm_text(Some("Unload"))
-                        .cancel_text(Some("Keep"))
-                        .danger_mode(true),
-                    );
+                    // Snapshot the identity being rendered, not the selected
+                    // one: by the time the dialog is answered they can differ.
+                    self.open_unload_confirmation(identity.identity.id());
                 }
             });
 
@@ -776,7 +805,11 @@ impl SettingsTab {
     // Dialog handling
     // -----------------------------------------------------------------
 
-    fn show_gated_dialogs(&mut self, ui: &mut Ui) -> AppAction {
+    fn show_confirmation_dialogs(
+        &mut self,
+        ui: &mut Ui,
+        app_context: &Arc<AppContext>,
+    ) -> AppAction {
         if let Some(dialog) = self.confirm_delete_profile.as_mut() {
             match dialog.show(ui).inner.dialog_response {
                 Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
@@ -786,16 +819,71 @@ impl SettingsTab {
             }
         }
 
-        if let Some(dialog) = self.confirm_unload.as_mut() {
-            match dialog.show(ui).inner.dialog_response {
-                Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
-                    self.confirm_unload = None;
+        let Some(pending) = self.confirm_unload.as_mut() else {
+            return AppAction::None;
+        };
+        // Read the response out before touching `self` again — the dialog is
+        // borrowed from the very field the handlers below consume.
+        let response = pending.dialog.show(ui).inner.dialog_response;
+        match response {
+            Some(ConfirmationStatus::Confirmed) => {
+                let in_progress = app_context.migration_status().state().is_in_progress();
+                match self.take_confirmed_unload(in_progress) {
+                    UnloadDecision::Remove(identity_id) => {
+                        return AppAction::BackendTask(BackendTask::IdentityTask(
+                            IdentityTask::RemoveIdentity { identity_id },
+                        ));
+                    }
+                    UnloadDecision::StorageBusy => {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE,
+                            MessageType::Warning,
+                        );
+                    }
+                    UnloadDecision::Nothing => {}
                 }
-                None => {}
             }
+            Some(ConfirmationStatus::Canceled) => {
+                self.confirm_unload = None;
+            }
+            None => {}
         }
 
         AppAction::None
+    }
+
+    /// Open the unload confirmation for `identity_id`, capturing it now so the
+    /// answer cannot be applied to a different identity later.
+    ///
+    /// Blocks input: the answer destroys private keys, and the identity
+    /// switcher behind an unblocking modal stays clickable, so the user could
+    /// otherwise confirm for one identity while looking at another's page.
+    fn open_unload_confirmation(&mut self, identity_id: Identifier) {
+        self.confirm_unload = Some(PendingIdentityUnload {
+            dialog: ConfirmationDialog::new(
+                "Unload this identity",
+                unload_confirmation_message(&identity_id),
+            )
+            .confirm_text(Some("Unload"))
+            .cancel_text(Some("Keep"))
+            .danger_mode(true)
+            .blocks_input(true),
+            target: identity_id,
+        });
+    }
+
+    /// Resolve a confirmed unload, closing the dialog either way. Returns the
+    /// snapshotted target, never the currently selected identity.
+    fn take_confirmed_unload(&mut self, migration_in_progress: bool) -> UnloadDecision {
+        let Some(pending) = self.confirm_unload.take() else {
+            return UnloadDecision::Nothing;
+        };
+        if migration_in_progress {
+            UnloadDecision::StorageBusy
+        } else {
+            UnloadDecision::Remove(pending.target)
+        }
     }
 
     // -----------------------------------------------------------------
@@ -955,6 +1043,15 @@ impl SettingsTab {
     // Test helpers (pub(crate))
     // -----------------------------------------------------------------
 
+    /// Test helper: adopt `identity` as the tab's current selection — the state
+    /// `ensure_selected` settles into after a frame in which that identity was
+    /// the effective one. Lets a caller stage the retained-identity half of an
+    /// unload without driving a render.
+    #[cfg(test)]
+    pub(crate) fn select_identity_for_test(&mut self, identity: QualifiedIdentity) {
+        self.selected_identity = Some(identity);
+    }
+
     /// Test helper: force the advanced expander open so the kittest frame sees
     /// the interior widgets without a click event. Not used by production code
     /// but kept on the struct for future populated-render tests.
@@ -1064,8 +1161,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn qualified_identity() -> QualifiedIdentity {
+        qualified_identity_with_id(7)
+    }
+
+    fn qualified_identity_with_id(byte: u8) -> QualifiedIdentity {
         let identity = Identity::create_basic_identity(
-            Identifier::from_bytes(&[7; 32]).expect("32-byte identifier"),
+            Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier"),
             PlatformVersion::latest(),
         )
         .expect("basic identity");
@@ -1400,5 +1501,83 @@ mod tests {
         assert_eq!(fields.avatar_url, "https://example.com/a.png");
         // Snapshot consumed → a second call is a no-op.
         assert!(tab.on_profile_saved().is_none());
+    }
+
+    /// The prompt is the last thing standing between a click and a permanent
+    /// key deletion, so it must name what it is about to destroy and hold the
+    /// screen still while it asks. Naming: "this identity" is unanswerable —
+    /// the user cannot tell which identity the dialog means. Blocking: the
+    /// identity switcher behind an unblocking modal stays clickable, so a
+    /// prompt opened for one identity can be confirmed while the user is
+    /// looking at another one's page, and the keys that die are not the ones
+    /// on screen.
+    #[test]
+    fn the_unload_prompt_names_its_target_and_freezes_the_screen_behind_it() {
+        let target = Identifier::from([7; 32]);
+        let mut tab = SettingsTab::new();
+        tab.open_unload_confirmation(target);
+
+        let pending = tab.confirm_unload.as_ref().expect("the prompt is open");
+        assert!(
+            pending
+                .dialog
+                .message_text()
+                .contains(&target.to_string(Encoding::Base58)),
+            "the prompt must name the identity whose keys it is about to delete"
+        );
+        assert!(
+            pending.dialog.is_input_blocking(),
+            "the prompt must block the controls behind it, so the answer cannot \
+             be given for one identity while another is on screen"
+        );
+    }
+
+    /// The TOCTOU guard, still needed with the prompt blocking input: the
+    /// selection can also move without a click (a background refresh, a
+    /// network switch), and the removal must target the identity the user was
+    /// looking at when they clicked, not whatever is selected when they
+    /// confirm.
+    #[test]
+    fn confirming_an_unload_targets_the_identity_snapshotted_at_click_time() {
+        let clicked = Identifier::from([7; 32]);
+        let mut tab = SettingsTab::new();
+        tab.open_unload_confirmation(clicked);
+
+        // The selection moves on while the dialog is open.
+        tab.selected_identity = Some(qualified_identity_with_id(9));
+
+        assert_eq!(
+            tab.take_confirmed_unload(false),
+            UnloadDecision::Remove(clicked),
+        );
+    }
+
+    /// Removing an identity while the storage update runs is refused by
+    /// `delete_local_qualified_identity` itself, so the UI must say so up front
+    /// rather than dispatching a task that can only come back as an error.
+    #[test]
+    fn confirming_an_unload_is_refused_while_the_storage_update_runs() {
+        let mut tab = SettingsTab::new();
+        tab.open_unload_confirmation(Identifier::from([7; 32]));
+
+        assert_eq!(tab.take_confirmed_unload(true), UnloadDecision::StorageBusy);
+        assert!(
+            tab.confirm_unload.is_none(),
+            "a refused unload still closes the dialog, so the user can retry deliberately"
+        );
+    }
+
+    /// Resolving a confirmation consumes it: a second resolve must not re-issue
+    /// the removal for an identity that is already gone.
+    #[test]
+    fn an_unload_confirmation_resolves_only_once() {
+        let mut tab = SettingsTab::new();
+        tab.open_unload_confirmation(Identifier::from([7; 32]));
+
+        assert!(matches!(
+            tab.take_confirmed_unload(false),
+            UnloadDecision::Remove(_)
+        ));
+        assert_eq!(tab.take_confirmed_unload(false), UnloadDecision::Nothing);
     }
 }

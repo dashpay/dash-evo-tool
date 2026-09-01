@@ -15,8 +15,8 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
-use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identity::funding_common::generate_qr_code_image;
+use crate::ui::identity::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use eframe::epaint::TextureHandle;

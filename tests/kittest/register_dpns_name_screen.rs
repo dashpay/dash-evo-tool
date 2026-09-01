@@ -21,7 +21,7 @@ use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, Qua
 use dash_evo_tool::ui::MessageType;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::components::ProgressOverlay;
-use dash_evo_tool::ui::identities::register_dpns_name_screen::{
+use dash_evo_tool::ui::identity::register_dpns_name_screen::{
     RegisterDpnsNameScreen, RegisterDpnsNameSource,
 };
 use dash_sdk::dpp::identity::Identity;

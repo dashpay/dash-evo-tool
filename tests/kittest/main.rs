@@ -4,7 +4,6 @@ mod contract_screen;
 mod create_asset_lock_screen;
 mod dashpay_screen;
 mod global_nav_switcher;
-mod identities_screen;
 mod identity_home;
 mod identity_hub;
 mod identity_hub_activity;

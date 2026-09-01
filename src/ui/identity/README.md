@@ -1,7 +1,8 @@
-# Identity Hub Components
+# Identity UI
 
-Hub-local widgets live here, alongside the tab modules that consume them.
-Promote to `src/ui/components/` only if a second, non-hub consumer appears.
+Hub-local widgets live here, alongside the tab modules that consume them and the
+standalone flow screens the hub links out to.
+Promote a widget to `src/ui/components/` only if a second, non-hub consumer appears.
 
 ## Tab modules
 
@@ -16,6 +17,21 @@ Promote to `src/ui/components/` only if a second, non-hub consumer appears.
 | `picker.rs` | Identity picker grid (≥ 2 identities) |
 | `landing.rs` | `HubLanding` state enum |
 | `tabs.rs` | `IdentityHubTab` enum |
+
+## Flow screens
+
+Pushed onto the screen stack from the hub (or the left nav), not tabs.
+
+| Module | Responsibility |
+|---|---|
+| `add_existing_identity_screen.rs` | Search a wallet for identities already registered from it |
+| `add_new_identity_screen/` | Register a new identity (funded by address, deposit, asset lock, or balance) |
+| `top_up_identity_screen/` | Top up an identity's credit balance, same four funding sources |
+| `register_dpns_name_screen.rs` | Claim a DPNS username for an identity |
+| `transfer_screen.rs` | Transfer credits to another identity |
+| `withdraw_screen.rs` | Withdraw credits to a Core payment address |
+| `keys/` | Key list, key detail, and add-key screens |
+| `funding_common.rs` | Funding-method state machine and widgets, shared by the flows above and by `ui/wallets/` |
 
 ## Widgets
 

@@ -18,7 +18,7 @@ use dash_evo_tool::model::qualified_identity::{
 };
 use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::components::legacy_recovery_section::recovery_item_labels;
-use dash_evo_tool::ui::identities::keys::keys_screen::KeysScreen;
+use dash_evo_tool::ui::identity::keys::keys_screen::KeysScreen;
 use dash_evo_tool::ui::masternodes::{KeyVocabulary, manage_keys_labels};
 use dash_evo_tool::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

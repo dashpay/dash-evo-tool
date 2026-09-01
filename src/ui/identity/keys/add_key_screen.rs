@@ -14,7 +14,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identity::get_selected_wallet;
 use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
@@ -410,7 +410,7 @@ impl ScreenLike for AddKeyScreen {
         action |= add_left_panel(
             ui,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenIdentities,
+            crate::ui::RootScreenType::RootScreenIdentityHub,
         );
 
         action |= island_central_panel(ui, |ui| {

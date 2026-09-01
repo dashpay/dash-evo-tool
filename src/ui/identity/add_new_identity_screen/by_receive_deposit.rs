@@ -2,16 +2,26 @@ use crate::app::AppAction;
 use crate::model::amount::Amount;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
-use crate::ui::identities::funding_common::{
+use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
     should_queue_funding_address, snapshot_deposit_outcome,
 };
-use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::theme::DashColors;
+use crate::wallet_backend::poison::RwLockRecover;
 use egui::{Color32, RichText, Ui, Vec2};
 use std::time::Duration;
 
-impl TopUpIdentityScreen {
+impl AddNewIdentityScreen {
+    /// The minimum credits needed to create the identity with the current key
+    /// set — shown as the amount to deposit.
+    fn deposit_minimum_credits(&self) -> u64 {
+        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+        self.app_context
+            .fee_estimator()
+            .estimate_identity_create(key_count)
+    }
+
     /// Queue a deposit-address derivation unless one is already shown, in
     /// flight, or a prior derivation failed. Idempotent, so it is safe to call
     /// every frame from the QR view.
@@ -24,7 +34,7 @@ impl TopUpIdentityScreen {
         ) {
             return;
         }
-        if let Some(wallet) = &self.wallet
+        if let Some(wallet) = &self.selected_wallet
             && let Ok(seed_hash) = wallet.read().map(|w| w.seed_hash())
         {
             self.pending_funding_address_request = Some(seed_hash);
@@ -47,7 +57,7 @@ impl TopUpIdentityScreen {
 
         // The QR URI encodes the amount at 4 decimals; show that same rounded-up
         // figure in the hint so the two never disagree or understate the minimum.
-        let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
+        let minimum_credits = self.deposit_minimum_credits();
         let minimum_dash = round_up_dash_4dp(Amount::dash_from_credits(minimum_credits).to_f64());
         let minimum_amount = format!("{minimum_dash:.4} DASH");
         let dash_uri = format!("dash:{address}?amount={minimum_dash:.4}");
@@ -63,7 +73,7 @@ impl TopUpIdentityScreen {
 
         ui.add_space(10.0);
         ui.label(format!(
-            "Send at least {minimum_amount} to this address to top up your identity."
+            "Send at least {minimum_amount} to this address to fund your identity."
         ));
         ui.add_space(5.0);
 
@@ -103,7 +113,7 @@ impl TopUpIdentityScreen {
             return;
         };
         let Some(seed_hash) = self
-            .wallet
+            .selected_wallet
             .as_ref()
             .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()))
         else {
@@ -117,32 +127,32 @@ impl TopUpIdentityScreen {
             .unwrap_or(0);
         self.funding_address_balance_duffs = address_balance_duffs;
 
-        let minimum_credits = self.app_context.fee_estimator().estimate_identity_topup();
-        let current_step = self.current_step();
+        let minimum_credits = self.deposit_minimum_credits();
+        let current_step = *self.step.read_recover();
         let (next_step, prefill) =
             snapshot_deposit_outcome(current_step, address_balance_duffs, minimum_credits);
         if prefill.is_some() {
             self.prefill_funding_amount = true;
-            self.set_step(next_step);
+            *self.step.write_recover() = next_step;
         }
     }
 
     /// Render the "Receive a new deposit" funding method: a scannable deposit
-    /// address while waiting, then an editable amount and Add funds button once the
+    /// address while waiting, then an editable amount and Create button once the
     /// deposit arrives. A "Choose a different funding method" affordance is
     /// present throughout so the user is never trapped.
     pub fn render_ui_by_receive_deposit(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
         let mut action = AppAction::None;
         self.reconcile_funding_deposit();
-        let step = self.current_step();
+        let step = *self.step.read_recover();
         let seed_hash = self
-            .wallet
+            .selected_wallet
             .as_ref()
             .and_then(|wallet| wallet.read().ok().map(|wallet| wallet.seed_hash()));
 
         if step == WalletFundedScreenStep::WaitingOnFunds {
             ui.heading(format!(
-                "{step_number}. Send a deposit to top up your identity."
+                "{step_number}. Send a deposit to fund your identity."
             ));
             ui.add_space(10.0);
             self.render_deposit_qr(ui);
@@ -197,17 +207,23 @@ impl TopUpIdentityScreen {
                     self.asset_lock_balance.invalidate_one(&seed_hash);
                 }
             }
-            self.top_up_funding_amount_input(ui);
+            self.render_funding_amount_input(ui);
 
-            let has_valid_amount = self.funding_amount_exact.is_some_and(|d| d > 0);
+            let has_valid_amount = self
+                .funding_amount
+                .as_ref()
+                .map(|a| a.value() > 0)
+                .unwrap_or(false);
 
             if has_valid_amount {
-                let button = egui::Button::new(RichText::new("Add funds").color(Color32::WHITE))
-                    .fill(DashColors::DASH_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0);
+                self.render_alias_input(ui, step_number + 1);
+                let button =
+                    egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
+                        .fill(DashColors::DASH_BLUE)
+                        .frame(true)
+                        .corner_radius(3.0);
                 if ui.add(button).clicked() {
-                    action = self.top_up_identity_clicked(FundingMethod::ReceiveDeposit);
+                    action = self.register_identity_clicked(FundingMethod::ReceiveDeposit);
                 }
                 ui.add_space(10.0);
             }
@@ -219,10 +235,10 @@ impl TopUpIdentityScreen {
         ui.add_space(20.0);
         ui.vertical_centered(|ui| match step {
             WalletFundedScreenStep::WaitingForAssetLock => {
-                ui.heading("Waiting for the Dash network to confirm the transfer.");
+                ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
             }
             WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                ui.heading("Waiting for Platform to add the funds to the identity.");
+                ui.heading("=> Waiting for Platform acknowledgement <=");
             }
             _ => {}
         });

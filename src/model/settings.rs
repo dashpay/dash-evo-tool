@@ -39,7 +39,6 @@ pub enum ThemeMode {
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[allow(clippy::enum_variant_names)]
 pub enum RootScreenType {
-    RootScreenIdentities,
     RootScreenDPNSActiveContests,
     RootScreenDPNSPastContests,
     RootScreenDPNSOwnedNames,
@@ -62,10 +61,10 @@ pub enum RootScreenType {
     RootScreenToolsGroveSTARKScreen,
     RootScreenToolsAddressBalanceScreen,
     RootScreenDashpay,
-    /// New unified Identities hub (Home · Contacts · Activity · Settings).
-    /// Coexists with `RootScreenIdentities` and the DashPay entries while the legacy
-    /// screens are still wired. Distinct variant so user selection, persistence, and
-    /// left-nav highlighting stay independent.
+    /// The unified Identities hub (Home · Contacts · Activity · Settings), and
+    /// the single user-facing `Identities` nav entry. Distinct variant so user
+    /// selection, persistence, and left-nav highlighting stay independent of the
+    /// DashPay entries it coexists with.
     RootScreenIdentityHub,
     /// Masternodes section (Expert-Mode gated). Node-operator surface for
     /// loading masternode/evonode identities, DPNS-contest voting, and
@@ -78,7 +77,7 @@ impl RootScreenType {
     /// Convert `RootScreenType` to an integer
     pub fn to_int(self) -> u32 {
         match self {
-            RootScreenType::RootScreenIdentities => 0,
+            // 0 used to be the standalone Identities screen
             RootScreenType::RootScreenDPNSActiveContests => 1,
             RootScreenType::RootScreenDPNSPastContests => 2,
             RootScreenType::RootScreenDPNSOwnedNames => 3,
@@ -113,7 +112,7 @@ impl RootScreenType {
     /// Convert an integer to a `RootScreenType`
     pub fn from_int(value: u32) -> Option<Self> {
         match value {
-            0 => Some(RootScreenType::RootScreenIdentities),
+            // 0 used to be the standalone Identities screen
             1 => Some(RootScreenType::RootScreenDPNSActiveContests),
             2 => Some(RootScreenType::RootScreenDPNSPastContests),
             3 => Some(RootScreenType::RootScreenDPNSOwnedNames),
@@ -180,6 +179,19 @@ mod root_screen_type_tests {
     fn from_int_returns_none_for_unknown_value() {
         assert!(RootScreenType::from_int(9999).is_none());
     }
+
+    /// Encoding 0 belonged to the standalone Identities screen, so it decodes
+    /// to `None` and the settings default decides where those users land. That
+    /// default must be the Identities hub: any other destination drops someone
+    /// who was last on an identities screen onto an unrelated section.
+    #[test]
+    fn the_retired_identities_encoding_falls_back_to_the_hub() {
+        assert!(RootScreenType::from_int(0).is_none());
+        assert_eq!(
+            super::AppSettings::default().root_screen_type,
+            RootScreenType::RootScreenIdentityHub
+        );
+    }
 }
 
 /// Application-level user preferences.
@@ -237,7 +249,9 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             network: Network::Mainnet,
-            root_screen_type: RootScreenType::RootScreenDashpay,
+            // Matches `app::FALLBACK_ROOT_SCREEN`: the one nav entry every
+            // install has, and where an undecodable persisted value lands.
+            root_screen_type: RootScreenType::RootScreenIdentityHub,
             dash_qt_path: detect_dash_qt_path(),
             overwrite_dash_conf: true,
             disable_zmq: false,
@@ -486,7 +500,7 @@ mod tests {
     fn settings_round_trip_through_wire() {
         let s = AppSettings {
             network: Network::Testnet,
-            root_screen_type: RootScreenType::RootScreenIdentities,
+            root_screen_type: RootScreenType::RootScreenIdentityHub,
             dash_qt_path: Some(PathBuf::from("/tmp/dash-qt")),
             overwrite_dash_conf: false,
             disable_zmq: true,

@@ -657,7 +657,7 @@ impl ScreenLike for IdentityHubScreen {
                 // still in flight keeps its own record.
                 self.pending_unloads
                     .retain(|pending| !identity_ids.contains(pending));
-                let (message, message_type) = crate::ui::identities::removed_identities_banner(
+                let (message, message_type) = crate::ui::identity::removed_identities_banner(
                     *associated_cleanup_failed,
                     *cleanup_deferred,
                 );

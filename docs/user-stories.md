@@ -34,6 +34,7 @@ As a user, I want to create a new wallet with a generated mnemonic so that I can
 - User can select mnemonic language and wallet name.
 - Optional password protection is offered.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
+- An optional wallet password must also be no more than 4080 UTF-8 bytes, counted without trimming. The app refuses a longer one when the wallet is created rather than saving a password it could never read back.
 - Recovery phrase is displayed for backup.
 
 ### WAL-002: Import wallet via mnemonic [Implemented]
@@ -44,6 +45,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 - Accepts standard BIP39 mnemonic phrases.
 - User can assign a name and optional password.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
+- An optional wallet password must also be no more than 4080 UTF-8 bytes, counted without trimming. The app refuses a longer one when the wallet is created rather than saving a password it could never read back.
 - Wallet syncs balances after import.
 
 ### WAL-003: Import single private key [Implemented]
@@ -52,6 +54,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 As a power user, I want to import a single private key so that I can manage funds from a standalone address.
 
 - Creates a single-key wallet from WIF-format key.
+- An optional per-key passphrase must be at least 8 characters and no more than 4080 UTF-8 bytes. A longer one is refused at import rather than saved as a passphrase the app could never read back.
 - Wallet appears in the wallet selector.
 
 ### WAL-004: Switch between wallets [Implemented]
@@ -606,6 +609,7 @@ As a power user, I want to add a password to an identity's signing keys so that 
 - Once protected, every signing operation for that identity asks for the password just-in-time, with an optional "keep unlocked until I close the app". A wrong password re-asks with no oracle.
 - Headless / MCP signing of a protected identity fails with a calm, actionable message telling the user to unlock it in the app or remove the protection — no environment-variable or flag password fallback exists.
 - Opting out asks for the current password and reverts the keys to keyless; signing is prompt-free again, including headless.
+- The password must be at least 8 characters and no more than 4080 UTF-8 bytes; a longer one is refused before the keys are sealed, since the app could never unseal them with it afterwards.
 - One password protects all of the identity's keys; it is separate from any wallet password (per-secret isolation). The encryption reuses the shipped Tier-2 seam (Argon2id + XChaCha20-Poly1305) — no new crypto, no plaintext written to disk.
 
 ### IDN-009: Refresh identity state [Implemented]

@@ -18,8 +18,10 @@ use crate::model::wallet::passphrase::validate_single_key_passphrase;
 ///
 /// # Errors
 ///
-/// [`TaskError::SingleKeyPassphraseTooShort`] when the password is shorter than
-/// the shared minimum length.
+/// - [`TaskError::SingleKeyPassphraseTooShort`] when the password is shorter
+///   than the shared minimum length.
+/// - [`TaskError::SingleKeyPassphraseTooLong`] when the password is past the
+///   vault's byte ceiling, which would make the sealed keys unopenable.
 pub fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
     let pw = password.expose_secret();
     validate_single_key_passphrase(pw, pw).map_err(TaskError::from)
@@ -40,5 +42,23 @@ mod tests {
         );
         validate_protection_password(&Secret::new("long-enough-password"))
             .expect("compliant password accepted");
+    }
+
+    /// The Tier-2 opt-in inherits the vault's byte ceiling too. Sealing an
+    /// identity's keys under a password past it would make every one of that
+    /// identity's keys unopenable on a later build.
+    #[test]
+    fn over_long_password_is_rejected() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
+        let over = Secret::new("a".repeat(MAX_PASSPHRASE_LEN + 1));
+        let err = validate_protection_password(&over).expect_err("over cap");
+        assert!(
+            matches!(err, TaskError::SingleKeyPassphraseTooLong { max } if max == MAX_PASSPHRASE_LEN as u32),
+            "expected SingleKeyPassphraseTooLong, got {err:?}"
+        );
+
+        let at_cap = Secret::new("a".repeat(MAX_PASSPHRASE_LEN));
+        validate_protection_password(&at_cap).expect("a password at the ceiling still seals");
     }
 }

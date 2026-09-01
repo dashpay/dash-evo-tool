@@ -39,6 +39,7 @@ use crate::wallet_backend::{DetKv, DetScope};
 /// from the model so the rule has a single home; both this backend and
 /// the import/restore dialogs share the same value.
 pub use crate::model::wallet::passphrase::MIN_SINGLE_KEY_PASSPHRASE_LEN;
+use crate::model::wallet::passphrase::validate_single_key_passphrase;
 
 /// Fixed per-backend namespace id for single-key entries.
 ///
@@ -220,11 +221,11 @@ impl<'a> SingleKeyView<'a> {
         let (has_passphrase, passphrase_hint) =
             match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
                 Some(p) if !p.is_empty() => {
-                    if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
-                        return Err(TaskError::SingleKeyPassphraseTooShort {
-                            min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
-                        });
-                    }
+                    // Authoritative re-check via the model validator (`p`
+                    // stands in as its own confirmation; matching is a UI
+                    // concern) — floor and byte ceiling, so no caller can seal
+                    // a key the vault would later refuse to unseal.
+                    validate_single_key_passphrase(p, p)?;
                     let pw = SecretString::new(p);
                     SecretSeam::new(self.secret_store).put_secret_protected(
                         &single_key_namespace_id(),
@@ -1814,6 +1815,45 @@ mod tests {
                 assert_eq!(min, super::MIN_SINGLE_KEY_PASSPHRASE_LEN as u32);
             }
             other => panic!("expected SingleKeyPassphraseTooShort, got {other:?}"),
+        }
+        assert!(view.list().is_empty(), "no entry should be created");
+    }
+
+    /// A passphrase past the vault's byte ceiling is rejected at import time,
+    /// before any vault write — the enrolment counterpart of the floor above.
+    /// Sealing under one leaves the key unopenable on a later build.
+    #[test]
+    fn over_long_passphrase_is_rejected_before_any_vault_write() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let err = view
+            .import_wif_with_passphrase(
+                known_wif(),
+                None,
+                crate::wallet_backend::single_key::ImportPassphrase {
+                    passphrase: Some(Zeroizing::new("a".repeat(MAX_PASSPHRASE_LEN + 1))),
+                    hint: None,
+                },
+            )
+            .expect_err("over-long passphrase rejected");
+        match err {
+            TaskError::SingleKeyPassphraseTooLong { max } => {
+                assert_eq!(max, MAX_PASSPHRASE_LEN as u32);
+            }
+            other => panic!("expected SingleKeyPassphraseTooLong, got {other:?}"),
         }
         assert!(view.list().is_empty(), "no entry should be created");
     }

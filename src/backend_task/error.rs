@@ -2181,6 +2181,18 @@ pub enum TaskError {
     )]
     WalletPasswordTooShort { min: u32 },
 
+    /// A new wallet password is longer than the persistent secret store's
+    /// ceiling, refused by the model pre-check before the vault was reached.
+    ///
+    /// Distinct from [`Self::PassphraseTooLong`], which is the same refusal
+    /// raised by the vault itself and therefore carries the upstream error as
+    /// `#[source]`. Both render identical copy — which layer caught it is not
+    /// the user's problem — while the type still says where it came from.
+    #[error(
+        "Wallet passwords must be no more than {max} UTF-8 bytes. Pick a shorter one and try again."
+    )]
+    WalletPasswordTooLong { max: u32 },
+
     /// Wallet key derivation failed during construction.
     #[error("Could not create the wallet. Key derivation failed — please try again.")]
     WalletKeyDerivationFailed {
@@ -2521,6 +2533,17 @@ pub enum TaskError {
     /// stronger value before the key is encrypted.
     #[error("Passphrases must be at least {min} characters. Pick a longer one and try again.")]
     SingleKeyPassphraseTooShort { min: u32 },
+
+    /// The passphrase the user supplied is longer than the vault's ceiling,
+    /// refused by the model pre-check before the key was sealed. Also covers
+    /// the identity-key protection password, which shares the same validator.
+    ///
+    /// Counted in bytes while [`Self::SingleKeyPassphraseTooShort`] counts
+    /// characters: each mirrors the unit the enforcing layer uses.
+    #[error(
+        "Wallet passwords must be no more than {max} UTF-8 bytes. Pick a shorter one and try again."
+    )]
+    SingleKeyPassphraseTooLong { max: u32 },
 
     /// The "Passphrase" and "Confirm passphrase" fields in the import
     /// dialog did not match. Caught client-side; this variant exists so
@@ -3008,6 +3031,7 @@ impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
         use crate::model::wallet::passphrase::PassphraseError;
         match e {
             PassphraseError::TooShort { min } => TaskError::SingleKeyPassphraseTooShort { min },
+            PassphraseError::TooLong { max } => TaskError::SingleKeyPassphraseTooLong { max },
             PassphraseError::Mismatch => TaskError::SingleKeyPassphraseMismatch,
         }
     }
@@ -3029,6 +3053,9 @@ impl From<crate::model::wallet::WalletCreationError> for TaskError {
         match e {
             WalletCreationError::PasswordTooShort { min } => {
                 TaskError::WalletPasswordTooShort { min }
+            }
+            WalletCreationError::PasswordTooLong { max } => {
+                TaskError::WalletPasswordTooLong { max }
             }
             WalletCreationError::Encryption { detail } => TaskError::EncryptionError { detail },
             WalletCreationError::KeyDerivation { source } => {
@@ -3471,6 +3498,78 @@ mod tests {
             }
             other => panic!("expected DapiAllAddressesExhausted, got {other:?}"),
         }
+    }
+
+    /// Every layer that can refuse an over-long password renders the SAME
+    /// sentence: the two model pre-checks and the vault-level refusal. The
+    /// user's fix is identical in all three cases, so a divergence here is a
+    /// copy-drift bug, not a nuance.
+    #[test]
+    fn every_too_long_refusal_renders_identical_copy() {
+        use platform_wallet_storage::secrets::SecretStoreError;
+
+        let vault = vault_error(
+            SecretStoreError::PassphraseTooLong {
+                found: 9000,
+                max: 4080,
+            },
+            |source| TaskError::SecretSeam { source },
+        );
+        let expected = "Wallet passwords must be no more than 4080 UTF-8 bytes. Pick a shorter one and try again.";
+
+        for rendered in [
+            TaskError::WalletPasswordTooLong { max: 4080 }.to_string(),
+            TaskError::SingleKeyPassphraseTooLong { max: 4080 }.to_string(),
+            vault.to_string(),
+            // The model errors these convert from must agree too — they are
+            // what the UI screens render directly for instant feedback.
+            crate::model::wallet::WalletCreationError::PasswordTooLong { max: 4080 }.to_string(),
+            crate::model::wallet::passphrase::PassphraseError::TooLong { max: 4080 }.to_string(),
+        ] {
+            assert_eq!(rendered, expected);
+        }
+    }
+
+    /// The pre-check variants carry no upstream error — nothing failed
+    /// downstream — while the vault-level refusal keeps its chain. That
+    /// difference is exactly why they are separate variants.
+    #[test]
+    fn pre_check_refusals_carry_no_source_unlike_the_vault_refusal() {
+        use std::error::Error;
+
+        assert!(
+            TaskError::WalletPasswordTooLong { max: 4080 }
+                .source()
+                .is_none()
+        );
+        assert!(
+            TaskError::SingleKeyPassphraseTooLong { max: 4080 }
+                .source()
+                .is_none()
+        );
+    }
+
+    /// The model pre-checks convert into the pre-check variants, not into the
+    /// vault-level one — so a caller matching on the layer still can.
+    #[test]
+    fn model_ceiling_errors_convert_to_the_pre_check_variants() {
+        let from_wallet =
+            TaskError::from(crate::model::wallet::WalletCreationError::PasswordTooLong {
+                max: 4080,
+            });
+        assert!(
+            matches!(from_wallet, TaskError::WalletPasswordTooLong { max } if max == 4080),
+            "got {from_wallet:?}"
+        );
+
+        let from_passphrase =
+            TaskError::from(crate::model::wallet::passphrase::PassphraseError::TooLong {
+                max: 4080,
+            });
+        assert!(
+            matches!(from_passphrase, TaskError::SingleKeyPassphraseTooLong { max } if max == 4080),
+            "got {from_passphrase:?}"
+        );
     }
 
     #[test]

@@ -53,7 +53,6 @@ use dash_sdk::platform::Identifier;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
-use identities::identities_screen::IdentitiesScreen;
 use identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
 use identity::IdentityHubScreen;
 use masternodes::MasternodesScreen;
@@ -137,7 +136,6 @@ pub use crate::model::settings::RootScreenType;
 impl From<RootScreenType> for ScreenType {
     fn from(value: RootScreenType) -> Self {
         match value {
-            RootScreenType::RootScreenIdentities => ScreenType::Identities,
             RootScreenType::RootScreenDPNSActiveContests => ScreenType::DPNSActiveContests,
             RootScreenType::RootScreenDPNSPastContests => ScreenType::DPNSPastContests,
             RootScreenType::RootScreenDPNSOwnedNames => ScreenType::DPNSMyUsernames,
@@ -174,8 +172,6 @@ impl From<RootScreenType> for ScreenType {
 
 #[derive(Debug, Clone, Default)]
 pub enum ScreenType {
-    #[default]
-    Identities,
     DPNSActiveContests,
     DPNSPastContests,
     DPNSMyUsernames,
@@ -214,7 +210,8 @@ pub enum ScreenType {
     GroveSTARK,
     AddressBalance,
     Dashpay,
-    /// Unified Identities hub (new four-tab section).
+    /// The unified Identities hub, and the app's default root screen.
+    #[default]
     IdentityHub,
     /// Masternodes section (Expert-Mode gated).
     Masternodes,
@@ -314,7 +311,6 @@ impl PartialEq for ScreenType {
 impl ScreenType {
     pub fn create_screen(&self, app_context: &Arc<AppContext>) -> Screen {
         match self {
-            ScreenType::Identities => Screen::IdentitiesScreen(IdentitiesScreen::new(app_context)),
             ScreenType::DPNSActiveContests => {
                 Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::Active))
             }
@@ -566,7 +562,6 @@ impl ScreenType {
 
 #[allow(clippy::enum_variant_names, clippy::large_enum_variant)]
 pub enum Screen {
-    IdentitiesScreen(IdentitiesScreen),
     DPNSScreen(DPNSScreen),
     DocumentQueryScreen(DocumentQueryScreen),
     AddNewWalletScreen(AddNewWalletScreen),
@@ -748,7 +743,6 @@ impl Screen {
         // The `skip` list must exactly match the explicit match arms above.
         set_ctx!(
             set:
-            IdentitiesScreen,
             DPNSScreen,
             AddExistingIdentityScreen,
             KeyInfoScreen,
@@ -915,7 +909,6 @@ impl Screen {
                 screen.key.clone(),
                 screen.private_key_data.clone(),
             ),
-            Screen::IdentitiesScreen(_) => ScreenType::Identities,
             Screen::DPNSScreen(DPNSScreen {
                 dpns_subscreen: DPNSSubscreen::Active,
                 ..
@@ -1078,7 +1071,6 @@ impl Screen {
 macro_rules! delegate_to_screen {
     ($self:expr, $screen:ident => $call:expr) => {
         match $self {
-            Screen::IdentitiesScreen($screen) => $call,
             Screen::DPNSScreen($screen) => $call,
             Screen::DocumentQueryScreen($screen) => $call,
             Screen::AddNewWalletScreen($screen) => $call,

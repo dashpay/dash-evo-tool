@@ -267,7 +267,7 @@ impl AddNewWalletScreen {
 
             if ui.button("Create Platform Identity").clicked() {
                 action = AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenIdentities,
+                    RootScreenType::RootScreenIdentityHub,
                     Screen::AddNewIdentityScreen(AddNewIdentityScreen::new_with_wallet(
                         &self.app_context,
                         self.created_wallet_seed_hash,

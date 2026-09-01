@@ -36,7 +36,7 @@ impl AddNewIdentityScreen {
                 screen.show_identity_selector = false;
             }
             return AppAction::PopThenAddScreenToMainScreen(
-                RootScreenType::RootScreenIdentities,
+                RootScreenType::RootScreenIdentityHub,
                 Screen::RegisterDpnsNameScreen(screen),
             );
         }

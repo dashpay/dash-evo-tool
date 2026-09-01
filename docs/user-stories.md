@@ -814,7 +814,7 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 
 As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to "pick a username" for a name I have already chosen.
 
-- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identities list and the Identity Home hero card.
+- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identity Home hero card and the Identity Settings tab.
 - The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
 - The onboarding checklist counts the submitted request as completing "Pick a username" while clearly stating that Dash masternodes are voting.
 - The pill's tooltip explains that Dash masternodes decide who receives the username and, when the decision time is known, gives an estimated decision time.

@@ -255,14 +255,14 @@ impl ImportMnemonicScreen {
             buttons.push((
                 "Create Identity".to_string(),
                 AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenIdentities,
+                    RootScreenType::RootScreenIdentityHub,
                     Screen::AddNewIdentityScreen(AddNewIdentityScreen::new(&self.app_context)),
                 ),
             ));
             buttons.push((
                 "Load Existing Identity".to_string(),
                 AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenIdentities,
+                    RootScreenType::RootScreenIdentityHub,
                     Screen::AddExistingIdentityScreen(AddExistingIdentityScreen::new(
                         &self.app_context,
                     )),

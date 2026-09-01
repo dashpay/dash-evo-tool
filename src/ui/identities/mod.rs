@@ -12,7 +12,6 @@ use crate::{
 pub mod add_existing_identity_screen;
 pub mod add_new_identity_screen;
 pub mod funding_common;
-pub mod identities_screen;
 pub mod keys;
 pub mod register_dpns_name_screen;
 pub mod top_up_identity_screen;
@@ -67,11 +66,9 @@ pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
     "The storage update is still running. Wait for it to finish before removing an identity.";
 
 /// Which banner to show for a `BackendTaskSuccessResult::RemovedIdentities`
-/// result, and how urgently. Shared by the Identity Hub and the legacy
-/// identities screen so the two, which handle the same result type, don't
-/// carry two independently-maintained copies of this 4-way decision — the
-/// combined-flags case in particular is easy to get wrong by handling each
-/// flag in isolation (see the `both` test case below).
+/// result, and how urgently. The combined-flags case is easy to get wrong by
+/// handling each flag in isolation (see the `both` test case below), so the
+/// 4-way decision lives here rather than at each callsite.
 pub fn removed_identities_banner(
     associated_cleanup_failed: bool,
     cleanup_deferred: bool,

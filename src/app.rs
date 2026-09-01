@@ -25,7 +25,6 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Progre
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
-use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::network_chooser_screen::{NetworkChooserScreen, chooser_network_label};
 use crate::ui::theme::ThemeMode;
@@ -1504,7 +1503,6 @@ impl AppState {
 
         // All screens are initialized with the active context (chosen_network).
         // They will get the right context via change_context() on network switch.
-        let identities_screen = IdentitiesScreen::new(&active_context);
         let dpns_active_contests_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Active);
         let dpns_past_contests_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Past);
         let dpns_my_usernames_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Owned);
@@ -1613,10 +1611,6 @@ impl AppState {
         };
 
         let main_screens: BTreeMap<RootScreenType, Screen> = [
-            (
-                RootScreenType::RootScreenIdentities,
-                Screen::IdentitiesScreen(identities_screen),
-            ),
             (
                 RootScreenType::RootScreenDPNSActiveContests,
                 Screen::DPNSScreen(dpns_active_contests_screen),

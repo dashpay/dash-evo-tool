@@ -20,7 +20,7 @@ use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
     show_success_screen_with_info,
 };
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identity::get_selected_wallet;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;

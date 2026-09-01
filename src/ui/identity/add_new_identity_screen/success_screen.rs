@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
-use crate::ui::identities::register_dpns_name_screen::{
+use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::identity::register_dpns_name_screen::{
     RegisterDpnsNameScreen, RegisterDpnsNameSource,
 };
 use crate::ui::{RootScreenType, Screen};

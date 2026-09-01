@@ -1,8 +1,8 @@
 use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::RootScreenType;
-use crate::ui::identities::funding_common::{FundingMethod, spendable_covers_minimum};
-use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
+use crate::ui::identity::funding_common::{FundingMethod, spendable_covers_minimum};
+use crate::ui::identity::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use crate::ui::theme::DashColors;
 use egui::{Color32, Frame, Margin, RichText, Ui};
 

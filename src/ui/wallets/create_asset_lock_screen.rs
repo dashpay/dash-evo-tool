@@ -14,7 +14,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, try_open_wallet_no_password};
-use crate::ui::identities::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
+use crate::ui::identity::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;

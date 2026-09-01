@@ -26,7 +26,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::funding_common::{
+use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
     max_amount_after_fee_reserve, receive_deposit_ceiling_duffs, spendable_covers_minimum,
     step_after_task_failure, wallet_selection_combo,

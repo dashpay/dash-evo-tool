@@ -829,7 +829,7 @@ impl ScreenLike for TopUpIdentityScreen {
         action |= add_left_panel(
             ui,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenIdentities,
+            crate::ui::RootScreenType::RootScreenIdentityHub,
         );
 
         let mut request_asset_lock_balance = false;

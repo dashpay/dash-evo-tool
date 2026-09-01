@@ -101,9 +101,6 @@ impl ScreenLike for KeysScreen {
             vec![],
         );
 
-        // The hub is where this screen is opened from, and the only nav entry
-        // that leads back to it — `RootScreenIdentities` is no longer in the
-        // nav, so selecting it here would highlight nothing.
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
 
         action |= island_central_panel(ui, |ui| {

@@ -1332,7 +1332,7 @@ impl AppContext {
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = crate::ui::identities::get_selected_wallet(&qi, Some(self), None).ok()??;
+        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None).ok()??;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }

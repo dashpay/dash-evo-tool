@@ -33,7 +33,7 @@ use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::helpers::format_key_label;
-use dash_evo_tool::ui::identities::withdraw_screen::WithdrawalScreen;
+use dash_evo_tool::ui::identity::withdraw_screen::WithdrawalScreen;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };

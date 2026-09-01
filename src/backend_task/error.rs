@@ -234,6 +234,12 @@ pub enum TaskError {
         "Your transaction was sent but the confirmation could not be verified. Wait a moment, then refresh your balance before sending it again."
     )]
     TransactionConfirmationUnknown {
+        /// The transaction whose outcome is unknown, on the paths that know it.
+        /// `None` for the upstream orchestrators (identity registration and
+        /// top-up, platform-address funding, asset-lock creation), which build
+        /// and broadcast their funding transaction internally and surface no
+        /// id — those outcomes cannot be watched for until upstream exposes it.
+        txid: Option<dash_sdk::dpp::dashcore::Txid>,
         #[source]
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
@@ -5724,6 +5730,7 @@ mod tests {
     #[test]
     fn transaction_confirmation_unknown_message_does_not_advise_retrying() {
         let msg = TaskError::TransactionConfirmationUnknown {
+            txid: None,
             source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
                 dash_sdk::Error::Generic("boom".to_string()),
             )),

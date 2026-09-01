@@ -271,7 +271,7 @@ impl ScreenLike for KeyInfoScreen {
         action |= add_left_panel(
             ui,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenIdentities,
+            crate::ui::RootScreenType::RootScreenIdentityHub,
         );
 
         action |= island_central_panel(ui, |ui| {

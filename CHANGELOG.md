@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
   the lock file moves from 0.11.14 to 0.11.15, which fixes a remote
-  memory-exhaustion issue in out-of-order stream reassembly. The crate is an
+Since and I think that the three saps are going to school if it says soon for like two years, but they do support on gigabytes if you haven't had high car if you would like set to be fast or alright if you're made set to be faster already I think on it which is all acons so the changes that do happen in the same block execution I don't know a hospital aptos in the convertible sweet you see they have it already same things they use on their own sort of DLS and other subsweet so Apples we frequently eight like it's not like a third of the sweet only the same way as I propose actually I'm actually quite surprised to still like oh it's not I mean they have confidential transfers a balances and transfer amounts are on these use I'll give you the box because actually set machines out of the box in Madagascar like should be a okay it's actually really complicated by the way like I don't know if you're doing today in the properties don't do that I'm not sure if you're we have to recontract we're rooted a s you want to use the time ranges that I go talk sometimes have a lot servicing two thousand zero for an app run to gig five sand a few weeks ago thirty two g two hundred fifty dollars cost I mean it's a news like four years old this one's burbish like this two thousand seven hundred fifty yeah thirty two gigs itself just take the memory out I got this one with sixteen gigs for eight hundred dollars more or less so code prices memorizing maybe more like nine hundred dollars I think yeah yeah half the price they are ridiculous three deliveries close to the Uk yeah I don't think I'm using that day weird stuff I think that's just going to be our
   inert optional entry that no build of this app actually links, so this is
   dependency hygiene rather than a fix for reachable behavior.
 
@@ -100,6 +100,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- **A payment whose confirmation couldn't be verified now confirms itself**:
+  the app used to tell you to wait and check your balance, and then never
+  mention it again — leaving you to work out by hand whether the payment
+  actually went. It now keeps watching that payment and, the moment the network
+  takes it, replaces the message with a confirmation naming that payment. The
+  confirmation waits for you instead of timing out, so stepping away while a
+  payment is in the air no longer means returning to a blank screen with the
+  answer already expired, and because it names the payment you can tell which
+  one landed when more than one is waiting. If it is
+  still unconfirmed after eleven minutes, the message changes once to point you
+  at the wallet's transaction history and to warn against sending again in the
+  meantime; the watch carries on, so a late confirmation still resolves it. The
+  app never claims a payment has failed — the Dash network has no way to say
+  so, and guessing could tell you it was safe to send again when it was not.
+  Several unverified payments can be waiting at once, and answering one of them
+  leaves every other message exactly where it was. If you switch networks while
+  one is waiting, the payment is left alone rather than followed on the network
+  you moved to, where it could never be found. Creating an asset lock is also
+  covered by the earlier fix below: it was still asking you to retry an outcome
+  that may already be on its way.
+
+  While a payment is still unaccounted for, its message also survives other
+  notifications crowding it out: only five are shown at once, and the app used
+  to let ordinary ones quietly push this one off the screen for good. If that
+  happens the message comes back on its own. Closing it yourself still closes
+  it for good — the app restores what it lost, not what you dismissed.
+- **The app now opens maximized the very first time it runs**: on a fresh
+  install, the window used to open at a small default size that didn't fit
+  the onboarding page. It now opens maximized on first launch; any size or
+  position you set afterward is remembered and used on every later start, as
+  before.
 
 - **A sent payment whose confirmation couldn't be verified no longer tells you
   to retry it**: when the network doesn't confirm a payment quickly enough,

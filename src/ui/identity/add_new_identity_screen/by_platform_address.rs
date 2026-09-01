@@ -3,7 +3,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::identities::add_new_identity_screen::{
+use crate::ui::identity::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
 use crate::ui::theme::{ComponentStyles, DashColors};

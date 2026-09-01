@@ -470,6 +470,19 @@ As a user, I want "Max" (and the amount check behind it) to reflect what my Core
 - Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
 - The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
 
+### SND-018: A payment with an unverified outcome resolves itself [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want a payment whose confirmation could not be verified to tell me its real outcome on its own, so that I do not have to work out by hand whether my money moved.
+
+- Covers sending DASH from a Core wallet, including sending to a DashPay contact. Identity registration, identity top-up, Platform-address funding, and the shielded flows keep the plain wait-and-check message — the transaction that funds them is sent inside the wallet stack, which reports no identifier to watch.
+- Once the network takes the payment — an InstantSend lock, or a block containing it — the message is replaced with a confirmation naming that payment, so a user with several waiting can tell which one landed. The watch survives leaving the Send screen, and the confirmation stays on screen until dismissed rather than timing out, so a user who stepped away still finds the answer waiting.
+- After eleven minutes without a confirmation, the message changes once to point at the wallet's transaction history and to warn that sending again could pay the same person twice. The watch continues, so a later confirmation still replaces it.
+- Several payments can be waiting at once. One of them being answered — confirmed, or reaching the eleven-minute mark — leaves every other waiting payment's message exactly as it was, including the plain wait-and-check message shown for the flows that report no identifier to watch.
+- The app never reports such a payment as failed: the network has no rejection signal, so an invalid payment and a slow one look the same.
+- Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
+- While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
+
 ---
 
 ## Asset Locks (ALK)
@@ -805,7 +818,7 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 
 As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to "pick a username" for a name I have already chosen.
 
-- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identities list and the Identity Home hero card.
+- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identity Home hero card and the Identity Settings tab.
 - The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
 - The onboarding checklist counts the submitted request as completing "Pick a username" while clearly stating that Dash masternodes are voting.
 - The pill's tooltip explains that Dash masternodes decide who receives the username and, when the decision time is known, gives an estimated decision time.

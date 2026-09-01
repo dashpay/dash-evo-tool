@@ -1,10 +1,10 @@
 use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::RootScreenType;
-use crate::ui::identities::add_new_identity_screen::{
+use crate::ui::identity::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
-use crate::ui::identities::funding_common::spendable_covers_minimum;
+use crate::ui::identity::funding_common::spendable_covers_minimum;
 use crate::ui::theme::DashColors;
 use egui::{Color32, RichText, Ui};
 

@@ -20,7 +20,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::masternodes::{KeyVocabulary, identity_keys, manage_keys_labels};
 use crate::ui::state::legacy_recovery::LegacyRecoveryState;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};

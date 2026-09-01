@@ -14,7 +14,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identities::funding_common::wallet_selection_combo;
+use crate::ui::identity::funding_common::wallet_selection_combo;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;

@@ -52,11 +52,10 @@ impl AppContext {
     /// upstream schema ladder and rehydrates the wallets it finds), then drain
     /// the previous version's `data.db`.
     ///
-    /// Idempotent and safe to call on every entry path — a second call on a
-    /// prepared network fast-paths through wiring and short-circuits the drain
-    /// on its completion sentinel. Concurrent callers serialize on
-    /// [`AppContext::prepare_gate`]; the loser observes the winner's finished
-    /// work rather than repeating it.
+    /// Idempotent and safe to call on every entry path — after one call completes
+    /// the full sequence, later calls return immediately. Concurrent callers
+    /// serialize on the private preparation gate; the loser observes the
+    /// winner's completion rather than repeating its work.
     ///
     /// Progress is published on [`MigrationStatus`](crate::context::migration_status::MigrationStatus)
     /// so the one existing overlay/banner surface covers the whole sequence.
@@ -81,6 +80,9 @@ impl AppContext {
         task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
         let gate = self.lock_prepare_gate().await;
+        if self.storage_prepared.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let status = self.migration_status();
         let announce = matches!(*status.state(), MigrationState::Idle);
         if announce {
@@ -112,6 +114,7 @@ impl AppContext {
         self.run_pending_vault_cleanup_sweep(&gate);
 
         drain?;
+        self.storage_prepared.store(true, Ordering::Release);
         Ok(())
     }
 

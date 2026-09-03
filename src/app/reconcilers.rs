@@ -455,6 +455,9 @@ pub(super) struct StoragePrepGate {
     overlay: Option<OverlayHandle>,
     /// Whether to start chain sync once the current preparation completes.
     auto_start_spv: bool,
+    /// Whether this is startup preparation, whose sync owns the blocking SPV
+    /// overlay. Network-switch sync remains ambient.
+    arm_spv_block: bool,
     /// Whether the "raised over nothing" surface has already been armed, so its
     /// log and its overlay swap happen once rather than every frame.
     orphaned: bool,
@@ -484,7 +487,11 @@ struct PrepareFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GateEvent {
     /// Preparation completed: build the root screens and release the app.
-    Prepared { network: Network, start_spv: bool },
+    Prepared {
+        network: Network,
+        start_spv: bool,
+        arm_spv_block: bool,
+    },
     /// The user chose "Try again" on a failed preparation.
     Retry(Network),
     /// The user chose "Close the app" on a terminal failure.
@@ -513,6 +520,7 @@ impl StoragePrepGate {
             failure: None,
             overlay: None,
             auto_start_spv: false,
+            arm_spv_block: false,
             #[cfg(feature = "testing")]
             test_hold: None,
         }
@@ -520,6 +528,10 @@ impl StoragePrepGate {
 
     pub(super) fn phase(&self) -> BootPhase {
         self.phase
+    }
+
+    pub(super) fn arm_spv_block_on_success(&self) -> bool {
+        self.arm_spv_block
     }
 
     /// Whether this network's storage was already prepared in this process.
@@ -535,10 +547,12 @@ impl StoragePrepGate {
         &mut self,
         network: Network,
         auto_start_spv: bool,
+        arm_spv_block: bool,
         result: tokio::sync::oneshot::Receiver<Result<(), TaskError>>,
     ) {
         self.phase = BootPhase::Preparing { network };
         self.auto_start_spv = auto_start_spv;
+        self.arm_spv_block = arm_spv_block;
         self.failure = None;
         self.orphaned = false;
         self.pending = Some(PendingPrepare {
@@ -556,7 +570,7 @@ impl StoragePrepGate {
     pub(super) fn test_raise(&mut self, network: Network) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.test_hold = Some(tx);
-        self.attach(network, false, rx);
+        self.attach(network, false, false, rx);
     }
 
     /// Test seam: drop the in-flight preparation while leaving the gate raised,
@@ -630,6 +644,7 @@ impl StoragePrepGate {
                 Some(GateEvent::Prepared {
                     network,
                     start_spv: self.auto_start_spv,
+                    arm_spv_block: self.arm_spv_block,
                 })
             }
             Ok(Err(error)) => {
@@ -641,7 +656,7 @@ impl StoragePrepGate {
                     retryable: !matches!(
                         error,
                         TaskError::SavedDataTooOld { .. } | TaskError::SavedDataTooNew { .. }
-                    ),
+                    ) && !crate::backend_task::is_terminal_storage_open_error(&error),
                     error,
                 });
                 None
@@ -705,8 +720,7 @@ impl StoragePrepGate {
         if let Some(handle) = &self.overlay {
             handle.set_description(description);
         } else {
-            // No escape while preparation is healthy: D2 replaces "continue in
-            // the background" with no background at all. Only the stuck branch
+            // Preparation cannot continue safely in the background. Only the stuck branch
             // adds an exit, and it re-raises to do so — an `OverlayHandle`'s
             // button methods append, so attaching per frame would stack copies.
             let mut config = OverlayConfig::new().with_description(description);
@@ -855,8 +869,7 @@ fn storage_prep_description(state: &MigrationState) -> &'static str {
     }
 }
 
-/// Reconciles the data-migration banner and drives the cold-start
-/// `FinishUnwire` dispatch per network.
+/// Reconciles the data-migration banner and its wallet-password prompt.
 pub(super) struct MigrationReconciler {
     /// Handle to the current migration banner, if displayed.
     banner_handle: Option<BannerHandle>,
@@ -886,9 +899,7 @@ impl MigrationReconciler {
         self.storage_startup_error.track(handle);
     }
 
-    /// Clear the migration banner and force re-evaluation (network switch). The
-    /// per-network dispatch guard is intentionally NOT reset — it is scoped per
-    /// network so a return to a seen network never re-drains.
+    /// Clear banner and password-prompt state for a new network context.
     pub(super) fn reset_for_switch(&mut self) {
         if let Some(handle) = self.banner_handle.take() {
             handle.clear();
@@ -927,7 +938,7 @@ impl MigrationReconciler {
             MigrationState::Idle
                 | MigrationState::Running { .. }
                 | MigrationState::AwaitingWalletPasswords { .. }
-        ) && app_context.prepare_gate.try_lock().is_ok();
+        ) && app_context.try_lock_prepare_gate().is_ok();
         self.storage_startup_error.clear_if(storage_guard_resolved);
         self.update_password_prompt(ctx, app_context, &state);
         // The gate owns every surface while it is raised, including the failed
@@ -1123,12 +1134,9 @@ impl MigrationReconciler {
         }
     }
 
-    /// Drain pending banner-action clicks. Two kinds of action are registered:
-    /// the migration Retry, which re-dispatches `FinishUnwire` after resetting the
-    /// cold-start guard, and the three unreadable-row acknowledgements (votes,
-    /// identities, or the combined banner naming both), each of which clears the
-    /// durable warning records its banner named. All are returned for `AppState`
-    /// to dispatch.
+    /// Drain pending banner-action clicks. Migration Retry clears `last_state`
+    /// before re-dispatching `FinishUnwire`; unreadable-row acknowledgements
+    /// clear the durable warning records their banners name.
     pub(super) fn drain_actions(
         &mut self,
         ctx: &egui::Context,
@@ -2250,8 +2258,7 @@ mod tests {
         assert!(harness.query_by_label(&message).is_some());
 
         let migration_guard = app_context
-            .prepare_gate
-            .try_lock()
+            .try_lock_prepare_gate()
             .expect("migration guard");
         app_context
             .migration_status()

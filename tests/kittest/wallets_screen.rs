@@ -921,6 +921,7 @@ fn test_app_stability_over_many_frames() {
 
         // Run 50 frames to test stability
         crate::support::wait_for_screens(&mut harness);
+        harness.run_steps(50);
     });
 }
 

@@ -29,9 +29,10 @@ use dash_evo_tool::context::migration_status::{MigrationState, MigrationStep};
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
-use dash_evo_tool::ui::RootScreenType;
 use dash_evo_tool::ui::components::ProgressOverlay;
+use dash_evo_tool::ui::{RootScreenType, Screen};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -138,7 +139,7 @@ fn step_until(
 
 // ── The password-prompt contract (the deadlock guard) ────────────────────────
 
-/// T1 — the storage update's password prompt renders, holds focus and accepts
+/// The storage update's password prompt renders, holds focus and accepts
 /// typing **above the raised gate**, and the gate's own progress copy is not
 /// painted over it.
 ///
@@ -230,7 +231,7 @@ fn gate_password_prompt_is_focusable_and_typeable() {
     });
 }
 
-/// T2 — "Skip this wallet" empties the pending list. Skipping is the only escape
+/// "Skip this wallet" empties the pending list. Skipping is the only escape
 /// from the password loop, and `pending_wallet_passwords` filters skipped wallets
 /// out of the next batch, so skipping every wallet is what lets preparation
 /// finish on an install whose passwords the user cannot supply.
@@ -295,7 +296,7 @@ fn skipping_a_wallet_empties_the_pending_list_through_the_gate() {
     });
 }
 
-/// T4 — `has_blocking_secret_prompt` is true for `AwaitingWalletPasswords`, and
+/// `has_blocking_secret_prompt` is true for `AwaitingWalletPasswords`, and
 /// the gate consults it: the gate is raised, yet its description is not painted.
 ///
 /// Deliberately names no button, so it survives any rewrite of the gate's or the
@@ -360,7 +361,7 @@ fn gate_defers_its_card_to_a_blocking_password_prompt() {
 
 // ── What the gate blocks, and for how long ───────────────────────────────────
 
-/// T3 — a raised gate lifts when its preparation completes, and the app it hands
+/// A raised gate lifts when its preparation completes, and the app it hands
 /// back is a working one.
 ///
 /// The bound is part of the assertion: a gate that never lifts has no other
@@ -412,7 +413,7 @@ fn a_completed_preparation_lifts_the_gate_and_builds_the_screens() {
     });
 }
 
-/// T5 — while preparing there is no background escape and no screen underneath:
+/// While preparing there is no background escape and no screen underneath:
 /// the retired "Continue in the background" affordance is absent, and a click
 /// where the screen would be is swallowed by the gate rather than reaching a
 /// root screen (there is none built yet).
@@ -434,7 +435,7 @@ fn preparing_offers_no_background_escape_and_swallows_screen_clicks() {
             harness
                 .query_by_label("Continue in the background")
                 .is_none(),
-            "D2: the background escape is gone — preparation has no background",
+            "the background escape is gone — preparation has no background",
         );
         assert!(
             harness.query_by_label("Cancel").is_none(),
@@ -449,7 +450,7 @@ fn preparing_offers_no_background_escape_and_swallows_screen_clicks() {
     });
 }
 
-/// T6 — chain sync does not start behind the gate. This is D2's actual
+/// Chain sync does not start behind the gate. This is the actual
 /// guarantee: SPV starts as a *continuation* of preparation, never alongside it.
 ///
 /// The gate is held up for the whole window and the window is measured in wall
@@ -559,9 +560,9 @@ fn results_arriving_mid_preparation_are_swallowed_and_the_route_survives() {
     });
 }
 
-// ── Terminal failure surfaces (D5) ───────────────────────────────────────────
+// ── Terminal failure surfaces ────────────────────────────────────────────────
 
-/// T8 — a version-window failure is terminal: the surface offers only "Close the
+/// A version-window failure is terminal: the surface offers only "Close the
 /// app", never "Try again", because a retry cannot turn a newer on-disk layout
 /// into a readable one. The copy comes from the `TaskError` variant's
 /// `#[error(..)]`, not from a callsite literal.
@@ -613,6 +614,37 @@ fn saved_data_too_new_is_terminal_with_no_retry() {
             harness.state().boot_phase() != BootPhase::Ready,
             "closing must not silently release the app instead",
         );
+    });
+}
+
+/// A wallet database written by a newer app is just as terminal as a legacy
+/// `data.db` outside the supported version window. Retrying cannot change its
+/// schema, so the gate must preserve the variant's update guidance and offer
+/// only the close action.
+#[test]
+fn wallet_data_too_new_is_terminal_with_no_retry() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_with_raised_gate();
+        let error = TaskError::WalletDataTooNew {
+            found: 99,
+            max_supported: 1,
+        };
+        let expected = error.to_string();
+        harness.state_mut().test_fail_storage_prep_gate(error);
+        harness.run_steps(5);
+
+        assert!(
+            harness.query_by_label(expected.as_str()).is_some(),
+            "the terminal surface must show the wallet-storage variant's update guidance",
+        );
+        assert!(
+            harness.query_by_label("Try again").is_none(),
+            "a newer wallet schema cannot be retried into a readable one",
+        );
+        assert!(harness.query_by_label("Close the app").is_some());
     });
 }
 
@@ -763,6 +795,16 @@ fn switching_networks_hands_the_app_back() {
         } else {
             Network::Testnet
         };
+        let contract_marker = Identifier::from([0x5a; 32]);
+        let Screen::TokensScreen(token_search) = harness
+            .state_mut()
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenTokenSearch)
+            .expect("token-search root screen")
+        else {
+            panic!("token-search root must hold TokensScreen");
+        };
+        token_search.selected_contract_id = Some(contract_marker);
 
         harness.state_mut().change_network(second);
         // Deadline rather than a frame count: the incoming network's context is
@@ -780,6 +822,19 @@ fn switching_networks_hands_the_app_back() {
             !ProgressOverlay::has_global(&harness.ctx),
             "a finished switch leaves no blocking overlay behind",
         );
+        let Screen::TokensScreen(token_search) = harness
+            .state()
+            .main_screens
+            .get(&RootScreenType::RootScreenTokenSearch)
+            .expect("token-search root screen after first switch")
+        else {
+            panic!("token-search root must hold TokensScreen");
+        };
+        assert_eq!(
+            token_search.selected_contract_id,
+            Some(contract_marker),
+            "first-time preparation must preserve root-screen state just like a cached switch",
+        );
 
         // Back to a network this process already prepared: the gate must not
         // re-raise over storage that is known good.
@@ -789,6 +844,70 @@ fn switching_networks_hands_the_app_back() {
             harness.state().boot_phase(),
             BootPhase::Ready,
             "returning to an already prepared network must not re-raise the gate",
+        );
+
+        // Visit B again as a prepared network. Both routes to B must preserve
+        // the same screen instance and therefore the same in-progress state.
+        harness.state_mut().change_network(second);
+        harness.run_steps(3);
+        let Screen::TokensScreen(token_search) = harness
+            .state()
+            .main_screens
+            .get(&RootScreenType::RootScreenTokenSearch)
+            .expect("token-search root screen after repeated switch")
+        else {
+            panic!("token-search root must hold TokensScreen");
+        };
+        assert_eq!(token_search.selected_contract_id, Some(contract_marker));
+    });
+}
+
+/// Network switching is ambient application work, not a startup/Connect sync
+/// episode. The first visit to a network must therefore use the same unarmed
+/// SPV behavior as every later visit.
+#[test]
+fn first_network_switch_does_not_arm_the_startup_spv_block() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let data_dir = std::env::var("DASH_EVO_DATA_DIR").expect("the isolated data dir");
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/.env.example"),
+            std::path::Path::new(&data_dir).join(".env"),
+        )
+        .expect("seed the isolated data dir with a full network config");
+
+        let mut harness = mount_prepared_app();
+        assert!(
+            !harness.state().test_spv_block_armed(),
+            "precondition: the prepared test app has no armed sync episode",
+        );
+        let first = harness.state().current_app_context().network();
+        let second = if first == Network::Testnet {
+            Network::Mainnet
+        } else {
+            Network::Testnet
+        };
+        harness
+            .state()
+            .current_app_context()
+            .update_auto_start_spv(true)
+            .expect("enable auto-start for the switch");
+
+        harness.state_mut().change_network(second);
+        poll_until(
+            &mut harness,
+            "the first switch with auto-start to finish preparation",
+            |state| {
+                state.current_app_context().network() == second
+                    && state.boot_phase() == BootPhase::Ready
+            },
+        );
+
+        assert!(
+            !harness.state().test_spv_block_armed(),
+            "a first network visit must not arm a startup-only blocking overlay",
         );
     });
 }

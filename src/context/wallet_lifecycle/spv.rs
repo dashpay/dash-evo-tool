@@ -148,11 +148,11 @@ impl AppContext {
     /// `WalletBackendNotYetWired` fast-fail race nor a start that outruns the
     /// legacy drain is reachable from any of them.
     ///
-    /// Both steps are idempotent: storage is prepared at most once per network
-    /// (later calls fast-path through wiring and short-circuit the drain on its
-    /// sentinel) and the upstream run loop is spawned at most once (guarded by
-    /// the backend's start latch). Chain sync runs asynchronously — progress
-    /// and success arrive via the `EventBridge`.
+    /// Both steps are idempotent: storage is prepared at most once per context
+    /// (later calls return after observing its completion latch) and the
+    /// upstream run loop is spawned at most once (guarded by the backend's start
+    /// latch). Chain sync runs asynchronously — progress and success arrive via
+    /// the `EventBridge`.
     ///
     /// On failure the SPV connection indicator is flipped to
     /// [`SpvStatus::Error`] before the error is returned, so every caller — GUI

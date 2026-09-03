@@ -1682,7 +1682,7 @@ impl AppState {
         if let Some(result) = boot_prepare {
             app_state
                 .boot
-                .attach(chosen_network, boot_auto_start_spv, result);
+                .attach(chosen_network, boot_auto_start_spv, true, result);
         }
 
         // The Orchard proving key is now owned by the upstream shielded
@@ -1892,16 +1892,23 @@ impl AppState {
         app_ctx: Arc<AppContext>,
     ) -> tokio::sync::oneshot::Receiver<Result<(), TaskError>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = subtasks.spawn_sync("storage-prepare", async move {
-            let network = app_ctx.network;
-            let result = app_ctx.prepare_storage(sender).await;
-            if tx.send(result).is_err() {
-                tracing::debug!(
-                    ?network,
-                    "Storage preparation finished after its gate was dropped"
-                );
-            }
-        });
+        let handle = tokio::runtime::Handle::current();
+        let _ = subtasks.spawn_blocking_sync(
+            "storage-prepare",
+            move || {
+                handle.block_on(async move {
+                    let network = app_ctx.network;
+                    let result = app_ctx.prepare_storage(sender).await;
+                    if tx.send(result).is_err() {
+                        tracing::debug!(
+                            ?network,
+                            "Storage preparation finished after its gate was dropped"
+                        );
+                    }
+                });
+            },
+            |_| async {},
+        );
         rx
     }
 
@@ -1953,31 +1960,40 @@ impl AppState {
     /// `refresh_on_arrival` runs against populated wallet and identity maps, and
     /// chain sync starts as a continuation of completed preparation rather than
     /// alongside it.
-    fn finish_boot_phase(&mut self, start_spv: bool) {
+    fn finish_boot_phase(&mut self, start_spv: bool, arm_spv_block: bool) {
         let active_context = self.current_app_context().clone();
-        for (root, screen) in Self::build_main_screens(&active_context) {
-            self.main_screens.insert(root, screen);
-        }
+        let first_screen_build = self.main_screens.len() == 1
+            && self
+                .main_screens
+                .contains_key(&RootScreenType::RootScreenNetworkChooser);
+        if first_screen_build {
+            for (root, screen) in Self::build_main_screens(&active_context) {
+                self.main_screens.insert(root, screen);
+            }
 
-        // Now that the map exists, an unregistered persisted route can finally
-        // be detected and replaced.
-        self.selected_main_screen = initial_root_screen(
-            self.selected_main_screen,
-            self.main_screens.contains_key(&self.selected_main_screen),
-            self.network_selection_required,
-        );
+            // Now that the map exists, an unregistered persisted route can finally
+            // be detected and replaced.
+            self.selected_main_screen = initial_root_screen(
+                self.selected_main_screen,
+                self.main_screens.contains_key(&self.selected_main_screen),
+                self.network_selection_required,
+            );
 
-        // Every root screen refreshes, not just the visible one, so screens the
-        // user has not opened yet (e.g. DashPay Profile) already hold their data.
-        for screen in self.main_screens.values_mut() {
-            screen.refresh_on_arrival();
+            // Every root screen refreshes, not just the visible one, so screens the
+            // user has not opened yet (e.g. DashPay Profile) already hold their data.
+            for screen in self.main_screens.values_mut() {
+                screen.refresh_on_arrival();
+            }
         }
 
         if start_spv {
-            // A user-initiated sync (the user opted into auto-start), so the
-            // SPV block covers it — F-SPV-A.
-            self.spv_block.arm();
-            self.start_spv_for(BackendInitReason::Boot);
+            let reason = if arm_spv_block {
+                self.spv_block.arm();
+                BackendInitReason::Boot
+            } else {
+                BackendInitReason::NetworkSwitch
+            };
+            self.start_spv_for(reason);
         }
     }
 
@@ -2204,7 +2220,12 @@ impl AppState {
                 self.task_result_sender.clone(),
                 app_context.clone(),
             );
-            self.boot.attach(network, auto_start_spv, result);
+            self.boot.attach(
+                network,
+                auto_start_spv,
+                was_network_selection_required,
+                result,
+            );
         }
 
         // Update MCP server's context to follow network switch
@@ -3219,7 +3240,11 @@ impl App for AppState {
             .boot
             .update(ctx, &active_context, migration_state.as_ref())
         {
-            Some(GateEvent::Prepared { start_spv, .. }) => self.finish_boot_phase(start_spv),
+            Some(GateEvent::Prepared {
+                start_spv,
+                arm_spv_block,
+                ..
+            }) => self.finish_boot_phase(start_spv, arm_spv_block),
             Some(GateEvent::Retry(network)) => {
                 tracing::info!(?network, "User retried storage preparation");
                 let app_ctx = self.current_app_context().clone();
@@ -3233,7 +3258,8 @@ impl App for AppState {
                     self.task_result_sender.clone(),
                     app_ctx,
                 );
-                self.boot.attach(network, auto_start, result);
+                let arm_spv_block = self.boot.arm_spv_block_on_success();
+                self.boot.attach(network, auto_start, arm_spv_block, result);
             }
             Some(GateEvent::Close) => {
                 // The same door every other in-app exit uses, so `on_exit` runs

@@ -129,7 +129,7 @@ the next launch retries from unchanged state.
 
 | Mechanism | Fate |
 |---|---|
-| `migration_run` mutex | **Renamed/repurposed** to `prepare_gate`; same three non-`prepare_storage` consumers (`recover_legacy_keys.rs`, the identity-delete guard in `context/mod.rs`, `resume_pending_vault_cleanups`) still take it, lock order unchanged (`prepare_gate` → identity-index guard, never the reverse). |
+| `migration_run` mutex | **Renamed/repurposed** to the private `prepare_gate`; every consumer acquires it through `lock_prepare_gate` / `try_lock_prepare_gate`, so `rg 'lock_prepare_gate|try_lock_prepare_gate' src` is the authoritative holder inventory. Lock order remains `prepare_gate` → identity-index guard, never the reverse. |
 | `dispatch_cold_start` (frame-loop readiness poll + dispatch) | **Deleted.** The drain is now an unconditional step inside `prepare_storage`, which already holds a wired backend by construction. |
 | `dispatched: BTreeSet<Network>`, `backend_wait_since`, `timeout_signaled` (`MigrationReconciler` fields) | **Deleted**, not kept. (The dev plan called for keeping `dispatched` as the "Retry now" mechanism; it shipped differently — see the deviation note below.) |
 | 30 s cold-start watchdog (`COLD_START_BACKEND_READY_TIMEOUT` / stuck banner) | **Moved into the gate** as `STORAGE_PREP_STUCK_TIMEOUT`, now covering the whole prepare sequence rather than only the wiring wait, and pairing with an actual exit ("Close the app") rather than a log-only banner — see §6. |
@@ -195,7 +195,7 @@ The escape from the prompt is per-wallet "Skip this wallet"
 (`MigrationWalletUnlockResult::Skipped` → `MigrationStatus::skip_wallet`);
 `AwaitingWalletPasswords` filters skipped wallets from future rounds, so
 skipping every locked wallet still terminates the wait. There is no "no
-escape" claim here — D1's "no background escape" means no *backgrounding*
+escape" claim here — "no background escape" means no *backgrounding*
 escape, not no way out of an individual password prompt.
 
 ## 7. The vault-cleanup sweep hazard
@@ -219,7 +219,7 @@ consequence of the gate's own locking, silently disabling a recovery path
 that existed for exactly this kind of interrupted-operation cleanup.
 
 The fix re-drives the sweep explicitly, under the gate `prepare_storage`
-already holds, via a `_gate: &MutexGuard<'_, ()>` parameter that exists as
+already holds, via a `_gate: &PrepareGateGuard<'_>` parameter that exists as
 compile-time proof of "callable only under the gate", not documentation. It
 has to run *before* the gate releases, not after: the drain's own detached
 DAPI-node refresh is queued behind the same `prepare_gate` and would very

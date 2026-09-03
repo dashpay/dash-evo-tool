@@ -259,7 +259,7 @@ async fn ensure_spv_ready(
         return Err(McpToolError::TaskFailed(e));
     }
 
-    // D4: the headless binary has no frame loop and therefore no gate, so the
+    // The headless binary has no frame loop and therefore no UI gate, so the
     // `WalletStorageNotReady` fast-fail and this join stay. It now covers only a
     // run another process or the embedded GUI started concurrently.
     ensure_storage_ready(ctx).await?;

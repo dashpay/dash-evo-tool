@@ -662,7 +662,7 @@ where
 {
     let ctx = Arc::clone(app_context);
     tokio::spawn(async move {
-        let _refresh_guard = ctx.prepare_gate.lock().await;
+        let _refresh_guard = ctx.lock_prepare_gate().await;
         refresh.await;
     })
 }
@@ -2667,7 +2667,7 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 pub(crate) async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
     tokio::task::yield_now().await;
-    let guard = app_context.prepare_gate.lock().await;
+    let guard = app_context.lock_prepare_gate().await;
     drop(guard);
 }
 
@@ -5246,7 +5246,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let deleted = [0x44; 32];
-        let _migration_guard = ctx.prepare_gate.try_lock().expect("claim migration lock");
+        let _migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
 
         assert!(matches!(
             ctx.delete_local_qualified_identity(&Identifier::from(deleted)),
@@ -5265,7 +5265,7 @@ mod tests {
     async fn public_migration_run_waits_behind_idle_deletion_guard() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.prepare_gate.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let follower_ctx = Arc::clone(&ctx);
         let follower = tokio::spawn(async move { run(&follower_ctx).await });
         tokio::task::yield_now().await;
@@ -5293,7 +5293,7 @@ mod tests {
     async fn public_migration_follower_returns_the_published_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.prepare_gate.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let source = Arc::new(MigrationError::WalletBackendUnavailable);
         ctx.migration_status().set_state(MigrationState::Failed {
             error: Arc::clone(&source),

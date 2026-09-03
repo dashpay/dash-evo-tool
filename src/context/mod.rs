@@ -169,7 +169,11 @@ pub struct AppContext {
     /// running after the drain publishes terminal status. Held by
     /// [`AppContext::prepare_storage`]; also prevents duplicate password waiters
     /// for the same wallet.
-    pub(crate) prepare_gate: tokio::sync::Mutex<()>,
+    prepare_gate: tokio::sync::Mutex<()>,
+    /// Set after this context completes wiring, migration, and cleanup once.
+    /// Read while holding `prepare_gate`, except for the final release store,
+    /// so concurrent callers cannot observe partial preparation.
+    storage_prepared: AtomicBool,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
@@ -507,6 +511,7 @@ impl AppContext {
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
             prepare_gate: tokio::sync::Mutex::new(()),
+            storage_prepared: AtomicBool::new(false),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),

@@ -1659,8 +1659,7 @@ impl AppContext {
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
         let _migration_guard = self
-            .prepare_gate
-            .try_lock()
+            .try_lock_prepare_gate()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);

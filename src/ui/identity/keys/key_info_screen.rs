@@ -4,6 +4,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
@@ -12,7 +13,7 @@ use crate::model::qualified_identity::key_placement::KeyPlacement;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
-use crate::model::wallet::passphrase::validate_single_key_passphrase;
+use crate::model::wallet::passphrase::PassphraseError;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
@@ -1627,10 +1628,13 @@ impl KeyInfoScreen {
     fn submit_new_password(&mut self) {
         let pw = self.protection_new_password.text().to_string();
         let confirm = self.protection_confirm_password.text().to_string();
-        if let Err(e) = validate_single_key_passphrase(&pw, &confirm) {
-            self.protection_form_error = Some(e.to_string());
-            return;
-        }
+        let password = match validate_identity_password_form(pw, &confirm) {
+            Ok(password) => password,
+            Err(error) => {
+                self.protection_form_error = Some(error);
+                return;
+            }
+        };
         let hint = {
             let h = self.protection_hint.trim();
             if h.is_empty() {
@@ -1639,7 +1643,7 @@ impl KeyInfoScreen {
                 Some(h.to_string())
             }
         };
-        self.pending_protect = Some((Secret::new(pw), hint));
+        self.pending_protect = Some((password, hint));
         self.finish_protection_flow();
     }
 
@@ -1706,6 +1710,15 @@ fn render_password_strength(ui: &mut egui::Ui, password: &str) {
     });
 }
 
+fn validate_identity_password_form(password: String, confirmation: &str) -> Result<Secret, String> {
+    let password = Secret::new(password);
+    validate_protection_password(&password).map_err(|error| error.to_string())?;
+    if password.expose_secret() != confirmation {
+        return Err(PassphraseError::Mismatch.to_string());
+    }
+    Ok(password)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1730,6 +1743,22 @@ mod tests {
 
     const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const VOTER: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    #[test]
+    fn identity_password_form_names_the_identity_credential_when_too_long() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
+        let error = validate_identity_password_form(
+            "a".repeat(MAX_PASSPHRASE_LEN + 1),
+            &"a".repeat(MAX_PASSPHRASE_LEN + 1),
+        )
+        .expect_err("overlong password must be rejected");
+
+        assert_eq!(
+            error,
+            "This identity password is too long. Pick a shorter password and try again."
+        );
+    }
 
     /// An offline, wired context on a throwaway data dir — the identity store
     /// refuses writes until the wallet backend is up.

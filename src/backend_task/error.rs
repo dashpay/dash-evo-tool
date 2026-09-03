@@ -466,7 +466,7 @@ pub enum TaskError {
     },
 
     /// A vault passphrase or a Tier-2 object password was longer than the
-    /// vault's ceiling (upstream `MAX_PASSPHRASE_LEN`, 4080 bytes).
+    /// vault's upstream ceiling.
     ///
     /// Supersedes the class variants that follow ([`Self::SecretStore`],
     /// [`Self::WalletSeedStorage`], [`Self::SecretSeam`],
@@ -481,7 +481,7 @@ pub enum TaskError {
     /// `max` repeats the ceiling already carried by `source` because an
     /// `#[error(...)]` template cannot reach into a source's fields.
     #[error(
-        "Wallet passwords must be no more than {max} UTF-8 bytes. Pick a shorter one and try again."
+        "This password is too long for this version of the app. If it already protects saved keys, reopen them with the previous version and change the password. Otherwise, choose a shorter password and try again."
     )]
     PassphraseTooLong {
         max: usize,
@@ -2190,14 +2190,11 @@ pub enum TaskError {
     /// A new wallet password is longer than the persistent secret store's
     /// ceiling, refused by the model pre-check before the vault was reached.
     ///
-    /// Distinct from [`Self::PassphraseTooLong`], which is the same refusal
-    /// raised by the vault itself and therefore carries the upstream error as
-    /// `#[source]`. Both render identical copy — which layer caught it is not
-    /// the user's problem — while the type still says where it came from.
-    #[error(
-        "Wallet passwords must be no more than {max} UTF-8 bytes. Pick a shorter one and try again."
-    )]
-    WalletPasswordTooLong { max: u32 },
+    /// Distinct from [`Self::PassphraseTooLong`], which is raised while reading
+    /// or writing the vault and therefore carries recovery guidance and the
+    /// upstream error as `#[source]`.
+    #[error("This wallet password is too long. Pick a shorter password and try again.")]
+    WalletPasswordTooLong { max: usize },
 
     /// Wallet key derivation failed during construction.
     #[error("Could not create the wallet. Key derivation failed — please try again.")]
@@ -2540,16 +2537,15 @@ pub enum TaskError {
     #[error("Passphrases must be at least {min} characters. Pick a longer one and try again.")]
     SingleKeyPassphraseTooShort { min: u32 },
 
-    /// The passphrase the user supplied is longer than the vault's ceiling,
-    /// refused by the model pre-check before the key was sealed. Also covers
-    /// the identity-key protection password, which shares the same validator.
-    ///
-    /// Counted in bytes while [`Self::SingleKeyPassphraseTooShort`] counts
-    /// characters: each mirrors the unit the enforcing layer uses.
-    #[error(
-        "Wallet passwords must be no more than {max} UTF-8 bytes. Pick a shorter one and try again."
-    )]
-    SingleKeyPassphraseTooLong { max: u32 },
+    /// The imported-key passphrase is longer than the vault's ceiling and was
+    /// refused before the key was sealed.
+    #[error("This key passphrase is too long. Pick a shorter passphrase and try again.")]
+    SingleKeyPassphraseTooLong { max: usize },
+
+    /// The identity-key protection password is longer than the vault's
+    /// ceiling and was refused before the keys were sealed.
+    #[error("This identity password is too long. Pick a shorter password and try again.")]
+    IdentityKeyPasswordTooLong { max: usize },
 
     /// The "Passphrase" and "Confirm passphrase" fields in the import
     /// dialog did not match. Caught client-side; this variant exists so
@@ -2802,6 +2798,13 @@ impl TaskError {
             self,
             Self::SecretStore { source } if matches!(**source, SecretStoreError::WrongPassphrase)
         )
+    }
+
+    /// Whether a keyed boot open can recover by keeping the unlock prompt
+    /// visible. An overlong entry is user-correctable just like a wrong one;
+    /// storage corruption and other failures remain fatal.
+    pub fn is_recoverable_secret_store_passphrase_error(&self) -> bool {
+        self.is_secret_store_wrong_passphrase() || matches!(self, Self::PassphraseTooLong { .. })
     }
 }
 
@@ -3506,34 +3509,38 @@ mod tests {
         }
     }
 
-    /// Every layer that can refuse an over-long password renders the SAME
-    /// sentence: the two model pre-checks and the vault-level refusal. The
-    /// user's fix is identical in all three cases, so a divergence here is a
-    /// copy-drift bug, not a nuance.
+    /// Each enrolment path names the credential the user is editing, while a
+    /// vault read explains how to recover data written by an older build.
     #[test]
-    fn every_too_long_refusal_renders_identical_copy() {
-        use platform_wallet_storage::secrets::SecretStoreError;
+    fn too_long_refusals_are_specific_and_actionable() {
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
 
         let vault = vault_error(
             SecretStoreError::PassphraseTooLong {
-                found: 9000,
-                max: 4080,
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
             },
             |source| TaskError::SecretSeam { source },
         );
-        let expected = "Wallet passwords must be no more than 4080 UTF-8 bytes. Pick a shorter one and try again.";
 
-        for rendered in [
-            TaskError::WalletPasswordTooLong { max: 4080 }.to_string(),
-            TaskError::SingleKeyPassphraseTooLong { max: 4080 }.to_string(),
+        assert_eq!(
+            TaskError::WalletPasswordTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .to_string(),
+            "This wallet password is too long. Pick a shorter password and try again."
+        );
+        assert_eq!(
+            TaskError::SingleKeyPassphraseTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .to_string(),
+            "This key passphrase is too long. Pick a shorter passphrase and try again."
+        );
+        assert_eq!(
             vault.to_string(),
-            // The model errors these convert from must agree too — they are
-            // what the UI screens render directly for instant feedback.
-            crate::model::wallet::WalletCreationError::PasswordTooLong { max: 4080 }.to_string(),
-            crate::model::wallet::passphrase::PassphraseError::TooLong { max: 4080 }.to_string(),
-        ] {
-            assert_eq!(rendered, expected);
-        }
+            "This password is too long for this version of the app. If it already protects saved keys, reopen them with the previous version and change the password. Otherwise, choose a shorter password and try again."
+        );
     }
 
     /// The pre-check variants carry no upstream error — nothing failed
@@ -3541,17 +3548,22 @@ mod tests {
     /// difference is exactly why they are separate variants.
     #[test]
     fn pre_check_refusals_carry_no_source_unlike_the_vault_refusal() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
         use std::error::Error;
 
         assert!(
-            TaskError::WalletPasswordTooLong { max: 4080 }
-                .source()
-                .is_none()
+            TaskError::WalletPasswordTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .source()
+            .is_none()
         );
         assert!(
-            TaskError::SingleKeyPassphraseTooLong { max: 4080 }
-                .source()
-                .is_none()
+            TaskError::SingleKeyPassphraseTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .source()
+            .is_none()
         );
     }
 
@@ -3559,21 +3571,23 @@ mod tests {
     /// vault-level one — so a caller matching on the layer still can.
     #[test]
     fn model_ceiling_errors_convert_to_the_pre_check_variants() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
         let from_wallet =
             TaskError::from(crate::model::wallet::WalletCreationError::PasswordTooLong {
-                max: 4080,
+                max: MAX_PASSPHRASE_LEN,
             });
         assert!(
-            matches!(from_wallet, TaskError::WalletPasswordTooLong { max } if max == 4080),
+            matches!(from_wallet, TaskError::WalletPasswordTooLong { max } if max == MAX_PASSPHRASE_LEN),
             "got {from_wallet:?}"
         );
 
         let from_passphrase =
             TaskError::from(crate::model::wallet::passphrase::PassphraseError::TooLong {
-                max: 4080,
+                max: MAX_PASSPHRASE_LEN,
             });
         assert!(
-            matches!(from_passphrase, TaskError::SingleKeyPassphraseTooLong { max } if max == 4080),
+            matches!(from_passphrase, TaskError::SingleKeyPassphraseTooLong { max } if max == MAX_PASSPHRASE_LEN),
             "got {from_passphrase:?}"
         );
     }
@@ -3868,6 +3882,33 @@ mod tests {
         assert!(!TaskError::ImportedKeyNotFound.is_secret_store_wrong_passphrase());
     }
 
+    #[test]
+    fn boot_passphrase_classifier_keeps_length_refusals_recoverable() {
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
+
+        let too_long = vault_error(
+            SecretStoreError::PassphraseTooLong {
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
+            },
+            |source| TaskError::SecretStore { source },
+        );
+
+        assert!(too_long.is_recoverable_secret_store_passphrase_error());
+        assert!(
+            TaskError::SecretStore {
+                source: Box::new(SecretStoreError::WrongPassphrase),
+            }
+            .is_recoverable_secret_store_passphrase_error()
+        );
+        assert!(
+            !TaskError::SecretStore {
+                source: Box::new(SecretStoreError::Corruption),
+            }
+            .is_recoverable_secret_store_passphrase_error()
+        );
+    }
+
     /// The length refusal wins over every class variant, and carries the
     /// limit plus an action the user can actually take.
     ///
@@ -3877,11 +3918,11 @@ mod tests {
     /// over-long password is wrong and leaves the real fix undiscoverable.
     #[test]
     fn vault_error_routes_the_length_refusal_away_from_the_class_copy() {
-        use platform_wallet_storage::secrets::SecretStoreError;
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
 
         let too_long = || SecretStoreError::PassphraseTooLong {
-            found: 9000,
-            max: 4080,
+            found: MAX_PASSPHRASE_LEN + 1,
+            max: MAX_PASSPHRASE_LEN,
         };
 
         // Every class the vault is reached through yields the same refusal:
@@ -3893,11 +3934,14 @@ mod tests {
         ] {
             let mapped = vault_error(too_long(), class);
             assert!(
-                matches!(mapped, TaskError::PassphraseTooLong { max, .. } if max == 4080),
+                matches!(mapped, TaskError::PassphraseTooLong { max, .. } if max == MAX_PASSPHRASE_LEN),
                 "got {mapped:?}"
             );
             let msg = mapped.to_string();
-            assert!(msg.contains("4080"), "the limit must be actionable: {msg}");
+            assert!(
+                msg.contains("previous version") && msg.contains("shorter password"),
+                "the recovery choices must be actionable: {msg}"
+            );
             assert!(
                 !msg.to_lowercase().contains("disk space"),
                 "an over-long password is not a disk-space problem: {msg}"
@@ -3918,13 +3962,13 @@ mod tests {
     /// the technical cause while `Display` stays user-facing.
     #[test]
     fn passphrase_too_long_preserves_its_source() {
-        use platform_wallet_storage::secrets::SecretStoreError;
+        use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, SecretStoreError};
         use std::error::Error;
 
         let mapped = vault_error(
             SecretStoreError::PassphraseTooLong {
-                found: 9000,
-                max: 4080,
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
             },
             |source| TaskError::SecretSeam { source },
         );

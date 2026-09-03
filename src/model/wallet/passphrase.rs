@@ -29,15 +29,9 @@ pub enum PassphraseError {
     /// would refuse to unseal with it too.
     ///
     /// Counted in bytes while [`Self::TooShort`] counts characters: each
-    /// mirrors the unit its enforcing layer uses. Copy is identical to
-    /// [`TaskError::PassphraseTooLong`] so the same password reads the same
-    /// whether this pre-check or the vault caught it.
-    ///
-    /// [`TaskError::PassphraseTooLong`]: crate::backend_task::error::TaskError::PassphraseTooLong
-    #[error(
-        "Wallet passwords must be no more than {max} UTF-8 bytes. Pick a shorter one and try again."
-    )]
-    TooLong { max: u32 },
+    /// mirrors the unit its enforcing layer uses.
+    #[error("This key passphrase is too long. Pick a shorter passphrase and try again.")]
+    TooLong { max: usize },
     /// The passphrase and its confirmation differ.
     #[error("The two passphrases do not match. Type them again carefully.")]
     Mismatch,
@@ -61,17 +55,17 @@ pub fn validate_single_key_passphrase(
     passphrase: &str,
     confirm: &str,
 ) -> Result<(), PassphraseError> {
-    if passphrase.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
-        return Err(PassphraseError::TooShort {
-            min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
-        });
-    }
     // Untrimmed bytes, matching upstream `exceeds_maximum_passphrase_len`: the
     // ceiling bounds the guarded page a resident passphrase occupies,
     // whitespace included. Trimming here would pass values the vault refuses.
     if passphrase.len() > MAX_PASSPHRASE_LEN {
         return Err(PassphraseError::TooLong {
-            max: MAX_PASSPHRASE_LEN as u32,
+            max: MAX_PASSPHRASE_LEN,
+        });
+    }
+    if passphrase.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
+        return Err(PassphraseError::TooShort {
+            min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
         });
     }
     if passphrase != confirm {
@@ -154,7 +148,7 @@ mod tests {
         let over: String = "a".repeat(MAX_PASSPHRASE_LEN + 1);
         let err = validate_single_key_passphrase(&over, &over).expect_err("over cap rejected");
         assert!(
-            matches!(err, PassphraseError::TooLong { max } if max == MAX_PASSPHRASE_LEN as u32),
+            matches!(err, PassphraseError::TooLong { max } if max == MAX_PASSPHRASE_LEN),
             "expected TooLong, got {err:?}"
         );
     }
@@ -192,6 +186,17 @@ mod tests {
         assert!(
             matches!(err, PassphraseError::TooLong { .. }),
             "expected TooLong, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn byte_ceiling_wins_when_trimmed_password_is_also_too_short() {
+        let padded = format!("{}x", " ".repeat(MAX_PASSPHRASE_LEN));
+
+        let err = validate_single_key_passphrase(&padded, &padded).expect_err("over cap");
+        assert!(
+            matches!(err, PassphraseError::TooLong { .. }),
+            "got {err:?}"
         );
     }
 

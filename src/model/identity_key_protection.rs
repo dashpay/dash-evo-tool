@@ -7,7 +7,7 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::secret::Secret;
-use crate::model::wallet::passphrase::validate_single_key_passphrase;
+use crate::model::wallet::passphrase::{PassphraseError, validate_single_key_passphrase};
 
 /// Validate an identity-key protection password against the backend policy.
 ///
@@ -20,11 +20,14 @@ use crate::model::wallet::passphrase::validate_single_key_passphrase;
 ///
 /// - [`TaskError::SingleKeyPassphraseTooShort`] when the password is shorter
 ///   than the shared minimum length.
-/// - [`TaskError::SingleKeyPassphraseTooLong`] when the password is past the
+/// - [`TaskError::IdentityKeyPasswordTooLong`] when the password is past the
 ///   vault's byte ceiling, which would make the sealed keys unopenable.
 pub fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
     let pw = password.expose_secret();
-    validate_single_key_passphrase(pw, pw).map_err(TaskError::from)
+    validate_single_key_passphrase(pw, pw).map_err(|error| match error {
+        PassphraseError::TooLong { max } => TaskError::IdentityKeyPasswordTooLong { max },
+        other => TaskError::from(other),
+    })
 }
 
 #[cfg(test)]
@@ -54,8 +57,8 @@ mod tests {
         let over = Secret::new("a".repeat(MAX_PASSPHRASE_LEN + 1));
         let err = validate_protection_password(&over).expect_err("over cap");
         assert!(
-            matches!(err, TaskError::SingleKeyPassphraseTooLong { max } if max == MAX_PASSPHRASE_LEN as u32),
-            "expected SingleKeyPassphraseTooLong, got {err:?}"
+            matches!(err, TaskError::IdentityKeyPasswordTooLong { max } if max == MAX_PASSPHRASE_LEN),
+            "expected IdentityKeyPasswordTooLong, got {err:?}"
         );
 
         let at_cap = Secret::new("a".repeat(MAX_PASSPHRASE_LEN));

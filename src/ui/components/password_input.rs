@@ -109,6 +109,14 @@ impl PasswordInput {
         self
     }
 
+    /// Only explicit, fixed-shape limits participate in intrinsic sizing.
+    /// The default password ceiling is a paste guard and would otherwise
+    /// allocate and measure a multi-thousand-character sample every frame.
+    fn intrinsic_width_char_limit(&self) -> Option<usize> {
+        self.char_limit
+            .filter(|limit| *limit != DEFAULT_PASSWORD_CHAR_LIMIT)
+    }
+
     // -- Access methods ------------------------------------------------------
 
     /// Borrow the plaintext.
@@ -155,6 +163,7 @@ impl PasswordInput {
         // -- TextEdit --------------------------------------------------------
         // Egui TextEdit may cache plaintext in layout galleys and
         // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
+        let intrinsic_width_char_limit = self.intrinsic_width_char_limit();
         let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
             .password(!self.revealing)
             .hint_text(&self.hint_text)
@@ -173,7 +182,7 @@ impl PasswordInput {
 
         if let Some(width) = self.desired_width {
             text_edit = text_edit.desired_width(width);
-        } else if let Some(limit) = self.char_limit {
+        } else if let Some(limit) = intrinsic_width_char_limit {
             let font_id = if self.monospace {
                 egui::TextStyle::Monospace.resolve(ui.style())
             } else {
@@ -296,6 +305,17 @@ mod tests {
     fn builder_overrides_the_default_char_limit() {
         assert_eq!(
             PasswordInput::new().with_char_limit(64).char_limit,
+            Some(64)
+        );
+    }
+
+    #[test]
+    fn default_limit_does_not_drive_intrinsic_width_measurement() {
+        assert_eq!(PasswordInput::new().intrinsic_width_char_limit(), None);
+        assert_eq!(
+            PasswordInput::new()
+                .with_char_limit(64)
+                .intrinsic_width_char_limit(),
             Some(64)
         );
     }

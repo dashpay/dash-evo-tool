@@ -101,6 +101,10 @@ Since and I think that the three saps are going to school if it says soon for li
 
 ### Fixed
 
+- **Closing password-entry screens no longer aborts debug builds**: secret
+  buffers now own separate guarded memory pages, so releasing one password
+  field cannot interfere with another field that is still in use.
+
 - **A payment whose confirmation couldn't be verified now confirms itself**:
   the app used to tell you to wait and check your balance, and then never
   mention it again — leaving you to work out by hand whether the payment
@@ -405,7 +409,7 @@ Since and I think that the three saps are going to school if it says soon for li
 
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip
-  (`d18020f` → `288a6ca`), which lands an embeddable SQLite persistence backend with
+  (`d18020f` → `67d4ef3f`), which lands an embeddable SQLite persistence backend with
   *seedless rehydration*. The wallet manager now restores watch-only wallet state
   (accounts, balances, identities, platform addresses) from the on-disk store
   without the HD seed, re-deriving spend authority just-in-time from the seed only
@@ -425,10 +429,9 @@ Since and I think that the three saps are going to school if it says soon for li
   (measured in bytes, not characters, so a 4-character non-ASCII password like
   `öäüß` — 8 bytes — is accepted); existing wallets with shorter passwords
   that are still in DET's legacy encrypted format remain usable instead of
-  failing during lazy migration. Wallet passwords are also capped at 4080
-  UTF-8 bytes — far above any typed password, but reachable by pasting into
-  the field; an over-long one is now refused with a message that says to
-  shorten it, rather than a generic storage error. Protected (Tier-2) shielded wallets now resolve
+  failing during lazy migration. New wallet passwords and key passphrases that
+  are too long for secure storage are now refused before anything is saved,
+  with guidance specific to the credential being edited. Protected (Tier-2) shielded wallets now resolve
   their seed just in time for every operation that spends or binds their Orchard
   keys (initialization, shield from Core, shield from Platform, transfer,
   unshield, and withdraw). Each operation prompts for the passphrase unless the

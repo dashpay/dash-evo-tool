@@ -34,7 +34,7 @@ As a user, I want to create a new wallet with a generated mnemonic so that I can
 - User can select mnemonic language and wallet name.
 - Optional password protection is offered.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
-- An optional wallet password must also be no more than 4080 UTF-8 bytes, counted without trimming. The app refuses a longer one when the wallet is created rather than saving a password it could never read back.
+- The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
 - Recovery phrase is displayed for backup.
 
 ### WAL-002: Import wallet via mnemonic [Implemented]
@@ -45,7 +45,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 - Accepts standard BIP39 mnemonic phrases.
 - User can assign a name and optional password.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
-- An optional wallet password must also be no more than 4080 UTF-8 bytes, counted without trimming. The app refuses a longer one when the wallet is created rather than saving a password it could never read back.
+- The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
 - Wallet syncs balances after import.
 
 ### WAL-003: Import single private key [Implemented]
@@ -54,7 +54,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 As a power user, I want to import a single private key so that I can manage funds from a standalone address.
 
 - Creates a single-key wallet from WIF-format key.
-- An optional per-key passphrase must be at least 8 characters and no more than 4080 UTF-8 bytes. A longer one is refused at import rather than saved as a passphrase the app could never read back.
+- An optional per-key passphrase must be at least 8 characters. The app refuses one that is too long for secure storage before importing the key and asks the user to choose a shorter passphrase.
 - Wallet appears in the wallet selector.
 
 ### WAL-004: Switch between wallets [Implemented]
@@ -83,6 +83,7 @@ As a user, I want my wallet protected by a passphrase so that others cannot acce
 - That option defaults to off: unless the user actively ticks it, every secret access re-prompts, and the seed is not cached.
 - The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes. An explicit unlock without the keep-unlocked option retains it only until that wallet is ready to use, then wipes it.
 - During a storage update, each previously password-protected wallet asks for its password so its secret can be re-sealed in the on-device vault under the same password. The user may skip a wallet they cannot unlock without blocking the rest of the app; the wallet stays locked and protected, and its update finishes the next time the user unlocks it. The prompt makes clear that skipping does not lose any coins.
+- If an optional storage update cannot re-seal a legacy seed because its existing password is too long for the new storage, the wallet still unlocks from its preserved legacy data and the update is retried later.
 
 ### WAL-007: Remove a wallet [Implemented]
 **Persona:** Priya, Jordan
@@ -255,6 +256,7 @@ As a user whose saved keys were sealed with a passphrase by an earlier version, 
 - When the app cannot open its saved-keys vault because it was sealed with a passphrase, it shows a masked unlock prompt at startup instead of closing.
 - Entering the correct passphrase opens the existing vault in place and the app continues to its normal screen; nothing is deleted, recreated, or re-encrypted.
 - A wrong passphrase re-asks with a calm message and no hint; the vault is never altered, so a later correct passphrase still works.
+- Entering a passphrase that is too long for this version keeps the startup prompt open and explains that the user can retry with a shorter passphrase or reopen the previous version to change it.
 - Choosing to quit closes the app cleanly and leaves the vault untouched, so the user can try again next time.
 - The headless command-line and automation paths never show a dialog; they report a calm, actionable message instead.
 
@@ -622,7 +624,8 @@ As a power user, I want to add a password to an identity's signing keys so that 
 - Once protected, every signing operation for that identity asks for the password just-in-time, with an optional "keep unlocked until I close the app". A wrong password re-asks with no oracle.
 - Headless / MCP signing of a protected identity fails with a calm, actionable message telling the user to unlock it in the app or remove the protection — no environment-variable or flag password fallback exists.
 - Opting out asks for the current password and reverts the keys to keyless; signing is prompt-free again, including headless.
-- The password must be at least 8 characters and no more than 4080 UTF-8 bytes; a longer one is refused before the keys are sealed, since the app could never unseal them with it afterwards.
+- The password must be at least 8 characters. The app refuses one that is too long for secure storage before sealing the keys and asks the user to choose a shorter identity password.
+- A password accepted by the current secure storage continues to open protected keys at the storage limit. If an older version sealed keys with a longer password, this version gives recovery guidance instead of presenting a generic storage failure.
 - One password protects all of the identity's keys; it is separate from any wallet password (per-secret isolation). The encryption reuses the shipped Tier-2 seam (Argon2id + XChaCha20-Poly1305) — no new crypto, no plaintext written to disk.
 
 ### IDN-009: Refresh identity state [Implemented]

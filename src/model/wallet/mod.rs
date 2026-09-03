@@ -70,15 +70,9 @@ pub enum WalletCreationError {
     /// later build would refuse to unseal with it too.
     ///
     /// Measured untrimmed, unlike [`Self::PasswordTooShort`]: see the check in
-    /// [`Wallet::new_from_seed`]. Copy is deliberately identical to
-    /// [`TaskError::PassphraseTooLong`] so the same over-long password reads
-    /// the same whether this pre-check or the vault caught it.
-    ///
-    /// [`TaskError::PassphraseTooLong`]: crate::backend_task::error::TaskError::PassphraseTooLong
-    #[error(
-        "Wallet passwords must be no more than {max} UTF-8 bytes. Pick a shorter one and try again."
-    )]
-    PasswordTooLong { max: u32 },
+    /// [`Wallet::new_from_seed`].
+    #[error("This wallet password is too long. Pick a shorter password and try again.")]
+    PasswordTooLong { max: usize },
     /// Encrypting the seed with the supplied password failed.
     #[error("Could not process encrypted data. Please check your keys and try again.")]
     Encryption { detail: String },
@@ -461,18 +455,18 @@ impl Wallet {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
-                if pw.expose_secret().trim().len() < MIN_PASSPHRASE_LEN {
-                    return Err(WalletCreationError::PasswordTooShort {
-                        min: MIN_PASSPHRASE_LEN as u32,
-                    });
-                }
                 // Untrimmed bytes, matching upstream
                 // `exceeds_maximum_passphrase_len`: the ceiling bounds the
                 // guarded page a resident passphrase occupies, whitespace
                 // included. Trimming would pass values the vault refuses.
                 if pw.expose_secret().len() > MAX_PASSPHRASE_LEN {
                     return Err(WalletCreationError::PasswordTooLong {
-                        max: MAX_PASSPHRASE_LEN as u32,
+                        max: MAX_PASSPHRASE_LEN,
+                    });
+                }
+                if pw.expose_secret().trim().len() < MIN_PASSPHRASE_LEN {
+                    return Err(WalletCreationError::PasswordTooShort {
+                        min: MIN_PASSPHRASE_LEN as u32,
                     });
                 }
                 // `encrypt_seed` is fully typed; `WalletCreationError::Encryption`
@@ -2748,7 +2742,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(WalletCreationError::PasswordTooLong { max })
-                if max == MAX_PASSPHRASE_LEN as u32
+                if max == MAX_PASSPHRASE_LEN
         ));
     }
 
@@ -2814,10 +2808,29 @@ mod tests {
     }
 
     #[test]
+    fn wallet_password_ceiling_wins_when_trimmed_password_is_too_short() {
+        let padded = format!("{}x", " ".repeat(MAX_PASSPHRASE_LEN));
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("padded-short-over-cap".to_string()),
+            Some(&Secret::new(padded)),
+        );
+
+        assert!(
+            matches!(result, Err(WalletCreationError::PasswordTooLong { .. })),
+            "expected PasswordTooLong"
+        );
+    }
+
+    #[test]
     fn password_too_long_display_is_actionable() {
         assert_eq!(
-            WalletCreationError::PasswordTooLong { max: 4080 }.to_string(),
-            "Wallet passwords must be no more than 4080 UTF-8 bytes. Pick a shorter one and try again."
+            WalletCreationError::PasswordTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .to_string(),
+            "This wallet password is too long. Pick a shorter password and try again."
         );
     }
 

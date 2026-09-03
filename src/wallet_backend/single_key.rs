@@ -1851,7 +1851,7 @@ mod tests {
             .expect_err("over-long passphrase rejected");
         match err {
             TaskError::SingleKeyPassphraseTooLong { max } => {
-                assert_eq!(max, MAX_PASSPHRASE_LEN as u32);
+                assert_eq!(max, MAX_PASSPHRASE_LEN);
             }
             other => panic!("expected SingleKeyPassphraseTooLong, got {other:?}"),
         }

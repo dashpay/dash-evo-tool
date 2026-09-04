@@ -1019,36 +1019,141 @@ async fn forward_backend_task_join_error(
     }
 }
 
+/// Minimum interval between consecutive OS-theme probes when preference is
+/// `System`. Prevents thrashing the underlying detector library on every frame.
+const DETECTION_THROTTLE: Duration = Duration::from_secs(2);
+
+/// Maximum time an in-flight detection probe is allowed to occupy the slot
+/// before the watchdog forcibly releases it. Protects against a panicking or
+/// hung detector preventing all future probes.
+const DETECTION_WATCHDOG: Duration = Duration::from_secs(10);
+
 struct ThemeState {
     preference: ThemeMode,
     resolved: ThemeMode,
     last_applied: Option<ThemeMode>,
-    last_checked: Instant,
+    last_checked: Option<Instant>,
+    detection_in_flight: bool,
+    /// When the current in-flight probe was dispatched. Used by the watchdog
+    /// to release a stuck detection slot.
+    detection_dispatched_at: Option<Instant>,
+    detection_generation: u64,
+    detection_sender: mpsc::Sender<(u64, Option<ThemeMode>)>,
+    detection_receiver: mpsc::Receiver<(u64, Option<ThemeMode>)>,
 }
 
 impl ThemeState {
     fn new(preference: ThemeMode) -> Self {
+        let (detection_sender, detection_receiver) = mpsc::channel();
         Self {
             resolved: crate::ui::theme::resolve_theme_mode(preference),
             last_applied: None,
-            last_checked: Instant::now(),
+            last_checked: Some(Instant::now()),
+            detection_in_flight: false,
+            detection_dispatched_at: None,
+            detection_generation: 0,
+            detection_sender,
+            detection_receiver,
             preference,
         }
     }
 
-    /// Polls the OS for system theme changes (throttled to every 2s) and
-    /// applies the theme if it changed. Returns `true` if the theme was applied.
-    fn poll_and_apply(&mut self, ctx: &egui::Context) -> bool {
-        if self.preference == ThemeMode::System {
-            let now = Instant::now();
-            if now.duration_since(self.last_checked) >= Duration::from_secs(2) {
-                self.last_checked = now;
-                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
-                    && detected != self.resolved
-                {
-                    self.resolved = detected;
-                }
+    /// Apply a single detection result. Stale-generation messages are
+    /// discarded (so they cannot overwrite `resolved` after a preference
+    /// change). A matching-generation `None` result clears the in-flight
+    /// slot but leaves `resolved` unchanged. Returns `true` iff `resolved`
+    /// changed.
+    fn handle_detection_result(&mut self, generation: u64, detected: Option<ThemeMode>) -> bool {
+        if generation != self.detection_generation {
+            return false;
+        }
+        self.detection_in_flight = false;
+        self.detection_dispatched_at = None;
+        if self.preference != ThemeMode::System {
+            return false;
+        }
+        match detected {
+            Some(detected) if detected != self.resolved => {
+                self.resolved = detected;
+                true
             }
+            _ => false,
+        }
+    }
+
+    fn drain_detection_results(&mut self) {
+        while let Ok((generation, detected)) = self.detection_receiver.try_recv() {
+            self.handle_detection_result(generation, detected);
+        }
+    }
+
+    /// If a detection probe has been in flight longer than [`DETECTION_WATCHDOG`],
+    /// release the slot so future probes can proceed even if the worker
+    /// panicked or hung. Advances the generation so a delayed result from the
+    /// stuck worker will be treated as stale. Returns `true` if the watchdog
+    /// fired.
+    fn check_detection_watchdog(&mut self, now: Instant) -> bool {
+        if !self.detection_in_flight {
+            return false;
+        }
+        let stuck = match self.detection_dispatched_at {
+            // Defensive: in-flight without a timestamp — treat as stuck.
+            None => true,
+            Some(dispatched_at) => now.duration_since(dispatched_at) >= DETECTION_WATCHDOG,
+        };
+        if stuck {
+            tracing::warn!(
+                "OS theme detection watchdog fired after {:?}; releasing in-flight slot",
+                DETECTION_WATCHDOG
+            );
+            self.detection_in_flight = false;
+            self.detection_dispatched_at = None;
+            self.detection_generation = self.detection_generation.wrapping_add(1);
+        }
+        stuck
+    }
+
+    fn request_system_detection(&mut self, ctx: &egui::Context, now: Instant) {
+        self.check_detection_watchdog(now);
+        if self.detection_in_flight {
+            return;
+        }
+        if self
+            .last_checked
+            .is_some_and(|last_checked| now.duration_since(last_checked) < DETECTION_THROTTLE)
+        {
+            return;
+        }
+
+        self.last_checked = Some(now);
+        self.detection_in_flight = true;
+        self.detection_dispatched_at = Some(now);
+        let sender = self.detection_sender.clone();
+        let generation = self.detection_generation;
+        let ctx = ctx.clone();
+        tokio::task::spawn_blocking(move || {
+            // Catch panics from the underlying `dark_light` crate so a panic
+            // still produces a generation-tagged result and a repaint request,
+            // preventing the in-flight slot from being held forever.
+            let detected = std::panic::catch_unwind(crate::ui::theme::try_detect_system_theme)
+                .unwrap_or_else(|_| {
+                    tracing::warn!("OS theme detection panicked; treating as no result");
+                    None
+                });
+            if sender.send((generation, detected)).is_err() {
+                tracing::debug!("Dropping OS theme detection result because receiver closed");
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Polls asynchronously for OS theme changes (throttled to every 2s) and
+    /// applies the latest detected theme if it changed. Returns `true` if the
+    /// theme was applied.
+    fn poll_and_apply(&mut self, ctx: &egui::Context) -> bool {
+        self.drain_detection_results();
+        if self.preference == ThemeMode::System {
+            self.request_system_detection(ctx, Instant::now());
         }
         if self.last_applied != Some(self.resolved) {
             crate::ui::theme::apply_theme(ctx, self.resolved);
@@ -1061,6 +1166,10 @@ impl ThemeState {
 
     fn apply_new_preference(&mut self, ctx: &egui::Context, new_theme: ThemeMode) -> bool {
         self.preference = new_theme;
+        self.detection_generation = self.detection_generation.wrapping_add(1);
+        self.detection_in_flight = false;
+        self.detection_dispatched_at = None;
+        let now = Instant::now();
         let mut detection_failed = false;
         self.resolved = if new_theme == ThemeMode::System {
             match crate::ui::theme::try_detect_system_theme() {
@@ -1073,10 +1182,166 @@ impl ThemeState {
         } else {
             new_theme
         };
-        self.last_checked = Instant::now();
+        self.last_checked = Some(now);
         crate::ui::theme::apply_theme(ctx, self.resolved);
         self.last_applied = Some(self.resolved);
         detection_failed
+    }
+}
+
+#[cfg(test)]
+mod theme_state_tests {
+    use super::*;
+
+    #[test]
+    fn stale_generation_result_does_not_overwrite_resolved() {
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.resolved = ThemeMode::Light;
+        state.last_applied = Some(ThemeMode::Light);
+        let stale_generation = state.detection_generation;
+
+        // Switching preference advances the generation and clears in-flight.
+        state.apply_new_preference(&ctx, ThemeMode::Dark);
+        assert_eq!(state.resolved, ThemeMode::Dark);
+        assert_ne!(state.detection_generation, stale_generation);
+
+        // A late result from the previous System probe must be ignored.
+        let changed = state.handle_detection_result(stale_generation, Some(ThemeMode::Light));
+        assert!(!changed);
+        assert_eq!(state.resolved, ThemeMode::Dark);
+    }
+
+    #[test]
+    fn none_detection_result_leaves_resolved_unchanged() {
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.resolved = ThemeMode::Dark;
+        state.detection_in_flight = true;
+        state.detection_dispatched_at = Some(Instant::now());
+        let generation = state.detection_generation;
+
+        let changed = state.handle_detection_result(generation, None);
+        assert!(!changed);
+        assert_eq!(state.resolved, ThemeMode::Dark);
+        assert!(
+            !state.detection_in_flight,
+            "matching-generation result clears the in-flight slot even on None"
+        );
+        assert!(state.detection_dispatched_at.is_none());
+    }
+
+    #[test]
+    fn matching_detection_result_updates_resolved() {
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.resolved = ThemeMode::Light;
+        state.detection_in_flight = true;
+        state.detection_dispatched_at = Some(Instant::now());
+        let generation = state.detection_generation;
+
+        let changed = state.handle_detection_result(generation, Some(ThemeMode::Dark));
+        assert!(changed);
+        assert_eq!(state.resolved, ThemeMode::Dark);
+        assert!(!state.detection_in_flight);
+    }
+
+    #[test]
+    fn detection_result_ignored_when_preference_not_system() {
+        let mut state = ThemeState::new(ThemeMode::Light);
+        state.resolved = ThemeMode::Light;
+        state.detection_in_flight = true;
+        state.detection_dispatched_at = Some(Instant::now());
+        let generation = state.detection_generation;
+
+        let changed = state.handle_detection_result(generation, Some(ThemeMode::Dark));
+        assert!(!changed);
+        assert_eq!(state.resolved, ThemeMode::Light);
+    }
+
+    #[test]
+    fn in_flight_guard_prevents_concurrent_dispatch() {
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::System);
+        // Pretend a probe is already in flight, dispatched just now.
+        let dispatched = Instant::now();
+        state.detection_in_flight = true;
+        state.detection_dispatched_at = Some(dispatched);
+        let before_last_checked = state.last_checked;
+
+        // Try to dispatch again 5s later (past the throttle but well within the watchdog).
+        state.request_system_detection(&ctx, dispatched + Duration::from_secs(5));
+
+        // No new dispatch happened: last_checked unchanged, still in flight.
+        assert_eq!(state.last_checked, before_last_checked);
+        assert!(state.detection_in_flight);
+        assert_eq!(state.detection_dispatched_at, Some(dispatched));
+    }
+
+    #[test]
+    fn throttle_skips_dispatch_within_window() {
+        let ctx = egui::Context::default();
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.detection_in_flight = false;
+        state.detection_dispatched_at = None;
+        let now = Instant::now();
+        state.last_checked = Some(now);
+
+        // Dispatch attempt 1s later — within the 2s throttle.
+        state.request_system_detection(&ctx, now + Duration::from_secs(1));
+        assert!(
+            !state.detection_in_flight,
+            "throttle must block dispatch within {DETECTION_THROTTLE:?}",
+        );
+        assert_eq!(state.last_checked, Some(now));
+    }
+
+    #[test]
+    fn watchdog_releases_stuck_in_flight_probe() {
+        let mut state = ThemeState::new(ThemeMode::System);
+        let now = Instant::now();
+        let dispatched = now - DETECTION_WATCHDOG - Duration::from_secs(1);
+        state.detection_in_flight = true;
+        state.detection_dispatched_at = Some(dispatched);
+        let old_generation = state.detection_generation;
+
+        let fired = state.check_detection_watchdog(now);
+
+        assert!(fired);
+        assert!(!state.detection_in_flight);
+        assert!(state.detection_dispatched_at.is_none());
+        assert_ne!(
+            state.detection_generation, old_generation,
+            "generation must advance so a delayed worker result is treated as stale",
+        );
+
+        // A delayed result from the stuck worker (old generation) is now stale.
+        state.resolved = ThemeMode::Light;
+        let changed = state.handle_detection_result(old_generation, Some(ThemeMode::Dark));
+        assert!(!changed);
+        assert_eq!(state.resolved, ThemeMode::Light);
+    }
+
+    #[test]
+    fn watchdog_no_op_within_timeout() {
+        let mut state = ThemeState::new(ThemeMode::System);
+        let now = Instant::now();
+        state.detection_in_flight = true;
+        state.detection_dispatched_at = Some(now);
+        let old_generation = state.detection_generation;
+
+        let fired = state.check_detection_watchdog(now + Duration::from_secs(1));
+        assert!(!fired);
+        assert!(state.detection_in_flight);
+        assert_eq!(state.detection_generation, old_generation);
+    }
+
+    #[test]
+    fn watchdog_no_op_when_not_in_flight() {
+        let mut state = ThemeState::new(ThemeMode::System);
+        state.detection_in_flight = false;
+        state.detection_dispatched_at = None;
+
+        let fired = state.check_detection_watchdog(Instant::now());
+        assert!(!fired);
     }
 }
 

@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod auth_pubkey_cache;
 pub mod birth_height;
 pub mod encryption;

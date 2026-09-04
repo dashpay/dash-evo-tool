@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::alias::validate_optional_alias;
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -10,6 +11,7 @@ use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::wallets::alias_input::render_optional_alias_input;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dpp::dashcore::Address;
@@ -108,6 +110,16 @@ impl AddNewWalletScreen {
         self.seed_phrase = Some(mnemonic);
     }
 
+    fn resolve_wallet_alias(&self) -> Result<String, String> {
+        let existing_wallet_count = self
+            .app_context
+            .wallets
+            .read()
+            .map(|w| w.len())
+            .unwrap_or(0);
+        resolve_wallet_alias(&self.alias_input, existing_wallet_count)
+    }
+
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
@@ -119,17 +131,7 @@ impl AddNewWalletScreen {
             };
 
             // Generate default wallet name if none provided
-            let wallet_alias = if self.alias_input.trim().is_empty() {
-                let existing_wallet_count = self
-                    .app_context
-                    .wallets
-                    .read()
-                    .map(|w| w.len())
-                    .unwrap_or(0);
-                format!("Wallet {}", existing_wallet_count + 1)
-            } else {
-                self.alias_input.clone()
-            };
+            let wallet_alias = self.resolve_wallet_alias()?;
 
             let wallet = Wallet::new_from_seed(
                 seed,
@@ -616,10 +618,7 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.add_space(8.0);
 
-                    ui.horizontal(|ui| {
-                        ui.label("Wallet Name:");
-                        ui.text_edit_singleline(&mut self.alias_input);
-                    });
+                    render_optional_alias_input(ui, "Wallet Name:", &mut self.alias_input);
 
                     ui.add_space(10.0);
                     ui.separator();
@@ -732,5 +731,114 @@ impl ScreenLike for AddNewWalletScreen {
 
         action |= pending_action;
         action
+    }
+}
+
+fn resolve_wallet_alias(alias_input: &str, existing_wallet_count: usize) -> Result<String, String> {
+    if let Some(alias) = validate_optional_alias(alias_input).map_err(|e| e.to_string())? {
+        Ok(alias.to_string())
+    } else {
+        Ok(format!("Wallet {}", existing_wallet_count + 1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AddNewWalletScreen, resolve_wallet_alias};
+    use crate::app_dir::ensure_env_file;
+    use crate::context::AppContext;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::wallet::alias::MAX_CHARS;
+    use crate::utils::tasks::TaskManager;
+    use bip39::Mnemonic;
+    use dash_sdk::dpp::dashcore::Network;
+    use std::sync::Arc;
+
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    fn test_mnemonic() -> Mnemonic {
+        Mnemonic::parse_normalized(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("mnemonic should parse")
+    }
+
+    #[test]
+    fn resolve_wallet_alias_falls_back_for_whitespace_only_input() {
+        let alias = resolve_wallet_alias("   \n\t  ", 2).expect("alias should resolve");
+        assert_eq!(alias, "Wallet 3");
+    }
+
+    #[test]
+    fn resolve_wallet_alias_preserves_invalid_input_on_validation_error() {
+        let raw = "a".repeat(MAX_CHARS + 1);
+        let err = resolve_wallet_alias(&raw, 0).expect_err("alias should be rejected");
+
+        assert!(err.contains("Name is"));
+        assert_eq!(raw.chars().count(), MAX_CHARS + 1);
+    }
+
+    #[tokio::test]
+    async fn save_wallet_uses_default_name_for_whitespace_only_alias() {
+        let (app_context, _tmp) = offline_ctx();
+        let mnemonic = test_mnemonic();
+        let expected_seed_hash = {
+            use crate::model::wallet::ClosedKeyItem;
+            ClosedKeyItem::compute_seed_hash(&mnemonic.to_seed(""))
+        };
+        let mut screen = AddNewWalletScreen::new(&app_context);
+        screen.seed_phrase = Some(mnemonic);
+        screen.alias_input = "  \n\t ".to_string();
+
+        screen.save_wallet().expect("save should succeed");
+
+        let expected_wallet = app_context
+            .wallets
+            .read()
+            .unwrap()
+            .values()
+            .find(|wallet| wallet.read().unwrap().seed_hash() == expected_seed_hash)
+            .cloned()
+            .expect("wallet should be registered");
+        assert_eq!(
+            expected_wallet.read().unwrap().alias.as_deref(),
+            Some("Wallet 1")
+        );
+    }
+
+    #[test]
+    fn save_wallet_rejects_over_limit_alias_without_registering_wallet() {
+        let (app_context, _tmp) = offline_ctx();
+        let mut screen = AddNewWalletScreen::new(&app_context);
+        screen.seed_phrase = Some(test_mnemonic());
+        screen.alias_input = "a".repeat(MAX_CHARS + 1);
+
+        let err = screen
+            .save_wallet()
+            .expect_err("over-limit alias should be rejected");
+
+        assert!(err.contains("Name is"));
+        assert!(app_context.wallets.read().unwrap().is_empty());
     }
 }

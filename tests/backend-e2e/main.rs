@@ -29,6 +29,7 @@ mod identity_cold_boot;
 mod spv_reconnect;
 
 mod core_tasks;
+mod cross_wallet_topup;
 // TODO(dashpay-e2e): deferred — dashpay backend depends on upstream platform-wallet dashpay completion. Re-enable once dashpay/platform#3841 ("complete dashpay", shumkov) lands and the platform-wallet dep is bumped. Tests: 12 tests (TC-031 to TC-046): tc_031/032/033/034/035/036/037/041/043/044/045/046.
 // mod dashpay_tasks;
 mod event_bridge_live;

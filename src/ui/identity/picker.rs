@@ -18,7 +18,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::Screen;
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;

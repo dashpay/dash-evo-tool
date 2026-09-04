@@ -4,50 +4,27 @@ use std::ops::Range;
 
 use egui::TextBuffer;
 use egui::text::CharIndex;
-use zeroize::{Zeroize, Zeroizing};
-
-/// Default pre-allocation capacity for `Secret` buffers.
-///
-/// Set to 4096 bytes because:
-/// - `mlock` operates on page granularity — locking less than a page still
-///   locks the entire page, so smaller buffers waste no memory.
-/// - 4096 bytes is large enough for any human-entered password or WIF key,
-///   making `String` reallocation virtually impossible during normal use.
-/// - When reallocation *does* happen, the old buffer is freed by the system
-///   allocator without zeroing — a residual leak we cannot prevent without
-///   a custom allocator. Pre-allocating avoids this entirely.
-const DEFAULT_CAPACITY: usize = 4096;
-
-/// A raw pointer used only for equality comparison, never dereferenced.
-/// Encapsulates the Send/Sync safety invariant so `Secret` itself does not
-/// need manual unsafe trait impls.
-#[derive(Clone, Copy)]
-struct CompareOnlyPtr(*const u8);
-
-// SAFETY: CompareOnlyPtr is never dereferenced — only compared via addr_eq().
-// The pointed-to memory is managed by the String inside Zeroizing.
-unsafe impl Send for CompareOnlyPtr {}
-unsafe impl Sync for CompareOnlyPtr {}
-
-impl CompareOnlyPtr {
-    fn new(ptr: *const u8) -> Self {
-        Self(ptr)
-    }
-
-    fn addr_eq(self, other: *const u8) -> bool {
-        std::ptr::eq(self.0, other)
-    }
-}
+use platform_wallet_storage::secrets::SecretString;
+use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 /// Zeroize-on-drop wrapper for sensitive strings (passwords, WIF keys, private key inputs).
 ///
-/// Debug output is redacted. Best-effort `mlock` prevents the backing memory from
-/// being swapped to disk. The lock is released automatically when the value is dropped.
+/// A newtype over [`SecretString`], which owns the storage: the bytes live in
+/// a page-aligned allocation fenced by inaccessible guard pages, `mlock`ed out
+/// of swap and excluded from core dumps on a best-effort basis, and wiped over
+/// the buffer's full capacity when the value drops. Two live secrets never
+/// share a page, so freeing one can never unlock memory another still holds.
 ///
-/// `Display`, `Deref`, and `DerefMut` are intentionally **not** implemented to
-/// prevent accidental leakage. Use [`expose_secret`](Self::expose_secret) for
-/// explicit read access, or pass `&mut Secret` directly to `TextEdit::singleline`
-/// (via the [`TextBuffer`] impl) for mutable editing.
+/// This type adds only what DET needs on top: egui's [`TextBuffer`] (so a
+/// `Secret` can back a `TextEdit` directly), equality, and `serde`/`schemars`
+/// for MCP tool parameters.
+///
+/// Debug output is redacted. `Display`, `Deref`, and `DerefMut` are
+/// intentionally **not** implemented to prevent accidental leakage. Use
+/// [`expose_secret`](Self::expose_secret) for explicit read access, or pass
+/// `&mut Secret` directly to `TextEdit::singleline` (via the [`TextBuffer`]
+/// impl) for mutable editing.
 ///
 /// # Security: TextEdit usage
 ///
@@ -55,74 +32,50 @@ impl CompareOnlyPtr {
 /// `.password(true)`. Without it, plaintext leaks to egui's layout system,
 /// widget info, and accessibility events. Use [`PasswordInput`] to ensure
 /// this is always enforced.
-pub struct Secret {
-    /// Dropped first -- zeroes the bytes.
-    inner: Zeroizing<String>,
-    /// Dropped second -- unlocks the page.
-    _lock: Option<region::LockGuard>,
-    /// Tracks the heap pointer so we can re-lock after reallocation.
-    locked_ptr: CompareOnlyPtr,
-}
+#[derive(Default, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Secret(SecretString);
+
+// `Secret` rides inside `BackendTask` variants across threads; losing that is a
+// compile error here rather than a puzzling one at a distant call site.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Secret>();
+};
 
 impl Secret {
-    /// Wrap a string in a `Secret`, locking its backing memory on a best-effort basis.
+    /// Wrap a string in a `Secret`, moving it into guarded memory.
+    ///
+    /// The source string is zeroized before it is dropped, so no unprotected
+    /// copy outlives the call.
     pub fn new(s: impl Into<String>) -> Self {
-        let mut source: String = s.into();
-        let cap = source.len().max(DEFAULT_CAPACITY);
-        let mut buf = String::with_capacity(cap);
-        buf.push_str(&source);
-        // Zeroize the original string before it's freed
-        source.zeroize();
-        let lock = region::lock(buf.as_ptr(), buf.capacity())
-            .map_err(|e| {
-                tracing::debug!("mlock failed for Secret: {e}");
-                e
-            })
-            .ok();
-        let locked_ptr = CompareOnlyPtr::new(buf.as_ptr());
-        Self {
-            inner: Zeroizing::new(buf),
-            _lock: lock,
-            locked_ptr,
-        }
+        Self(SecretString::new(s))
     }
 
-    /// Create an empty `Secret` with a pre-allocated, locked buffer.
-    pub fn with_capacity(cap: usize) -> Self {
-        let cap = cap.max(DEFAULT_CAPACITY);
-        let s = String::with_capacity(cap);
-        let lock = region::lock(s.as_ptr(), s.capacity())
-            .map_err(|e| {
-                tracing::debug!("mlock failed for Secret: {e}");
-                e
-            })
-            .ok();
-        let locked_ptr = CompareOnlyPtr::new(s.as_ptr());
-        Self {
-            inner: Zeroizing::new(s),
-            _lock: lock,
-            locked_ptr,
-        }
-    }
-
-    /// Create an empty `Secret` with a pre-allocated, locked buffer.
+    /// Create an empty `Secret`, which holds no allocation at all.
     pub fn empty() -> Self {
-        Self::default()
+        Self(SecretString::empty())
     }
 
     /// Borrow the plaintext.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the buffer does not hold valid UTF-8, which can only mean a
+    /// mutation landed off a character boundary — a bug rather than a
+    /// recoverable condition.
     pub fn expose_secret(&self) -> &str {
-        &self.inner
+        self.0.expose_secret()
     }
 
     /// The length of the secret in bytes.
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.0.len()
     }
 
     /// Whether the secret is empty.
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.0.is_empty()
     }
 
     /// Whether the secret's trimmed value is empty.
@@ -130,50 +83,23 @@ impl Secret {
     /// Prefer this over `expose_secret().trim().is_empty()` for presence
     /// checks — it avoids exposing the raw bytes unnecessarily.
     pub fn is_blank(&self) -> bool {
-        self.inner.trim().is_empty()
+        self.0.is_blank()
     }
 
     /// Returns a new `Secret` containing the trimmed content.
-    /// Keeps the data within the secure wrapper unlike `text().trim()`
+    /// Keeps the data within the secure wrapper unlike `expose_secret().trim()`
     /// which returns a borrowed `&str`.
     pub fn trimmed(&self) -> Self {
-        Self::new(self.inner.trim().to_string())
-    }
-
-    /// If the backing allocation moved (e.g. after a `String` reallocation),
-    /// drop the old mlock guard and create a new one for the current buffer.
-    fn relock_if_moved(&mut self) {
-        if !self.locked_ptr.addr_eq(self.inner.as_ptr()) {
-            self._lock = region::lock(self.inner.as_ptr(), self.inner.capacity())
-                .map_err(|e| {
-                    tracing::debug!("mlock re-lock failed after reallocation: {e}");
-                    e
-                })
-                .ok();
-            self.locked_ptr = CompareOnlyPtr::new(self.inner.as_ptr());
-        }
-    }
-}
-
-impl Drop for Secret {
-    fn drop(&mut self) {
-        // Zero the full capacity, including bytes beyond len that
-        // Zeroize for String would miss (it only zeros 0..len).
-        // Use zeroize crate semantics (volatile/fence-guarded) to prevent
-        // the compiler from optimizing the wipe away.
-        let ptr = self.inner.as_mut_ptr();
-        let cap = self.inner.capacity();
-        if cap > 0 {
-            // SAFETY: ptr is valid for cap bytes (String allocation guarantee).
-            let slice = unsafe { std::slice::from_raw_parts_mut(ptr, cap) };
-            slice.zeroize();
-        }
-        // After this, Rust drops fields in order: inner (Zeroizing re-zeroes 0..len, harmless),
-        // then _lock (unlocks the page), then locked_ptr (no-op).
+        Self(self.0.trimmed())
     }
 }
 
 // -- TextBuffer impl (allows `TextEdit::singleline(&mut secret)`) -----------
+//
+// Every edit reduces to `SecretString::replace_range`, which takes byte
+// offsets. The char-index translation stays here: `byte_index_from_char_index`
+// reads `as_str()` and always yields a character boundary at or before the end
+// of the plaintext, so no edit below can trip that method's bounds assertions.
 
 impl TextBuffer for Secret {
     fn is_mutable(&self) -> bool {
@@ -181,44 +107,39 @@ impl TextBuffer for Secret {
     }
 
     fn as_str(&self) -> &str {
-        self.inner.as_str()
+        self.0.expose_secret()
     }
 
     fn insert_text(&mut self, text: &str, char_index: CharIndex) -> usize {
-        let n = <String as TextBuffer>::insert_text(&mut *self.inner, text, char_index);
-        self.relock_if_moved();
-        n
+        let at = self.byte_index_from_char_index(char_index).0;
+        self.0.replace_range(at..at, text);
+        text.chars().count()
     }
 
     fn delete_char_range(&mut self, char_range: Range<CharIndex>) {
-        <String as TextBuffer>::delete_char_range(&mut *self.inner, char_range);
-        // Zero deleted bytes in trailing capacity [len..capacity)
-        let ptr = self.inner.as_mut_ptr();
-        let len = self.inner.len();
-        let cap = self.inner.capacity();
-        if cap > len {
-            // SAFETY: ptr is valid for cap bytes (String's allocation guarantee),
-            // and we only write to the unused portion [len..cap).
-            unsafe { std::slice::from_raw_parts_mut(ptr.add(len), cap - len) }.zeroize();
-        }
+        assert!(
+            char_range.start <= char_range.end,
+            "start must be <= end, but got {char_range:?}"
+        );
+        let start = self.byte_index_from_char_index(char_range.start).0;
+        let end = self.byte_index_from_char_index(char_range.end).0;
+        self.0.replace_range(start..end, "");
     }
 
     fn clear(&mut self) {
-        Zeroize::zeroize(&mut *self.inner);
+        self.0.zeroize();
     }
 
     fn replace_with(&mut self, text: &str) {
-        Zeroize::zeroize(&mut *self.inner);
-        self.inner.push_str(text);
-        self.relock_if_moved();
+        self.0.replace_range(.., text);
     }
 
     fn take(&mut self) -> String {
         // Deliberately returns an unprotected String — required by egui TextBuffer trait.
         // The undoer is disabled in PasswordInput, limiting the call paths. Accepted as
         // inherent limitation of the egui framework for the desktop GUI threat model.
-        let copy = self.inner.to_string();
-        Zeroize::zeroize(&mut *self.inner);
+        let copy = self.0.expose_secret().to_owned();
+        self.0.zeroize();
         copy
     }
 
@@ -230,14 +151,10 @@ impl TextBuffer for Secret {
 // -- Trait impls -------------------------------------------------------------
 
 impl Clone for Secret {
+    /// Copies into a fresh guarded allocation rather than sharing one, so the
+    /// clone keeps its own exclusively owned pages and is wiped independently.
     fn clone(&self) -> Self {
-        Self::new((*self.inner).clone())
-    }
-}
-
-impl Default for Secret {
-    fn default() -> Self {
-        Self::with_capacity(DEFAULT_CAPACITY)
+        Self(SecretString::from(self.0.expose_secret()))
     }
 }
 
@@ -248,20 +165,11 @@ impl fmt::Debug for Secret {
 }
 
 impl PartialEq for Secret {
-    /// Best-effort timing-resistant comparison. Note: length differences cause
-    /// an early return, which leaks length information through timing. Acceptable
-    /// for this application's local threat model.
+    /// Compares equal-length values in constant time via [`subtle`]. A length
+    /// mismatch short-circuits, so timing reveals the length but never where
+    /// two values of the same length diverge.
     fn eq(&self, other: &Self) -> bool {
-        let a = self.expose_secret().as_bytes();
-        let b = other.expose_secret().as_bytes();
-        if a.len() != b.len() {
-            return false;
-        }
-        let diff = a
-            .iter()
-            .zip(b.iter())
-            .fold(0u8, |acc, (x, y)| acc | (x ^ y));
-        diff == 0
+        bool::from(self.0.ct_eq(&other.0))
     }
 }
 
@@ -269,51 +177,37 @@ impl Eq for Secret {}
 
 impl From<String> for Secret {
     fn from(s: String) -> Self {
-        Self::new(s)
+        Self(SecretString::from(s))
     }
 }
 
 impl From<&str> for Secret {
+    /// Copies straight into guarded memory, with no transient `String`.
     fn from(s: &str) -> Self {
-        Self::new(s.to_string())
+        Self(SecretString::from(s))
     }
 }
 
 // -- serde / schemars impls --------------------------------------------------
 //
 // `Secret` carries private-key / mnemonic material in MCP tool parameter
-// structs.  Adding `Deserialize` lets the params struct derive `Deserialize`
-// directly — the impl deserializes into a transient `String`, then moves it
-// into the zeroizing/mlock'd buffer and drops the transient, so no long-lived
-// plain `String` copy persists.  The `JsonSchema` impl (gated to
-// the features that bring in `rmcp`) exposes `Secret` as a JSON string in the
-// MCP tool schema so clients know what format to supply.
-//
-// `platform_wallet_storage::SecretString` offers the same security guarantees
-// but lacks both `Deserialize` and `JsonSchema`, and `IdentityInputToLoad`
-// already uses this local `Secret` type — switching would require a lossy
-// expose-then-rewrap at the boundary.  The local type is therefore preferred
-// for MCP parameters.
+// structs and in the testnet-node fixture, so both impls forward to
+// `SecretString`'s own: its visitor copies a borrowed `&str` straight into
+// guarded memory, and refuses a value past the vault's `MAX_PASSPHRASE_LEN`
+// before it is ever allocated. There is deliberately no `Serialize`.
 
-impl<'de> serde::Deserialize<'de> for Secret {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(Secret::new(s))
-    }
-}
-
-/// Expose as a plain JSON string schema — the secure wrapper is invisible to
-/// the caller; they just supply a string value.
+/// Delegates to [`SecretString`]'s schema: a plain JSON string carrying no
+/// length policy, pattern, or example value. The schema name stays `Secret`,
+/// which is also its `schema_id`, so generated MCP tool schemas keep
+/// referring to it under that name.
 #[cfg(any(feature = "mcp", feature = "cli"))]
 impl rmcp::schemars::JsonSchema for Secret {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "Secret".into()
     }
-    fn json_schema(_gen: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
-        rmcp::schemars::json_schema!({ "type": "string" })
+
+    fn json_schema(generator: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+        <SecretString as rmcp::schemars::JsonSchema>::json_schema(generator)
     }
 }
 
@@ -322,6 +216,10 @@ impl rmcp::schemars::JsonSchema for Secret {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Comfortably past `SecretString`'s single-page default capacity, so an
+    /// edit of this size is guaranteed to force a reallocation.
+    const PAST_DEFAULT_CAPACITY: usize = 8192;
 
     #[test]
     fn test_debug_redacted() {
@@ -355,6 +253,34 @@ mod tests {
     }
 
     #[test]
+    fn test_text_buffer_insert_in_middle() {
+        let mut secret = Secret::new("held");
+        let inserted = secret.insert_text("wor", CharIndex(2));
+        assert_eq!(inserted, 3);
+        assert_eq!(secret.expose_secret(), "heworld");
+    }
+
+    /// Character indices are not byte indices: an edit must land on character
+    /// boundaries or the buffer stops being valid UTF-8.
+    #[test]
+    fn test_text_buffer_multibyte_utf8() {
+        let mut secret = Secret::new("héllo");
+        assert_eq!(secret.len(), 6, "é occupies two bytes");
+
+        let inserted = secret.insert_text(" wörld", CharIndex(5));
+        assert_eq!(inserted, 6);
+        assert_eq!(secret.expose_secret(), "héllo wörld");
+
+        // Remove the é (character 1), not just the second byte of it.
+        secret.delete_char_range(CharIndex(1)..CharIndex(2));
+        assert_eq!(secret.expose_secret(), "hllo wörld");
+
+        // Insert a 4-byte character at a boundary that follows a 2-byte one.
+        secret.insert_text("🦡", CharIndex(7));
+        assert_eq!(secret.expose_secret(), "hllo wö🦡rld");
+    }
+
+    #[test]
     fn test_text_buffer_clear() {
         let mut secret = Secret::new("sensitive");
         TextBuffer::clear(&mut secret);
@@ -367,6 +293,18 @@ mod tests {
         let mut secret = Secret::new("old content");
         secret.replace_with("new content");
         assert_eq!(secret.expose_secret(), "new content");
+    }
+
+    /// A shrinking whole-buffer replacement must leave only the new value —
+    /// no tail of the previous one readable past the new length. The wipe of
+    /// the vacated bytes is `SecretString`'s guarantee, proven in its own
+    /// suite; observable here is that nothing of the old value survives.
+    #[test]
+    fn test_replace_with_shorter_keeps_only_new_value() {
+        let mut secret = Secret::new("a very long previous secret");
+        secret.replace_with("short");
+        assert_eq!(secret.expose_secret(), "short");
+        assert_eq!(secret.len(), "short".len());
     }
 
     #[test]
@@ -389,8 +327,11 @@ mod tests {
         let a = Secret::new("same");
         let b = Secret::new("same");
         let c = Secret::new("different");
+        let prefix = Secret::new("sam");
         assert_eq!(a, b);
         assert_ne!(a, c);
+        assert_ne!(a, prefix);
+        assert_eq!(Secret::empty(), Secret::empty());
     }
 
     #[test]
@@ -418,20 +359,37 @@ mod tests {
         let original = Secret::new("clone me");
         let cloned = original.clone();
         assert_eq!(original, cloned);
+        assert_eq!(cloned.expose_secret(), "clone me");
     }
 
+    /// A clone owns its content outright: editing one must not disturb the
+    /// other, in either direction.
     #[test]
-    fn test_with_capacity() {
-        let secret = Secret::with_capacity(256);
-        assert!(secret.is_empty());
-        assert_eq!(secret.expose_secret(), "");
-        // Capacity must be at least DEFAULT_CAPACITY
-        assert!(
-            secret.inner.capacity() >= DEFAULT_CAPACITY,
-            "capacity {} must be >= DEFAULT_CAPACITY {}",
-            secret.inner.capacity(),
-            DEFAULT_CAPACITY,
-        );
+    fn test_clone_is_independent() {
+        let mut original = Secret::new("original value");
+        let mut cloned = original.clone();
+
+        cloned.replace_with("clone value");
+        assert_eq!(original.expose_secret(), "original value");
+        assert_eq!(cloned.expose_secret(), "clone value");
+
+        original.replace_with("second original");
+        assert_eq!(cloned.expose_secret(), "clone value");
+    }
+
+    /// Deserializes from a plain JSON string, the shape every caller supplies
+    /// (MCP tool parameters, the testnet-node fixture).
+    #[test]
+    fn test_deserialize_from_json_string() {
+        let secret: Secret = serde_json::from_str(r#""correct horse battery staple""#)
+            .expect("a JSON string deserializes into a Secret");
+        assert_eq!(secret.expose_secret(), "correct horse battery staple");
+    }
+
+    /// A non-string JSON value is not a secret.
+    #[test]
+    fn test_deserialize_rejects_non_string() {
+        serde_json::from_str::<Secret>("42").expect_err("a JSON number is not a Secret");
     }
 
     #[test]
@@ -449,17 +407,11 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_char_range_zeroes_trailing() {
+    fn test_delete_char_range_removes_tail() {
         let mut secret = Secret::new("abcdef");
         secret.delete_char_range(CharIndex(3)..CharIndex(6));
         assert_eq!(secret.expose_secret(), "abc");
-        // Trailing capacity bytes (after len) should be zeroed
-        let len = secret.inner.len();
-        let cap = secret.inner.capacity();
-        let bytes = secret.inner.as_bytes();
-        // We can only inspect up to len via safe API, but the content is correct
-        assert_eq!(bytes, b"abc");
-        assert!(cap > len, "buffer should have trailing capacity");
+        assert_eq!(secret.len(), 3);
     }
 
     #[test]
@@ -470,47 +422,42 @@ mod tests {
         // If we get here, drop didn't panic
     }
 
+    /// Dropping many `Secret`s in bulk must stay silent. Over ordinary
+    /// allocations the first drop unlocked pages its neighbours still occupied,
+    /// and the resulting unlock failure took the process down on Windows.
+    #[test]
+    fn test_dropping_many_secrets_does_not_panic() {
+        let secrets: Vec<Secret> = (0..64).map(|i| Secret::new(format!("s{i}"))).collect();
+        drop(secrets);
+    }
+
+    /// A `Secret` that outgrows its buffer migrates to a larger guarded
+    /// allocation; the content must survive that migration intact.
+    #[test]
+    fn test_growth_beyond_capacity_preserves_content() {
+        let mut secret = Secret::new("start");
+        let long = "x".repeat(PAST_DEFAULT_CAPACITY);
+        secret.replace_with(&long);
+        assert_eq!(secret.expose_secret(), long);
+        assert_eq!(secret.len(), long.len());
+    }
+
+    /// Growing by repeated insertion — how a `TextEdit` actually fills a buffer
+    /// — must preserve every byte across the migrations it triggers.
+    #[test]
+    fn test_incremental_growth_preserves_content() {
+        let mut secret = Secret::empty();
+        let chunk = "0123456789";
+        let repeats = (PAST_DEFAULT_CAPACITY / chunk.len()) + 3;
+        for i in 0..repeats {
+            secret.insert_text(chunk, CharIndex(i * chunk.len()));
+        }
+        assert_eq!(secret.len(), repeats * chunk.len());
+        assert_eq!(secret.expose_secret(), chunk.repeat(repeats));
+    }
+
     // Compile-time assertion that Secret has a Drop impl (not trivially droppable).
     const _: () = {
         assert!(std::mem::needs_drop::<Secret>());
     };
-
-    /// Best-effort test that Drop zeroes the full capacity.
-    ///
-    /// Reads freed memory after drop — technically UB and may fail if the
-    /// allocator reuses the page between drop and inspection (common during
-    /// parallel test execution). Run manually with `--ignored` in a single
-    /// thread for reliable results:
-    ///
-    /// ```sh
-    /// cargo test --lib -- test_drop_zeroes_full_capacity --ignored --test-threads=1
-    /// ```
-    ///
-    /// The compile-time assertion (`needs_drop`) above is the primary regression
-    /// guard; this test provides supplementary runtime verification.
-    #[test]
-    #[ignore]
-    fn test_drop_zeroes_full_capacity() {
-        let ptr: *const u8;
-        let cap: usize;
-        {
-            let secret = Secret::new("sensitive_data_here".to_string());
-            ptr = secret.inner.as_ptr();
-            cap = secret.inner.capacity();
-            // Verify data is present before drop
-            let slice = unsafe { std::slice::from_raw_parts(ptr, cap) };
-            assert!(
-                slice.iter().any(|&b| b != 0),
-                "Expected non-zero bytes before drop"
-            );
-            // secret drops here — Drop zeros 0..cap via zeroize
-        }
-        // SAFETY: Reading freed memory. Best-effort: allocator is unlikely to
-        // reuse this page immediately when running single-threaded.
-        let post = unsafe { std::slice::from_raw_parts(ptr, cap) };
-        assert!(
-            post.iter().all(|&b| b == 0),
-            "Memory was not zeroed after drop"
-        );
-    }
 }

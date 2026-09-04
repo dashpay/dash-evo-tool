@@ -34,6 +34,7 @@ As a user, I want to create a new wallet with a generated mnemonic so that I can
 - User can select mnemonic language and wallet name.
 - Optional password protection is offered.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
+- The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
 - Recovery phrase is displayed for backup.
 
 ### WAL-002: Import wallet via mnemonic [Implemented]
@@ -44,6 +45,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 - Accepts standard BIP39 mnemonic phrases.
 - User can assign a name and optional password.
 - An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
+- The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
 - Wallet syncs balances after import.
 
 ### WAL-003: Import single private key [Implemented]
@@ -52,6 +54,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 As a power user, I want to import a single private key so that I can manage funds from a standalone address.
 
 - Creates a single-key wallet from WIF-format key.
+- An optional per-key passphrase must be at least 8 characters. The app refuses one that is too long for secure storage before importing the key and asks the user to choose a shorter passphrase.
 - Wallet appears in the wallet selector.
 
 ### WAL-004: Switch between wallets [Implemented]
@@ -80,6 +83,7 @@ As a user, I want my wallet protected by a passphrase so that others cannot acce
 - That option defaults to off: unless the user actively ticks it, every secret access re-prompts, and the seed is not cached.
 - The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes. An explicit unlock without the keep-unlocked option retains it only until that wallet is ready to use, then wipes it.
 - During a storage update, each previously password-protected wallet asks for its password so its secret can be re-sealed in the on-device vault under the same password. The user may skip a wallet they cannot unlock without blocking the rest of the app; the wallet stays locked and protected, and its update finishes the next time the user unlocks it. The prompt makes clear that skipping does not lose any coins.
+- If an optional storage update cannot re-seal a legacy seed because its existing password is too long for the new storage, the wallet still unlocks from its preserved legacy data and the update is retried later.
 
 ### WAL-007: Remove a wallet [Implemented]
 **Persona:** Priya, Jordan
@@ -252,6 +256,7 @@ As a user whose saved keys were sealed with a passphrase by an earlier version, 
 - When the app cannot open its saved-keys vault because it was sealed with a passphrase, it shows a masked unlock prompt at startup instead of closing.
 - Entering the correct passphrase opens the existing vault in place and the app continues to its normal screen; nothing is deleted, recreated, or re-encrypted.
 - A wrong passphrase re-asks with a calm message and no hint; the vault is never altered, so a later correct passphrase still works.
+- Entering a passphrase that is too long for this version keeps the startup prompt open and explains that the user can retry with a shorter passphrase or reopen the previous version to change it.
 - Choosing to quit closes the app cleanly and leaves the vault untouched, so the user can try again next time.
 - The headless command-line and automation paths never show a dialog; they report a calm, actionable message instead.
 
@@ -467,6 +472,19 @@ As a user, I want "Max" (and the amount check behind it) to reflect what my Core
 - Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
 - The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
 
+### SND-018: A payment with an unverified outcome resolves itself [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want a payment whose confirmation could not be verified to tell me its real outcome on its own, so that I do not have to work out by hand whether my money moved.
+
+- Covers sending DASH from a Core wallet, including sending to a DashPay contact. Identity registration, identity top-up, Platform-address funding, and the shielded flows keep the plain wait-and-check message — the transaction that funds them is sent inside the wallet stack, which reports no identifier to watch.
+- Once the network takes the payment — an InstantSend lock, or a block containing it — the message is replaced with a confirmation naming that payment, so a user with several waiting can tell which one landed. The watch survives leaving the Send screen, and the confirmation stays on screen until dismissed rather than timing out, so a user who stepped away still finds the answer waiting.
+- After eleven minutes without a confirmation, the message changes once to point at the wallet's transaction history and to warn that sending again could pay the same person twice. The watch continues, so a later confirmation still replaces it.
+- Several payments can be waiting at once. One of them being answered — confirmed, or reaching the eleven-minute mark — leaves every other waiting payment's message exactly as it was, including the plain wait-and-check message shown for the flows that report no identifier to watch.
+- The app never reports such a payment as failed: the network has no rejection signal, so an invalid payment and a slow one look the same.
+- Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
+- While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
+
 ---
 
 ## Asset Locks (ALK)
@@ -606,6 +624,8 @@ As a power user, I want to add a password to an identity's signing keys so that 
 - Once protected, every signing operation for that identity asks for the password just-in-time, with an optional "keep unlocked until I close the app". A wrong password re-asks with no oracle.
 - Headless / MCP signing of a protected identity fails with a calm, actionable message telling the user to unlock it in the app or remove the protection — no environment-variable or flag password fallback exists.
 - Opting out asks for the current password and reverts the keys to keyless; signing is prompt-free again, including headless.
+- The password must be at least 8 characters. The app refuses one that is too long for secure storage before sealing the keys and asks the user to choose a shorter identity password.
+- A password accepted by the current secure storage continues to open protected keys at the storage limit. If an older version sealed keys with a longer password, this version gives recovery guidance instead of presenting a generic storage failure.
 - One password protects all of the identity's keys; it is separate from any wallet password (per-secret isolation). The encryption reuses the shipped Tier-2 seam (Argon2id + XChaCha20-Poly1305) — no new crypto, no plaintext written to disk.
 
 ### IDN-009: Refresh identity state [Implemented]
@@ -706,13 +726,18 @@ As a user whose identity was already in the app before the upgrade — a mastern
 As a user, I want to remove an identity from this device from the identity's own Settings tab, so that I can clear out an identity I no longer use without hunting for a separate screen.
 
 - The identity's Settings tab has an "Unload this identity from this device" action in its Danger zone, and it is usable rather than announced as a coming feature.
+- The confirmation names the identity it is about to unload and states plainly that this permanently deletes that identity's private keys stored on this device, and that using it here again needs the user's own backup — the identity record itself stays on Dash Platform, but "stays on Platform" is not "keys survive".
+- While the confirmation is open the controls behind it, including the identity switcher, cannot be used, so the answer is always given for the identity the confirmation names.
 - Confirming removes the identity, its saved keys, its top-up history, its scheduled DPNS votes, its DashPay contact overlays, and its token-list preferences from this device.
-- The confirmation says the identity stays on Dash Platform without promising it stays usable: an identity whose only saved keys were on this device needs its wallet recovery phrase or private keys to be used again.
 - The removal applies to the identity that was on screen when the action was chosen, even if the selected identity changes while the confirmation is open.
 - Choosing "Keep", or dismissing the confirmation, changes nothing.
 - While a storage update is running the removal is refused with an explanation and can be retried once it finishes.
-- Once the identity is gone the Settings tab moves to another identity on its own, and the outcome is reported — including the case where the identity went but a voter identity tied to it stayed behind.
-- A removal that cannot be completed leaves the identity's private keys intact, so a retry still has everything it needs and no identity is left listed without its keys.
+- Once the identity is gone, where the app lands depends on what is left: with no identities remaining it shows first-run onboarding, with exactly one it opens that identity, and with two or more it shows the identity picker so the user chooses which one to continue with rather than being dropped onto an arbitrary one.
+- The outcome is reported: a plain success, a success noting a voter identity tied to it stayed behind, or — when the identity is delisted but a later step of the removal did not finish — a success noting its private keys may still be on this device, that the app will keep trying to clear them automatically, and that until then the device should be treated as still holding them. The report claims no more than that: not that keys are definitely present (the unfinished step may have had no keys to clear), and not that any particular launch clears them (the automatic attempt can return without doing anything, or can fail again). It names no launch at all, because this message does not survive a restart and the launch it named might make no attempt. Keys that were deleted are reported as deleted, whatever internal bookkeeping failed afterwards.
+- A removal that cannot be completed at all leaves the identity's private keys intact, so a retry still has everything it needs; no identity is ever left listed without its keys, and no identity is ever reported as still removable once it is already gone from every list.
+- The unload sticks. The wallet that derives the identity stays loaded, and the app re-derives and looks up that wallet's identities on its own — at start-up, after a wallet is unlocked, and when a wallet is imported — but none of those automatic passes put back an identity the user unloaded, whether the pass starts before, during, or after the removal. The same holds for the developer-only devnet "clear all identities" sweep.
+- Adding a key to an identity that is unloaded while the key is being registered on the network does not leave that key's private half on this device. The key exists on Dash Platform and the app says so plainly, naming what to do — load the identity again, then add the key again — rather than reporting a save that did not happen.
+- Loading the identity again is always available and always works: choosing it explicitly, or searching for it by wallet index, loads it back and ends the exclusion, so a later automatic pass keeps it up to date again like any other identity.
 
 ---
 
@@ -796,7 +821,7 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 
 As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to "pick a username" for a name I have already chosen.
 
-- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identities list and the Identity Home hero card.
+- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identity Home hero card and the Identity Settings tab.
 - The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
 - The onboarding checklist counts the submitted request as completing "Pick a username" while clearly stating that Dash masternodes are voting.
 - The pill's tooltip explains that Dash masternodes decide who receives the username and, when the decision time is known, gives an estimated decision time.
@@ -1448,18 +1473,19 @@ As a user, while a long operation that is unsafe to interrupt is running (broadc
 - All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc, Enter, Space, or Tab.
 - The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action.
 - The prompt installs its own pointer sink in the block's place, so interaction beneath it stays blocked while the block is yielding. This holds for every passphrase prompt, dismissible or not: being able to cancel a prompt is not the same as being able to click past it.
-- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded but read-only, so it ships an always-visible "Continue in the background" escape instead.)_
+- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded, so it ships a Cancel affordance instead of relying on boundedness.)_
 
-### UX-002: Blocking SPV-sync overlay with a "continue in the background" escape [Implemented]
+### UX-002: Blocking SPV-sync overlay with a confirmed Cancel [Implemented]
 **Persona:** Alex, Priya, Jordan
 
-As a user, while the app connects to and syncs the Dash chain on startup or after I press Connect, I want a clear please-wait block so I know it is working — and because that sync can wait indefinitely for peers, I want an always-visible "Continue in the background" button so I am never trapped behind it.
+As a user, while the app connects to and syncs the Dash chain on startup or after I press Connect, I want a clear please-wait block so I know it is working — and because that sync can wait indefinitely for peers, I want a way to stop it rather than wait forever, without a single careless keypress disconnecting my wallet.
 
 - While that startup/Connect sync is getting connected, a full-window block appears with a plain please-wait sentence ("Connecting to the Dash network." / "Syncing with the Dash network.") and a friendly progress indicator ("Step N of 5") — no blockchain jargon, raw heights, or percentages.
-- The block always offers a secondary "Continue in the background" button. Clicking it lowers the block; sync keeps running in the background (it is read-only and strands nothing), and the block is not re-raised for the rest of that sync episode.
-- The "Continue in the background" escape is reachable by **keyboard**, not just the mouse: it is the one designated keyboard escape on this otherwise keyboard-blocked block, so a keyboard-only or assistive-technology user can activate it with Enter or Space and is never trapped behind the unbounded sync. Focus is pinned to that button, so Enter/Space (and Tab/clicks) can never reach a widget beneath the block.
-- The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user. Pressing Connect (or a fresh startup) blocks again.
-- This is the overlay's first real adopter (PR #863). Unlike the unsafe-to-interrupt operations in UX-001, SPV sync is **unbounded but safe to background** — so its C2 "never trap the user" guarantee is met by the always-on escape, not by operation boundedness.
+- The block offers a secondary "Cancel" button. Clicking it does not stop sync immediately — it swaps the action row to a confirmation: "Stop syncing? You can start again from the Network screen." with "Stop syncing" and "Keep syncing".
+- The keyboard escape is bound to the non-destructive choice at each step — "Cancel" while syncing, "Keep syncing" (focused by default) while confirming — so the block stays keyboard-reachable without a single reflexive Enter or Space ever disconnecting the wallet.
+- Confirming "Stop syncing" actually stops chain sync and lowers the block; the episode is not re-armed until the user restarts sync from the Network screen, or a fresh startup/Connect blocks again.
+- The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user.
+- This is the overlay's first real adopter (PR #863). SPV sync is **unbounded**, so its C2 "never trap the user" guarantee rests on the two-step Cancel rather than on operation boundedness. The original single-tap "Continue in the background" button was replaced because it shared its keyboard binding with the block's universal dismiss key, making Enter a one-keypress wallet disconnect for a keyboard-only or assistive-technology user — see `docs/ai-design/2026-08-31-startup-linearization/`.
 
 ### UX-003: Global wallet/identity switcher across all tabs [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1480,6 +1506,20 @@ As an existing user upgrading into the platform-wallet version, I want a one-tim
 
 - A one-time notice appears on first launch after the migration, disclosing the removed QR-direct-fund path (referenced by NET-008 and IDN-014).
 - Note (DOC-003): not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
+
+### UX-005: Blocking storage-preparation gate on launch and network switch [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, while the app opens my saved data on startup or after switching networks, I want a clear please-wait block covering everything from opening storage to restoring my wallets, so that I never see a half-ready app — and if my saved data can't be opened, I want to know why and what I can do about it, in plain language.
+
+- A full-window block appears before any screen renders, on first launch and on switching to a network not yet prepared this session, and stays up through wiring, restoring wallets, and the previous version's data update as one sequence. It shows one plain-language sentence per step (e.g. "The app is opening your saved data.", "The app is restoring your identities and their keys.") — no "backend", "wiring", "SPV", or error codes.
+- Unlike UX-002, this block has no Cancel or background option: the app is not usable until preparation finishes, so the only choices are wait, or close the app.
+- A password-protected wallet carried over from an earlier version prompts for its password *above* the block — typeable, focused — with a "Skip this wallet" option that moves on to the next locked wallet without losing it; the prompt cycles until every locked wallet is unlocked or skipped.
+- If preparation runs unusually long (30 s), the message changes to reassure the user and offers "Close the app" — nothing is written on this path, so relaunching retries cleanly from the unchanged saved data.
+- If preparation fails, the block explains that saved data is unchanged and offers "Try again" or "Close the app".
+- If the saved data is from a much newer or much older version than this one can open directly, the block explains that plainly (naming the version to install or use first) and offers only "Close the app" — retrying cannot fix a version mismatch.
+- Once a network's storage is prepared, returning to it later in the same session does not re-show the block; chain sync starts automatically only after preparation finishes, never before or during it.
+- Not covered: the headless CLI/MCP path has no such block — it fast-fails with "The storage update is still running. Please wait a moment and try again." instead, since it has no window to hold up. See `docs/ai-design/2026-08-31-startup-linearization/`.
 
 ## Identities Hub (IDH)
 

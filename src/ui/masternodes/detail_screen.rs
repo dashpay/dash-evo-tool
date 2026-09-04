@@ -34,9 +34,9 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::legacy_recovery_section::host_offer;
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
+use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };

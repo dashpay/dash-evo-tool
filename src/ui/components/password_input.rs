@@ -6,6 +6,14 @@ use crate::ui::theme::{DashColors, ResponseExt, Typography};
 const PASSWORD_INPUT_HORIZONTAL_PADDING: f32 = 8.0;
 const PASSWORD_INPUT_REVEAL_ICON_WIDTH: f32 = 28.0;
 
+/// Default cap on typed/pasted characters — a paste guard, not the length
+/// policy (that is a *byte* ceiling in `model/`). Set to the byte ceiling
+/// itself because egui truncates silently: any smaller value could clip a
+/// password the vault would have accepted, sealing the wallet under a string
+/// the user never chose. Multi-byte input still exceeds the byte cap at this
+/// limit, and gets a typed error from `model/` rather than being clipped.
+const DEFAULT_PASSWORD_CHAR_LIMIT: usize = platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
 /// Response from [`PasswordInput::show`].
 ///
 /// Intentionally does NOT implement `ComponentResponse` — exposing the `Secret`
@@ -61,7 +69,7 @@ impl PasswordInput {
             secret: Secret::default(),
             hint_text: "Enter password".to_string(),
             desired_width: None,
-            char_limit: None,
+            char_limit: Some(DEFAULT_PASSWORD_CHAR_LIMIT),
             error_message: None,
             monospace: false,
             revealing: false,
@@ -93,10 +101,20 @@ impl PasswordInput {
         self
     }
 
-    /// Limit the maximum number of characters the user can enter.
+    /// Limit the maximum number of characters the user can enter, replacing
+    /// [`DEFAULT_PASSWORD_CHAR_LIMIT`]. For fields with a fixed shape (a WIF
+    /// key); passphrase length policy is byte-based and lives in `model/`.
     pub fn with_char_limit(mut self, limit: usize) -> Self {
         self.char_limit = Some(limit);
         self
+    }
+
+    /// Only explicit, fixed-shape limits participate in intrinsic sizing.
+    /// The default password ceiling is a paste guard and would otherwise
+    /// allocate and measure a multi-thousand-character sample every frame.
+    fn intrinsic_width_char_limit(&self) -> Option<usize> {
+        self.char_limit
+            .filter(|limit| *limit != DEFAULT_PASSWORD_CHAR_LIMIT)
     }
 
     // -- Access methods ------------------------------------------------------
@@ -145,6 +163,7 @@ impl PasswordInput {
         // -- TextEdit --------------------------------------------------------
         // Egui TextEdit may cache plaintext in layout galleys and
         // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
+        let intrinsic_width_char_limit = self.intrinsic_width_char_limit();
         let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
             .password(!self.revealing)
             .hint_text(&self.hint_text)
@@ -163,7 +182,7 @@ impl PasswordInput {
 
         if let Some(width) = self.desired_width {
             text_edit = text_edit.desired_width(width);
-        } else if let Some(limit) = self.char_limit {
+        } else if let Some(limit) = intrinsic_width_char_limit {
             let font_id = if self.monospace {
                 egui::TextStyle::Monospace.resolve(ui.style())
             } else {
@@ -261,5 +280,43 @@ impl PasswordInput {
 impl Default for PasswordInput {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
+    /// The default paste guard must never silently clip a password the vault
+    /// would accept — that seals the wallet under a string the user never
+    /// typed, the very outcome this ceiling exists to prevent.
+    #[test]
+    fn default_char_limit_cannot_clip_a_vault_acceptable_password() {
+        let limit = PasswordInput::new().char_limit.expect("a default is set");
+        assert!(
+            limit >= MAX_PASSPHRASE_LEN,
+            "a {limit}-character guard can truncate a valid {MAX_PASSPHRASE_LEN}-byte password"
+        );
+    }
+
+    /// Fields with a fixed shape (WIF keys) still set their own tighter limit.
+    #[test]
+    fn builder_overrides_the_default_char_limit() {
+        assert_eq!(
+            PasswordInput::new().with_char_limit(64).char_limit,
+            Some(64)
+        );
+    }
+
+    #[test]
+    fn default_limit_does_not_drive_intrinsic_width_measurement() {
+        assert_eq!(PasswordInput::new().intrinsic_width_char_limit(), None);
+        assert_eq!(
+            PasswordInput::new()
+                .with_char_limit(64)
+                .intrinsic_width_char_limit(),
+            Some(64)
+        );
     }
 }

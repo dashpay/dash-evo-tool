@@ -1601,6 +1601,10 @@ impl WalletBackend {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "PlatformWalletError is an upstream type we cannot shrink"
+    )]
     async fn start_once(&self) -> Result<(), PlatformWalletError> {
         let config = self.build_client_config();
 
@@ -2498,6 +2502,21 @@ impl WalletBackend {
             .clone()
     }
 
+    /// Confirmation state of `txid` across every loaded wallet's history, or
+    /// `None` when none of them has seen the transaction.
+    ///
+    /// Answers "did that payment land?" for a transaction whose broadcast
+    /// outcome was ambiguous. Reads the same published history the wallet
+    /// screen renders, so the answer can never contradict the row the user is
+    /// looking at. Linear in the combined history length — for the occasional
+    /// pending-confirmation watch, not a per-frame read.
+    pub fn transaction_confirmation(
+        &self,
+        txid: &dash_sdk::dpp::dashcore::Txid,
+    ) -> Option<crate::model::wallet::TransactionConfirmation> {
+        self.inner.snapshots.transaction_confirmation_any(txid)
+    }
+
     /// Startup hydration status for the display-only transaction history.
     pub fn transaction_history_status(
         &self,
@@ -2923,6 +2942,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         // reconcile rather than follow the generic envelope's retry advice.
         other @ P::TransactionBroadcastUnconfirmed(_) => {
             TaskError::TransactionConfirmationUnknown {
+                // Upstream assembles and broadcasts the funding transaction
+                // internally and returns no id, so this outcome cannot be
+                // watched for a late confirmation.
+                txid: None,
                 source: Box::new(other),
             }
         }
@@ -2947,8 +2970,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AssetLockAlreadyConsumed(_)
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBroadcast(_)
+        | P::MasternodeWithdrawalUnconfirmed { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::Sdk(_)
         | P::AddressSync(_)
@@ -3046,6 +3071,9 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
             source: Box::new(e),
         },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
             source: Box::new(e),
         },
         // Registration creates the identity, so it cannot legitimately raise a
@@ -3089,6 +3117,9 @@ fn map_identity_top_up_error(
             source: Box::new(e),
         },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
             source: Box::new(e),
         },
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
@@ -3158,6 +3189,9 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
             source: Box::new(e),
         },
         IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
             source: Box::new(e),
         },
         // Platform-address funding does not consult the identity manager, so a
@@ -3233,6 +3267,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::AddressSync(_)
         | P::AddressOperation(_)
@@ -3266,6 +3301,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // Address nonce desync is a precondition/state fault unrelated to
         // identity registration; bucket as Other.
         | P::AddressNonceMismatch { .. }
+        // Broadcast was accepted but its execution result is unconfirmed — the
+        // op may already be on chain, so it is neither a rejection nor a
+        // finality timeout. Bucket as Other; the upstream contract says the
+        // caller must not re-submit (the next sync reconciles).
+        | P::MasternodeWithdrawalUnconfirmed { .. }
         // Shielded ambiguity is unreachable here — identity funding runs no
         // shielded op. `map_shielded_op_error` routes it where it can occur.
         | P::ShieldedBroadcastUnconfirmed { .. }
@@ -4211,6 +4251,8 @@ mod tests {
             map_identity_top_up_error(identity_id, broadcast_unconfirmed()),
             map_platform_address_fund_error(broadcast_unconfirmed()),
             map_shielded_op_error(broadcast_unconfirmed()),
+            // The payment and asset-lock-creation façades share this one.
+            super::payments::map_core_broadcast_error(None, broadcast_unconfirmed()),
         ];
         for error in mapped {
             assert!(

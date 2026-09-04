@@ -502,7 +502,7 @@ impl<'a> DashpayView<'a> {
             // sidecar timestamps default to 0 when unset, fall back to that
             // ordering — newest first when timestamps exist, otherwise stable on
             // the storage key.
-            out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            out.sort_by_key(|a| std::cmp::Reverse(a.created_at));
             out
         })
         .await

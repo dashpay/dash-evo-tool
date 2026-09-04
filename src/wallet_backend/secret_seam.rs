@@ -182,19 +182,58 @@ impl<'a> SecretSeam<'a> {
 }
 
 fn map_err(source: SecretStoreError) -> TaskError {
-    TaskError::SecretSeam {
-        source: Box::new(source),
-    }
+    crate::backend_task::error::vault_error(source, |source| TaskError::SecretSeam { source })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::wallet_backend::single_key::open_secret_store;
+    use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
         let path = dir.join("secrets.pwsvault");
         Arc::new(open_secret_store(&path).expect("open vault"))
+    }
+
+    /// An over-long object password reaches the user as the dedicated
+    /// length refusal, not as the generic seam-storage copy, on BOTH sides
+    /// of the Tier-2 path.
+    ///
+    /// The generic `SecretSeam` copy tells the user to check disk space and
+    /// restart — useless advice for a password that is simply too long, and
+    /// the only self-service fix (shorten it) would be undiscoverable. The
+    /// read side matters as much as the write side: the vault enforces the
+    /// ceiling on unseal too, so a password pasted at the prompt must not
+    /// masquerade as a storage failure either.
+    #[test]
+    fn over_long_object_password_surfaces_as_the_length_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seam = SecretSeam::new(&store);
+        let scope = SecretWalletId::from([0x5Au8; 32]);
+        let over = SecretString::new("p".repeat(MAX_PASSPHRASE_LEN + 1));
+        let secret = SecretBytes::from_slice(&[0x11u8; 32]);
+
+        let write = seam
+            .put_secret_protected(&scope, "seed.raw.v1", &secret, &over)
+            .expect_err("a password past the vault ceiling must be refused");
+        assert!(
+            matches!(write, TaskError::PassphraseTooLong { max, .. } if max == MAX_PASSPHRASE_LEN),
+            "write side gave {write:?}"
+        );
+
+        // Seal with an accepted password, then read with an over-long one.
+        let ok = SecretString::new("p".repeat(MAX_PASSPHRASE_LEN));
+        seam.put_secret_protected(&scope, "seed.raw.v1", &secret, &ok)
+            .expect("a password at the ceiling is accepted");
+        let read = seam
+            .get_secret_protected(&scope, "seed.raw.v1", &over)
+            .expect_err("the ceiling is enforced on unseal too");
+        assert!(
+            matches!(read, TaskError::PassphraseTooLong { max, .. } if max == MAX_PASSPHRASE_LEN),
+            "read side gave {read:?}"
+        );
     }
 
     /// TS-RT-01 — HD seed raw round-trip. A known 64-byte seed stored under

@@ -11,7 +11,7 @@ use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::app::AppAction;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use dash_evo_tool::ui::identities::transfer_screen::TransferScreen;
+use dash_evo_tool::ui::identity::transfer_screen::TransferScreen;
 use dash_evo_tool::ui::{Screen, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;

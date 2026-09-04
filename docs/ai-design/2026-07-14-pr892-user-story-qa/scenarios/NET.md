@@ -231,8 +231,9 @@ Steps:
 3. Clicked "Create Wallet" → guided 5-step flow begins ("Follow these steps to create your
    wallet", Step 1: move cursor over an entropy grid, then select language/word count and
    "Generate"). A live "Syncing with the Dash network — Step 1 of 5" progress modal appeared
-   simultaneously (with "Continue in the background"), confirming SPV sync kicks off
-   automatically with zero prior configuration.
+   simultaneously (with "Continue in the background", since superseded by a "Cancel" →
+   confirm step — see `docs/ai-design/2026-08-31-startup-linearization/`), confirming SPV sync
+   kicks off automatically with zero prior configuration.
 4. Terminated the throwaway instance (`kill -TERM`, graceful) and deleted its data dir
    without saving/confirming a wallet — did not touch the shared QA data dir.
 5. Cross-referenced `WAL-001` (`scenarios/WAL.md`), which independently exercised the same

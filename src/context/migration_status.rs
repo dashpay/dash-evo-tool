@@ -25,6 +25,13 @@ use crate::wallet_backend::SecretLease;
 /// "Migrating your shielded data…").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrationStep {
+    /// Opening this network's storage: the wallet-backend seam, the upstream
+    /// schema ladder, and rehydrating the wallets it finds. Published by
+    /// [`AppContext::prepare_storage`](crate::context::AppContext) only, and
+    /// only for the launch that finds the status still
+    /// [`Idle`](MigrationState::Idle) — a later wiring call on an already
+    /// prepared network is silent.
+    Wiring,
     /// Sniffing `data.db` for legacy rows.
     Detecting,
     /// Importing DET-owned rows the wallet drain never touched: scheduled
@@ -50,6 +57,44 @@ pub enum MigrationStep {
     Identities,
     /// Writing the completion sentinel and cleaning up.
     Finalize,
+}
+
+impl MigrationStep {
+    /// Every variant, in publication order.
+    ///
+    /// `every_step_appears_once_in_all` enforces that this list is complete, so
+    /// the label-coverage tests that iterate it actually guard future variants
+    /// instead of only the ones someone remembered to type out.
+    pub const ALL: [MigrationStep; 9] = [
+        MigrationStep::Wiring,
+        MigrationStep::Detecting,
+        MigrationStep::AppData,
+        MigrationStep::SingleKey,
+        MigrationStep::Shielded,
+        MigrationStep::WalletSeeds,
+        MigrationStep::WalletMeta,
+        MigrationStep::Identities,
+        MigrationStep::Finalize,
+    ];
+
+    /// Position of this step in [`Self::ALL`], as an exhaustive `match` so a new
+    /// variant cannot be added without listing it there. Test-only: nothing in
+    /// the app orders steps, and CI compiles the tests on every change, so this
+    /// is where the guard belongs rather than in the shipped binary.
+    #[cfg(test)]
+    fn ordinal(self) -> usize {
+        match self {
+            MigrationStep::Wiring => 0,
+            MigrationStep::Detecting => 1,
+            MigrationStep::AppData => 2,
+            MigrationStep::SingleKey => 3,
+            MigrationStep::Shielded => 4,
+            MigrationStep::WalletSeeds => 5,
+            MigrationStep::WalletMeta => 6,
+            MigrationStep::Identities => 7,
+            MigrationStep::Finalize => 8,
+        }
+    }
 }
 
 /// High-level state of the legacy migration.
@@ -332,14 +377,7 @@ mod tests {
             }
         );
 
-        for step in [
-            MigrationStep::SingleKey,
-            MigrationStep::Shielded,
-            MigrationStep::WalletSeeds,
-            MigrationStep::WalletMeta,
-            MigrationStep::Identities,
-            MigrationStep::Finalize,
-        ] {
+        for step in MigrationStep::ALL.into_iter().skip(3) {
             status.set_state(MigrationState::Running { step });
             assert_eq!(*status.state(), MigrationState::Running { step });
             assert!(status.state().is_executing());
@@ -350,6 +388,15 @@ mod tests {
         assert_eq!(*status.state(), MigrationState::Success);
         assert!(!status.state().is_executing());
         assert!(!status.state().is_in_progress());
+    }
+
+    /// `ALL` and `ordinal` must agree, or `ALL` silently loses a variant and the
+    /// label-coverage tests that iterate it stop guarding new steps.
+    #[test]
+    fn every_step_appears_once_in_all() {
+        for (index, step) in MigrationStep::ALL.into_iter().enumerate() {
+            assert_eq!(step.ordinal(), index, "{step:?} is misplaced in ALL");
+        }
     }
 
     #[test]

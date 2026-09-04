@@ -17,7 +17,7 @@ use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
+use crate::ui::identity::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -409,6 +409,7 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(identity_id.into()),
             }],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],

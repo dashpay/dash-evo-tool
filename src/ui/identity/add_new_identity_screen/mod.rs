@@ -26,7 +26,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::funding_common::{
+use crate::ui::identity::funding_common::{
     FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
     funding_method_after_switch, max_amount_after_fee_reserve, receive_deposit_ceiling_duffs,
     spendable_covers_minimum, step_after_task_failure, wallet_selection_combo,
@@ -958,13 +958,15 @@ impl AddNewIdentityScreen {
                                             Purpose::ENCRYPTION | Purpose::DECRYPTION => {
                                                 entry.security_level = SecurityLevel::MEDIUM;
                                             }
-                                            Purpose::AUTHENTICATION => {
-                                                if entry.security_level != SecurityLevel::CRITICAL
-                                                    && entry.security_level != SecurityLevel::HIGH
-                                                    && entry.security_level != SecurityLevel::MEDIUM
-                                                {
-                                                    entry.security_level = SecurityLevel::CRITICAL;
-                                                }
+                                            Purpose::AUTHENTICATION
+                                                if entry.security_level
+                                                    != SecurityLevel::CRITICAL
+                                                    && entry.security_level
+                                                        != SecurityLevel::HIGH
+                                                    && entry.security_level
+                                                        != SecurityLevel::MEDIUM =>
+                                            {
+                                                entry.security_level = SecurityLevel::CRITICAL;
                                             }
                                             _ => {}
                                         }
@@ -1607,7 +1609,7 @@ impl ScreenLike for AddNewIdentityScreen {
         action |= add_left_panel(
             ui,
             &self.app_context,
-            crate::ui::RootScreenType::RootScreenIdentities,
+            crate::ui::RootScreenType::RootScreenIdentityHub,
         );
 
         let mut request_asset_lock_balance = false;

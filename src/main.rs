@@ -74,7 +74,13 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
         persistence_path: Some(app_data_dir.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
-            .with_app_id("org.dash.DashEvoTool"),
+            .with_app_id("org.dash.DashEvoTool")
+            // Only takes effect on a genuine first launch: once `persist_window`
+            // has written window geometry to `app.ron`, the persisted state
+            // (size/maximized/fullscreen) unconditionally overrides this on
+            // every later run. Without it, winit falls back to its own small
+            // platform-default size, which doesn't fit the onboarding page.
+            .with_maximized(true),
         // Use wgpu instead of glow (OpenGL) to avoid platform-specific rendering
         // issues, e.g. NSOpenGLContext idle/sleep crashes on macOS (#629)
         renderer: eframe::Renderer::Wgpu,

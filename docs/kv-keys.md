@@ -1,6 +1,6 @@
 # DET k/v key reference
 
-`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete), `DetScope::Identity(&id)` = per-identity slot (active — used for identities, top-ups, scheduled votes, and DashPay `private`/`address_index` overlays), `DetScope::Token { identity_id, token_id }` = per-token slot (defined and mapped, currently unused — token balances are read live from upstream). `DetScope::Identity` and `DetScope::Token` map to the upstream `meta_identity` / `meta_token` tables; their metadata is reaped by an upstream `AFTER DELETE` soft-cascade when the parent object row is removed. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
+`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete), `DetScope::Identity(&id)` = per-identity slot (active — used for identities, top-ups, scheduled votes, and DashPay `private`/`address_index` overlays), `DetScope::Token { identity_id, token_id }` = per-token slot (defined and mapped, currently unused — token balances are read live from upstream). `DetScope::Identity` and `DetScope::Token` map to the upstream `meta_identity` / `meta_token` tables; an upstream `AFTER DELETE` soft-cascade reaps that metadata only when the parent object row is actually deleted. DET identity unloads do not delete that upstream row, so `delete_local_qualified_identity` explicitly purges the identity scope and owner-scoped Global sidecars. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
 
 Three backing stores exist:
 
@@ -80,14 +80,16 @@ Source: `src/model/selected_wallet.rs`, `src/wallet_backend/mod.rs`
 
 ## Identities
 
-The identity blob and top-up history are **identity-scoped** (`DetScope::Identity(&id)`) so the upstream soft-cascade reaps them when the identity row is deleted. `DetScope::Identity` has no cross-identity listing, so a Global `det:identity_index:v1` slot holds the complete id roster the load-all paths iterate. `det:identity_order:v1` is a separate user-ordering view (may lag the full set) and stays Global.
+The identity blob and top-up history are **identity-scoped** (`DetScope::Identity(&id)`). The upstream soft-cascade reaps them when the identity row is deleted, while DET's unload path explicitly purges the scope because it does not issue that row delete. `DetScope::Identity` has no cross-identity listing, so a Global `det:identity_index:v1` slot holds the complete id roster the load-all paths iterate. `det:identity_order:v1` is a separate user-ordering view (may lag the full set) and stays Global.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
 | `det:identity:v1` | `DetScope::Identity(&id)` | `det-<net>.sqlite` | `StoredQualifiedIdentity` | Fields: `qi_bytes` (inner bincode, redacted in `Debug`), `status: u8`, `identity_type: String`, `wallet_hash: Option<[u8;32]>`, `wallet_index: Option<u32>` |
-| `det:identity_index:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids |
+| `det:identity_index:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids. Rewritten wholesale on every add/remove, so all read-modify-write access is serialized by one process-wide lock — absence from this roster authorizes the vault-cleanup sweep to delete an identity's private keys, and a lost update would forge that evidence |
 | `det:identity_order:v1` | `None` | `det-<net>.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
 | `det:top_ups:v1` | `DetScope::Identity(&id)` | `det-<net>.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
+| `det:vault_cleanup_pending:v1:<id_base58>` | `None` | `det-<net>.sqlite` | `Vec<(StoredPrivateKeyTarget, KeyID)>` | Durable manifest of the vault-key placements a `delete_local_qualified_identity` call must still clear; persisted before that call's first mutation, cleared once every listed key is deleted (a clear that fails leaves a stale manifest, not a failed removal — the sweep re-runs the idempotent deletes and clears it). Global-scoped (not `DetScope::Identity`) so it survives the index removal that unlists `id` — the exact step it exists to protect against. Resumed by the boot-time `AppContext::resume_pending_vault_cleanups` sweep. |
+| `det:identity_unloaded:v1:<id_base58>` | `None` | `det-<net>.sqlite` | `u64` | Presence-only marker that the user unloaded this identity from this device; the stored value is the unload's unix timestamp, kept for diagnostics only and never read for a decision. Written by `delete_local_qualified_identity` **before** `index_remove_identity` delists the identity, and by the devnet wipe for every identity it clears, so no window exists in which the identity is gone and the marker is not yet on file. Consulted by `AppContext::store_discovered_identity` — the single guarded store used by the discovery passes and by the `finish_unwire` migration import — which refuses to store an identity carrying one. That refusal is what makes an unload survive the automatic passes (boot sweep, post-unlock, wallet import, resumed migration), all of which re-derive or re-read the same identity from material that outlives the removal. The absent-record branch of `write_local_qualified_identity_locked` declines the same way, as a backstop covering every update path that could otherwise re-create a record for an identity a removal had already taken away. Global-scoped for the same reason as the manifest above: it must outlive the identity's own scope. Retired only by `insert_local_qualified_identity`, i.e. by the user deliberately loading the identity again. Never expired on a timer — an expiring tombstone is a resurrection with a delay — and never reaped: it grows by one entry per identity the user has actually unloaded on this network, a bound set by user action rather than by anything automatic, which any change letting an automatic path write these would break. |
 
 **Exception to the cascade above**: an identity stored without a wallet association (`wallet_hash: None`) is *also* mirrored into the upstream `identities` table under the **unowned scope** — the all-zero `WalletId`, which upstream stores as a NULL `wallet_id`. Masternode/evonode nodes are the expected case, but any wallet-less identity DET stores takes this path (e.g. a `User` identity looked up by id with no owning wallet). The scope is load-bearing, not incidental: a NULL `wallet_id` activates no foreign key, so no wallet's `ON DELETE CASCADE` reaches the row, and the `cascade_meta_on_identity_delete` trigger — which would delete the identity's `meta_identity` rows, i.e. the `det:identity:v1` record above — never fires for it. That is the whole point: filing the same identity under a real wallet's scope would make removing that unrelated wallet destroy the node's DET record. These rows are also kept out of every wallet's `IdentityManager`, because the `identities` upsert promotes an unowned row to the first wallet that flushes it.
 
@@ -146,6 +148,7 @@ Source: `src/context/contract_token_db.rs`
 |-----|-------|-------|------------|-------|
 | `det:token:<base58_token_id>` | `None` | `det-<net>.sqlite` | `StoredToken` | Fields: `config_bytes: Vec<u8>` (bincode `TokenConfiguration`), `alias: String`, `data_contract_id: [u8;32]`, `position: u16` |
 | `det:token_order:v1` | `None` | `det-<net>.sqlite` | `Vec<([u8;32],[u8;32])>` | Ordered `(token_id, identity_id)` pairs for My Tokens screen |
+| `det:token_untracked:v2:<base58_token_id>:<base58_identity_id>` | `None` | `det-<net>.sqlite` | `()` | Presence-only marker that the identity stopped tracking this token balance; identity unload removes that owner's markers and order entries explicitly |
 
 Per-`(identity, token)` balances are no longer cached by DET. They are read live from the upstream `IdentitySyncManager` through the `TokenBalanceView` seam (`src/wallet_backend/token_balance.rs`), which is fed a lock-free snapshot refreshed off the UI thread.
 
@@ -168,7 +171,7 @@ Source: `src/context/platform_address_db.rs`, `src/wallet_backend/platform_addre
 
 ## DashPay sidecar
 
-The per-network `det-<net>.sqlite` already partitions DashPay data by network, so no `<network>:` prefix is needed within a key. Owner-specific decisions and recovery state use `DetScope::Identity(&owner)`; the owner id is carried by the scope and the upstream soft-cascade reaps those values when the owner identity row is deleted.
+The per-network `det-<net>.sqlite` already partitions DashPay data by network, so no `<network>:` prefix is needed within a key. Owner-specific decisions and recovery state use `DetScope::Identity(&owner)`; the owner id is carried by the scope. The upstream soft-cascade reaps those values only when the owner identity row is deleted. DET unloads do not issue that delete, so `dashpay_clear_owner_overlays` explicitly clears the six identity-scoped families and the Global reverse-address mappings for that owner. Shared timestamps remain until the network-wide sweep.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
@@ -216,8 +219,8 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 | Store | Key count |
 |-------|-----------|
 | `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `det-<net>.sqlite` | 21 (across 8 domains) |
+| `det-<net>.sqlite` | 24 (across 8 domains) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
-| **Total** | **27** |
+| **Total** | **30** |
 
 Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

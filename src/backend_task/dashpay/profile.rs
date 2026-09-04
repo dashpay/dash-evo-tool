@@ -337,6 +337,7 @@ pub async fn update_profile(
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
 
         let mut builder = DocumentCreateTransitionBuilder::new(

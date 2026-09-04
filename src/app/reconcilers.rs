@@ -10,11 +10,11 @@
 //! module can read its parent's private items, so no visibility widening is
 //! needed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{Network, Txid};
 use eframe::egui;
 
 use crate::backend_task::error::TaskError;
@@ -25,22 +25,25 @@ use crate::context::connection_status::{
     OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step, spv_progress_token,
 };
 use crate::context::migration_status::MigrationState;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::{TransactionConfirmation, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::wallet_unlock_popup::{
     MigrationWalletUnlockResult, WalletUnlockPopup, wallet_needs_unlock,
 };
 use crate::ui::components::{
-    BannerHandle, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle,
+    BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
 
 use super::{
-    COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_IDENTITIES_ACK_ACTION_ID,
+    AppAction, BootPhase, MAX_PENDING_WATCHES, MIGRATION_IDENTITIES_ACK_ACTION_ID,
     MIGRATION_RETRY_ACTION_ID, MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
-    SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION,
-    SpvBlockStep, cold_start_backend_wait_timed_out,
+    PENDING_POLL_INTERVAL, PENDING_STALE_MESSAGE, PendingStep, SPV_CANCEL_ACTION_ID,
+    SPV_CANCEL_CONFIRM_ACTION_ID, SPV_CANCEL_KEEP_ACTION_ID, SPV_CANCEL_QUESTION,
+    SPV_CONNECTING_DESCRIPTION, SPV_SYNCING_DESCRIPTION, STORAGE_PREP_CLOSE_ACTION_ID,
+    STORAGE_PREP_FAILED_MESSAGE, STORAGE_PREP_PASSWORD_DESCRIPTION, STORAGE_PREP_RETRY_ACTION_ID,
+    STORAGE_PREP_STUCK_MESSAGE, STORAGE_PREP_STUCK_TIMEOUT, SpvBlockStep,
     migration_failed_with_unreadable_identities_text, migration_running_text,
-    migration_unreadable_data_text, should_dispatch_cold_start, spv_block_step,
+    migration_unreadable_data_text, pending_confirmed_message, pending_step, spv_block_step,
 };
 
 /// Drives platform-level accessibility (AccessKit) activation on the first
@@ -89,16 +92,16 @@ impl AccessibilityActivator {
     }
 }
 
-/// Drives the blocking SPV-sync overlay (F-SPV-A). Owns the overlay handle and
-/// the armed/dismissed episode flags so an ambient reconnect never hard-blocks
-/// a working user.
+/// Drives the blocking SPV-sync overlay (F-SPV-A). Owns the overlay handle, the
+/// armed-episode flag so an ambient reconnect never hard-blocks a working user,
+/// and whether the block is currently asking the user to confirm cancelling.
 pub(super) struct SpvBlockReconciler {
     /// The blocking overlay raised while an armed sync is connecting.
     overlay: Option<OverlayHandle>,
     /// Whether a user-initiated sync episode is armed for blocking.
     armed: bool,
-    /// Whether the user chose "Continue in the background" for this episode.
-    dismissed: bool,
+    /// Whether the block is showing the Cancel confirmation rather than progress.
+    confirming_cancel: bool,
 }
 
 impl SpvBlockReconciler {
@@ -106,18 +109,19 @@ impl SpvBlockReconciler {
         Self {
             overlay: None,
             armed,
-            dismissed: false,
+            confirming_cancel: false,
         }
     }
 
     /// Arm a fresh user-initiated episode (boot auto-start, Connect button,
-    /// post-onboarding auto-start), re-arming the background escape.
+    /// post-onboarding auto-start).
     pub(super) fn arm(&mut self) {
         self.armed = true;
-        self.dismissed = false;
+        self.confirming_cancel = false;
     }
 
     /// Whether an episode is currently armed (test seam / observation).
+    #[cfg(feature = "testing")]
     pub(super) fn armed(&self) -> bool {
         self.armed
     }
@@ -132,16 +136,25 @@ impl SpvBlockReconciler {
     pub(super) fn reset(&mut self) {
         self.overlay = None;
         self.armed = false;
-        self.dismissed = false;
+        self.confirming_cancel = false;
     }
 
     /// Drive the blocking SPV-sync overlay for one frame (see the field docs on
     /// [`AppState`](super::AppState) for the F-SPV-A / C1-C2 contract). Raises
     /// at most once per episode, then updates content in place.
-    pub(super) fn update(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+    ///
+    /// Returns [`AppAction::StopSpv`] on the frame the user confirms cancelling.
+    /// The action travels back to the frame loop rather than being applied here
+    /// because stopping sync is dispatch work `AppState` owns; the reconciler
+    /// only decides that it was asked for.
+    pub(super) fn update(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+    ) -> Option<AppAction> {
         let cs = app_context.connection_status();
         let state = cs.overall_state();
-        match spv_block_step(self.armed, self.dismissed, state) {
+        match spv_block_step(self.armed, state) {
             SpvBlockStep::Block => {
                 // F-SPV-B: plain, jargon-free copy — the determinate granularity
                 // is the "Step N of 5" counter, NOT raw phase names / heights.
@@ -151,23 +164,16 @@ impl SpvBlockReconciler {
                 // height so a slow-but-advancing phase never trips the
                 // no-progress watchdog. It is never rendered.
                 let token = progress.as_ref().and_then(spv_progress_token);
-                let description = if step.is_some() {
+                let description = if self.confirming_cancel {
+                    SPV_CANCEL_QUESTION
+                } else if step.is_some() {
                     SPV_SYNCING_DESCRIPTION
                 } else {
                     SPV_CONNECTING_DESCRIPTION
                 };
                 if self.overlay.is_none() {
-                    // The escape is the single keyboard-reachable exit: the
-                    // overlay focus-pins this button and lets Enter/Space
-                    // activate it, so a keyboard-only / assistive-tech user is
-                    // never stranded behind the UNBOUNDED SPV block.
-                    let mut config = OverlayConfig::new()
-                        .with_description(description)
-                        .with_secondary_action(
-                            "Continue in the background",
-                            SPV_CONTINUE_BACKGROUND_ACTION,
-                        )
-                        .with_keyboard_escape(SPV_CONTINUE_BACKGROUND_ACTION);
+                    let mut config = OverlayConfig::new().with_description(description);
+                    config = Self::apply_actions(config, self.confirming_cancel);
                     if let Some(n) = step {
                         config = config.with_step(n, SPV_SYNC_PHASE_COUNT);
                     }
@@ -192,37 +198,68 @@ impl SpvBlockReconciler {
             }
             SpvBlockStep::Disarm => {
                 // Armed episode ended (Synced/Error): lower and disarm so
-                // ambient Connecting/Syncing never re-blocks (F-SPV-A). Re-arm
-                // the escape for the next user-initiated sync.
+                // ambient Connecting/Syncing never re-blocks (F-SPV-A).
                 self.overlay.take_and_clear();
                 self.armed = false;
-                self.dismissed = false;
-            }
-            SpvBlockStep::Stand => {
-                // User chose to continue in the background: stay lowered, but
-                // keep the episode armed + dismissed so we don't re-raise (C2).
-                self.overlay.take_and_clear();
+                self.confirming_cancel = false;
             }
             SpvBlockStep::Idle => {
                 // Not armed (ambient sync, or already disarmed): never block.
                 self.overlay.take_and_clear();
+                self.confirming_cancel = false;
             }
         }
 
-        // Drain this overlay's own clicks: the "Continue in the background"
-        // escape lowers the block for the rest of this episode.
+        self.drain_actions()
+    }
+
+    /// Put the action row for the current step on `config`.
+    ///
+    /// The keyboard escape is bound to the *non-destructive* choice in both
+    /// rows: Cancel (which only asks) while syncing, "Keep syncing" while
+    /// confirming. That is what keeps the block keyboard-reachable without
+    /// making Enter or Space disconnect the wallet.
+    fn apply_actions(config: OverlayConfig, confirming_cancel: bool) -> OverlayConfig {
+        if confirming_cancel {
+            config
+                .with_action("Stop syncing", SPV_CANCEL_CONFIRM_ACTION_ID)
+                .with_secondary_action("Keep syncing", SPV_CANCEL_KEEP_ACTION_ID)
+                .with_keyboard_escape(SPV_CANCEL_KEEP_ACTION_ID)
+        } else {
+            config
+                .with_secondary_action("Cancel", SPV_CANCEL_ACTION_ID)
+                .with_keyboard_escape(SPV_CANCEL_ACTION_ID)
+        }
+    }
+
+    /// Drain this overlay's own clicks and apply the two-step cancel.
+    ///
+    /// Switching between the progress row and the confirmation row lowers the
+    /// overlay so the next frame re-raises it: an [`OverlayHandle`]'s button
+    /// methods append, and re-asserting a row per frame would stack duplicates.
+    fn drain_actions(&mut self) -> Option<AppAction> {
         let actions = self
             .overlay
             .as_ref()
             .map(|handle| handle.take_actions())
             .unwrap_or_default();
-        if actions
-            .iter()
-            .any(|id| id == SPV_CONTINUE_BACKGROUND_ACTION)
-        {
-            self.dismissed = true;
-            self.overlay.take_and_clear();
+
+        for action in actions {
+            if action == SPV_CANCEL_ACTION_ID {
+                self.confirming_cancel = true;
+                self.overlay.take_and_clear();
+            } else if action == SPV_CANCEL_KEEP_ACTION_ID {
+                self.confirming_cancel = false;
+                self.overlay.take_and_clear();
+            } else if action == SPV_CANCEL_CONFIRM_ACTION_ID {
+                tracing::info!("User cancelled chain sync from the startup block");
+                self.confirming_cancel = false;
+                self.overlay.take_and_clear();
+                self.armed = false;
+                return Some(AppAction::StopSpv);
+            }
         }
+        None
     }
 }
 
@@ -388,8 +425,451 @@ impl ConnectionBanner {
     }
 }
 
-/// Reconciles the data-migration banner and drives the cold-start
-/// `FinishUnwire` dispatch per network.
+/// Drives the blocking storage-preparation gate: the one place boot decides a
+/// network's storage is usable.
+///
+/// Backend wiring, the legacy drain and chain sync used to race; the gate makes
+/// them a sequence by refusing to hand the app back to the user — or to chain
+/// sync — until [`AppContext::prepare_storage`] has returned. A thread-blocking
+/// gate is impossible (the main thread already sits inside `runtime.block_on`),
+/// so the block is on the *user*: preparation runs as a spawned task and this
+/// reconciler polls it, owning the whole interaction surface meanwhile.
+///
+/// The overlay is raised through [`ProgressOverlay`], not a bespoke surface, so
+/// it inherits the four-point contract that lets the storage update's own
+/// password prompt render, focus and type *above* the block — without which the
+/// gate would deadlock on the frame loop its own completion depends on.
+pub(super) struct StoragePrepGate {
+    /// What may render this frame. The frame loop reads it; only this reconciler
+    /// advances it.
+    phase: BootPhase,
+    /// Networks whose storage this process has already prepared. Returning to
+    /// one never re-raises the gate — sentinels are per-network, but the work
+    /// behind them is done for this run.
+    prepared: BTreeSet<Network>,
+    /// The in-flight preparation, if any.
+    pending: Option<PendingPrepare>,
+    /// Terminal failure surface, once preparation has failed.
+    failure: Option<PrepareFailure>,
+    /// The blocking overlay raised for the current phase.
+    overlay: Option<OverlayHandle>,
+    /// Whether to start chain sync once the current preparation completes.
+    auto_start_spv: bool,
+    /// Whether this is startup preparation, whose sync owns the blocking SPV
+    /// overlay. Network-switch sync remains ambient.
+    arm_spv_block: bool,
+    /// Whether the "raised over nothing" surface has already been armed, so its
+    /// log and its overlay swap happen once rather than every frame.
+    orphaned: bool,
+    #[cfg(feature = "testing")]
+    test_hold: Option<tokio::sync::oneshot::Sender<Result<(), TaskError>>>,
+}
+
+/// One spawned [`AppContext::prepare_storage`] run.
+struct PendingPrepare {
+    network: Network,
+    started: Instant,
+    result: tokio::sync::oneshot::Receiver<Result<(), TaskError>>,
+    /// Whether the stuck-preparation copy has already been surfaced.
+    stuck: bool,
+}
+
+/// A preparation that failed, held so the terminal surface survives re-renders.
+struct PrepareFailure {
+    network: Network,
+    /// Whether retrying can plausibly help. A version-window mismatch cannot be
+    /// retried into success, so its surface offers only "Close the app".
+    retryable: bool,
+    error: TaskError,
+}
+
+/// What the frame loop must do after driving the gate for one frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GateEvent {
+    /// Preparation completed: build the root screens and release the app.
+    Prepared {
+        network: Network,
+        start_spv: bool,
+        arm_spv_block: bool,
+    },
+    /// The user chose "Try again" on a failed preparation.
+    Retry(Network),
+    /// The user chose "Close the app" on a terminal failure.
+    Close,
+}
+
+impl StoragePrepGate {
+    /// A gate parked on the network chooser: boot could not decide a network,
+    /// so nothing may be prepared until the user picks one.
+    pub(super) fn awaiting_network_choice() -> Self {
+        Self::with_phase(BootPhase::AwaitingNetworkChoice)
+    }
+
+    /// A gate already raised for `network`. The caller spawns the preparation
+    /// and hands the result channel over with [`Self::attach`].
+    pub(super) fn preparing(network: Network) -> Self {
+        Self::with_phase(BootPhase::Preparing { network })
+    }
+
+    fn with_phase(phase: BootPhase) -> Self {
+        Self {
+            phase,
+            prepared: BTreeSet::new(),
+            orphaned: false,
+            pending: None,
+            failure: None,
+            overlay: None,
+            auto_start_spv: false,
+            arm_spv_block: false,
+            #[cfg(feature = "testing")]
+            test_hold: None,
+        }
+    }
+
+    pub(super) fn phase(&self) -> BootPhase {
+        self.phase
+    }
+
+    pub(super) fn arm_spv_block_on_success(&self) -> bool {
+        self.arm_spv_block
+    }
+
+    /// Whether this network's storage was already prepared in this process.
+    pub(super) fn is_prepared(&self, network: Network) -> bool {
+        self.prepared.contains(&network)
+    }
+
+    /// Raise the gate for `network` and adopt the result channel of the
+    /// preparation the caller just spawned. `auto_start_spv` is carried through
+    /// to the [`GateEvent::Prepared`] that lifts it, so chain sync starts as a
+    /// continuation of preparation rather than alongside it.
+    pub(super) fn attach(
+        &mut self,
+        network: Network,
+        auto_start_spv: bool,
+        arm_spv_block: bool,
+        result: tokio::sync::oneshot::Receiver<Result<(), TaskError>>,
+    ) {
+        self.phase = BootPhase::Preparing { network };
+        self.auto_start_spv = auto_start_spv;
+        self.arm_spv_block = arm_spv_block;
+        self.failure = None;
+        self.orphaned = false;
+        self.pending = Some(PendingPrepare {
+            network,
+            started: Instant::now(),
+            result,
+            stuck: false,
+        });
+    }
+
+    /// Test seam: raise the gate with no preparation behind it, so a kittest can
+    /// drive the REAL frame loop against a gate that never completes and assert
+    /// what renders above it. Mirrors `AppState::test_arm_spv_block`.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_raise(&mut self, network: Network) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.test_hold = Some(tx);
+        self.attach(network, false, false, rx);
+    }
+
+    /// Test seam: drop the in-flight preparation while leaving the gate raised,
+    /// reproducing the state a reset-after-attach used to leave behind.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_orphan(&mut self) {
+        self.pending = None;
+    }
+
+    /// Test clock seam: shift the in-flight preparation's start into the past,
+    /// so a kittest can cross the stuck threshold without waiting it out.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_backdate_preparation(&mut self, by: std::time::Duration) {
+        if let Some(pending) = self.pending.as_mut() {
+            pending.started = pending.started.checked_sub(by).unwrap_or(pending.started);
+        }
+    }
+
+    /// Test seam: resolve the raised gate's preparation as `error`, so a kittest
+    /// can drive the REAL terminal-failure surface for an error the test picks.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_fail(&mut self, error: TaskError) {
+        if let Some(tx) = self.test_hold.take() {
+            let _ = tx.send(Err(error));
+        }
+    }
+
+    /// Test seam: resolve the raised gate's preparation successfully, so a
+    /// kittest can drive the REAL terminal transition — screen construction,
+    /// route re-resolution, chain-sync start — without waiting on real storage.
+    #[cfg(feature = "testing")]
+    pub(super) fn test_complete(&mut self) {
+        if let Some(tx) = self.test_hold.take() {
+            let _ = tx.send(Ok(()));
+        }
+    }
+
+    /// Drive the gate for one frame: poll the in-flight preparation, keep the
+    /// overlay's copy in step with the published progress, and drain the
+    /// terminal surface's buttons.
+    pub(super) fn update(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+        migration_state: &MigrationState,
+    ) -> Option<GateEvent> {
+        if !matches!(self.phase, BootPhase::Preparing { .. }) {
+            self.overlay.take_and_clear();
+            return None;
+        }
+
+        if let Some(event) = self.poll_pending() {
+            return Some(event);
+        }
+
+        self.render(ctx, migration_state);
+        self.drain_actions(app_context)
+    }
+
+    /// Resolve the in-flight preparation if it has finished.
+    fn poll_pending(&mut self) -> Option<GateEvent> {
+        let pending = self.pending.as_mut()?;
+        let network = pending.network;
+        match pending.result.try_recv() {
+            Ok(Ok(())) => {
+                self.pending = None;
+                self.overlay.take_and_clear();
+                self.prepared.insert(network);
+                self.phase = BootPhase::Ready;
+                tracing::info!(?network, "Storage preparation finished; releasing the app");
+                Some(GateEvent::Prepared {
+                    network,
+                    start_spv: self.auto_start_spv,
+                    arm_spv_block: self.arm_spv_block,
+                })
+            }
+            Ok(Err(error)) => {
+                self.pending = None;
+                self.overlay.take_and_clear();
+                tracing::error!(?network, error = %error, "Storage preparation failed");
+                self.failure = Some(PrepareFailure {
+                    network,
+                    retryable: !matches!(
+                        error,
+                        TaskError::SavedDataTooOld { .. } | TaskError::SavedDataTooNew { .. }
+                    ) && !crate::backend_task::is_terminal_storage_open_error(&error),
+                    error,
+                });
+                None
+            }
+            // The preparation task was dropped without reporting — treat it as a
+            // retryable failure rather than blocking forever on a dead channel.
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.pending = None;
+                self.overlay.take_and_clear();
+                tracing::error!(
+                    ?network,
+                    "Storage preparation ended without a result; offering a retry"
+                );
+                self.failure = Some(PrepareFailure {
+                    network,
+                    retryable: true,
+                    error: TaskError::WalletStorageNotReady,
+                });
+                None
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+        }
+    }
+
+    /// Raise or update the overlay for this frame.
+    fn render(&mut self, ctx: &egui::Context, migration_state: &MigrationState) {
+        // A repaint every frame: the gate's only progress signal is a background
+        // task, so egui would otherwise go idle and never poll it again.
+        ctx.request_repaint();
+
+        if let Some(failure) = &self.failure {
+            let mut config = OverlayConfig::new();
+            if failure.retryable {
+                config = config
+                    .with_action("Try again", STORAGE_PREP_RETRY_ACTION_ID)
+                    .with_secondary_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID);
+            } else {
+                config = config.with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID);
+            }
+            let message = if failure.retryable {
+                STORAGE_PREP_FAILED_MESSAGE.to_string()
+            } else {
+                failure.error.to_string()
+            };
+            config = config
+                .with_description(message)
+                .with_keyboard_escape(STORAGE_PREP_CLOSE_ACTION_ID);
+            if self.overlay.is_none() {
+                self.overlay.raise(ctx, "", config);
+            }
+            return;
+        }
+
+        let stuck = self.mark_stuck_if_overdue(migration_state) || self.raise_if_orphaned();
+        let description = if stuck {
+            STORAGE_PREP_STUCK_MESSAGE
+        } else {
+            storage_prep_description(migration_state)
+        };
+
+        if let Some(handle) = &self.overlay {
+            handle.set_description(description);
+        } else {
+            // Preparation cannot continue safely in the background. Only the stuck branch
+            // adds an exit, and it re-raises to do so — an `OverlayHandle`'s
+            // button methods append, so attaching per frame would stack copies.
+            let mut config = OverlayConfig::new().with_description(description);
+            if stuck {
+                config = config
+                    .with_action("Close the app", STORAGE_PREP_CLOSE_ACTION_ID)
+                    .with_keyboard_escape(STORAGE_PREP_CLOSE_ACTION_ID);
+            }
+            self.overlay.raise(ctx, "", config);
+        }
+    }
+
+    /// Whether the gate is up with nothing behind it, which no code path is
+    /// allowed to produce.
+    ///
+    /// A raised gate with no preparation to poll and no failure to show is
+    /// unreachable by design — every reset is followed by an attach or by
+    /// `Ready` — but it is also the one gate bug the user cannot work around:
+    /// no screen renders beneath it and, without this, no button appears on it.
+    /// Treating it as stuck costs a wrong-ish sentence in a state that should
+    /// never occur and buys an exit that is never missing.
+    fn raise_if_orphaned(&mut self) -> bool {
+        if self.pending.is_some() || !matches!(self.phase, BootPhase::Preparing { .. }) {
+            return false;
+        }
+        if !self.orphaned {
+            self.orphaned = true;
+            tracing::error!(
+                phase = ?self.phase,
+                "Storage-preparation gate is raised with nothing to wait for; offering to close the app",
+            );
+            self.overlay.take_and_clear();
+        }
+        true
+    }
+
+    /// Whether preparation has been running long enough to surface the stuck
+    /// copy. On the transition, logs once and lowers the overlay so the branch
+    /// above re-raises it carrying the "Close the app" exit.
+    ///
+    /// The budget covers unattended work only. A password prompt is preparation
+    /// waiting for the person at the keyboard, which it is designed to do for as
+    /// long as it takes, so the clock restarts when they answer — and a prompt
+    /// that outlives the budget never leaves the stuck copy latched behind it.
+    fn mark_stuck_if_overdue(&mut self, migration_state: &MigrationState) -> bool {
+        if MigrationReconciler::is_prompting(migration_state) {
+            let latched = match self.pending.as_mut() {
+                Some(pending) => {
+                    pending.started = Instant::now();
+                    std::mem::take(&mut pending.stuck)
+                }
+                None => false,
+            };
+            if latched {
+                self.overlay.take_and_clear();
+            }
+            return false;
+        }
+        let Some(pending) = self.pending.as_mut() else {
+            return false;
+        };
+        if pending.started.elapsed() < STORAGE_PREP_STUCK_TIMEOUT {
+            return false;
+        }
+        if !pending.stuck {
+            pending.stuck = true;
+            tracing::warn!(
+                network = ?pending.network,
+                timeout_secs = STORAGE_PREP_STUCK_TIMEOUT.as_secs(),
+                "Storage preparation exceeded its expected duration; offering to close the app",
+            );
+            self.overlay.take_and_clear();
+        }
+        true
+    }
+
+    /// Drain the overlay's own button clicks.
+    fn drain_actions(&mut self, app_context: &Arc<AppContext>) -> Option<GateEvent> {
+        let actions = self
+            .overlay
+            .as_ref()
+            .map(|handle| handle.take_actions())
+            .unwrap_or_default();
+        let network = self
+            .failure
+            .as_ref()
+            .map(|f| f.network)
+            .or_else(|| self.pending.as_ref().map(|p| p.network))
+            .unwrap_or(app_context.network);
+
+        for action in actions {
+            if action == STORAGE_PREP_CLOSE_ACTION_ID {
+                return Some(GateEvent::Close);
+            }
+            if action == STORAGE_PREP_RETRY_ACTION_ID {
+                self.failure = None;
+                self.overlay.take_and_clear();
+                // A retry re-runs the FULL sequence, not just the drain, so the
+                // network must lose any claim to being prepared — otherwise a
+                // later switch back would skip the gate on storage that never
+                // finished preparing.
+                self.prepared.remove(&network);
+                return Some(GateEvent::Retry(network));
+            }
+        }
+        None
+    }
+
+    /// Drop every surface and in-flight preparation belonging to the outgoing
+    /// network, and settle the phase for `incoming`.
+    ///
+    /// The invariant, which is what a future change breaks without noticing:
+    /// **this must run before the incoming network's `attach`, and every call
+    /// must be followed by an attach or by [`BootPhase::Ready`] — a raised gate
+    /// must always have something to wait for.** It clears `pending`, so the
+    /// reverse order discards the very preparation the gate is waiting on and
+    /// leaves it raised over nothing to poll, with no screen beneath it and no
+    /// button on it.
+    ///
+    /// `prepared` is preserved: it is per-process knowledge that outlives any
+    /// one network. A network already in it needs no preparation at all, so the
+    /// phase goes straight to [`BootPhase::Ready`]; otherwise the caller's
+    /// attach sets [`BootPhase::Preparing`].
+    pub(super) fn reset_for_switch(&mut self, incoming: Network) {
+        self.overlay.take_and_clear();
+        self.pending = None;
+        self.failure = None;
+        if self.prepared.contains(&incoming) {
+            self.phase = BootPhase::Ready;
+        }
+    }
+}
+
+/// The gate's own progress copy for the current published storage state.
+///
+/// Progress rides the one [`MigrationStatus`](crate::context::migration_status::MigrationStatus)
+/// the banner already reads, so there is one step vocabulary rather than two.
+/// States that publish no step (the sentinel short-circuit, a terminal outcome
+/// reached before the frame loop caught up) fall back to the opening sentence
+/// rather than leaving the card wordless.
+fn storage_prep_description(state: &MigrationState) -> &'static str {
+    match state {
+        MigrationState::Running { step } => migration_running_text(*step),
+        MigrationState::AwaitingWalletPasswords { .. } => STORAGE_PREP_PASSWORD_DESCRIPTION,
+        _ => migration_running_text(crate::context::migration_status::MigrationStep::Wiring),
+    }
+}
+
+/// Reconciles the data-migration banner and its wallet-password prompt.
 pub(super) struct MigrationReconciler {
     /// Handle to the current migration banner, if displayed.
     banner_handle: Option<BannerHandle>,
@@ -397,12 +877,6 @@ pub(super) struct MigrationReconciler {
     storage_startup_error: TransientBanner,
     /// Last-seen migration state so reconciliation fires only on change.
     last_state: Option<MigrationState>,
-    /// Networks whose cold-start `FinishUnwire` has been dispatched this process.
-    dispatched: BTreeSet<Network>,
-    /// Per network, when the readiness gate first observed an unwired backend.
-    backend_wait_since: BTreeMap<Network, Instant>,
-    /// Networks whose stuck-preparation timeout was already logged (dedupe).
-    timeout_signaled: BTreeSet<Network>,
     /// Reused password-entry component for the current migrated wallet.
     wallet_unlock_popup: WalletUnlockPopup,
     /// Migrated wallet currently shown in the password prompt.
@@ -415,9 +889,6 @@ impl MigrationReconciler {
             banner_handle: None,
             storage_startup_error: TransientBanner::default(),
             last_state: None,
-            dispatched: BTreeSet::new(),
-            backend_wait_since: BTreeMap::new(),
-            timeout_signaled: BTreeSet::new(),
             wallet_unlock_popup: WalletUnlockPopup::new(),
             prompt_wallet: None,
         }
@@ -428,9 +899,7 @@ impl MigrationReconciler {
         self.storage_startup_error.track(handle);
     }
 
-    /// Clear the migration banner and force re-evaluation (network switch). The
-    /// per-network dispatch guard is intentionally NOT reset — it is scoped per
-    /// network so a return to a seen network never re-drains.
+    /// Clear banner and password-prompt state for a new network context.
     pub(super) fn reset_for_switch(&mut self) {
         if let Some(handle) = self.banner_handle.take() {
             handle.clear();
@@ -446,86 +915,22 @@ impl MigrationReconciler {
         matches!(state, MigrationState::AwaitingWalletPasswords { .. })
     }
 
-    /// Dispatch the cold-start migration once per network, gated on the wallet
-    /// backend being wired. Returns the `FinishUnwire` task when it fires;
-    /// otherwise surfaces the stuck-preparation banner past the readiness
-    /// timeout. See `finish_unwire` for the per-network scoping rationale.
-    pub(super) fn dispatch_cold_start(
-        &mut self,
-        app_context: &Arc<AppContext>,
-    ) -> Option<BackendTask> {
-        let network = app_context.network;
-        let already_dispatched = self.dispatched.contains(&network);
-        // Readiness gate: after a network SWITCH the switched-to backend wires
-        // a few frames later; dispatching before it is ready aborts the first
-        // step with a transient error AND burns the per-network guard. Poll
-        // readiness (a cheap ArcSwap load) and only dispatch once wired.
-        let backend_ready = app_context.wallet_backend().is_ok();
-        if should_dispatch_cold_start(already_dispatched, backend_ready) {
-            // Backend wired: retire any stuck-preparation watchdog before
-            // burning the guard and dispatching.
-            self.clear_backend_wait(app_context);
-            self.dispatched.insert(network);
-            tracing::info!(
-                target = "migration::cold_start",
-                ?network,
-                "Dispatching FinishUnwire migration at cold start",
-            );
-            return Some(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
-        }
-
-        if already_dispatched {
-            return None;
-        }
-
-        // Not dispatched because the wallet backend has not wired yet. Record
-        // when the wait began and, once it exceeds the readiness timeout,
-        // surface a visible, actionable banner. Recovery stays automatic: if the
-        // backend wires later, the dispatch branch above clears the banner.
-        let now = Instant::now();
-        let waited = now.duration_since(*self.backend_wait_since.entry(network).or_insert(now));
-        if cold_start_backend_wait_timed_out(Some(waited), COLD_START_BACKEND_READY_TIMEOUT) {
-            let handle = MessageBanner::set_global(
-                app_context.egui_ctx(),
-                COLD_START_STUCK_MESSAGE,
-                MessageType::Error,
-            );
-            handle.disable_auto_dismiss();
-            // Log + attach the last wiring error once per network; the banner is
-            // re-asserted every frame (idempotent) so it survives a switch.
-            if self.timeout_signaled.insert(network) {
-                if let Some(detail) = app_context.connection_status().spv_last_error() {
-                    handle.with_details(detail);
-                }
-                tracing::warn!(
-                    target = "migration::cold_start",
-                    ?network,
-                    waited_secs = waited.as_secs(),
-                    "Wallet backend did not finish wiring within the readiness timeout; showing the wallet-preparation banner. Restart the app if this persists.",
-                );
-            }
-        }
-        None
-    }
-
-    /// Retire the stuck-preparation watchdog for the active network: drop the
-    /// wait timer and, if the timeout banner was raised, remove it.
-    fn clear_backend_wait(&mut self, app_context: &Arc<AppContext>) {
-        let network = app_context.network;
-        self.backend_wait_since.remove(&network);
-        if self.timeout_signaled.remove(&network) {
-            MessageBanner::clear_global_message(app_context.egui_ctx(), COLD_START_STUCK_MESSAGE);
-        }
-    }
-
     /// Update the migration banner to reflect the current [`MigrationState`].
     /// Each step / outcome surfaces a single i18n-ready sentence. Retryable
     /// failures get a "Retry now" action button.
+    ///
+    /// `gate_raised` means the storage-preparation gate owns the frame. Its
+    /// overlay already carries the in-progress copy — reading it from the same
+    /// [`MigrationState`] — so the banner's in-progress arms stand down rather
+    /// than printing the identical sentence twice. Terminal outcomes still
+    /// surface: the gate lifts on those, and they carry the recovery actions.
+    /// The password prompt is driven either way; it is what lets the gate finish.
     pub(super) fn update_banner(
         &mut self,
         ctx: &egui::Context,
         app_context: &Arc<AppContext>,
         frame_state: &MigrationState,
+        gate_raised: bool,
     ) {
         let state = frame_state.clone();
         let storage_guard_resolved = !matches!(
@@ -533,9 +938,16 @@ impl MigrationReconciler {
             MigrationState::Idle
                 | MigrationState::Running { .. }
                 | MigrationState::AwaitingWalletPasswords { .. }
-        ) && app_context.migration_run.try_lock().is_ok();
+        ) && app_context.try_lock_prepare_gate().is_ok();
         self.storage_startup_error.clear_if(storage_guard_resolved);
         self.update_password_prompt(ctx, app_context, &state);
+        // The gate owns every surface while it is raised, including the failed
+        // one: its overlay carries both the progress copy and the only "Try
+        // again", so a banner here would either duplicate the sentence or offer
+        // a second, competing retry that re-runs less than the gate's does.
+        if gate_raised {
+            return;
+        }
         if self.last_state.as_ref() == Some(&state) {
             return;
         }
@@ -597,16 +1009,6 @@ impl MigrationReconciler {
                 // (retryable, sticky) names both problems — the identities need
                 // reloading AND the app-data update must be retried — so neither
                 // silently hides the other.
-                if error.is_backend_not_ready() {
-                    // Transient app-data backend-not-ready: reset to Idle so the
-                    // frame loop re-dispatches once ready, no failure flash.
-                    self.dispatched.remove(&app_context.network);
-                    app_context
-                        .migration_status()
-                        .set_state(MigrationState::Idle);
-                    self.last_state = Some(MigrationState::Idle);
-                    return;
-                }
                 let handle = MessageBanner::set_global(
                     ctx,
                     migration_failed_with_unreadable_identities_text(count),
@@ -618,18 +1020,15 @@ impl MigrationReconciler {
                 self.banner_handle = Some(handle);
             }
             MigrationState::Failed { error } => {
-                if error.is_backend_not_ready() {
-                    // Transient: the wallet backend had not finished wiring when
-                    // this run fired. Drop the per-network dispatch guard so the
-                    // frame loop re-dispatches once ready, and reset to Idle so
-                    // no failure banner flashes — the retry is automatic.
-                    self.dispatched.remove(&app_context.network);
-                    app_context
-                        .migration_status()
-                        .set_state(MigrationState::Idle);
-                    self.last_state = Some(MigrationState::Idle);
-                    return;
-                }
+                // A backend-not-ready failure used to reset to Idle and wait for
+                // the frame loop's readiness poll to re-dispatch. That poll is
+                // gone — storage preparation wires the backend before the drain,
+                // so the gate's own path cannot produce this — and the reset
+                // would now strand the run at Idle with no banner and no retry.
+                // It reaches the retryable banner below instead, which is a
+                // recovery the user can actually reach. Still possible from the
+                // `FinishUnwire` retry task and the MCP join, neither of which
+                // wires first.
                 let task_error = migration_task_error(Arc::clone(&error));
                 let retryable = matches!(&task_error, TaskError::MigrationFailed { .. });
                 let message = if retryable {
@@ -735,12 +1134,9 @@ impl MigrationReconciler {
         }
     }
 
-    /// Drain pending banner-action clicks. Two kinds of action are registered:
-    /// the migration Retry, which re-dispatches `FinishUnwire` after resetting the
-    /// cold-start guard, and the three unreadable-row acknowledgements (votes,
-    /// identities, or the combined banner naming both), each of which clears the
-    /// durable warning records its banner named. All are returned for `AppState`
-    /// to dispatch.
+    /// Drain pending banner-action clicks. Migration Retry clears `last_state`
+    /// before re-dispatching `FinishUnwire`; unreadable-row acknowledgements
+    /// clear the durable warning records their banners name.
     pub(super) fn drain_actions(
         &mut self,
         ctx: &egui::Context,
@@ -754,11 +1150,9 @@ impl MigrationReconciler {
                     ?network,
                     "User clicked migration Retry — re-dispatching FinishUnwire",
                 );
-                // Reset the reconciler so the new run's Running banner overwrites
-                // the stale Failed one, and drop the per-network dispatch guard
-                // so a future `dispatch_cold_start` for the same network re-fires.
+                // Reset the reconciler so the new run's Running banner
+                // overwrites the stale Failed one.
                 self.last_state = None;
-                self.dispatched.remove(&network);
                 task = Some(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
             } else if action_id == MIGRATION_VOTES_ACK_ACTION_ID {
                 tracing::info!(
@@ -799,9 +1193,277 @@ impl MigrationReconciler {
     }
 }
 
+/// One transaction whose broadcast outcome was ambiguous.
+struct PendingWatch {
+    txid: Txid,
+    /// When the watch was adopted, i.e. when the user was first told to wait.
+    since: Instant,
+    /// Whether the stale re-wording has already been applied.
+    stale: bool,
+}
+
+/// Finishes the sentence the ambiguous-outcome banner starts.
+///
+/// A payment whose broadcast came back unverified leaves the user holding a
+/// "wait, then refresh" message and no way to learn the answer except by
+/// checking by hand. This adopts that banner and watches the wallet's own
+/// display snapshot for the transaction to reach an InstantSend lock or a mined
+/// block, then replaces it with a plain confirmation.
+///
+/// Lives above the screens on purpose: the watch has to survive the user
+/// navigating away from Send, which screen state does not.
+///
+/// It owns the two banners rather than each watch holding its own, because
+/// [`MessageBanner`] keys banners by exact text: every ambiguous outcome —
+/// each watch's, plus every outcome that arrived without a transaction id —
+/// is one and the same banner. Retiring it is therefore a decision about all
+/// of them at once, taken in [`Self::sync_banners`].
+pub(super) struct PendingConfirmation {
+    watches: Vec<PendingWatch>,
+    /// The shared ambiguous-outcome banner, adopted from the error arm.
+    ambiguous: Option<BannerHandle>,
+    /// That banner's copy, kept so it can be raised again if the global list
+    /// evicts it at capacity while the question it asks is still open. The
+    /// text originates in the error arm, so there is nothing else to rebuild
+    /// it from.
+    ambiguous_text: Option<String>,
+    /// Whether an ambiguous outcome arrived with no transaction id (identity
+    /// registration, top-up, platform-address funding, asset locks). No watch
+    /// can ever answer it, so it is held purely as a claim on the shared
+    /// banner: another payment's verdict must not clear it away.
+    unwatchable: bool,
+    /// The shared stale banner, raised while any claim needs it.
+    stale: Option<BannerHandle>,
+    /// One confirmation banner per answered payment, each naming its own
+    /// transaction. Not shared the way the two warnings are: those ask the
+    /// same question of every claim at once, whereas a confirmation speaks for
+    /// exactly one payment, and with several waiting the user has to be able
+    /// to tell which one it means.
+    ///
+    /// Held, and raised without auto-dismiss, for the same reason the question
+    /// is: this feature exists because the user walked away, so the answer has
+    /// to still be on screen when they come back. A default `Success` banner
+    /// retires itself after five seconds, which would take the answer away
+    /// moments after [`Self::sync_banners`] retired the question.
+    confirmed: Vec<BannerHandle>,
+    /// Whether a watch was retired at [`MAX_PENDING_WATCHES`]. The watch is
+    /// gone but its stale advice stays — the transaction is still out there.
+    retired: bool,
+    /// `None` until the first poll, so a watch adopted this frame is resolved
+    /// on the next one rather than sitting out a full interval.
+    last_poll: Option<Instant>,
+}
+
+impl PendingConfirmation {
+    pub(super) fn new() -> Self {
+        Self {
+            watches: Vec::new(),
+            ambiguous: None,
+            ambiguous_text: None,
+            unwatchable: false,
+            stale: None,
+            confirmed: Vec::new(),
+            retired: false,
+            last_poll: None,
+        }
+    }
+
+    /// Adopt the banner raised for an ambiguous broadcast of `txid`, sent on
+    /// `origin` while `active` is the network now selected. The handle must
+    /// already have auto-dismiss disabled — a pending funds question must not
+    /// time out on its own.
+    ///
+    /// A payment from any other network is adopted but not watched: the watch
+    /// reads the active network's wallet snapshot, which has never heard of it,
+    /// so it could only ever go stale and hand the user transaction-history
+    /// advice pointing at the wrong wallet.
+    pub(super) fn track(
+        &mut self,
+        ctx: &egui::Context,
+        txid: Txid,
+        origin: Option<Network>,
+        active: Network,
+        banner: BannerHandle,
+    ) {
+        if origin != Some(active) {
+            tracing::warn!(
+                %txid,
+                ?origin,
+                %active,
+                "Not watching a payment with an unverified outcome: it was not sent on the network now selected",
+            );
+            self.track_unwatchable(banner);
+            return;
+        }
+        self.adopt_ambiguous(banner);
+        // Re-tracking the same transaction (the user retried, upstream refused
+        // again) keeps the original wait start: the network has had that long.
+        if !self.watches.iter().any(|w| w.txid == txid) {
+            self.watches.push(PendingWatch {
+                txid,
+                since: Instant::now(),
+                stale: false,
+            });
+            if self.watches.len() > MAX_PENDING_WATCHES {
+                let evicted = self.watches.remove(0);
+                tracing::warn!(
+                    txid = %evicted.txid,
+                    "Stopped watching the oldest unconfirmed payment: {MAX_PENDING_WATCHES} are already being watched",
+                );
+                // Retire it to the durable surface rather than going silent.
+                self.retired = true;
+            }
+        }
+        self.sync_banners(ctx);
+    }
+
+    /// Adopt an ambiguous-outcome banner nothing here can ever answer — the
+    /// outcome carries no transaction id, or belongs to another network. Held
+    /// only so a watched payment's verdict cannot retire the message with it.
+    pub(super) fn track_unwatchable(&mut self, banner: BannerHandle) {
+        self.adopt_ambiguous(banner);
+        self.unwatchable = true;
+    }
+
+    /// Take over the shared ambiguous-outcome banner, recording its copy from
+    /// the banner itself so a later eviction can be undone. A handle that is
+    /// somehow already dead leaves the last known copy in place rather than
+    /// erasing the only means of restoring the message.
+    fn adopt_ambiguous(&mut self, banner: BannerHandle) {
+        if let Some(text) = banner.text() {
+            self.ambiguous_text = Some(text);
+        }
+        self.ambiguous = Some(banner);
+    }
+
+    /// Drop every watch (network switch): the new network's snapshot knows
+    /// nothing about these transactions, so nothing here could ever resolve.
+    pub(super) fn reset(&mut self) {
+        self.watches.clear();
+        self.unwatchable = false;
+        self.retired = false;
+        self.ambiguous.take_and_clear();
+        self.ambiguous_text = None;
+        self.stale.take_and_clear();
+        // Each confirmation names a payment on the network being left, so it
+        // would be read against the wrong wallet's history if it stayed.
+        for banner in self.confirmed.drain(..) {
+            banner.clear();
+        }
+    }
+
+    /// Re-read the snapshot for every open watch, at most once per
+    /// [`PENDING_POLL_INTERVAL`]. Cheap to call every frame: with no watch
+    /// open it does nothing at all.
+    pub(super) fn update(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        let throttled = self
+            .last_poll
+            .is_some_and(|last| last.elapsed() < PENDING_POLL_INTERVAL);
+        // A claim with nothing to re-read still ticks: an outcome carrying no
+        // transaction id, or a watch retired at the cap, owns a banner that
+        // has to outlive an eviction just as a watched payment's does.
+        let idle = self.watches.is_empty() && !self.unwatchable && !self.retired;
+        if idle || throttled {
+            return;
+        }
+        self.last_poll = Some(Instant::now());
+        if self.watches.is_empty() {
+            self.sync_banners(ctx);
+            return;
+        }
+        let Ok(backend) = app_context.wallet_backend() else {
+            // Backend not wired (boot, or mid network switch) — the snapshot it
+            // publishes is what we read, so retry on a later tick. Reconcile the
+            // banners first all the same: restoring an evicted warning needs no
+            // snapshot, and these are the windows that flood the list with
+            // startup and connection messages in the first place.
+            self.sync_banners(ctx);
+            return;
+        };
+        self.apply(ctx, |txid| backend.transaction_confirmation(txid));
+    }
+
+    /// Apply one tick's verdicts. Split from [`Self::update`] so the banner
+    /// transitions can be driven against a synthetic snapshot.
+    fn apply(
+        &mut self,
+        ctx: &egui::Context,
+        confirmation: impl Fn(&Txid) -> Option<TransactionConfirmation>,
+    ) {
+        let mut open = Vec::with_capacity(self.watches.len());
+        let mut confirmed = Vec::new();
+        for mut watch in self.watches.drain(..) {
+            match pending_step(
+                confirmation(&watch.txid),
+                watch.since.elapsed(),
+                watch.stale,
+            ) {
+                PendingStep::Confirmed => {
+                    tracing::info!(txid = %watch.txid, "A payment with an unverified outcome is confirmed on the network");
+                    confirmed.push(watch.txid);
+                }
+                PendingStep::Stale => {
+                    tracing::warn!(txid = %watch.txid, "A payment with an unverified outcome is still unconfirmed");
+                    watch.stale = true;
+                    open.push(watch);
+                }
+                PendingStep::Waiting => open.push(watch),
+            }
+        }
+        self.watches = open;
+        // Raise the answer first, reconcile after. Raising evicts the oldest
+        // banner once the list is full, so doing it second could knock out the
+        // warning `sync_banners` had just restored. Reconciling last makes the
+        // warning the one that survives a full list — the message that guards
+        // the user's money outranks the one that merely reassures them.
+        for txid in confirmed {
+            let mut banner = None;
+            banner.raise_persistent(ctx, pending_confirmed_message(&txid), MessageType::Success);
+            self.confirmed.extend(banner);
+        }
+        self.sync_banners(ctx);
+    }
+
+    /// Bring both shared banners in line with the claims still open. Each is
+    /// keyed by its text, so one banner speaks for every claim of its kind: it
+    /// may only be retired once nothing still speaks through it. A claim also
+    /// re-raises its banner if the global list evicted it at capacity, so
+    /// unrelated notifications cannot end a message about the user's money.
+    fn sync_banners(&mut self, ctx: &egui::Context) {
+        if !self.unwatchable && !self.watches.iter().any(|w| !w.stale) {
+            self.ambiguous.take_and_clear();
+            self.ambiguous_text = None;
+        } else if self.ambiguous.was_evicted() {
+            // Unrelated app chatter pushed the warning out while the user's
+            // money is still unaccounted for. Restoring it loses only the
+            // collapsible details; the sentence is what protects them. A
+            // banner the user dismissed is not evicted, so it stays gone.
+            if let Some(text) = self.ambiguous_text.clone() {
+                self.ambiguous
+                    .raise_persistent(ctx, text, MessageType::Error);
+            }
+        }
+        if self.retired || self.watches.iter().any(|w| w.stale) {
+            if self.stale.is_none() || self.stale.was_evicted() {
+                self.stale
+                    .raise_persistent(ctx, PENDING_STALE_MESSAGE, MessageType::Warning);
+            }
+        } else {
+            self.stale.take_and_clear();
+        }
+    }
+
+    /// Transactions currently being watched (test seam / observation).
+    #[cfg(test)]
+    pub(super) fn watched(&self) -> Vec<Txid> {
+        self.watches.iter().map(|w| w.txid).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
@@ -843,12 +1505,578 @@ mod tests {
             .build_ui(MessageBanner::show_global);
 
         let frame_state = app_context.migration_status().state();
-        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref(), false);
         harness.run();
         harness.get_by_label(label).click();
         harness.run();
 
         reconciler.drain_actions(&harness.ctx, app_context.network)
+    }
+
+    /// The ambiguous-outcome copy the reconciler adopts, verbatim from
+    /// `TaskError::TransactionConfirmationUnknown`.
+    const AMBIGUOUS: &str = "Your transaction was sent but the confirmation could not be verified. Wait a moment, then refresh your balance before sending it again.";
+
+    fn banner_harness() -> Harness<'static> {
+        Harness::builder()
+            .with_size(egui::vec2(900.0, 400.0))
+            .build_ui(MessageBanner::show_global)
+    }
+
+    /// The network these tests run their payments on.
+    const ACTIVE: Network = Network::Testnet;
+
+    /// The countdown a banner on the default short (five-second) auto-dismiss
+    /// renders in its first second of life. A persistent banner renders no
+    /// countdown at all, so this string's absence is the observable difference
+    /// between a message that will expire and one that will not.
+    const COUNTDOWN_AT_FULL_TERM: &str = "(5s)";
+
+    /// Raise a fresh ambiguous-outcome banner, exactly as the generic error arm
+    /// in `AppState::update` does.
+    fn ambiguous_banner(ctx: &egui::Context) -> BannerHandle {
+        let banner = MessageBanner::set_global(ctx, AMBIGUOUS, MessageType::Error);
+        banner.disable_auto_dismiss();
+        banner
+    }
+
+    /// Adopt a fresh ambiguous-outcome banner for `txid`, sent on the network
+    /// still selected.
+    fn adopt(reconciler: &mut PendingConfirmation, ctx: &egui::Context, txid: Txid) {
+        let banner = ambiguous_banner(ctx);
+        reconciler.track(ctx, txid, Some(ACTIVE), ACTIVE, banner);
+    }
+
+    fn mined(height: u32) -> Option<TransactionConfirmation> {
+        Some(TransactionConfirmation {
+            status: crate::model::wallet::TransactionStatus::Confirmed,
+            height: Some(height),
+        })
+    }
+
+    /// The whole point of the feature: the user is told to wait, the network
+    /// takes the payment, and the app says so without being asked.
+    #[test]
+    fn a_confirmed_watch_replaces_the_ambiguous_banner_with_a_confirmation() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let txid = Txid::from_byte_array([1u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, txid);
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+
+        reconciler.apply(&harness.ctx, |_| mined(1_234));
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_none(),
+            "the stale wait-and-refresh advice must be retired once the outcome is known"
+        );
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
+        assert!(
+            reconciler.watched().is_empty(),
+            "a resolved watch must stop costing a snapshot scan"
+        );
+    }
+
+    /// The answer must outlast the question. `sync_banners` retires the
+    /// ambiguous warning on the same tick the confirmation goes up, so if the
+    /// confirmation carried the default five-second `Success` timer the user
+    /// would come back to a blank screen — knowing less than before the watch
+    /// existed, with the payment's fate again theirs to work out by hand.
+    ///
+    /// A banner that will expire renders a countdown next to its text; a
+    /// persistent one renders none. Asserting on that annotation pins the
+    /// timer's absence without having to make five seconds pass. The control
+    /// case below fixes the meaning of the check: if the annotation's shape
+    /// ever changes, it fails loudly here rather than passing vacuously.
+    #[test]
+    fn a_confirmation_does_not_expire_while_the_user_is_away() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let txid = Txid::from_byte_array([2u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, txid);
+
+        reconciler.apply(&harness.ctx, |_| mined(1_234));
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
+        assert!(
+            harness.query_by_label(COUNTDOWN_AT_FULL_TERM).is_none(),
+            "the confirmation must not carry an auto-dismiss timer: the whole \
+             point is that the user is not watching when it arrives",
+        );
+
+        // Control: an ordinary Success banner does show that countdown, so the
+        // assertion above is testing the timer and not a stale label string.
+        MessageBanner::set_global(&harness.ctx, "an ordinary success", MessageType::Success);
+        harness.run();
+        assert!(
+            harness.query_by_label(COUNTDOWN_AT_FULL_TERM).is_some(),
+            "a default Success banner is expected to show its countdown",
+        );
+    }
+
+    /// A transaction sitting in the local mempool is not a verdict, and the
+    /// banner must not move on it.
+    #[test]
+    fn an_unresolved_watch_leaves_the_ambiguous_banner_alone() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let txid = Txid::from_byte_array([2u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, txid);
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_none()
+        );
+        assert_eq!(reconciler.watched(), vec![txid]);
+    }
+
+    /// Two payments can be unverified at once, and every ambiguous banner is
+    /// literally the same banner — the text is identical, and banners key by
+    /// text. One payment's verdict must not retire the message the other
+    /// payment's user is still waiting on.
+    #[test]
+    fn one_watchs_confirmation_leaves_the_other_watch_its_banner() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let first = Txid::from_byte_array([10u8; 32]);
+        let second = Txid::from_byte_array([11u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, first);
+        adopt(&mut reconciler, &harness.ctx, second);
+
+        reconciler.apply(&harness.ctx, |txid| {
+            (*txid == first).then(|| mined(9)).flatten()
+        });
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&first))
+                .is_some(),
+            "the confirmation must name the payment that actually landed"
+        );
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&second))
+                .is_none(),
+            "and must not be readable as the payment still in the air"
+        );
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the payment still unanswered must keep the message telling its user to wait"
+        );
+        assert_eq!(reconciler.watched(), vec![second]);
+    }
+
+    /// The stale re-wording speaks for one watch. Raising it must not take the
+    /// wait-and-see message away from a sibling watch still inside its window.
+    #[test]
+    fn a_stale_watch_leaves_a_sibling_still_waiting_its_banner() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let old = Txid::from_byte_array([12u8; 32]);
+        let fresh = Txid::from_byte_array([13u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, old);
+        adopt(&mut reconciler, &harness.ctx, fresh);
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the watch still inside its window must keep its own message"
+        );
+        assert_eq!(reconciler.watched(), vec![old, fresh]);
+    }
+
+    /// An ambiguous outcome with no transaction id (identity registration,
+    /// top-ups, asset locks) shares the one ambiguous banner but can never be
+    /// answered here. An unrelated payment confirming says nothing about it and
+    /// must not take its message away.
+    #[test]
+    fn a_confirmation_leaves_an_outcome_with_no_transaction_id_alone() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let txid = Txid::from_byte_array([14u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, txid);
+        reconciler.track_unwatchable(ambiguous_banner(&harness.ctx));
+
+        reconciler.apply(&harness.ctx, |_| mined(21));
+        harness.run();
+
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "an outcome no watch can answer must keep its message when another payment confirms"
+        );
+        assert!(reconciler.watched().is_empty());
+    }
+
+    /// A payment dispatched before a network switch can only be answered by the
+    /// network it was sent on: the active network's snapshot has never heard of
+    /// it, so watching it here would poll forever and then hand the user
+    /// transaction-history advice for the wrong wallet. Its banner still
+    /// stands — the outcome really is unknown.
+    #[test]
+    fn a_payment_that_did_not_come_from_the_active_network_is_not_watched() {
+        for origin in [None, Some(Network::Mainnet)] {
+            let mut harness = banner_harness();
+            let mut reconciler = PendingConfirmation::new();
+            let txid = Txid::from_byte_array([15u8; 32]);
+            let banner = ambiguous_banner(&harness.ctx);
+
+            reconciler.track(&harness.ctx, txid, origin, ACTIVE, banner);
+            harness.run();
+
+            assert!(
+                reconciler.watched().is_empty(),
+                "a payment sent on {origin:?} must not be watched against {ACTIVE:?}"
+            );
+            assert!(
+                harness.query_by_label(AMBIGUOUS).is_some(),
+                "the outcome is still unknown, so its message must stay"
+            );
+            assert!(
+                harness.query_by_label(PENDING_STALE_MESSAGE).is_none(),
+                "a watch that was never taken must not produce stale advice"
+            );
+        }
+    }
+
+    /// Past the threshold the original advice has expired, so the banner is
+    /// re-worded once — and the watch stays open, so a late confirmation still
+    /// resolves it instead of leaving the warning as the last word.
+    #[test]
+    fn a_stale_watch_is_re_worded_and_keeps_watching() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let txid = Txid::from_byte_array([3u8; 32]);
+        adopt(&mut reconciler, &harness.ctx, txid);
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+        assert_eq!(reconciler.watched(), vec![txid]);
+
+        reconciler.apply(&harness.ctx, |_| mined(7));
+        harness.run();
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_none());
+        assert!(
+            harness
+                .query_by_label(&pending_confirmed_message(&txid))
+                .is_some()
+        );
+    }
+
+    /// A run of ambiguous sends must not grow the watch list without bound,
+    /// and the watch that is dropped must not just go quiet — it is handed the
+    /// transaction-history advice on the way out.
+    #[test]
+    fn the_oldest_watch_is_retired_to_the_stale_copy_at_the_cap() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        let first = Txid::from_byte_array([0u8; 32]);
+        for n in 0..=MAX_PENDING_WATCHES as u8 {
+            adopt(
+                &mut reconciler,
+                &harness.ctx,
+                Txid::from_byte_array([n; 32]),
+            );
+        }
+        harness.run();
+
+        assert_eq!(reconciler.watched().len(), MAX_PENDING_WATCHES);
+        assert!(!reconciler.watched().contains(&first));
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+    }
+
+    /// Raise enough unrelated banners to push everything already showing out
+    /// of the global list, exactly as ordinary app chatter (connection,
+    /// migration, per-task success) would during a long wait.
+    fn evict_showing_banners(ctx: &egui::Context) {
+        for n in 0..crate::ui::components::message_banner::MAX_BANNERS {
+            MessageBanner::set_global(ctx, format!("Unrelated banner {n}"), MessageType::Info);
+        }
+    }
+
+    /// The banner is the only thing telling the user their money may be in
+    /// flight. Ordinary app chatter pushing it out of the capacity-bound
+    /// global list must not be how that warning ends.
+    #[test]
+    fn an_evicted_ambiguous_banner_comes_back_while_the_question_is_open() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([4u8; 32]),
+        );
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_none(),
+            "the flood must actually evict the banner, or this test proves nothing"
+        );
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the unverified-payment warning must return while its answer is still unknown"
+        );
+    }
+
+    /// The same loss, one copy later: once a wait has gone on long enough to
+    /// earn the transaction-history advice, an eviction must not retire it.
+    #[test]
+    fn an_evicted_stale_banner_comes_back_while_a_watch_is_stale() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([5u8; 32]),
+        );
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_none());
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(PENDING_STALE_MESSAGE).is_some(),
+            "the stale advice must return while the transaction is still out there"
+        );
+    }
+
+    /// The mixed verdict: one payment has waited long enough for the stale
+    /// copy while another is still fresh, so both banners are owed at once. A
+    /// flood takes both, and both must come back — restoring one and leaving
+    /// the other would tell a half-truth about the user's money.
+    #[test]
+    fn both_banners_come_back_after_an_eviction_on_a_mixed_verdict() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([6u8; 32]),
+        );
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+        reconciler.apply(&harness.ctx, |_| None);
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([7u8; 32]),
+        );
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_none());
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the fresh payment's warning must return"
+        );
+        assert!(
+            harness.query_by_label(PENDING_STALE_MESSAGE).is_some(),
+            "the long wait's advice must return alongside it"
+        );
+    }
+
+    /// The other half of the restore rule. Coming back after an eviction must
+    /// not turn into coming back after the user closed it — that would make an
+    /// unavoidable nag out of a warning they have already read and acted on.
+    #[test]
+    fn a_dismissed_ambiguous_banner_is_not_raised_again() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([8u8; 32]),
+        );
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+
+        // What the dismiss button does: drop the banner, leaving the handle.
+        reconciler
+            .ambiguous
+            .clone()
+            .expect("the banner was adopted")
+            .clear();
+        harness.run();
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_none(),
+            "a warning the user closed must stay closed"
+        );
+    }
+
+    /// Same rule for the later copy: dismissing the stale advice retires it,
+    /// even though the watch it speaks for is still open.
+    #[test]
+    fn a_dismissed_stale_banner_is_not_raised_again() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([9u8; 32]),
+        );
+        reconciler.watches[0].since = Instant::now()
+            .checked_sub(super::super::PENDING_STALE_AFTER)
+            .expect("the test clock predates the stale threshold");
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+        assert!(harness.query_by_label(PENDING_STALE_MESSAGE).is_some());
+
+        reconciler
+            .stale
+            .clone()
+            .expect("the stale banner was raised")
+            .clear();
+        harness.run();
+
+        reconciler.apply(&harness.ctx, |_| None);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(PENDING_STALE_MESSAGE).is_none(),
+            "advice the user closed must stay closed"
+        );
+    }
+
+    /// An outcome with no transaction id has no watch to poll, so nothing was
+    /// ticking to notice its banner had been evicted. That claim is exactly the
+    /// one no verdict can ever answer, which makes losing its banner permanent.
+    #[test]
+    fn an_evicted_unwatchable_banner_comes_back_with_no_watch_to_poll() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        reconciler.track_unwatchable(ambiguous_banner(&harness.ctx));
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+        assert!(
+            reconciler.watched().is_empty(),
+            "this claim has nothing to watch — that is the point"
+        );
+
+        evict_showing_banners(&harness.ctx);
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
+
+        reconciler.update(&harness.ctx, &app_context);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "a claim nothing can answer must still keep its banner"
+        );
+    }
+
+    /// `AppState::update` drains every queued task result before the
+    /// reconciler ticks, and the poll throttle can suppress a tick for
+    /// seconds more. A long burst of unrelated banners in that window must
+    /// not cost the warning its right to come back.
+    #[test]
+    fn an_evicted_banner_comes_back_after_a_long_burst_before_the_next_tick() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        reconciler.track_unwatchable(ambiguous_banner(&harness.ctx));
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_some());
+
+        // Many times the capacity, all before the reconciler gets to look.
+        for n in 0..crate::ui::components::message_banner::MAX_BANNERS * 20 {
+            MessageBanner::set_global(
+                &harness.ctx,
+                format!("Unrelated banner {n}"),
+                MessageType::Info,
+            );
+        }
+        harness.run();
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
+
+        reconciler.update(&harness.ctx, &app_context);
+        harness.run();
+
+        assert!(
+            harness.query_by_label(AMBIGUOUS).is_some(),
+            "the warning must survive a burst of chatter, however long"
+        );
+    }
+
+    /// The transactions belong to the network the user just left; their
+    /// banners must go with them.
+    #[test]
+    fn reset_drops_every_watch_and_its_banner() {
+        let mut harness = banner_harness();
+        let mut reconciler = PendingConfirmation::new();
+        adopt(
+            &mut reconciler,
+            &harness.ctx,
+            Txid::from_byte_array([4u8; 32]),
+        );
+        harness.run();
+
+        reconciler.reset();
+        harness.run();
+
+        assert!(reconciler.watched().is_empty());
+        assert!(harness.query_by_label(AMBIGUOUS).is_none());
     }
 
     #[test]
@@ -869,7 +2097,7 @@ mod tests {
             ),
         };
 
-        reconciler.update_banner(&harness.ctx, &app_context, &state);
+        reconciler.update_banner(&harness.ctx, &app_context, &state, false);
         harness.run();
 
         assert!(harness.query_by_label(message).is_some());
@@ -1025,19 +2253,18 @@ mod tests {
         handle.disable_auto_dismiss();
         reconciler.track_storage_startup_error(handle);
         let state = app_context.migration_status().state();
-        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref(), false);
         harness.run();
         assert!(harness.query_by_label(&message).is_some());
 
         let migration_guard = app_context
-            .migration_run
-            .try_lock()
+            .try_lock_prepare_gate()
             .expect("migration guard");
         app_context
             .migration_status()
             .set_state(MigrationState::Ready);
         let state = app_context.migration_status().state();
-        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref(), false);
         harness.run();
         assert!(
             harness.query_by_label(&message).is_some(),
@@ -1045,7 +2272,7 @@ mod tests {
         );
 
         drop(migration_guard);
-        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref());
+        reconciler.update_banner(&harness.ctx, &app_context, state.as_ref(), false);
         harness.run();
         assert!(
             harness.query_by_label(&message).is_none(),

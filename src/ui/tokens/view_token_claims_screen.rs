@@ -72,6 +72,7 @@ impl ViewTokenClaimsScreen {
                         value: Value::Identifier(identity_token_basic_info.identity_id.into()),
                     },
                 ],
+                time_range_clauses: Vec::new(),
                 group_by: Vec::new(),
                 having: Vec::new(),
                 order_by_clauses: vec![],

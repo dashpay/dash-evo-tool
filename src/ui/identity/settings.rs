@@ -31,9 +31,9 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::pill;
-use crate::ui::identities::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
-use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
+use crate::ui::identity::IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE;
 use crate::ui::identity::identity_hero_card::HeroIdentityKind;
+use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Spacing, Typography};
 use crate::ui::{RootScreenType, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -83,8 +83,9 @@ const TIP_ADD_KEY: &str =
 const TIP_MANAGE_KEYS: &str = "View this identity's keys and their security settings.";
 const TIP_VIEW_USERNAMES: &str = "Open the complete list of your registered usernames.";
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
-const TIP_UNLOAD: &str = "Remove this identity, and any keys saved for it, from this device. The identity itself \
-     stays on Dash Platform.";
+const TIP_UNLOAD: &str = "Remove this identity from this device and permanently delete the private keys \
+     stored here. It remains on Dash Platform, but you will need your own backup to use it on this \
+     device again.";
 const TIP_SAVE_ALIAS: &str = "Save this name on this device.";
 const TIP_ID_COPY: &str = "Copy the full identity ID to your clipboard.";
 
@@ -125,6 +126,21 @@ use crate::model::dashpay::{
 struct PendingIdentityUnload {
     dialog: ConfirmationDialog,
     target: Identifier,
+}
+
+/// The unload prompt's body, naming the identity it is about to unload.
+///
+/// The identity is named because the answer permanently deletes its private
+/// keys: a prompt that says only "this identity" gives the user nothing to
+/// check it against.
+fn unload_confirmation_message(identity_id: &Identifier) -> String {
+    format!(
+        "This removes the identity {identity_id} from this device and permanently deletes \
+         the private keys stored here. It remains on Dash Platform, but using it again on \
+         this device will require your own backup — such as your wallet's recovery phrase \
+         or the key you imported.",
+        identity_id = identity_id.to_string(Encoding::Base58),
+    )
 }
 
 /// What a confirmed unload resolves to.
@@ -839,17 +855,20 @@ impl SettingsTab {
 
     /// Open the unload confirmation for `identity_id`, capturing it now so the
     /// answer cannot be applied to a different identity later.
+    ///
+    /// Blocks input: the answer destroys private keys, and the identity
+    /// switcher behind an unblocking modal stays clickable, so the user could
+    /// otherwise confirm for one identity while looking at another's page.
     fn open_unload_confirmation(&mut self, identity_id: Identifier) {
         self.confirm_unload = Some(PendingIdentityUnload {
             dialog: ConfirmationDialog::new(
                 "Unload this identity",
-                "This removes the identity, and any keys saved for it, from this device. The \
-                 identity stays on Dash Platform, but to use it again you will need its wallet \
-                 recovery phrase or its private keys.",
+                unload_confirmation_message(&identity_id),
             )
             .confirm_text(Some("Unload"))
             .cancel_text(Some("Keep"))
-            .danger_mode(true),
+            .danger_mode(true)
+            .blocks_input(true),
             target: identity_id,
         });
     }
@@ -1023,6 +1042,15 @@ impl SettingsTab {
     // -----------------------------------------------------------------
     // Test helpers (pub(crate))
     // -----------------------------------------------------------------
+
+    /// Test helper: adopt `identity` as the tab's current selection — the state
+    /// `ensure_selected` settles into after a frame in which that identity was
+    /// the effective one. Lets a caller stage the retained-identity half of an
+    /// unload without driving a render.
+    #[cfg(test)]
+    pub(crate) fn select_identity_for_test(&mut self, identity: QualifiedIdentity) {
+        self.selected_identity = Some(identity);
+    }
 
     /// Test helper: force the advanced expander open so the kittest frame sees
     /// the interior widgets without a click event. Not used by production code
@@ -1475,11 +1503,40 @@ mod tests {
         assert!(tab.on_profile_saved().is_none());
     }
 
-    /// The TOCTOU guard. The unload confirmation is answered frames after the
-    /// click, and the hub's selection can move in between — a real sequence,
-    /// because the breadcrumb switcher stays live behind the dialog. The
-    /// removal must target the identity the user was looking at when they
-    /// clicked, not whatever is selected when they confirm.
+    /// The prompt is the last thing standing between a click and a permanent
+    /// key deletion, so it must name what it is about to destroy and hold the
+    /// screen still while it asks. Naming: "this identity" is unanswerable —
+    /// the user cannot tell which identity the dialog means. Blocking: the
+    /// identity switcher behind an unblocking modal stays clickable, so a
+    /// prompt opened for one identity can be confirmed while the user is
+    /// looking at another one's page, and the keys that die are not the ones
+    /// on screen.
+    #[test]
+    fn the_unload_prompt_names_its_target_and_freezes_the_screen_behind_it() {
+        let target = Identifier::from([7; 32]);
+        let mut tab = SettingsTab::new();
+        tab.open_unload_confirmation(target);
+
+        let pending = tab.confirm_unload.as_ref().expect("the prompt is open");
+        assert!(
+            pending
+                .dialog
+                .message_text()
+                .contains(&target.to_string(Encoding::Base58)),
+            "the prompt must name the identity whose keys it is about to delete"
+        );
+        assert!(
+            pending.dialog.is_input_blocking(),
+            "the prompt must block the controls behind it, so the answer cannot \
+             be given for one identity while another is on screen"
+        );
+    }
+
+    /// The TOCTOU guard, still needed with the prompt blocking input: the
+    /// selection can also move without a click (a background refresh, a
+    /// network switch), and the removal must target the identity the user was
+    /// looking at when they clicked, not whatever is selected when they
+    /// confirm.
     #[test]
     fn confirming_an_unload_targets_the_identity_snapshotted_at_click_time() {
         let clicked = Identifier::from([7; 32]);

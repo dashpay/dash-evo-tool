@@ -3,7 +3,7 @@ use crate::app::TaskResult;
 use crate::app_dir::{ensure_data_dir_exists, ensure_env_file};
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
-use crate::context::migration_status::MigrationState;
+use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::test_helpers::create_database_at_path;
 use crate::model::secret::Secret;
 use crate::utils::egui_mpsc::SenderAsync;
@@ -147,6 +147,35 @@ async fn wiring_does_not_start_chain_sync() {
     );
 
     backend.shutdown().await;
+}
+
+/// Once a context has completed storage preparation, later chokepoint calls
+/// return without replaying the drain or overwriting another migration status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_storage_preparation_preserves_the_published_status() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    ctx.prepare_storage(sender.clone())
+        .await
+        .expect("first preparation should succeed offline");
+    ctx.migration_status().set_state(MigrationState::Running {
+        step: MigrationStep::Shielded,
+    });
+
+    ctx.prepare_storage(sender)
+        .await
+        .expect("completed preparation should fast-path");
+
+    assert!(matches!(
+        ctx.migration_status().state().as_ref(),
+        MigrationState::Running {
+            step: MigrationStep::Shielded
+        }
+    ));
+
+    if let Ok(backend) = ctx.wallet_backend() {
+        backend.shutdown().await;
+    }
 }
 
 /// The async chokepoint wires the backend and starts chain sync in one call,

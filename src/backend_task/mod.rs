@@ -233,7 +233,7 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 /// newer/incompatible app build). These must surface their actionable
 /// message instead of being logged-and-discarded as a transient deferral
 /// (F50); every other init error is retried by the cold-boot bridge.
-fn is_terminal_storage_open_error(error: &TaskError) -> bool {
+pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     matches!(
         error,
         TaskError::WalletDataTooNew { .. } | TaskError::WalletDataIncompatible { .. }
@@ -339,6 +339,10 @@ pub enum BackendTaskContext {
     },
     /// One HD-wallet or imported-key alias update.
     WalletRename(WalletTask),
+    /// A wallet payment broadcast, bound to the network it was dispatched on.
+    /// Its ambiguous-outcome error is adopted by a per-network watch, and the
+    /// user may have switched networks before that error arrives.
+    WalletPaymentBroadcast { network: Network },
     /// The detection pass for one identity's legacy-recovery offer.
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
@@ -350,6 +354,37 @@ pub enum BackendTaskContext {
 }
 
 impl BackendTaskContext {
+    /// The context for `task` about to run on `network`. Identical to
+    /// `From<&BackendTask>` except that a wallet payment broadcast records the
+    /// network: the task alone cannot name it — a [`Wallet`](crate::model::wallet::Wallet)
+    /// carries none, and its extended public key cannot tell Devnet or Regtest
+    /// from Testnet — and a late "outcome unknown" error must not be adopted by
+    /// whichever network happens to be selected when it lands.
+    pub(crate) fn for_task_on(task: &BackendTask, network: Network) -> Self {
+        match task {
+            BackendTask::CoreTask(CoreTask::SendWalletPayment { .. }) => {
+                Self::WalletPaymentBroadcast { network }
+            }
+            // The contact send broadcasts through `CoreTask::SendWalletPayment`
+            // inside this task, so its result rides this context.
+            BackendTask::DashPayTask(dashpay)
+                if matches!(dashpay.as_ref(), DashPayTask::SendPaymentToContact { .. }) =>
+            {
+                Self::WalletPaymentBroadcast { network }
+            }
+            other => Self::from(other),
+        }
+    }
+
+    /// The network a payment broadcast was dispatched on, or `None` for every
+    /// other operation.
+    pub(crate) fn payment_broadcast_network(&self) -> Option<Network> {
+        match self.operation() {
+            Self::WalletPaymentBroadcast { network } => Some(*network),
+            _ => None,
+        }
+    }
+
     pub(crate) fn for_dispatch(task: &BackendTask) -> Self {
         Self::Dispatched {
             dispatch_id: BACKEND_TASK_DISPATCH_ID.fetch_add(1, Ordering::Relaxed),
@@ -777,6 +812,26 @@ pub enum BackendTaskSuccessResult {
     RemovedIdentities {
         identity_ids: Vec<Identifier>,
         associated_cleanup_failed: bool,
+        /// Set when the identity and its keys were removed, but one or more
+        /// owner-scoped DashPay or token-list sidecars could not be cleared.
+        local_data_cleanup_failed: bool,
+        /// Set when the primary identity's, the associated voter identity's,
+        /// or both ones' cleanup failed strictly after they were already
+        /// delisted (index removal succeeded), so removal itself is done and
+        /// irreversible; only a k/v drain — which includes, but is not limited
+        /// to, the vault-key delete — is unfinished.
+        ///
+        /// `true` means every identity named in `identity_ids` is already gone
+        /// from every screen and there is no "try again" affordance left for
+        /// the user to reach one with. It does NOT establish that key material
+        /// is still present: the step that failed may be the scope purge for a
+        /// keyless identity, whose cleanup manifest names no placements. Nor
+        /// does it establish that the residue will be gone by the next launch:
+        /// the boot sweep is best-effort, skipped while a storage update runs,
+        /// and retains the manifest whenever the purge or vault delete fails
+        /// again. Callers may promise another automatic attempt; they may not
+        /// promise presence or completion.
+        cleanup_deferred: bool,
     },
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
@@ -1791,6 +1846,57 @@ mod tests {
         );
     }
 
+    /// Both shapes of payment broadcast must carry the network they were
+    /// dispatched on: it is the only way a late "outcome unknown" error can be
+    /// told apart from one belonging to the network the user has since left.
+    #[test]
+    fn payment_broadcast_context_carries_the_dispatch_network() {
+        use crate::backend_task::core::{PaymentRecipient, WalletPaymentRequest};
+        use crate::model::wallet::Wallet;
+        use std::sync::RwLock;
+
+        let request = WalletPaymentRequest {
+            recipients: vec![PaymentRecipient {
+                address: "yMLhEsf1bbDqM5p9LyrPHgM7g4Pvqp1Fbb".to_string(),
+                amount_duffs: 10_000,
+            }],
+            override_fee: None,
+        };
+        let wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, None, None).expect("wallet");
+        let direct = BackendTask::CoreTask(CoreTask::SendWalletPayment {
+            wallet: Arc::new(RwLock::new(wallet)),
+            request,
+        });
+        let contact = BackendTask::DashPayTask(Box::new(DashPayTask::SendPaymentToContact {
+            identity: qualified_identity(3),
+            contact_id: Identifier::from([4; 32]),
+            amount_duffs: 10_000,
+            memo: None,
+        }));
+
+        for task in [direct, contact] {
+            let context = BackendTaskContext::for_task_on(&task, Network::Testnet);
+            assert_eq!(
+                context.payment_broadcast_network(),
+                Some(Network::Testnet),
+                "a payment broadcast must record the network it runs on: {context:?}"
+            );
+        }
+
+        let unrelated = BackendTask::SystemTask(SystemTask::ClearNetworkDatabase);
+        assert_eq!(
+            BackendTaskContext::for_task_on(&unrelated, Network::Testnet),
+            BackendTaskContext::ClearNetworkDatabase,
+            "every other task keeps the context it always had"
+        );
+        assert_eq!(
+            BackendTaskContext::for_task_on(&unrelated, Network::Testnet)
+                .payment_broadcast_network(),
+            None,
+        );
+    }
+
     /// `is_wallet_touching` covers every task family that funnels
     /// through `WalletBackend` — the gate in `run_backend_task` relies
     /// on it to short-circuit while the cold-start migration is
@@ -2157,6 +2263,13 @@ mod tests {
             &TaskError::WalletDataTooNew {
                 found: 99,
                 max_supported: 1,
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataIncompatible {
+                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
+                    "incompatible test fixture",
+                )),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

@@ -71,6 +71,57 @@ const VAULT_CLEANUP_PENDING_PREFIX: &str = "det:vault_cleanup_pending:v1:";
 /// this record needs to start existing.
 const IDENTITY_UNLOADED_PREFIX: &str = "det:identity_unloaded:v1:";
 
+/// Whether every owner-scoped DashPay and token-list sidecar was removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentitySidecarCleanup {
+    Complete,
+    Incomplete,
+}
+
+impl IdentitySidecarCleanup {
+    pub(crate) fn is_incomplete(self) -> bool {
+        self == Self::Incomplete
+    }
+
+    /// Preserve incomplete cleanup as a typed error for callers that cannot
+    /// represent the richer partial-success outcome.
+    fn require_complete(self) -> std::result::Result<(), TaskError> {
+        match self {
+            Self::Complete => Ok(()),
+            Self::Incomplete => Err(TaskError::IdentitySidecarCleanupIncomplete),
+        }
+    }
+}
+
+fn sidecar_cleanup_outcome(
+    dashpay: Result<(), TaskError>,
+    token_list: Result<(), TaskError>,
+    identifier: &Identifier,
+) -> IdentitySidecarCleanup {
+    let mut incomplete = false;
+    if let Err(error) = dashpay {
+        incomplete = true;
+        tracing::warn!(
+            identity_id = %identifier,
+            ?error,
+            "Removed identity left its DashPay contact overlays behind"
+        );
+    }
+    if let Err(error) = token_list {
+        incomplete = true;
+        tracing::warn!(
+            identity_id = %identifier,
+            ?error,
+            "Removed identity left its token list preferences behind"
+        );
+    }
+    if incomplete {
+        IdentitySidecarCleanup::Incomplete
+    } else {
+        IdentitySidecarCleanup::Complete
+    }
+}
+
 fn identity_unloaded_key(id: &[u8; 32]) -> String {
     format!(
         "{IDENTITY_UNLOADED_PREFIX}{}",
@@ -1632,7 +1683,9 @@ impl AppContext {
     /// path. This method therefore drains the Identity scope itself — the
     /// blob, the top-up history, and every scheduled vote queued for this
     /// identity — and removes the Global index entries that the trigger
-    /// would not touch.
+    /// would not touch. For the same reason it clears this identity's DashPay
+    /// contact overlays and its token-list preferences, which live under
+    /// Global keys naming the owner and so outlive the scope drain.
     ///
     /// For a wallet-less identity this also *tombstones* (never row-deletes)
     /// its mirrored row in the upstream unowned scope, via
@@ -1648,16 +1701,26 @@ impl AppContext {
     /// strictly after `identifier` is already gone from every screen — a
     /// durable vault-cleanup manifest survives that and the next boot's
     /// [`Self::resume_pending_vault_cleanups`] finishes the job regardless.
-    /// A caller that turns this `Err` straight into a user-facing "removal
-    /// failed, please retry" message is wrong in exactly that case: the
-    /// identity cannot be retried (it is unlisted) and nothing is actually
-    /// still broken. Call [`Self::is_identity_listed`] first to tell the two
-    /// outcomes apart — see `AppContext::remove_identity` (in
-    /// `backend_task/identity/remove_identity.rs`) for the reference pattern.
+    /// [`TaskError::IdentitySidecarCleanupIncomplete`] is another committed
+    /// removal: the identity and its keys are gone, but optional local data
+    /// remains. User-facing callers should use
+    /// [`Self::delete_local_qualified_identity_with_outcome`] when they can
+    /// represent that partial success; otherwise they must distinguish this
+    /// variant and use [`Self::is_identity_listed`] for other errors.
     pub fn delete_local_qualified_identity(
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
+        self.delete_local_qualified_identity_with_outcome(identifier)
+            .and_then(IdentitySidecarCleanup::require_complete)
+    }
+
+    /// Perform identity removal and report whether secondary local data was
+    /// fully cleared after the irreversible key deletion completed.
+    pub(crate) fn delete_local_qualified_identity_with_outcome(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
         let _migration_guard = self
             .try_lock_prepare_gate()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
@@ -1700,6 +1763,13 @@ impl AppContext {
         index_remove_identity(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
         finish_vault_cleanup(&kv, &self.secret_store, &id, vault_keys)?;
+        // INTENTIONAL(late-owner-sidecar-writes): in-flight writers are not drained; coordinating
+        // every backend task requires a wider owner-lifecycle protocol than this cleanup adds.
+        let dashpay_cleanup = self
+            .wallet_backend()
+            .and_then(|backend| backend.dashpay_clear_owner_overlays(identifier));
+        let token_cleanup = super::contract_token_db::forget_identity_token_state(&kv, identifier);
+        let sidecar_cleanup = sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, identifier);
         // Mirror the removal into the wallet store's unowned scope, so a
         // deleted node does not linger there. Best-effort, and a no-op for a
         // wallet-owned identity, which is never registered unowned.
@@ -1712,7 +1782,7 @@ impl AppContext {
                 "Deleted identity still registered with the wallet store"
             );
         }
-        Ok(())
+        Ok(sidecar_cleanup)
     }
 
     /// Boot-time sweep for vault-cleanup manifests left behind by a
@@ -2808,6 +2878,38 @@ mod tests {
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    #[test]
+    fn sidecar_cleanup_outcome_reports_any_failed_family() {
+        assert_eq!(
+            sidecar_cleanup_outcome(Ok(()), Ok(()), &Identifier::default()),
+            IdentitySidecarCleanup::Complete
+        );
+        assert_eq!(
+            sidecar_cleanup_outcome(
+                Err(TaskError::WalletStorageNotReady),
+                Ok(()),
+                &Identifier::default(),
+            ),
+            IdentitySidecarCleanup::Incomplete
+        );
+        assert_eq!(
+            sidecar_cleanup_outcome(
+                Ok(()),
+                Err(TaskError::WalletStorageNotReady),
+                &Identifier::default(),
+            ),
+            IdentitySidecarCleanup::Incomplete
+        );
+        assert!(
+            matches!(
+                IdentitySidecarCleanup::Incomplete.require_complete(),
+                Err(TaskError::IdentitySidecarCleanupIncomplete)
+            ),
+            "unit-result removal callers must not report incomplete sidecar cleanup as success"
+        );
+        assert!(IdentitySidecarCleanup::Complete.require_complete().is_ok());
     }
 
     fn id(b: u8) -> [u8; 32] {
@@ -5061,6 +5163,131 @@ mod tests {
                 .expect("read the blob")
                 .is_some(),
             "and its record must still be written"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_an_identity_clears_its_dashpay_overlays() {
+        const ADDRESS: &str = "yTb47qEBpNmgXvYYsHEN4nh8yJwa5iC4Cs";
+
+        let staged = stage_identity_with_vaulted_keys([0x11; 32], [0x22; 32]).await;
+        let backend = staged.ctx.wallet_backend().expect("wallet backend");
+        let owner = staged.id;
+        let contact = Identifier::from([0x51; 32]);
+        let bystander = Identifier::from([0x52; 32]);
+
+        for who in [owner, bystander] {
+            backend.dashpay_mark_blocked(&who, &contact).unwrap();
+            backend.dashpay_mark_declined(&who, &contact).unwrap();
+            backend.dashpay_mark_withdrawn(&who, &contact).unwrap();
+            backend
+                .dashpay_set_private_info(
+                    &who,
+                    &contact,
+                    &crate::model::dashpay::ContactPrivateInfo {
+                        nickname: "Bob".into(),
+                        notes: "poker night".into(),
+                        is_hidden: false,
+                    },
+                )
+                .unwrap();
+            backend
+                .dashpay_set_address_mapping(&who, ADDRESS, &contact, 3)
+                .unwrap();
+        }
+
+        let owner_buf = owner.to_buffer();
+        let kv = backend.kv();
+        assert!(
+            !kv.list(DetScope::Identity(&owner_buf), Some("det:dashpay:"))
+                .unwrap()
+                .is_empty(),
+            "precondition: the owner has DashPay overlays before the removal"
+        );
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&owner)
+            .expect("remove the identity");
+
+        assert!(
+            kv.list(DetScope::Identity(&owner_buf), Some("det:dashpay:"))
+                .unwrap()
+                .is_empty(),
+            "no DashPay overlay may survive under a removed identity"
+        );
+        assert!(
+            backend
+                .dashpay_get_address_mapping(&owner, ADDRESS)
+                .unwrap()
+                .is_none(),
+            "the Global reverse address map needs its own owner-scoped sweep"
+        );
+        assert!(
+            backend.dashpay_is_declined(&bystander, &contact),
+            "another owner's markers must survive"
+        );
+        assert!(
+            backend
+                .dashpay_get_private_info(&bystander, &contact)
+                .unwrap()
+                .is_some(),
+            "another owner's private memo must survive"
+        );
+        assert!(
+            backend
+                .dashpay_get_address_mapping(&bystander, ADDRESS)
+                .unwrap()
+                .is_some(),
+            "another owner's address mapping must survive"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_an_identity_forgets_its_token_list_state() {
+        use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let owner = staged.id;
+        let bystander = Identifier::from([0x62; 32]);
+        let token = Identifier::from([0x71; 32]);
+
+        let removed_pair = IdentityTokenIdentifier {
+            identity_id: owner,
+            token_id: token,
+        };
+        let kept_pair = IdentityTokenIdentifier {
+            identity_id: bystander,
+            token_id: token,
+        };
+        staged
+            .ctx
+            .mark_token_balance_untracked(removed_pair)
+            .unwrap();
+        staged.ctx.mark_token_balance_untracked(kept_pair).unwrap();
+        staged
+            .ctx
+            .save_token_order(vec![(token, owner), (token, bystander)])
+            .unwrap();
+
+        staged
+            .ctx
+            .delete_local_qualified_identity(&owner)
+            .expect("remove the identity");
+
+        let untracked = staged.ctx.untracked_token_balances().unwrap();
+        assert!(
+            !untracked.contains(&removed_pair),
+            "a removed identity's dismissal must not survive"
+        );
+        assert!(
+            untracked.contains(&kept_pair),
+            "another identity's dismissal of the same token must survive"
+        );
+        assert_eq!(
+            staged.ctx.load_token_order().unwrap(),
+            vec![(token, bystander)],
+            "the saved ordering keeps every entry except the removed identity's"
         );
     }
 }

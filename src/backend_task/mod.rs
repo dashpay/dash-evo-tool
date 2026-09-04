@@ -812,6 +812,9 @@ pub enum BackendTaskSuccessResult {
     RemovedIdentities {
         identity_ids: Vec<Identifier>,
         associated_cleanup_failed: bool,
+        /// Set when the identity and its keys were removed, but one or more
+        /// owner-scoped DashPay or token-list sidecars could not be cleared.
+        local_data_cleanup_failed: bool,
         /// Set when the primary identity's, the associated voter identity's,
         /// or both ones' cleanup failed strictly after they were already
         /// delisted (index removal succeeded), so removal itself is done and

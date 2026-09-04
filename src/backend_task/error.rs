@@ -1218,6 +1218,13 @@ pub enum TaskError {
     )]
     IdentityNotFoundLocally,
 
+    /// The identity and its private keys are gone, but at least one optional
+    /// owner-scoped sidecar could not be removed.
+    #[error(
+        "The identity was removed, but some DashPay or token-list data may still be stored on this device. If you can load this identity again, remove it again to retry local cleanup."
+    )]
+    IdentitySidecarCleanupIncomplete,
+
     /// The identity's saved copy in the preserved pre-update database is there
     /// but will not decode, so there is nothing this flow can restore from it.
     /// Never treated as an empty record: merging against one would look like

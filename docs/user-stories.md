@@ -728,7 +728,7 @@ As a user, I want to remove an identity from this device from the identity's own
 - The identity's Settings tab has an "Unload this identity from this device" action in its Danger zone, and it is usable rather than announced as a coming feature.
 - The confirmation names the identity it is about to unload and states plainly that this permanently deletes that identity's private keys stored on this device, and that using it here again needs the user's own backup — the identity record itself stays on Dash Platform, but "stays on Platform" is not "keys survive".
 - While the confirmation is open the controls behind it, including the identity switcher, cannot be used, so the answer is always given for the identity the confirmation names.
-- Confirming removes the identity, its top-up history, and its scheduled DPNS votes from this device.
+- Confirming removes the identity, its saved keys, its top-up history, its scheduled DPNS votes, its DashPay contact overlays, and its token-list preferences from this device.
 - The removal applies to the identity that was on screen when the action was chosen, even if the selected identity changes while the confirmation is open.
 - Choosing "Keep", or dismissing the confirmation, changes nothing.
 - While a storage update is running the removal is refused with an explanation and can be retried once it finishes.
@@ -737,7 +737,7 @@ As a user, I want to remove an identity from this device from the identity's own
 - A removal that cannot be completed at all leaves the identity's private keys intact, so a retry still has everything it needs; no identity is ever left listed without its keys, and no identity is ever reported as still removable once it is already gone from every list.
 - The unload sticks. The wallet that derives the identity stays loaded, and the app re-derives and looks up that wallet's identities on its own — at start-up, after a wallet is unlocked, and when a wallet is imported — but none of those automatic passes put back an identity the user unloaded, whether the pass starts before, during, or after the removal. The same holds for the developer-only devnet "clear all identities" sweep.
 - Adding a key to an identity that is unloaded while the key is being registered on the network does not leave that key's private half on this device. The key exists on Dash Platform and the app says so plainly, naming what to do — load the identity again, then add the key again — rather than reporting a save that did not happen.
-- Loading the identity again is always available and always works: choosing it explicitly, or searching for it by wallet index, loads it back and ends the exclusion, so a later automatic pass keeps it up to date again like any other identity.
+- Loading the identity again ends the exclusion, so later automatic passes keep its public record up to date. Loading does not restore private keys deleted by the unload: using the identity for signed actions again requires the user's own backup, either an unlocked wallet that can derive a matching key or a key the user imports.
 
 ---
 

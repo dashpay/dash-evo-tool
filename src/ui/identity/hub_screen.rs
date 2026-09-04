@@ -625,6 +625,7 @@ impl ScreenLike for IdentityHubScreen {
             BackendTaskSuccessResult::RemovedIdentities {
                 identity_ids,
                 associated_cleanup_failed,
+                local_data_cleanup_failed,
                 cleanup_deferred,
             } => {
                 // Two separate questions with two separate answers. The
@@ -660,6 +661,7 @@ impl ScreenLike for IdentityHubScreen {
                 let (message, message_type) = crate::ui::identity::removed_identities_banner(
                     *associated_cleanup_failed,
                     *cleanup_deferred,
+                    *local_data_cleanup_failed,
                 );
                 let handle =
                     MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
@@ -1102,6 +1104,7 @@ mod tests {
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             identity_ids: vec![fallback],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 
@@ -1170,6 +1173,7 @@ mod tests {
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             identity_ids: vec![unloaded],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 
@@ -1238,6 +1242,7 @@ mod tests {
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             identity_ids: vec![second],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
         assert!(
@@ -1259,6 +1264,7 @@ mod tests {
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             identity_ids: vec![first],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 
@@ -1331,6 +1337,7 @@ mod tests {
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
             identity_ids: vec![elsewhere],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 

@@ -104,6 +104,21 @@ pub const IDENTITY_REMOVED_VOTER_LEFT: &str = "The identity was removed, but its
 /// about it now.
 pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed — retry after restarting the app. Private keys for one or both of them may still be stored on this device. The app will keep trying to clear them automatically. Until then, treat this device as if it still holds them.";
 
+/// Shown when the identity and its keys are gone but secondary local data
+/// could not be fully cleared.
+pub const IDENTITY_REMOVED_LOCAL_DATA_CLEANUP_FAILED: &str = "The identity and its private keys were removed, but some DashPay or token-list data may still be stored on this device. If you can load this identity again, remove it again to retry the cleanup.";
+
+/// Shown when the voter identity remains and secondary local data cleanup also
+/// failed for at least one identity.
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_LOCAL_DATA_CLEANUP_FAILED: &str = "The identity was removed, but its associated voter identity could not be removed. Some DashPay or token-list data may also remain on this device. Retry the voter removal after restarting the app. If you can load this identity again, remove it again to retry the other cleanup.";
+
+/// Shown when both vault cleanup and secondary local-data cleanup are
+/// incomplete for an identity that is already delisted.
+pub const IDENTITY_REMOVED_ALL_CLEANUP_PENDING: &str = "The identity was removed, but its private keys may still be stored here, and some DashPay or token-list data may remain. The app will keep trying to clear the keys automatically. Until then, treat this device as if it still holds them. If you can load this identity again, remove it again to retry the other cleanup.";
+
+/// Shown when the voter remains and both cleanup categories are incomplete.
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_ALL_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed. Private keys for one or both identities may still be stored here, and some DashPay or token-list data may remain. The app will keep trying to clear the keys automatically. Until then, treat this device as if it still holds them. Retry the voter removal after restarting the app. If you can load this identity again, remove it again to retry the other cleanup.";
+
 /// Shown when a removal is refused because the storage update is still running.
 pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
     "The storage update is still running. Wait for it to finish before removing an identity.";
@@ -111,20 +126,38 @@ pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
 /// Which banner to show for a `BackendTaskSuccessResult::RemovedIdentities`
 /// result, and how urgently. The combined-flags case is easy to get wrong by
 /// handling each flag in isolation (see the `both` test case below), so the
-/// 4-way decision lives here rather than at each callsite.
+/// 8-way decision lives here rather than at each callsite.
 pub fn removed_identities_banner(
     associated_cleanup_failed: bool,
     cleanup_deferred: bool,
+    local_data_cleanup_failed: bool,
 ) -> (&'static str, crate::ui::MessageType) {
     use crate::ui::MessageType;
-    match (associated_cleanup_failed, cleanup_deferred) {
-        (true, true) => (
+    match (
+        associated_cleanup_failed,
+        cleanup_deferred,
+        local_data_cleanup_failed,
+    ) {
+        (true, true, true) => (
+            IDENTITY_REMOVED_VOTER_LEFT_AND_ALL_CLEANUP_PENDING,
+            MessageType::Warning,
+        ),
+        (true, true, false) => (
             IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING,
             MessageType::Warning,
         ),
-        (true, false) => (IDENTITY_REMOVED_VOTER_LEFT, MessageType::Warning),
-        (false, true) => (IDENTITY_REMOVED_CLEANUP_PENDING, MessageType::Warning),
-        (false, false) => (IDENTITY_REMOVED, MessageType::Success),
+        (true, false, true) => (
+            IDENTITY_REMOVED_VOTER_LEFT_AND_LOCAL_DATA_CLEANUP_FAILED,
+            MessageType::Warning,
+        ),
+        (true, false, false) => (IDENTITY_REMOVED_VOTER_LEFT, MessageType::Warning),
+        (false, true, true) => (IDENTITY_REMOVED_ALL_CLEANUP_PENDING, MessageType::Warning),
+        (false, true, false) => (IDENTITY_REMOVED_CLEANUP_PENDING, MessageType::Warning),
+        (false, false, true) => (
+            IDENTITY_REMOVED_LOCAL_DATA_CLEANUP_FAILED,
+            MessageType::Warning,
+        ),
+        (false, false, false) => (IDENTITY_REMOVED, MessageType::Success),
     }
 }
 
@@ -216,7 +249,7 @@ mod tests {
     /// silently drops the unretryable voter failure.
     #[test]
     fn removed_identities_banner_names_both_outcomes_when_both_apply() {
-        let (message, message_type) = removed_identities_banner(true, true);
+        let (message, message_type) = removed_identities_banner(true, true, false);
         assert_eq!(message, IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING);
         // Case-insensitive: which clause opens a sentence is a copy decision,
         // and this assertion is about both outcomes being named, not casing.
@@ -295,17 +328,50 @@ mod tests {
     #[test]
     fn removed_identities_banner_covers_every_single_flag_combination() {
         assert_eq!(
-            removed_identities_banner(true, false),
+            removed_identities_banner(true, false, false),
             (IDENTITY_REMOVED_VOTER_LEFT, MessageType::Warning)
         );
         assert_eq!(
-            removed_identities_banner(false, true),
+            removed_identities_banner(false, true, false),
             (IDENTITY_REMOVED_CLEANUP_PENDING, MessageType::Warning)
         );
         assert_eq!(
-            removed_identities_banner(false, false),
+            removed_identities_banner(false, false, false),
             (IDENTITY_REMOVED, MessageType::Success)
         );
+    }
+
+    #[test]
+    fn removed_identities_banner_reports_incomplete_local_data_cleanup() {
+        let (message, message_type) = removed_identities_banner(false, false, true);
+        assert_eq!(message, IDENTITY_REMOVED_LOCAL_DATA_CLEANUP_FAILED);
+        assert!(message.contains("DashPay or token-list data"));
+        assert!(message.contains("If you can load this identity again"));
+        assert_eq!(message_type, MessageType::Warning);
+    }
+
+    #[test]
+    fn removed_identities_banner_reports_every_incomplete_cleanup() {
+        let (message, message_type) = removed_identities_banner(false, true, true);
+        assert_eq!(message, IDENTITY_REMOVED_ALL_CLEANUP_PENDING);
+        assert!(message.contains("private keys"));
+        assert!(message.contains("DashPay or token-list data"));
+        assert_eq!(message_type, MessageType::Warning);
+    }
+
+    #[test]
+    fn every_local_cleanup_retry_is_conditional() {
+        for (associated_cleanup_failed, cleanup_deferred) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let (message, message_type) =
+                removed_identities_banner(associated_cleanup_failed, cleanup_deferred, true);
+            assert!(
+                message.contains("If you can load this identity again"),
+                "retry guidance must acknowledge that key deletion can make reload unavailable: {message}"
+            );
+            assert_eq!(message_type, MessageType::Warning);
+        }
     }
 
     use dash_sdk::dpp::dashcore::Network;

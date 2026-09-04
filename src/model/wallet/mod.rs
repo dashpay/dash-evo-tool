@@ -19,7 +19,7 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
-use platform_wallet_storage::secrets::MIN_PASSPHRASE_LEN;
+use platform_wallet_storage::secrets::{MAX_PASSPHRASE_LEN, MIN_PASSPHRASE_LEN};
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
@@ -65,6 +65,14 @@ pub enum WalletCreationError {
         "Wallet passwords must be at least {min} UTF-8 bytes after trimming. Pick a longer one and try again."
     )]
     PasswordTooShort { min: u32 },
+    /// The password exceeds the persistent secret store's ceiling, so the
+    /// seed could never be sealed under it — and, were it ever enrolled, a
+    /// later build would refuse to unseal with it too.
+    ///
+    /// Measured untrimmed, unlike [`Self::PasswordTooShort`]: see the check in
+    /// [`Wallet::new_from_seed`].
+    #[error("This wallet password is too long. Pick a shorter password and try again.")]
+    PasswordTooLong { max: usize },
     /// Encrypting the seed with the supplied password failed.
     #[error("Could not process encrypted data. Please check your keys and try again.")]
     Encryption { detail: String },
@@ -447,6 +455,15 @@ impl Wallet {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
+                // Untrimmed bytes, matching upstream
+                // `exceeds_maximum_passphrase_len`: the ceiling bounds the
+                // guarded page a resident passphrase occupies, whitespace
+                // included. Trimming would pass values the vault refuses.
+                if pw.expose_secret().len() > MAX_PASSPHRASE_LEN {
+                    return Err(WalletCreationError::PasswordTooLong {
+                        max: MAX_PASSPHRASE_LEN,
+                    });
+                }
                 if pw.expose_secret().trim().len() < MIN_PASSPHRASE_LEN {
                     return Err(WalletCreationError::PasswordTooShort {
                         min: MIN_PASSPHRASE_LEN as u32,
@@ -2709,6 +2726,111 @@ mod tests {
         assert_eq!(
             WalletCreationError::PasswordTooShort { min: 8 }.to_string(),
             "Wallet passwords must be at least 8 UTF-8 bytes after trimming. Pick a longer one and try again."
+        );
+    }
+
+    #[test]
+    fn new_wallet_rejects_password_above_storage_ceiling() {
+        let over = Secret::new("a".repeat(MAX_PASSPHRASE_LEN + 1));
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("over-cap-password".to_string()),
+            Some(&over),
+        );
+
+        assert!(matches!(
+            result,
+            Err(WalletCreationError::PasswordTooLong { max })
+                if max == MAX_PASSPHRASE_LEN
+        ));
+    }
+
+    #[test]
+    fn new_wallet_accepts_password_exactly_at_storage_ceiling() {
+        let at_cap = Secret::new("a".repeat(MAX_PASSPHRASE_LEN));
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("at-cap-password".to_string()),
+            Some(&at_cap),
+        );
+
+        assert!(
+            result.is_ok(),
+            "the vault seals at the ceiling, so wallet creation must not refuse it"
+        );
+    }
+
+    /// The ceiling counts UTF-8 bytes, not characters. A character-counted
+    /// check would enrol 4 080 four-byte characters (16 320 bytes) — a
+    /// password the vault can never unseal.
+    #[test]
+    fn wallet_password_ceiling_counts_bytes_not_characters() {
+        let over = "\u{1D11E}".repeat(MAX_PASSPHRASE_LEN / 4 + 1);
+        assert!(
+            over.chars().count() < MAX_PASSPHRASE_LEN,
+            "under the ceiling in characters"
+        );
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("multibyte-over-cap".to_string()),
+            Some(&Secret::new(over)),
+        );
+
+        assert!(
+            matches!(result, Err(WalletCreationError::PasswordTooLong { .. })),
+            "expected PasswordTooLong"
+        );
+    }
+
+    /// The ceiling does NOT trim, unlike the floor: upstream bounds the whole
+    /// resident value, whitespace included.
+    #[test]
+    fn wallet_password_ceiling_does_not_trim_surrounding_whitespace() {
+        let padded = format!("{}password", " ".repeat(MAX_PASSPHRASE_LEN));
+        assert!(
+            padded.trim().len() < MAX_PASSPHRASE_LEN,
+            "trims to well under the ceiling"
+        );
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("padded-over-cap".to_string()),
+            Some(&Secret::new(padded)),
+        );
+
+        assert!(
+            matches!(result, Err(WalletCreationError::PasswordTooLong { .. })),
+            "expected PasswordTooLong"
+        );
+    }
+
+    #[test]
+    fn wallet_password_ceiling_wins_when_trimmed_password_is_too_short() {
+        let padded = format!("{}x", " ".repeat(MAX_PASSPHRASE_LEN));
+        let result = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("padded-short-over-cap".to_string()),
+            Some(&Secret::new(padded)),
+        );
+
+        assert!(
+            matches!(result, Err(WalletCreationError::PasswordTooLong { .. })),
+            "expected PasswordTooLong"
+        );
+    }
+
+    #[test]
+    fn password_too_long_display_is_actionable() {
+        assert_eq!(
+            WalletCreationError::PasswordTooLong {
+                max: MAX_PASSPHRASE_LEN,
+            }
+            .to_string(),
+            "This wallet password is too long. Pick a shorter password and try again."
         );
     }
 

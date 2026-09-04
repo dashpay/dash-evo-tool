@@ -737,7 +737,7 @@ As a user, I want to remove an identity from this device from the identity's own
 - A removal that cannot be completed at all leaves the identity's private keys intact, so a retry still has everything it needs; no identity is ever left listed without its keys, and no identity is ever reported as still removable once it is already gone from every list.
 - The unload sticks. The wallet that derives the identity stays loaded, and the app re-derives and looks up that wallet's identities on its own — at start-up, after a wallet is unlocked, and when a wallet is imported — but none of those automatic passes put back an identity the user unloaded, whether the pass starts before, during, or after the removal. The same holds for the developer-only devnet "clear all identities" sweep.
 - Adding a key to an identity that is unloaded while the key is being registered on the network does not leave that key's private half on this device. The key exists on Dash Platform and the app says so plainly, naming what to do — load the identity again, then add the key again — rather than reporting a save that did not happen.
-- Loading the identity again is always available and always works: choosing it explicitly, or searching for it by wallet index, loads it back and ends the exclusion, so a later automatic pass keeps it up to date again like any other identity.
+- Loading the identity again ends the exclusion, so later automatic passes keep its public record up to date. Loading does not restore private keys deleted by the unload: using the identity for signed actions again requires the user's own backup, either an unlocked wallet that can derive a matching key or a key the user imports.
 
 ---
 

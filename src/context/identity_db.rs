@@ -82,6 +82,15 @@ impl IdentitySidecarCleanup {
     pub(crate) fn is_incomplete(self) -> bool {
         self == Self::Incomplete
     }
+
+    /// Preserve incomplete cleanup as a typed error for callers that cannot
+    /// represent the richer partial-success outcome.
+    fn require_complete(self) -> std::result::Result<(), TaskError> {
+        match self {
+            Self::Complete => Ok(()),
+            Self::Incomplete => Err(TaskError::IdentitySidecarCleanupIncomplete),
+        }
+    }
 }
 
 fn sidecar_cleanup_outcome(
@@ -1692,18 +1701,18 @@ impl AppContext {
     /// strictly after `identifier` is already gone from every screen — a
     /// durable vault-cleanup manifest survives that and the next boot's
     /// [`Self::resume_pending_vault_cleanups`] finishes the job regardless.
-    /// A caller that turns this `Err` straight into a user-facing "removal
-    /// failed, please retry" message is wrong in exactly that case: the
-    /// identity cannot be retried (it is unlisted) and nothing is actually
-    /// still broken. Call [`Self::is_identity_listed`] first to tell the two
-    /// outcomes apart — see `AppContext::remove_identity` (in
-    /// `backend_task/identity/remove_identity.rs`) for the reference pattern.
+    /// [`TaskError::IdentitySidecarCleanupIncomplete`] is another committed
+    /// removal: the identity and its keys are gone, but optional local data
+    /// remains. User-facing callers should use
+    /// [`Self::delete_local_qualified_identity_with_outcome`] when they can
+    /// represent that partial success; otherwise they must distinguish this
+    /// variant and use [`Self::is_identity_listed`] for other errors.
     pub fn delete_local_qualified_identity(
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
         self.delete_local_qualified_identity_with_outcome(identifier)
-            .map(|_| ())
+            .and_then(IdentitySidecarCleanup::require_complete)
     }
 
     /// Perform identity removal and report whether secondary local data was
@@ -2893,6 +2902,14 @@ mod tests {
             ),
             IdentitySidecarCleanup::Incomplete
         );
+        assert!(
+            matches!(
+                IdentitySidecarCleanup::Incomplete.require_complete(),
+                Err(TaskError::IdentitySidecarCleanupIncomplete)
+            ),
+            "unit-result removal callers must not report incomplete sidecar cleanup as success"
+        );
+        assert!(IdentitySidecarCleanup::Complete.require_complete().is_ok());
     }
 
     fn id(b: u8) -> [u8; 32] {

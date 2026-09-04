@@ -21,6 +21,7 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 
 use crate::app::AppAction;
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -1018,27 +1019,46 @@ impl MasternodeDetailView {
     }
 
     /// Delete the node and its associated voter identity from local storage.
-    /// On the primary delete failing, surface an actionable error banner rather
-    /// than failing silently, and keep the detail view open so the user can
-    /// retry. The secondary voter-identity delete failing is non-fatal (the node
-    /// is already gone) and only logged.
+    /// Incomplete sidecar cleanup is reported as a committed removal warning.
+    /// Other primary errors retain the failure path; voter errors remain
+    /// non-fatal because the node is already gone.
     fn remove_node(&self, ctx: &egui::Context) -> bool {
         let node_id = self.identity.identity.id();
-        if let Err(e) = self.app_context.delete_local_qualified_identity(&node_id) {
-            MessageBanner::set_global(
-                ctx,
-                "This masternode couldn't be removed from this device. Try again in a moment.",
-                MessageType::Error,
-            )
-            .with_details(e);
-            return false;
+        let mut local_data_cleanup_failed = false;
+        match self.app_context.delete_local_qualified_identity(&node_id) {
+            Ok(()) => {}
+            Err(TaskError::IdentitySidecarCleanupIncomplete) => {
+                local_data_cleanup_failed = true;
+            }
+            Err(e) => {
+                MessageBanner::set_global(
+                    ctx,
+                    "This masternode couldn't be removed from this device. Try again in a moment.",
+                    MessageType::Error,
+                )
+                .with_details(e);
+                return false;
+            }
         }
-        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref()
-            && let Err(e) = self
+        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
+            match self
                 .app_context
                 .delete_local_qualified_identity(&voter.id())
-        {
-            tracing::warn!("Failed to remove voter identity: {e}");
+            {
+                Ok(()) => {}
+                Err(TaskError::IdentitySidecarCleanupIncomplete) => {
+                    local_data_cleanup_failed = true;
+                }
+                Err(e) => tracing::warn!("Failed to remove voter identity: {e}"),
+            }
+        }
+        if local_data_cleanup_failed {
+            MessageBanner::set_global(
+                ctx,
+                crate::ui::identity::IDENTITY_REMOVED_LOCAL_DATA_CLEANUP_FAILED,
+                MessageType::Warning,
+            )
+            .disable_auto_dismiss();
         }
         true
     }

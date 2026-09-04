@@ -20,9 +20,10 @@ fn test_app_startup() {
         // Set the window size
         harness.set_size(egui::vec2(800.0, 600.0));
 
-        // Run a few frames to ensure the app initializes
-        // Using run_steps instead of run() because the app may show spinners
-        // which cause continuous repainting
+        // Step until the storage-preparation gate lifts rather than for a fixed
+        // count: `run_steps(10)` can end mid-gate, leaving the app in a phase
+        // where no root screen has been built yet.
+        crate::support::wait_for_wallet_backend(&mut harness);
         harness.run_steps(10);
     });
 }

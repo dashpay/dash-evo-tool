@@ -1466,18 +1466,19 @@ As a user, while a long operation that is unsafe to interrupt is running (broadc
 - All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc, Enter, Space, or Tab.
 - The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action.
 - The prompt installs its own pointer sink in the block's place, so interaction beneath it stays blocked while the block is yielding. This holds for every passphrase prompt, dismissible or not: being able to cancel a prompt is not the same as being able to click past it.
-- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded but read-only, so it ships an always-visible "Continue in the background" escape instead.)_
+- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded, so it ships a Cancel affordance instead of relying on boundedness.)_
 
-### UX-002: Blocking SPV-sync overlay with a "continue in the background" escape [Implemented]
+### UX-002: Blocking SPV-sync overlay with a confirmed Cancel [Implemented]
 **Persona:** Alex, Priya, Jordan
 
-As a user, while the app connects to and syncs the Dash chain on startup or after I press Connect, I want a clear please-wait block so I know it is working — and because that sync can wait indefinitely for peers, I want an always-visible "Continue in the background" button so I am never trapped behind it.
+As a user, while the app connects to and syncs the Dash chain on startup or after I press Connect, I want a clear please-wait block so I know it is working — and because that sync can wait indefinitely for peers, I want a way to stop it rather than wait forever, without a single careless keypress disconnecting my wallet.
 
 - While that startup/Connect sync is getting connected, a full-window block appears with a plain please-wait sentence ("Connecting to the Dash network." / "Syncing with the Dash network.") and a friendly progress indicator ("Step N of 5") — no blockchain jargon, raw heights, or percentages.
-- The block always offers a secondary "Continue in the background" button. Clicking it lowers the block; sync keeps running in the background (it is read-only and strands nothing), and the block is not re-raised for the rest of that sync episode.
-- The "Continue in the background" escape is reachable by **keyboard**, not just the mouse: it is the one designated keyboard escape on this otherwise keyboard-blocked block, so a keyboard-only or assistive-technology user can activate it with Enter or Space and is never trapped behind the unbounded sync. Focus is pinned to that button, so Enter/Space (and Tab/clicks) can never reach a widget beneath the block.
-- The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user. Pressing Connect (or a fresh startup) blocks again.
-- This is the overlay's first real adopter (PR #863). Unlike the unsafe-to-interrupt operations in UX-001, SPV sync is **unbounded but safe to background** — so its C2 "never trap the user" guarantee is met by the always-on escape, not by operation boundedness.
+- The block offers a secondary "Cancel" button. Clicking it does not stop sync immediately — it swaps the action row to a confirmation: "Stop syncing? You can start again from the Network screen." with "Stop syncing" and "Keep syncing".
+- The keyboard escape is bound to the non-destructive choice at each step — "Cancel" while syncing, "Keep syncing" (focused by default) while confirming — so the block stays keyboard-reachable without a single reflexive Enter or Space ever disconnecting the wallet.
+- Confirming "Stop syncing" actually stops chain sync and lowers the block; the episode is not re-armed until the user restarts sync from the Network screen, or a fresh startup/Connect blocks again.
+- The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user.
+- This is the overlay's first real adopter (PR #863). SPV sync is **unbounded**, so its C2 "never trap the user" guarantee rests on the two-step Cancel rather than on operation boundedness. The original single-tap "Continue in the background" button was replaced because it shared its keyboard binding with the block's universal dismiss key, making Enter a one-keypress wallet disconnect for a keyboard-only or assistive-technology user — see `docs/ai-design/2026-08-31-startup-linearization/`.
 
 ### UX-003: Global wallet/identity switcher across all tabs [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -1498,6 +1499,20 @@ As an existing user upgrading into the platform-wallet version, I want a one-tim
 
 - A one-time notice appears on first launch after the migration, disclosing the removed QR-direct-fund path (referenced by NET-008 and IDN-014).
 - Note (DOC-003): not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
+
+### UX-005: Blocking storage-preparation gate on launch and network switch [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, while the app opens my saved data on startup or after switching networks, I want a clear please-wait block covering everything from opening storage to restoring my wallets, so that I never see a half-ready app — and if my saved data can't be opened, I want to know why and what I can do about it, in plain language.
+
+- A full-window block appears before any screen renders, on first launch and on switching to a network not yet prepared this session, and stays up through wiring, restoring wallets, and the previous version's data update as one sequence. It shows one plain-language sentence per step (e.g. "The app is opening your saved data.", "The app is restoring your identities and their keys.") — no "backend", "wiring", "SPV", or error codes.
+- Unlike UX-002, this block has no Cancel or background option: the app is not usable until preparation finishes, so the only choices are wait, or close the app.
+- A password-protected wallet carried over from an earlier version prompts for its password *above* the block — typeable, focused — with a "Skip this wallet" option that moves on to the next locked wallet without losing it; the prompt cycles until every locked wallet is unlocked or skipped.
+- If preparation runs unusually long (30 s), the message changes to reassure the user and offers "Close the app" — nothing is written on this path, so relaunching retries cleanly from the unchanged saved data.
+- If preparation fails, the block explains that saved data is unchanged and offers "Try again" or "Close the app".
+- If the saved data is from a much newer or much older version than this one can open directly, the block explains that plainly (naming the version to install or use first) and offers only "Close the app" — retrying cannot fix a version mismatch.
+- Once a network's storage is prepared, returning to it later in the same session does not re-show the block; chain sync starts automatically only after preparation finishes, never before or during it.
+- Not covered: the headless CLI/MCP path has no such block — it fast-fails with "The storage update is still running. Please wait a moment and try again." instead, since it has no window to hold up. See `docs/ai-design/2026-08-31-startup-linearization/`.
 
 ## Identities Hub (IDH)
 

@@ -212,6 +212,16 @@ backgrounding valve only if the watchdog log ever fires in practice. If the user
 availability over the conflicting-op risk more highly than I have weighted it, that is their call
 to make — flagging it rather than burying it.
 
+> **Superseded (2026-08-31) for the storage-preparation gate specifically.** The deferred question
+> came back not because a watchdog fired, but because a *different* button-less block —
+> `AppContext::prepare_storage`, covering wiring, the schema ladder, hydration and the legacy
+> drain — has no C2 boundedness to lean on: it must run before any screen exists, so it cannot
+> fail over to a normal error banner. The resolution taken is still not "manual backgrounding":
+> preparation itself stays escape-free, guarded instead by a 30 s stuck-timeout that offers only
+> "Close the app" (a safe, tracked exit — vault teardown runs, nothing is written, the next
+> launch retries cleanly) — closer in spirit to this section's own watchdog than to a
+> backgrounding valve. See `docs/ai-design/2026-08-31-startup-linearization/`.
+
 ### Test obligations
 
 - **Un-ignore** `qa_buttonless_overlay_blocks_typing_into_focused_field_beneath` (QA-001); it must
@@ -346,7 +356,7 @@ live owner.** Concretely:
 
 | # | Decision | Status |
 |---|---|---|
-| A-1 | No renderer dismiss/background valve; safety = caller contract (C1 clear-on-terminal, C2 bounded-op) + 30 s soft / 120 s-no-progress escalation + one-shot dev watchdog | Decided (one sub-point flagged for user) |
+| A-1 | No renderer dismiss/background valve; safety = caller contract (C1 clear-on-terminal, C2 bounded-op) + 30 s soft / 120 s-no-progress escalation + one-shot dev watchdog | Decided (one sub-point flagged for user); **superseded for the storage-preparation gate** — see the 2026-08-31 note in §1 and `docs/ai-design/2026-08-31-startup-linearization/`. Unaffected for every other button-less adopter (broadcast, signing, key import, migration steps). |
 | A-2 | Button-less block must be genuinely total: `claim_input` at frame start releases beneath focus + strips text/nav keys (resolves QA-001) | Decided |
 | A-3 | Clicks delivered to the caller via keyed `OverlayHandle::take_actions`; global drain demoted to `sweep_orphan_actions` | Decided |
 | A-4 | `clear_all_global` clears the action queue too (SEC-007) | Decided |

@@ -233,7 +233,7 @@ fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadT
 /// newer/incompatible app build). These must surface their actionable
 /// message instead of being logged-and-discarded as a transient deferral
 /// (F50); every other init error is retried by the cold-boot bridge.
-fn is_terminal_storage_open_error(error: &TaskError) -> bool {
+pub(crate) fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     matches!(
         error,
         TaskError::WalletDataTooNew { .. } | TaskError::WalletDataIncompatible { .. }
@@ -2260,6 +2260,13 @@ mod tests {
             &TaskError::WalletDataTooNew {
                 found: 99,
                 max_supported: 1,
+            }
+        ));
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataIncompatible {
+                source: platform_wallet_storage::WalletStorageError::Io(std::io::Error::other(
+                    "incompatible test fixture",
+                )),
             }
         ));
         // A transient pre-wire state must NOT be treated as terminal.

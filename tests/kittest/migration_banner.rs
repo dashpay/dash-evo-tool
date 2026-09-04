@@ -45,16 +45,7 @@ fn tc_mig_001_running_banner_shows_step_label() {
 /// landing without label coverage.
 #[test]
 fn tc_mig_014_running_text_covers_every_step_with_sentence() {
-    for step in [
-        MigrationStep::Detecting,
-        MigrationStep::AppData,
-        MigrationStep::SingleKey,
-        MigrationStep::Shielded,
-        MigrationStep::WalletSeeds,
-        MigrationStep::WalletMeta,
-        MigrationStep::Identities,
-        MigrationStep::Finalize,
-    ] {
+    for step in MigrationStep::ALL {
         let text = migration_running_text(step);
         assert!(!text.is_empty(), "step {step:?} has empty banner text");
         assert!(

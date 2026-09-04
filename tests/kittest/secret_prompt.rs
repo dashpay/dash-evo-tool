@@ -375,7 +375,7 @@ fn appstate_jit_prompt_activation_drops_transition_frame_click() {
                 .with_animations(false)
         });
         harness.set_size(egui::vec2(1024.0, 768.0));
-        harness.run_steps(5);
+        crate::support::wait_for_screens(&mut harness);
 
         let card_center = harness.get_by_label("Just Explore").rect().center();
         harness.hover_at(card_center);

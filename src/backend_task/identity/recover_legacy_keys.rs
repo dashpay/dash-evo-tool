@@ -200,8 +200,7 @@ impl AppContext {
         // The storage migration owns the identity store while it runs; the
         // delete path takes the same two-part guard for the same reason.
         let _migration_guard = self
-            .migration_run
-            .try_lock()
+            .try_lock_prepare_gate()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
@@ -284,8 +283,7 @@ impl AppContext {
     /// check.
     fn require_storage_migration_idle(&self) -> Result<(), TaskError> {
         let _probe = self
-            .migration_run
-            .try_lock()
+            .try_lock_prepare_gate()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
@@ -1585,7 +1583,7 @@ mod tests {
             .delete_local_qualified_identity(&unrelated_id)
             .expect("removing an unrelated identity must not wait on an open password prompt");
         assert!(
-            offline.ctx.migration_run.try_lock().is_ok(),
+            offline.ctx.try_lock_prepare_gate().is_ok(),
             "the storage-migration mutex must stay free while a prompt is open",
         );
 

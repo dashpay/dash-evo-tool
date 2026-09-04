@@ -21,6 +21,7 @@ mod legacy_recovery_section;
 mod masternode_tab;
 mod message_banner;
 mod migration_banner;
+mod migration_gate;
 mod network_chooser;
 mod progress_overlay;
 mod register_dpns_name_screen;

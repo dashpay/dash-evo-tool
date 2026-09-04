@@ -13,6 +13,7 @@ mod settings_db;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod wallet_lifecycle;
+pub use wallet_lifecycle::PrepareGateGuard;
 
 pub use wallet_lifecycle::WalletUnlockRetention;
 
@@ -163,10 +164,16 @@ pub struct AppContext {
     /// frame from the UI. Always present and idle on fresh installs;
     /// driven by [`MigrationTask::FinishUnwire`](crate::backend_task::migration::MigrationTask).
     pub(crate) migration_status: Arc<MigrationStatus>,
-    /// Serializes complete storage-update runs, including the detached automatic
-    /// DAPI refresh that continues after migration publishes terminal status.
-    /// This also prevents duplicate password waiters for the same wallet.
-    pub(crate) migration_run: tokio::sync::Mutex<()>,
+    /// Serializes the whole storage-preparation sequence — backend wiring,
+    /// hydration, the legacy drain, and the detached DAPI refresh that keeps
+    /// running after the drain publishes terminal status. Held by
+    /// [`AppContext::prepare_storage`]; also prevents duplicate password waiters
+    /// for the same wallet.
+    prepare_gate: tokio::sync::Mutex<()>,
+    /// Set after this context completes wiring, migration, and cleanup once.
+    /// Read while holding `prepare_gate`, except for the final release store,
+    /// so concurrent callers cannot observe partial preparation.
+    storage_prepared: AtomicBool,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
@@ -309,7 +316,7 @@ impl AppContext {
     /// [`delete_local_qualified_identity`](Self::delete_local_qualified_identity),
     /// so coverage does not depend on remembering it at ~20 call sites.
     ///
-    /// Lock order is `migration_run` → this guard, never the reverse: the
+    /// Lock order is `prepare_gate` → this guard, never the reverse: the
     /// delete and legacy-recovery paths both take the storage-migration mutex
     /// first. Nothing may be held across an `.await`.
     ///
@@ -503,7 +510,8 @@ impl AppContext {
             token_balance_refresh_in_flight: AtomicBool::new(false),
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
-            migration_run: tokio::sync::Mutex::new(()),
+            prepare_gate: tokio::sync::Mutex::new(()),
+            storage_prepared: AtomicBool::new(false),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),

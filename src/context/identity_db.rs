@@ -1659,8 +1659,7 @@ impl AppContext {
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
         let _migration_guard = self
-            .migration_run
-            .try_lock()
+            .try_lock_prepare_gate()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
@@ -1749,18 +1748,34 @@ impl AppContext {
     /// failure on one manifest is logged and retried next boot, and never
     /// blocks the sweep from resuming every other one.
     ///
-    /// Guarded by the same `migration_run` lock and in-progress check as
+    /// Guarded by the same `prepare_gate` lock and in-progress check as
     /// [`Self::delete_local_qualified_identity`]: a storage migration can be
     /// mid-rewrite of this same Identity scope around the same boot window
     /// this sweep runs in, and the sweep's purge/vault-delete pair is not
     /// safe to interleave with that.
     pub(crate) fn resume_pending_vault_cleanups(&self) {
-        let Ok(_migration_guard) = self.migration_run.try_lock() else {
+        let Ok(guard) = self.try_lock_prepare_gate() else {
             tracing::debug!(
                 "Pending vault-cleanup sweep skipped; a storage migration is running, will retry at next boot"
             );
             return;
         };
+        self.resume_pending_vault_cleanups_gated(&guard);
+    }
+
+    /// [`Self::resume_pending_vault_cleanups`] for a caller that already owns
+    /// [`AppContext::prepare_gate`], proved by the borrowed guard.
+    ///
+    /// [`AppContext::prepare_storage`] holds the gate across the whole storage
+    /// sequence, so the `try_lock` above can only fail for it — which would skip
+    /// the sweep on every boot, forever, since the next boot takes the same gate
+    /// at the same point. The guard parameter is proof, not decoration: it is
+    /// what makes "callable only under the gate" a compile-time fact rather than
+    /// a comment.
+    pub(crate) fn resume_pending_vault_cleanups_gated(
+        &self,
+        _gate: &crate::context::PrepareGateGuard<'_>,
+    ) {
         if self.migration_status().state().is_in_progress() {
             tracing::debug!(
                 "Pending vault-cleanup sweep skipped; a storage migration is in progress, will retry at next boot"
@@ -4193,6 +4208,139 @@ mod tests {
             .expect("read the manifest slot")
             .is_none(),
             "the manifest must be cleared once the sweep confirms every key deleted"
+        );
+    }
+
+    /// REGRESSION — a boot that goes through `prepare_storage` must still run
+    /// the pending vault-cleanup sweep.
+    ///
+    /// The sweep normally rides `bootstrap_loaded_wallets` inside
+    /// `ensure_wallet_backend`, which the storage gate now calls while holding
+    /// `prepare_gate` and while `MigrationStep::Wiring` is published. Both of the
+    /// sweep's guards therefore trip — its `try_lock` loses to the gate, and its
+    /// in-progress check sees the published step — and it skips at DEBUG level
+    /// saying it will retry next boot. The next boot takes the same gate at the
+    /// same point and skips identically, forever, so vault keys orphaned by an
+    /// interrupted removal accumulate with no recovery path and no user-visible
+    /// signal.
+    ///
+    /// Asserting through `prepare_storage` rather than calling the sweep
+    /// directly is the entire point: a test that calls the sweep itself passes
+    /// happily while boot never reaches it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepare_storage_still_runs_the_pending_vault_cleanup_sweep() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x33; 32];
+        const LOW: [u8; 32] = [0x44; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        // An identity already off the roster with a durable manifest: exactly the
+        // state only the boot sweep can still recover.
+        let vault_keys = staged
+            .ctx
+            .identity_vault_key_placements(&kv, &id_buf)
+            .expect("read the live placements before removing from the index");
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id_buf, &vault_keys)
+            .expect("persist the manifest");
+        index_remove_identity(&kv, &id_buf).expect("remove from the roster");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+        staged
+            .ctx
+            .prepare_storage(sender)
+            .await
+            .expect("storage preparation should succeed offline");
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} is still in the vault: the gate skipped the sweep, and \
+                 every later boot will skip it the same way",
+            );
+        }
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_none(),
+            "the manifest must be cleared by the sweep the gate drives",
+        );
+    }
+
+    /// The same guarantee on the drain's FAILURE path.
+    ///
+    /// Keys orphaned by an earlier interrupted removal do not become less
+    /// orphaned because this launch's storage update failed — and a drain that
+    /// fails deterministically (a version-window mismatch is exactly that) would
+    /// otherwise postpone the sweep on every future launch too. The manifests it
+    /// consumes are written by identity removal, never by a migration, so they
+    /// always predate the run that failed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepare_storage_runs_the_sweep_even_when_the_drain_fails() {
+        const MAIN: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+        const HIGH: [u8; 32] = [0x55; 32];
+        const LOW: [u8; 32] = [0x66; 32];
+
+        let staged = stage_identity_with_vaulted_keys(HIGH, LOW).await;
+        let kv = staged.ctx.det_kv().expect("identity kv");
+        let id_buf = staged.id.to_buffer();
+
+        let vault_keys = staged
+            .ctx
+            .identity_vault_key_placements(&kv, &id_buf)
+            .expect("read the live placements before removing from the index");
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id_buf, &vault_keys)
+            .expect("persist the manifest");
+        index_remove_identity(&kv, &id_buf).expect("remove from the roster");
+
+        // Force the drain to fail before it does any work: a stored version
+        // below the direct-upgrade window is rejected by
+        // `validate_saved_data_for_migration`, deterministically, every launch.
+        staged
+            .ctx
+            .db
+            .execute(
+                "INSERT INTO settings (id, database_version) VALUES (1, 1)
+                 ON CONFLICT(id) DO UPDATE SET database_version = 1",
+                [],
+            )
+            .expect("write a too-old legacy database version");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+        let outcome = staged.ctx.prepare_storage(sender).await;
+        assert!(
+            outcome.is_err(),
+            "the fixture must actually fail the drain, or this proves nothing",
+        );
+
+        let view = IdentityKeyView::new(&staged.store, id_buf);
+        for key_id in [1, 2] {
+            assert!(
+                view.get(&MAIN, key_id).unwrap().is_none(),
+                "key {key_id} is still in the vault: a failed drain must not also \
+                 strand the keys an earlier removal orphaned",
+            );
+        }
+        assert!(
+            kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(
+                DetScope::Global,
+                &vault_cleanup_pending_key(&id_buf)
+            )
+            .expect("read the manifest slot")
+            .is_none(),
+            "the manifest must be cleared even though the drain failed",
         );
     }
 

@@ -403,7 +403,7 @@ async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
 
 /// Runs one best-effort refresh with an injected discovery operation.
 ///
-/// Run-triggered passes still hold their per-context `migration_run`, while migration and manual refresh
+/// Run-triggered passes still hold their per-context `prepare_gate`, while migration and manual refresh
 /// share a process-wide guard across whole-file config persistence, including different network contexts.
 async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
 where
@@ -598,10 +598,10 @@ fn write_dapi_refresh_completion(
 /// both signals) rather than an `Err` that this boundary would publish as a
 /// plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
-    let _run_guard = match app_context.migration_run.try_lock() {
+    let _run_guard = match app_context.try_lock_prepare_gate() {
         Ok(guard) => guard,
         Err(_) => {
-            let guard = app_context.migration_run.lock().await;
+            let guard = app_context.lock_prepare_gate().await;
             match app_context.migration_status().state().as_ref() {
                 MigrationState::Failed { error } => {
                     let result = Err(super::migration_task_error(Arc::clone(error)));
@@ -617,6 +617,26 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
+    run_gated(app_context, &_run_guard).await
+}
+
+/// The drain body, for a caller that already owns
+/// [`AppContext::prepare_gate`](crate::context::AppContext), proved by the
+/// borrowed guard.
+///
+/// [`AppContext::prepare_storage`] holds the gate across wiring *and* the drain
+/// so the two are one ordering rather than two racing claims; it therefore
+/// cannot go through [`run`], whose own acquire would deadlock against it. The
+/// guard parameter is proof, not decoration: without it this function is a
+/// silently unguarded copy of [`run`] that any future caller could reach.
+///
+/// # Errors
+///
+/// Same as [`run`].
+pub(crate) async fn run_gated(
+    app_context: &Arc<AppContext>,
+    _gate: &crate::context::PrepareGateGuard<'_>,
+) -> Result<bool, TaskError> {
     match run_under_guard(app_context).await {
         Ok(did_work) => Ok(did_work),
         Err(task_error) => {
@@ -634,7 +654,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     }
 }
 
-/// Waits for the launching pass, then holds `migration_run` through refresh.
+/// Waits for the launching pass, then holds `prepare_gate` through refresh.
 /// Operations that claim this guard stay gated until the detached work completes.
 fn spawn_dapi_refresh<F>(app_context: &Arc<AppContext>, refresh: F) -> tokio::task::JoinHandle<()>
 where
@@ -642,7 +662,7 @@ where
 {
     let ctx = Arc::clone(app_context);
     tokio::spawn(async move {
-        let _refresh_guard = ctx.migration_run.lock().await;
+        let _refresh_guard = ctx.lock_prepare_gate().await;
         refresh.await;
     })
 }
@@ -1591,7 +1611,7 @@ fn write_identity_progress(
 
 /// Record an explicit identity deletion before removing its modern record.
 /// A later partial-pass retry then skips the stale legacy row. The caller holds
-/// `migration_run` across this marker and the complete modern-store deletion.
+/// `prepare_gate` across this marker and the complete modern-store deletion.
 pub(crate) fn record_identity_deletion(
     app_context: &AppContext,
     id: [u8; 32],
@@ -2635,9 +2655,9 @@ impl From<MigrationError> for TaskError {
 }
 
 /// Test-only synchronization helper: `run` deliberately detaches its DAPI
-/// refresh onto a spawned task that queues for `migration_run` behind the
+/// refresh onto a spawned task that queues for `prepare_gate` behind the
 /// caller's own guard (see [`spawn_dapi_refresh`]). A test that calls another
-/// `migration_run`-guarded operation (e.g. `delete_local_qualified_identity`)
+/// `prepare_gate`-guarded operation (e.g. `delete_local_qualified_identity`)
 /// right after `run` returns races that detached task — yield so it queues
 /// for the guard, then acquire the same guard after the refresh releases it.
 ///
@@ -2647,7 +2667,7 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 pub(crate) async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
     tokio::task::yield_now().await;
-    let guard = app_context.migration_run.lock().await;
+    let guard = app_context.lock_prepare_gate().await;
     drop(guard);
 }
 
@@ -5226,7 +5246,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let deleted = [0x44; 32];
-        let _migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let _migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
 
         assert!(matches!(
             ctx.delete_local_qualified_identity(&Identifier::from(deleted)),
@@ -5245,7 +5265,7 @@ mod tests {
     async fn public_migration_run_waits_behind_idle_deletion_guard() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let follower_ctx = Arc::clone(&ctx);
         let follower = tokio::spawn(async move { run(&follower_ctx).await });
         tokio::task::yield_now().await;
@@ -5273,7 +5293,7 @@ mod tests {
     async fn public_migration_follower_returns_the_published_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let source = Arc::new(MigrationError::WalletBackendUnavailable);
         ctx.migration_status().set_state(MigrationState::Failed {
             error: Arc::clone(&source),

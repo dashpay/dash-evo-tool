@@ -48,13 +48,17 @@ impl AppContext {
         // below, its associated voter twin — since the same failure window
         // exists on both `delete_local_qualified_identity` calls.
         let mut cleanup_deferred = false;
-        match self.delete_local_qualified_identity(&identity_id) {
-            Ok(()) => {}
+        let mut local_data_cleanup_failed = false;
+        match self.delete_local_qualified_identity_with_outcome(&identity_id) {
+            Ok(sidecar_cleanup) => {
+                local_data_cleanup_failed |= sidecar_cleanup.is_incomplete();
+            }
             Err(error) => {
                 if still_listed_or_assume_so(self, &identity_id) {
                     return Err(error);
                 }
                 cleanup_deferred = true;
+                local_data_cleanup_failed = true;
                 tracing::warn!(
                     ?error,
                     %identity_id,
@@ -66,8 +70,11 @@ impl AppContext {
         let mut removed_identity_ids = vec![identity_id];
         let mut associated_cleanup_failed = false;
         if let Some(voter_id) = associated_voter_identity_id.filter(|id| *id != identity_id) {
-            match self.delete_local_qualified_identity(&voter_id) {
-                Ok(()) => removed_identity_ids.push(voter_id),
+            match self.delete_local_qualified_identity_with_outcome(&voter_id) {
+                Ok(sidecar_cleanup) => {
+                    local_data_cleanup_failed |= sidecar_cleanup.is_incomplete();
+                    removed_identity_ids.push(voter_id);
+                }
                 Err(error) => {
                     if still_listed_or_assume_so(self, &voter_id) {
                         associated_cleanup_failed = true;
@@ -79,6 +86,7 @@ impl AppContext {
                     } else {
                         removed_identity_ids.push(voter_id);
                         cleanup_deferred = true;
+                        local_data_cleanup_failed = true;
                         tracing::warn!(
                             ?error,
                             voter_identity_id = %voter_id,
@@ -90,8 +98,10 @@ impl AppContext {
         }
 
         Ok(BackendTaskSuccessResult::RemovedIdentities {
+            network: self.network,
             identity_ids: removed_identity_ids,
             associated_cleanup_failed,
+            local_data_cleanup_failed,
             cleanup_deferred,
         })
     }
@@ -113,13 +123,20 @@ mod tests {
     const MEDIUM: [u8; 32] = [0xB2; 32];
 
     /// Unpack the only success shape this task produces.
-    fn removal_outcome(result: BackendTaskSuccessResult) -> (Vec<Identifier>, bool, bool) {
+    fn removal_outcome(result: BackendTaskSuccessResult) -> (Vec<Identifier>, bool, bool, bool) {
         match result {
             BackendTaskSuccessResult::RemovedIdentities {
+                network: _,
                 identity_ids,
                 associated_cleanup_failed,
+                local_data_cleanup_failed,
                 cleanup_deferred,
-            } => (identity_ids, associated_cleanup_failed, cleanup_deferred),
+            } => (
+                identity_ids,
+                associated_cleanup_failed,
+                local_data_cleanup_failed,
+                cleanup_deferred,
+            ),
             other => panic!("removing an identity must report a removal, got {other:?}"),
         }
     }
@@ -171,12 +188,13 @@ mod tests {
         let staged = stage_identity_with_vaulted_keys(HIGH, MEDIUM).await;
         fail_removals_after_delisting(&staged.ctx);
 
-        let (identity_ids, associated_cleanup_failed, cleanup_deferred) = removal_outcome(
-            staged
-                .ctx
-                .remove_identity(staged.id)
-                .expect("a delisted identity is removed, whatever failed afterwards"),
-        );
+        let (identity_ids, associated_cleanup_failed, local_data_cleanup_failed, cleanup_deferred) =
+            removal_outcome(
+                staged
+                    .ctx
+                    .remove_identity(staged.id)
+                    .expect("a delisted identity is removed, whatever failed afterwards"),
+            );
 
         assert_eq!(identity_ids, vec![staged.id]);
         assert!(
@@ -187,6 +205,7 @@ mod tests {
             !associated_cleanup_failed,
             "there is no associated identity here, so nothing may be blamed on one"
         );
+        assert!(local_data_cleanup_failed);
         assert!(
             !staged
                 .ctx
@@ -210,12 +229,13 @@ mod tests {
         let voter_id = staged.voter_id.expect("the fixture stages a voter twin");
         fail_removals_after_delisting(&staged.ctx);
 
-        let (identity_ids, associated_cleanup_failed, cleanup_deferred) = removal_outcome(
-            staged
-                .ctx
-                .remove_identity(staged.id)
-                .expect("both identities are delisted, whatever failed afterwards"),
-        );
+        let (identity_ids, associated_cleanup_failed, local_data_cleanup_failed, cleanup_deferred) =
+            removal_outcome(
+                staged
+                    .ctx
+                    .remove_identity(staged.id)
+                    .expect("both identities are delisted, whatever failed afterwards"),
+            );
 
         assert_eq!(
             identity_ids,
@@ -227,6 +247,7 @@ mod tests {
             "the voter identity was removed; only its vault cleanup is pending"
         );
         assert!(cleanup_deferred, "both cleanups are outstanding");
+        assert!(local_data_cleanup_failed);
         assert!(
             !staged
                 .ctx
@@ -247,12 +268,13 @@ mod tests {
         fail_removals_after_delisting(&staged.ctx);
         fail_removal_before_delisting(&staged.ctx, &voter_id);
 
-        let (identity_ids, associated_cleanup_failed, cleanup_deferred) = removal_outcome(
-            staged
-                .ctx
-                .remove_identity(staged.id)
-                .expect("the primary is delisted, so this is still a removal"),
-        );
+        let (identity_ids, associated_cleanup_failed, local_data_cleanup_failed, cleanup_deferred) =
+            removal_outcome(
+                staged
+                    .ctx
+                    .remove_identity(staged.id)
+                    .expect("the primary is delisted, so this is still a removal"),
+            );
 
         assert_eq!(
             identity_ids,
@@ -267,6 +289,7 @@ mod tests {
             cleanup_deferred,
             "the primary's pending vault cleanup must survive the voter's failure"
         );
+        assert!(local_data_cleanup_failed);
         assert!(
             staged
                 .ctx

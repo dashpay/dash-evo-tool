@@ -618,15 +618,15 @@ impl ScreenLike for IdentityHubScreen {
                     );
                 }
             }
-            // The Settings tab's unload lands here. The tab re-resolves its own
-            // selection next frame, so this only has to report the outcome —
-            // including the case where the identity went but its voter twin
-            // stayed, which the user would otherwise read as a failed removal.
+            // AppState delivers removals even while this root is hidden and owns the banner.
             BackendTaskSuccessResult::RemovedIdentities {
+                network,
                 identity_ids,
-                associated_cleanup_failed,
-                cleanup_deferred,
+                ..
             } => {
+                if *network != self.app_context.network {
+                    return;
+                }
                 // Two separate questions with two separate answers. The
                 // app-wide selection is dropped only when it is the thing that
                 // was removed, so the hub falls back deliberately instead of
@@ -657,15 +657,6 @@ impl ScreenLike for IdentityHubScreen {
                 // still in flight keeps its own record.
                 self.pending_unloads
                     .retain(|pending| !identity_ids.contains(pending));
-                let (message, message_type) = crate::ui::identity::removed_identities_banner(
-                    *associated_cleanup_failed,
-                    *cleanup_deferred,
-                );
-                let handle =
-                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
-                if message_type == MessageType::Warning {
-                    handle.disable_auto_dismiss();
-                }
             }
             _ => {}
         }
@@ -1100,8 +1091,10 @@ mod tests {
         );
 
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: screen.app_context.network,
             identity_ids: vec![fallback],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 
@@ -1168,8 +1161,10 @@ mod tests {
         );
 
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: screen.app_context.network,
             identity_ids: vec![unloaded],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 
@@ -1236,8 +1231,10 @@ mod tests {
         // The second unload is answered first, and must not take the first
         // one's record with it.
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: screen.app_context.network,
             identity_ids: vec![second],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
         assert!(
@@ -1257,8 +1254,10 @@ mod tests {
         );
 
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: screen.app_context.network,
             identity_ids: vec![first],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 
@@ -1329,8 +1328,10 @@ mod tests {
         // that is not this one. Nothing live names it, and this screen never
         // dispatched it.
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: screen.app_context.network,
             identity_ids: vec![elsewhere],
             associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
             cleanup_deferred: false,
         });
 

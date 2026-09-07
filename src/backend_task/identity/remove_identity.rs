@@ -58,6 +58,7 @@ impl AppContext {
                     return Err(error);
                 }
                 cleanup_deferred = true;
+                local_data_cleanup_failed = true;
                 tracing::warn!(
                     ?error,
                     %identity_id,
@@ -85,6 +86,7 @@ impl AppContext {
                     } else {
                         removed_identity_ids.push(voter_id);
                         cleanup_deferred = true;
+                        local_data_cleanup_failed = true;
                         tracing::warn!(
                             ?error,
                             voter_identity_id = %voter_id,
@@ -96,6 +98,7 @@ impl AppContext {
         }
 
         Ok(BackendTaskSuccessResult::RemovedIdentities {
+            network: self.network,
             identity_ids: removed_identity_ids,
             associated_cleanup_failed,
             local_data_cleanup_failed,
@@ -123,6 +126,7 @@ mod tests {
     fn removal_outcome(result: BackendTaskSuccessResult) -> (Vec<Identifier>, bool, bool, bool) {
         match result {
             BackendTaskSuccessResult::RemovedIdentities {
+                network: _,
                 identity_ids,
                 associated_cleanup_failed,
                 local_data_cleanup_failed,
@@ -201,7 +205,7 @@ mod tests {
             !associated_cleanup_failed,
             "there is no associated identity here, so nothing may be blamed on one"
         );
-        assert!(!local_data_cleanup_failed);
+        assert!(local_data_cleanup_failed);
         assert!(
             !staged
                 .ctx
@@ -243,7 +247,7 @@ mod tests {
             "the voter identity was removed; only its vault cleanup is pending"
         );
         assert!(cleanup_deferred, "both cleanups are outstanding");
-        assert!(!local_data_cleanup_failed);
+        assert!(local_data_cleanup_failed);
         assert!(
             !staged
                 .ctx
@@ -285,7 +289,7 @@ mod tests {
             cleanup_deferred,
             "the primary's pending vault cleanup must survive the voter's failure"
         );
-        assert!(!local_data_cleanup_failed);
+        assert!(local_data_cleanup_failed);
         assert!(
             staged
                 .ctx

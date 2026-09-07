@@ -86,6 +86,47 @@ pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
 const WALLET_BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SHUTDOWN_DEADLINE_MARGIN: Duration = Duration::from_secs(5);
 
+/// Deliver removal outcomes to persistent roots even while another screen is visible.
+pub(crate) fn deliver_identity_removal_result(
+    ctx: &egui::Context,
+    roots: &mut BTreeMap<RootScreenType, Screen>,
+    result: &BackendTaskSuccessResult,
+) -> Option<BannerHandle> {
+    let BackendTaskSuccessResult::RemovedIdentities {
+        network,
+        associated_cleanup_failed,
+        local_data_cleanup_failed,
+        cleanup_deferred,
+        ..
+    } = result
+    else {
+        return None;
+    };
+    for root in [
+        RootScreenType::RootScreenIdentityHub,
+        RootScreenType::RootScreenMasternodes,
+    ] {
+        if let Some(screen) = roots.get_mut(&root) {
+            screen.display_task_result(result.clone());
+        }
+    }
+    let (message, message_type) = crate::ui::identity::removed_identities_banner(
+        *associated_cleanup_failed,
+        *cleanup_deferred,
+        *local_data_cleanup_failed,
+    );
+    let network = chooser_network_label(*network);
+    let handle = MessageBanner::set_global(
+        ctx,
+        format!("Identity removal on {network}: {message}"),
+        message_type,
+    );
+    if message_type == MessageType::Warning {
+        handle.disable_auto_dismiss();
+    }
+    Some(handle)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShutdownOutcome {
     Complete,
@@ -2823,6 +2864,13 @@ impl App for AppState {
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
                     self.route_contact_request_result_to_hidden_hub(&unboxed_message);
                     match unboxed_message {
+                        BackendTaskSuccessResult::RemovedIdentities { .. } => {
+                            deliver_identity_removal_result(
+                                ctx,
+                                &mut self.main_screens,
+                                &unboxed_message,
+                            );
+                        }
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();

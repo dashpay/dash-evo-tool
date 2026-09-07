@@ -624,18 +624,22 @@ impl ScreenLike for MasternodesScreen {
                 );
             }
             BackendTaskSuccessResult::RemovedIdentities {
+                network,
                 identity_ids,
-                associated_cleanup_failed,
-                local_data_cleanup_failed,
-                cleanup_deferred,
+                ..
             } => {
+                if network != self.app_context.network {
+                    return;
+                }
                 let removes_open_node = matches!(
                     &self.view,
                     MasternodesView::Detail(detail) if identity_ids.contains(&detail.node_id())
                 );
                 let answers_this_screen = identity_ids
                     .iter()
-                    .any(|identity_id| self.pending_removals.remove(identity_id));
+                    .any(|identity_id| self.pending_removals.contains(identity_id));
+                self.pending_removals
+                    .retain(|id| !identity_ids.contains(id));
                 if !removes_open_node && !answers_this_screen {
                     return;
                 }
@@ -644,16 +648,6 @@ impl ScreenLike for MasternodesScreen {
                     self.view = MasternodesView::List;
                 }
                 self.reload();
-                let (message, message_type) = crate::ui::identity::removed_identities_banner(
-                    associated_cleanup_failed,
-                    cleanup_deferred,
-                    local_data_cleanup_failed,
-                );
-                let handle =
-                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
-                if message_type == MessageType::Warning {
-                    handle.disable_auto_dismiss();
-                }
                 return;
             }
             _ => {}
@@ -924,6 +918,7 @@ mod tests {
         ctx.delete_local_qualified_identity(&node)
             .expect("the backend task removed the node before returning its result");
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: ctx.network,
             identity_ids: vec![node],
             associated_cleanup_failed: false,
             local_data_cleanup_failed: false,
@@ -947,6 +942,7 @@ mod tests {
         screen.open_detail(node);
 
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: ctx.network,
             identity_ids: vec![Identifier::from([0x77; 32])],
             associated_cleanup_failed: false,
             local_data_cleanup_failed: false,
@@ -959,6 +955,127 @@ mod tests {
         assert_eq!(detail.node_id(), node);
 
         ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn masternode_removal_result_from_another_network_preserves_the_open_node() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: Network::Mainnet,
+            identity_ids: vec![node],
+            associated_cleanup_failed: false,
+            local_data_cleanup_failed: true,
+            cleanup_deferred: true,
+        });
+        assert!(matches!(screen.view, MasternodesView::Detail(_)));
+        assert!(ctx.is_identity_listed(&node).unwrap());
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn masternode_removal_delivery_updates_hidden_roots_and_reports_every_outcome() {
+        use crate::ui::Screen;
+        use crate::ui::components::message_banner::global_banner_texts;
+        let (ctx, _tmp) = offline_ctx().await;
+        for flags in 0..8 {
+            let node = Identifier::from([0x30 + flags; 32]);
+            seed_masternode(&ctx, 0x30 + flags, None);
+            let mut screen = MasternodesScreen::new(&ctx);
+            screen.open_detail(node);
+            screen.pending_removals.insert(node);
+            ctx.set_selected_identity(Some(node));
+            let mut roots = BTreeMap::from([
+                (
+                    RootScreenType::RootScreenMasternodes,
+                    Screen::MasternodesScreen(screen),
+                ),
+                (
+                    RootScreenType::RootScreenIdentityHub,
+                    Screen::IdentityHubScreen(
+                        crate::ui::identity::hub_screen::IdentityHubScreen::new(&ctx),
+                    ),
+                ),
+            ]);
+            ctx.delete_local_qualified_identity(&node).unwrap();
+            MessageBanner::clear_all_global(ctx.egui_ctx());
+            let result = BackendTaskSuccessResult::RemovedIdentities {
+                network: ctx.network,
+                identity_ids: vec![node],
+                associated_cleanup_failed: flags & 1 != 0,
+                cleanup_deferred: flags & 2 != 0,
+                local_data_cleanup_failed: flags & 4 != 0,
+            };
+            // The app's delivery path has no dependency on root selection or its child stack.
+            let banner =
+                crate::app::deliver_identity_removal_result(ctx.egui_ctx(), &mut roots, &result)
+                    .unwrap();
+            let Screen::MasternodesScreen(screen) = &roots[&RootScreenType::RootScreenMasternodes]
+            else {
+                unreachable!()
+            };
+            assert!(matches!(screen.view, MasternodesView::List));
+            assert!(screen.nodes.is_empty());
+            assert!(screen.pending_removals.is_empty());
+            assert_eq!(ctx.selected_identity_id(), None);
+            let (expected, _) = crate::ui::identity::removed_identities_banner(
+                flags & 1 != 0,
+                flags & 2 != 0,
+                flags & 4 != 0,
+            );
+            assert!(banner.text().unwrap().contains(expected));
+            assert!(banner.text().unwrap().contains("Testnet"));
+            assert_eq!(
+                global_banner_texts(ctx.egui_ctx()).len(),
+                1,
+                "only the app publishes the outcome"
+            );
+        }
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn masternode_removal_delivery_reports_inactive_network_without_mutating_roots() {
+        use crate::ui::Screen;
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        ctx.set_selected_identity(Some(node));
+        let mut roots = BTreeMap::from([
+            (
+                RootScreenType::RootScreenMasternodes,
+                Screen::MasternodesScreen(screen),
+            ),
+            (
+                RootScreenType::RootScreenIdentityHub,
+                Screen::IdentityHubScreen(crate::ui::identity::hub_screen::IdentityHubScreen::new(
+                    &ctx,
+                )),
+            ),
+        ]);
+        let result = BackendTaskSuccessResult::RemovedIdentities {
+            network: Network::Mainnet,
+            identity_ids: vec![node],
+            associated_cleanup_failed: false,
+            local_data_cleanup_failed: true,
+            cleanup_deferred: true,
+        };
+        let banner =
+            crate::app::deliver_identity_removal_result(ctx.egui_ctx(), &mut roots, &result)
+                .unwrap();
+        assert!(banner.text().unwrap().contains("Mainnet"));
+        let Screen::MasternodesScreen(screen) = &roots[&RootScreenType::RootScreenMasternodes]
+        else {
+            unreachable!()
+        };
+        assert!(matches!(screen.view, MasternodesView::Detail(_)));
+        assert_eq!(ctx.selected_identity_id(), Some(node));
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -978,6 +1095,7 @@ mod tests {
         ctx.delete_local_qualified_identity(&node)
             .expect("the backend task removed the node before returning its result");
         screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            network: ctx.network,
             identity_ids: vec![node],
             associated_cleanup_failed: false,
             local_data_cleanup_failed: false,

@@ -1221,7 +1221,7 @@ pub enum TaskError {
     /// The identity and its private keys are gone, but at least one optional
     /// owner-scoped sidecar could not be removed.
     #[error(
-        "The identity was removed, but some DashPay or token-list data may still be stored on this device. If you can load this identity again, remove it again to retry local cleanup."
+        "The identity was removed, but some DashPay or token-list data may still be stored on this device. The app will keep trying to clear this local data automatically."
     )]
     IdentitySidecarCleanupIncomplete,
 

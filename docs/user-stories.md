@@ -729,6 +729,7 @@ As a user, I want to remove an identity from this device from the identity's own
 - The confirmation names the identity it is about to unload and states plainly that this permanently deletes that identity's private keys stored on this device, and that using it here again needs the user's own backup — the identity record itself stays on Dash Platform, but "stays on Platform" is not "keys survive".
 - While the confirmation is open the controls behind it, including the identity switcher, cannot be used, so the answer is always given for the identity the confirmation names.
 - Confirming removes the identity, its saved keys, its top-up history, its scheduled DPNS votes, its DashPay contact overlays, and its token-list preferences from this device.
+- Interrupted removal retains a durable cleanup record until its keys and owner-scoped local data are cleared; startup retries do not require loading the identity again and never clear another identity's data.
 - The removal applies to the identity that was on screen when the action was chosen, even if the selected identity changes while the confirmation is open.
 - Choosing "Keep", or dismissing the confirmation, changes nothing.
 - While a storage update is running the removal is refused with an explanation and can be retried once it finishes.
@@ -1632,6 +1633,7 @@ As a masternode operator, I want to remove a masternode from DET, so that I can 
 - The detail view's "Remove masternode" action shows a confirmation dialog before proceeding.
 - The confirmation explains that removal deletes local private keys and that loading the node again requires its ProTxHash and a private-key backup.
 - Confirming forgets the masternode and its associated voter identity, and the card disappears from the list.
+- Removal completes off the UI thread. Its outcome and any cleanup warnings remain visible after navigation, identify the affected network, and update the retained node view without affecting another network's nodes.
 
 ### MN-005: Keep the everyday surface clean [Implemented]
 **Persona:** Alex, Priya

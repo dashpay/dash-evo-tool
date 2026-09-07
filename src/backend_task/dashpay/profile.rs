@@ -31,7 +31,7 @@ pub async fn load_profile(
     let mut profile_query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay profile",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         }
     })?;
 
@@ -182,7 +182,7 @@ pub async fn update_profile(
         DocumentQuery::new(dashpay_contract.clone(), "profile").map_err(|e| {
             DashPayError::QueryCreation {
                 query_target: "DashPay profile",
-                source: Box::new(e),
+                source: Box::new(e.into()),
             }
         })?;
 
@@ -337,6 +337,7 @@ pub async fn update_profile(
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
 
         let mut builder = DocumentCreateTransitionBuilder::new(
@@ -436,7 +437,7 @@ pub async fn fetch_contact_profile(
     let mut query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay profile",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         }
     })?;
 
@@ -481,7 +482,7 @@ pub async fn search_profiles(
     let mut dpns_query =
         DocumentQuery::new(dpns_contract, "domain").map_err(|e| DashPayError::QueryCreation {
             query_target: "DPNS domain",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         })?;
 
     dpns_query = dpns_query
@@ -532,7 +533,7 @@ pub async fn search_profiles(
             DocumentQuery::new(dashpay_contract.clone(), "profile").map_err(|e| {
                 DashPayError::QueryCreation {
                     query_target: "DashPay profile",
-                    source: Box::new(e),
+                    source: Box::new(e.into()),
                 }
             })?;
 

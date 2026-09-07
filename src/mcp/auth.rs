@@ -19,6 +19,10 @@ pub struct ApiKey(pub Arc<str>);
 
 /// Axum middleware that validates `Authorization: Bearer <token>` headers.
 /// Uses constant-time comparison to prevent timing attacks.
+#[expect(
+    clippy::result_large_err,
+    reason = "axum's middleware contract fixes the Result<Response, Response> signature"
+)]
 pub async fn bearer_auth(
     State(api_key): State<ApiKey>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,

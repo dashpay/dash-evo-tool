@@ -38,10 +38,12 @@ impl AppContext {
                     value: Value::Text(normalized_name.clone()),
                 },
             ],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],
             limit: 1,
+            offset: None,
             start: None,
         };
 
@@ -84,10 +86,12 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(identity_id.into()),
             }],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
+            offset: None,
             start: None,
         };
 

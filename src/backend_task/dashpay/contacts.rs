@@ -215,7 +215,7 @@ pub async fn load_contacts(
     let mut contact_info_query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
         .map_err(|e| DashPayError::QueryCreation {
             query_target: "DashPay contactInfo",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         })?;
 
     contact_info_query = contact_info_query.with_where(WhereClause {

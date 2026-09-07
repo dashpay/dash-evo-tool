@@ -10,12 +10,19 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+use platform_wallet::changeset::PlatformWalletPersistence;
+use platform_wallet::wallet::platform_wallet::WalletId;
 use std::sync::Arc;
 
 use super::{
     DetPlatformSigner, DetSigner, PlatformPathIndex, WalletBackend, map_identity_register_error,
     map_identity_top_up_error, map_platform_address_fund_error,
 };
+
+/// The all-zero `WalletId` upstream storage reserves as the spelling of
+/// "owned by no wallet": every scope-aware reader and writer maps it to a
+/// NULL `wallet_id`. Never a real wallet id.
+const UNOWNED_WALLET_SCOPE: WalletId = [0u8; 32];
 
 /// The two identity-funding account flavours DET provisions. Parsing the
 /// caller's intent into this once (at [`WalletBackend::ensure_identity_funding_accounts`])
@@ -156,6 +163,222 @@ impl WalletBackend {
                 source: Arc::new(e),
             }),
         }
+    }
+
+    /// The ids of every identity in the upstream store that belongs to no
+    /// wallet — DET's wallet-less identities. Masternode/evonode nodes are
+    /// the expected case, but any identity
+    /// [`AppContext::insert_local_qualified_identity`](crate::context::AppContext::insert_local_qualified_identity)
+    /// stores without a wallet association lands here too.
+    ///
+    /// `AppContext::reconcile_unowned_identities` diffs this set against its
+    /// own cheap sidecar id scan on both sides — registering what's missing
+    /// here and withdrawing what's missing there — so this is also the read
+    /// half of that reconcile's two-way contract, not only a test accessor.
+    ///
+    /// Ids are all the caller gets, but not all this costs: upstream exposes
+    /// no id-only door (`SqlitePersister::load_unowned_identities` is the only
+    /// public read of the unowned scope), so every row is decoded into a full
+    /// `ManagedIdentity` — keys and contacts merged in — and then dropped.
+    /// Acceptable because the unowned scope holds one row per wallet-less
+    /// identity, i.e. this device's masternode/evonode nodes.
+    pub(crate) fn unowned_identity_ids(
+        &self,
+    ) -> Result<std::collections::BTreeSet<dash_sdk::platform::Identifier>, TaskError> {
+        Ok(self.load_unowned_identities()?.into_keys().collect())
+    }
+
+    /// Register `identity` in the upstream store as **unowned** — belonging to
+    /// no wallet — so a wallet-less identity DET knows about (masternode and
+    /// evonode nodes are the expected case, though any wallet-less identity
+    /// takes this path) is visible to upstream instead of living only in
+    /// DET's k/v sidecar. Idempotent: a no-op once the id is present in the
+    /// unowned scope, whether this call or an earlier boot's reconcile put it
+    /// there.
+    ///
+    /// The wallet scope is deliberately *no wallet*: the row is written through
+    /// a persister scoped to the all-zero sentinel, which stores a NULL
+    /// `identities.wallet_id`. That is what keeps the node's DET record safe —
+    /// a real wallet's scope would put the row under that wallet's `ON DELETE
+    /// CASCADE`, and the storage layer's `cascade_meta_on_identity_delete`
+    /// trigger would then delete the node's `meta_identity` rows, i.e. DET's own
+    /// `det:identity:v1` record, when that unrelated wallet is removed.
+    ///
+    /// **What the mirrored row does *not* carry: `identity`'s public keys.**
+    /// Upstream's out-of-wallet write path persists only an identity/balance/
+    /// revision changeset — it never emits a keys changeset — so a
+    /// `ManagedIdentity` read back for one of these ids has a permanently
+    /// *empty* key map and a `status` frozen at `Unknown`, regardless of what
+    /// DET's own sidecar record holds. Tracked upstream:
+    /// <https://github.com/dashpay/platform/issues/4443>. The row is also
+    /// write-once: a no-op on an already-registered id means its
+    /// balance/revision stay frozen at whatever they were on first
+    /// registration — there is no update path today.
+    ///
+    /// Currently latent, not a live bug: every production reader —
+    /// `AppContext::reconcile_unowned_identities` via [`Self::unowned_identity_ids`],
+    /// and this method's own `bool` return — only ever consults an id, never a
+    /// mirrored row's keys, status, or balance. It becomes a live bug the day
+    /// a caller trusts the mirror for anything beyond presence.
+    ///
+    /// Returns `true` when this call newly registered the identity, `false`
+    /// when it was already in the unowned scope — matching
+    /// [`Self::ensure_identity_managed`], so a reconcile driver can log only
+    /// real changes instead of every attempt. A `true` is a *verified* one:
+    /// the row is read back before it is claimed (see Errors).
+    ///
+    /// # Errors
+    /// [`TaskError::UnownedIdentityMirrorMissing`] when the row is absent from
+    /// the unowned scope right after being written there. The readback is the
+    /// only evidence available: the upsert's
+    /// `WHERE identities.wallet_id IS NULL OR identities.wallet_id IS excluded.wallet_id`
+    /// skips a row already filed under a wallet and reports no error for the
+    /// skip, upstream offers no re-scoping write, and `add_out_of_wallet_identity`
+    /// swallows a persist failure into `tracing::error!` before returning
+    /// `Ok(())` (`manager/lifecycle.rs` at pin `4784de03`). A refused mirror and
+    /// a failed write therefore arrive here identically — the error deliberately
+    /// claims neither cause. Paid on a registration only: the already-registered
+    /// fast path above returns before it.
+    ///
+    /// [`TaskError::WalletStorage`] if reading the unowned set fails;
+    /// [`TaskError::WalletBackend`] on an upstream add failure — currently
+    /// unreachable in practice, since upstream's `add_out_of_wallet_identity`
+    /// returns `Ok` unconditionally, but that is an implementation detail of
+    /// the pinned rev, not a documented contract.
+    pub(crate) fn ensure_identity_unowned(
+        &self,
+        identity: &dash_sdk::platform::Identity,
+    ) -> Result<bool, TaskError> {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let mut manager = self.unowned_identity_manager()?;
+        if manager.identity(&identity.id()).is_some() {
+            return Ok(false);
+        }
+        #[cfg(test)]
+        let write_swallowed = self
+            .inner
+            .swallow_next_unowned_write
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(test))]
+        let write_swallowed = false;
+        if !write_swallowed {
+            manager
+                .add_out_of_wallet_identity(identity.clone(), &self.unowned_scope_persister())
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
+        }
+        if !self.load_unowned_identities()?.contains_key(&identity.id()) {
+            return Err(TaskError::UnownedIdentityMirrorMissing {
+                identity_id: identity.id(),
+            });
+        }
+        Ok(true)
+    }
+
+    /// Withdraw an identity from the upstream store's unowned scope, mirroring
+    /// its removal from DET. A no-op for an identity that is not registered
+    /// there — including every wallet-owned one.
+    ///
+    /// Upstream records this as a tombstone rather than a row delete, so it
+    /// cannot reach the identity's `meta_identity` rows.
+    ///
+    /// Retried like registration is: the caller
+    /// ([`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity))
+    /// only logs a failure, but the boot reconcile
+    /// (`AppContext::reconcile_unowned_identities`) works both directions and
+    /// re-issues this call for every registration whose sidecar record is
+    /// gone. A tombstone lost to a crash or storage error between the sidecar
+    /// delete and this call therefore costs one boot, not the record.
+    ///
+    /// An `Ok` is a *verified* one: the row is read back as gone before the
+    /// removal is claimed (see Errors).
+    ///
+    /// # Errors
+    /// [`TaskError::UnownedIdentityMirrorRemains`] when the row is still in
+    /// the unowned scope right after being withdrawn from it. Upstream's
+    /// `remove_identity` persists the tombstone through `persist_removal`,
+    /// which swallows a persister failure into `tracing::error!` and returns
+    /// `()`, so the removal reports success either way (`manager/lifecycle.rs`
+    /// at pin `4784de03`) — the readback is the only evidence available. Paid
+    /// on a real withdrawal only: the not-registered fast path above returns
+    /// before it.
+    ///
+    /// [`TaskError::WalletStorage`] if reading the unowned set fails;
+    /// [`TaskError::WalletBackend`] on an upstream removal failure.
+    pub(crate) fn remove_unowned_identity(
+        &self,
+        identity_id: &dash_sdk::platform::Identifier,
+    ) -> Result<(), TaskError> {
+        let mut manager = self.unowned_identity_manager()?;
+        if manager.identity(identity_id).is_none() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        let removal_swallowed = self
+            .inner
+            .swallow_next_unowned_removal
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(not(test))]
+        let removal_swallowed = false;
+        if !removal_swallowed {
+            manager
+                .remove_identity(identity_id, &self.unowned_scope_persister())
+                .map(|_| ())
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Arc::new(e),
+                })?;
+        }
+        if self.load_unowned_identities()?.contains_key(identity_id) {
+            return Err(TaskError::UnownedIdentityMirrorRemains {
+                identity_id: *identity_id,
+            });
+        }
+        Ok(())
+    }
+
+    fn load_unowned_identities(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<
+            dash_sdk::platform::Identifier,
+            platform_wallet::ManagedIdentity,
+        >,
+        TaskError,
+    > {
+        #[cfg(test)]
+        if self
+            .inner
+            .unowned_read_test_failure
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(TaskError::WalletStorageNotReady);
+        }
+
+        self.inner
+            .wallet_persister
+            .load_unowned_identities()
+            .map_err(|source| TaskError::WalletStorage { source })
+    }
+
+    /// The unowned identities as a manager, so a mutation keeps the bucket and
+    /// its private location index consistent. Deliberately its own manager and
+    /// never a wallet's: an unowned identity inside a wallet's manager is
+    /// claimed by that wallet on its next flush, via the `identities` upsert's
+    /// orphan-promotion COALESCE.
+    fn unowned_identity_manager(&self) -> Result<platform_wallet::IdentityManager, TaskError> {
+        Ok(platform_wallet::changeset::IdentityManagerStartState {
+            out_of_wallet_identities: self.load_unowned_identities()?,
+            wallet_identities: Default::default(),
+        }
+        .into())
+    }
+
+    fn unowned_scope_persister(&self) -> platform_wallet::WalletPersister {
+        platform_wallet::WalletPersister::new(
+            UNOWNED_WALLET_SCOPE,
+            Arc::clone(&self.inner.wallet_persister) as Arc<dyn PlatformWalletPersistence>,
+        )
     }
 
     /// Test-only: the identity id this wallet's upstream manager resolves for

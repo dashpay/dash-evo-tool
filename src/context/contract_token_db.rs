@@ -773,6 +773,34 @@ fn clear_untracked_in(
         .map_err(token_err)
 }
 
+/// Drop the token-list state belonging to `identity_id`: every balance
+/// dismissal it recorded, and its entries in the saved ordering.
+///
+/// The identity counterpart of [`clear_untracked_token_in`] and of the pruning
+/// [`AppContext::remove_token`] does — a marker naming an identity that no
+/// longer exists is invisible to the user, so left behind it silently re-hides
+/// that token if the identity is ever loaded again.
+///
+/// The dismissal keys lead with the token id, so one identity's markers are not
+/// a single prefix scan: the whole family is listed and matched on the decoded
+/// pair, keeping [`parse_untracked_key`] the only reader of the key layout.
+pub(super) fn forget_identity_token_state(
+    kv: &DetKv,
+    identity_id: &Identifier,
+) -> std::result::Result<(), TaskError> {
+    // INTENTIONAL(identity-token-global-scan): the token-first on-disk layout requires a full
+    // family scan per identity; changing that durable format is outside this cleanup change.
+    for key in kv
+        .list(DetScope::Global, Some(TOKEN_UNTRACKED_PREFIX))
+        .map_err(token_err)?
+    {
+        if parse_untracked_key(&key).is_some_and(|pair| pair.identity_id == *identity_id) {
+            kv.delete(DetScope::Global, &key).map_err(token_err)?;
+        }
+    }
+    prune_token_order(kv, |(_, identity)| identity != identity_id)
+}
+
 /// Drop every dismissal recorded for `token_id`, whichever identity made it.
 fn clear_untracked_token_in(
     kv: &DetKv,
@@ -821,7 +849,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use crate::wallet_backend::kv_test_support::{InMemoryKv, StallingReadKv};
     use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::{Arc, Mutex};
 
@@ -1060,40 +1088,6 @@ mod tests {
     // read-before / written-over — the lost update surfaces as a dismissed
     // token reappearing on the next refresh.
     // ----------------------------------------------------------------
-
-    /// Delegates to [`InMemoryKv`], stalling *after* each read has taken its
-    /// snapshot. Two concurrent mutations therefore both observe the
-    /// pre-mutation state and write back late: a mutation that reads before it
-    /// writes loses its peer's update, while a mutation that only writes never
-    /// reads, never stalls, and cannot be clobbered.
-    #[derive(Default)]
-    struct StallingReadKv {
-        inner: InMemoryKv,
-    }
-
-    impl KvStore for StallingReadKv {
-        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            let value = self.inner.get(scope, key);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            value
-        }
-
-        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
-            self.inner.put(scope, key, value)
-        }
-
-        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
-            self.inner.delete(scope, key)
-        }
-
-        fn list_keys(
-            &self,
-            scope: &ObjectId,
-            prefix: Option<&str>,
-        ) -> Result<Vec<String>, KvError> {
-            self.inner.list_keys(scope, prefix)
-        }
-    }
 
     fn stalling_kv() -> DetKv {
         DetKv::from_store(Arc::new(StallingReadKv::default()))

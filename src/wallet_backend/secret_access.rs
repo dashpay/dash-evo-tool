@@ -1171,6 +1171,14 @@ fn handle_lazy_tier2_rewrap_result(result: Result<(), TaskError>) -> Result<(), 
             );
             Ok(())
         }
+        Err(TaskError::PassphraseTooLong { source, .. }) => {
+            tracing::warn!(
+                target = "wallet_backend::secret_access",
+                error = ?source,
+                "HD seed lazy Tier-2 re-wrap deferred because the legacy password exceeds the storage ceiling",
+            );
+            Ok(())
+        }
         other => other,
     }
 }
@@ -2738,6 +2746,21 @@ mod tests {
     fn lazy_tier2_rewrap_defers_blank_passphrase() {
         let result = handle_lazy_tier2_rewrap_result(Err(TaskError::SecretSeam {
             source: Box::new(SecretStoreError::BlankPassphrase),
+        }));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn lazy_tier2_rewrap_defers_overlong_passphrase() {
+        use platform_wallet_storage::secrets::MAX_PASSPHRASE_LEN;
+
+        let result = handle_lazy_tier2_rewrap_result(Err(TaskError::PassphraseTooLong {
+            max: MAX_PASSPHRASE_LEN,
+            source: Box::new(SecretStoreError::PassphraseTooLong {
+                found: MAX_PASSPHRASE_LEN + 1,
+                max: MAX_PASSPHRASE_LEN,
+            }),
         }));
 
         assert!(result.is_ok());

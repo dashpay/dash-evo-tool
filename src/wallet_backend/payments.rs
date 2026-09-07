@@ -14,7 +14,7 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::dashcore::blockdata::constants::MAX_MONEY;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
-use dash_sdk::dpp::dashcore::{ScriptBuf, TxOut};
+use dash_sdk::dpp::dashcore::{ScriptBuf, TxOut, Txid};
 use dash_sdk::dpp::key_wallet::account::Account;
 use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::{
@@ -129,12 +129,11 @@ fn dry_run_asset_lock_amount(
 // bounded by rust-dashcore#919's suffix-sum feasibility prune and node budget,
 // which closes rust-dashcore#918. The aggregate quote still has a deadline
 // because it performs many individually bounded selections under a write lock.
-// Confirmed present: `platform`'s `key-wallet` dep tracks rust-dashcore's
-// `dash-evo-tool` integration branch (rev 34f0921e, which merges #919's
-// source branch directly), and this crate's own `Cargo.toml` pins `platform`
-// to rev a18bd1586858ef680124e150caad6a7dc21d0b64 (feat/platform-wallet-
-// storage-rehydration tip) or later, which resolves to that same key-wallet
-// rev or newer. If either pin ever moves backward, re-verify this holds.
+// Confirmed present: this crate's `Cargo.toml` pins `platform` to rev
+// 993584a6b53831026f2f5fe30f21a8f4d14a06e8, whose `key-wallet` dep pins
+// rust-dashcore rev 173ffac0, and that rev's `coin_selection.rs` is
+// byte-identical to the one carrying #919. Re-verify whenever either pin
+// moves — the key-wallet reference is a rev, so it cannot drift on its own.
 fn dry_run_asset_lock_amount_with_strategy(
     managed_account: &ManagedCoreFundsAccount,
     account: &Account,
@@ -152,20 +151,24 @@ fn dry_run_asset_lock_amount_with_strategy(
                 script_pubkey: ScriptBuf::from_bytes(vec![0; P2PKH_CREDIT_OUTPUT_SCRIPT_LEN]),
             }]),
         ))
-        .set_funding(&mut dry_run_account, account);
+        .add_funding(&mut dry_run_account, account);
     if let Some(strategy) = selection_strategy {
         builder = builder.set_selection_strategy(strategy);
     }
-    let result = builder.require_final_inputs().build_unsigned();
+    let result = builder.require_final_inputs().build_unsigned_reserved();
 
     match result {
-        Ok((transaction, _)) => {
+        Ok((transaction, _, reservation)) => {
             // `ManagedCoreFundsAccount::clone` shares the live `ReservationSet`
             // (`Arc<Mutex<_>>`; source of truth: key-wallet's
             // `managed_account/reservation.rs` doc comment). Every successful probe
             // reserves real wallet outpoints, so this call MUST run on every success
             // path; deleting it silently strands real UTXOs for the 24-block TTL.
-            dry_run_account.release_reservation(&transaction);
+            // The owner guard frees only what this build reserved, never a
+            // concurrent build's re-reservation of the same outpoint.
+            if let Some(token) = reservation {
+                dry_run_account.release_reservation_if_owner(&transaction, token);
+            }
             Ok(AssetLockDryRun::Builds)
         }
         Err(BuilderError::CoinSelection(SelectionError::NoUtxosAvailable)) => {
@@ -203,18 +206,22 @@ fn asset_lock_drain_ceiling(
                 script_pubkey: ScriptBuf::from_bytes(vec![0; P2PKH_CREDIT_OUTPUT_SCRIPT_LEN]),
             }]),
         ))
-        .set_funding(&mut dry_run_account, account)
+        .add_funding(&mut dry_run_account, account)
         .require_final_inputs()
-        .build_unsigned();
+        .build_unsigned_reserved();
 
     match result {
-        Ok((transaction, _)) => {
+        Ok((transaction, _, reservation)) => {
             // `ManagedCoreFundsAccount::clone` shares the live `ReservationSet`
             // (`Arc<Mutex<_>>`; source of truth: key-wallet's
             // `managed_account/reservation.rs` doc comment). Every successful probe
             // reserves real wallet outpoints, so this call MUST run on every success
             // path; deleting it silently strands real UTXOs for the 24-block TTL.
-            dry_run_account.release_reservation(&transaction);
+            // The owner guard frees only what this build reserved, never a
+            // concurrent build's re-reservation of the same outpoint.
+            if let Some(token) = reservation {
+                dry_run_account.release_reservation_if_owner(&transaction, token);
+            }
             transaction
                 .output
                 .first()
@@ -700,7 +707,7 @@ impl WalletBackend {
                 let wallet_id = wallet.wallet_id();
 
                 // Assemble and sign under one uninterrupted hold of the
-                // wallet-manager write lock: `set_funding` reads the funding
+                // wallet-manager write lock: `add_funding` reads the funding
                 // account's free UTXOs and `build_signed` reserves the ones it
                 // selects. Holding the lock across both closes the
                 // read-then-reserve window a concurrent build could otherwise use
@@ -726,7 +733,7 @@ impl WalletBackend {
                     let mut builder = TransactionBuilder::new()
                         .set_current_height(current_height)
                         .set_selection_strategy(SelectionStrategy::LargestFirst)
-                        .set_funding(managed_account, account);
+                        .add_funding(managed_account, account);
                     for (address, amount) in &recipients {
                         builder = builder.add_output(address, *amount);
                     }
@@ -776,9 +783,7 @@ impl WalletBackend {
                         &tx,
                     )
                     .await
-                    .map_err(|source| TaskError::WalletBackend {
-                        source: Arc::new(source),
-                    })?;
+                    .map_err(|e| map_core_broadcast_error(Some(tx.txid()), e))?;
                 Ok(tx.txid())
             })
             .await
@@ -867,9 +872,12 @@ impl WalletBackend {
                         &signer,
                     )
                     .await
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Arc::new(e),
-                    })?;
+                    // Upstream keeps both the UTXO reservation and the
+                    // resumable Built row when this broadcast is ambiguous, so
+                    // the generic envelope's "please retry" would advise a
+                    // resend that cannot go through. It builds and broadcasts
+                    // internally, so no id reaches us to watch.
+                    .map_err(|e| map_core_broadcast_error(None, e))?;
                 let private_key =
                     self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;
                 Ok((proof, private_key, out_point.txid))
@@ -958,11 +966,40 @@ fn unbound_topup_lock_eligible(
     }
 }
 
+/// Classify a broadcast failure from the payment path. Pure — unit-testable.
+///
+/// An ambiguous outcome gets its own [`TaskError::TransactionConfirmationUnknown`]
+/// rather than the generic envelope: the payment may already be on the network,
+/// and upstream deliberately keeps its inputs reserved so it cannot be sent
+/// twice, so telling the user to retry would be both wrong and unactionable.
+/// Every definitive failure keeps the generic envelope.
+///
+/// `txid` is the broadcast transaction's id when the caller holds it, so the UI
+/// can watch that transaction for a late confirmation; `None` where the
+/// transaction was assembled and sent inside an upstream orchestrator that
+/// returns no id.
+pub(super) fn map_core_broadcast_error(
+    txid: Option<Txid>,
+    source: platform_wallet::error::PlatformWalletError,
+) -> TaskError {
+    match source {
+        platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(_) => {
+            TaskError::TransactionConfirmationUnknown {
+                txid,
+                source: Box::new(source),
+            }
+        }
+        other => TaskError::WalletBackend {
+            source: Arc::new(other),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ASSET_LOCK_FEE_PER_KB, MAX_MONEY, asset_lock_builder_height,
-        asset_lock_max_amount_from_account, unbound_topup_lock_eligible,
+        asset_lock_max_amount_from_account, map_core_broadcast_error, unbound_topup_lock_eligible,
     };
     use crate::backend_task::error::TaskError;
     use crate::model::fee_estimation::core_max_send_amount_duffs;
@@ -1018,13 +1055,13 @@ mod tests {
             .expect("the balance covers the Max-send fee reserve");
 
         assert_eq!(max_amount, 9_999_780);
-        let (transaction, fee) = TransactionBuilder::new()
+        let (transaction, fee, _no_reservation) = TransactionBuilder::new()
             .set_current_height(200)
             .set_selection_strategy(SelectionStrategy::LargestFirst)
             .add_inputs([utxo])
             .add_output(&address, max_amount)
             .set_change_address(address)
-            .build_unsigned()
+            .build_unsigned_reserved()
             .expect("a Max send must fold the zero/dust remainder into its fee");
 
         assert_eq!(transaction.output.len(), 1);
@@ -1089,7 +1126,7 @@ mod tests {
         );
 
         let mut dry_run_account = managed_account.clone();
-        let (transaction, _) = TransactionBuilder::new()
+        let (transaction, _, reservation) = TransactionBuilder::new()
             .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
             .set_current_height(CURRENT_HEIGHT)
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
@@ -1098,11 +1135,13 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut dry_run_account, account)
+            .add_funding(&mut dry_run_account, account)
             .require_final_inputs()
-            .build_unsigned()
+            .build_unsigned_reserved()
             .expect("quoted Max must build through the real asset-lock selector");
-        dry_run_account.release_reservation(&transaction);
+        if let Some(token) = reservation {
+            dry_run_account.release_reservation_if_owner(&transaction, token);
+        }
 
         let mut one_over_account = managed_account.clone();
         let one_over = TransactionBuilder::new()
@@ -1114,9 +1153,9 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut one_over_account, account)
+            .add_funding(&mut one_over_account, account)
             .require_final_inputs()
-            .build_unsigned();
+            .build_unsigned_reserved();
         assert!(
             one_over.is_err(),
             "one duff above the quoted Max must fail through the real selector"
@@ -1132,9 +1171,9 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut overshoot_account, account)
+            .add_funding(&mut overshoot_account, account)
             .require_final_inputs()
-            .build_unsigned();
+            .build_unsigned_reserved();
         assert!(
             overshoot.is_err(),
             "the display-only snapshot amount must reproduce the builder rejection"
@@ -1206,7 +1245,7 @@ mod tests {
         );
 
         let mut dry_run_account = managed_account.clone();
-        let (transaction, _) = TransactionBuilder::new()
+        let (transaction, _, reservation) = TransactionBuilder::new()
             .set_fee_rate(FeeRate::new(ASSET_LOCK_FEE_PER_KB))
             .set_current_height(CURRENT_HEIGHT)
             .set_special_payload(TransactionPayload::AssetLockPayloadType(
@@ -1215,15 +1254,17 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut dry_run_account, account)
+            .add_funding(&mut dry_run_account, account)
             .require_final_inputs()
-            .build_unsigned()
+            .build_unsigned_reserved()
             .expect("quoted Max must build from an in-cap subset");
         assert!(
             transaction.input.len() <= INPUT_CAP,
             "the achievable quote must respect the builder's input cap"
         );
-        dry_run_account.release_reservation(&transaction);
+        if let Some(token) = reservation {
+            dry_run_account.release_reservation_if_owner(&transaction, token);
+        }
 
         let mut one_over_account = managed_account.clone();
         let one_over = TransactionBuilder::new()
@@ -1235,9 +1276,9 @@ mod tests {
                     script_pubkey: ScriptBuf::new(),
                 }]),
             ))
-            .set_funding(&mut one_over_account, account)
+            .add_funding(&mut one_over_account, account)
             .require_final_inputs()
-            .build_unsigned();
+            .build_unsigned_reserved();
         assert!(
             one_over.is_err(),
             "one duff above the quote must exceed the achievable in-cap subset"
@@ -1533,6 +1574,81 @@ mod tests {
         assert!(
             matches!(err, TaskError::AssetLockAlreadyUsed),
             "expected AssetLockAlreadyUsed, got: {err:?}"
+        );
+    }
+
+    /// A send whose broadcast outcome is ambiguous must not be reported with
+    /// the generic wallet-backend message, which tells the user to retry: the
+    /// payment may already be on the network, and upstream keeps its inputs
+    /// reserved so it must not be sent a second time.
+    #[test]
+    fn an_ambiguous_broadcast_does_not_ask_the_user_to_retry() {
+        let err = map_core_broadcast_error(
+            None,
+            platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(
+                "peer timed out after send".to_string(),
+            ),
+        );
+        assert!(
+            matches!(err, TaskError::TransactionConfirmationUnknown { .. }),
+            "expected TransactionConfirmationUnknown, got: {err:?}"
+        );
+    }
+
+    /// An unambiguous broadcast rejection keeps the generic envelope — the
+    /// carve-out above must not swallow the ordinary failure path.
+    #[test]
+    fn a_definitive_broadcast_rejection_keeps_the_generic_envelope() {
+        let err = map_core_broadcast_error(
+            None,
+            platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+                "rejected by peer".to_string(),
+            ),
+        );
+        assert!(
+            matches!(err, TaskError::WalletBackend { .. }),
+            "expected WalletBackend, got: {err:?}"
+        );
+    }
+
+    /// The in-limbo payment's id has to survive the classification, or nothing
+    /// downstream can tell whether that transaction ever landed — the user is
+    /// left to reconcile a funds movement by hand.
+    #[test]
+    fn map_core_broadcast_error_carries_the_txid_of_an_ambiguous_send() {
+        let sent = Txid::from_byte_array([7u8; 32]);
+        let err = map_core_broadcast_error(
+            Some(sent),
+            platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(
+                "peer timed out after send".to_string(),
+            ),
+        );
+        assert!(
+            matches!(
+                err,
+                TaskError::TransactionConfirmationUnknown {
+                    txid: Some(seen),
+                    ..
+                } if seen == sent
+            ),
+            "expected the broadcast txid to reach the error, got: {err:?}"
+        );
+    }
+
+    /// A definitive rejection must not smuggle the txid into an envelope that
+    /// invites a resend: those inputs are released, so there is nothing to
+    /// watch and a retry is the correct advice.
+    #[test]
+    fn map_core_broadcast_error_drops_the_txid_on_a_definitive_rejection() {
+        let err = map_core_broadcast_error(
+            Some(Txid::from_byte_array([7u8; 32])),
+            platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+                "rejected by peer".to_string(),
+            ),
+        );
+        assert!(
+            matches!(err, TaskError::WalletBackend { .. }),
+            "expected WalletBackend, got: {err:?}"
         );
     }
 }

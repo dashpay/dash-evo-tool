@@ -227,6 +227,12 @@ impl AppContext {
                     .resume_unbound_topup_asset_lock(seed_hash, out_point)
                     .await?
             }
+            // Unreachable from here — the caller builds only the two modes
+            // above — but this is a funds path, so an upstream funding mode
+            // this path cannot build fails closed instead of panicking.
+            AssetLockFunding::DrainAccountBalance { .. } => {
+                return Err(TaskError::TopUpFundingMethodUnsupported);
+            }
         };
 
         identity

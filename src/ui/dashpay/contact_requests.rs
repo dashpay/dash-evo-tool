@@ -14,8 +14,8 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
-use crate::ui::identities::get_selected_wallet;
-use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::document::DocumentV0Getters;

@@ -510,7 +510,7 @@ async fn lookup_contact_info(
     let mut query = DocumentQuery::new(dashpay_contract, "contactInfo").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay contactInfo",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         }
     })?;
     query = query.with_where(WhereClause {
@@ -751,6 +751,7 @@ pub async fn create_or_update_contact_info(
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
 
         let mut builder = DocumentCreateTransitionBuilder::new(
@@ -856,6 +857,7 @@ mod tests {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         })
     }
 
@@ -890,6 +892,7 @@ mod tests {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         })
     }
 

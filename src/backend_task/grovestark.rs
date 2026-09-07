@@ -173,7 +173,7 @@ impl GroveSTARKProver {
             .map_err(GroveSTARKError::InvalidDocumentId)?;
 
         let query = DocumentQuery::new(contract, document_type)
-            .map_err(|e| GroveSTARKError::Platform(Box::new(e)))?
+            .map_err(|e| GroveSTARKError::Platform(Box::new(e.into())))?
             .with_document_id(&document_id_identifier);
 
         let (document_opt, _metadata, proof) =
@@ -194,9 +194,12 @@ impl GroveSTARKProver {
         }
 
         // Step 4: Recover the current state root from the document proof.
-        let drive_document_query: DriveDocumentQuery = (&query)
-            .try_into()
-            .map_err(|e: dash_sdk::error::Error| GroveSTARKError::Platform(Box::new(e)))?;
+        let drive_document_query: DriveDocumentQuery =
+            (&query)
+                .try_into()
+                .map_err(|e: dash_sdk::dash_platform_queries::Error| {
+                    GroveSTARKError::Platform(Box::new(e.into()))
+                })?;
         let (state_root, _documents) = drive_document_query
             .verify_proof(&proof.grovedb_proof, sdk.version())
             .map_err(|e| GroveSTARKError::Platform(Box::new(dash_sdk::Error::Drive(e))))?;

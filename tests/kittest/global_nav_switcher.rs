@@ -230,11 +230,11 @@ fn navigate_to_root_sets_main_screen() {
         let (_rt, app_context) = fresh_app_context();
         let action = apply_global_nav_effect(
             &app_context,
-            GlobalNavEffect::NavigateToRoot(RootScreenType::RootScreenIdentities),
+            GlobalNavEffect::NavigateToRoot(RootScreenType::RootScreenDocumentQuery),
         );
         assert_eq!(
             action,
-            AppAction::SetMainScreen(RootScreenType::RootScreenIdentities)
+            AppAction::SetMainScreen(RootScreenType::RootScreenDocumentQuery)
         );
     });
 }
@@ -259,22 +259,22 @@ fn select_page_object_never_writes_app_global_identity() {
     });
 }
 
-/// The global switcher renders on non-Hub root screens. Identities (everyday)
+/// The global switcher renders on non-Hub root screens. Contracts (everyday)
 /// shows both the wallet and identity placeholders; Wallets (wallet-only,
 /// TC-NAV-15) shows only the wallet placeholder, no identity segment.
 #[test]
-fn switcher_present_on_identities_root() {
+fn switcher_present_on_non_hub_everyday_root() {
     with_isolated_data_dir(|| {
-        let harness = mount_app(RootScreenType::RootScreenIdentities);
+        let harness = mount_app(RootScreenType::RootScreenDocumentQuery);
         assert!(
             harness.query_by_label_contains("(no wallet yet)").is_some(),
-            "the global switcher's wallet placeholder must render on Identities"
+            "the global switcher's wallet placeholder must render on Contracts"
         );
         assert!(
             harness
                 .query_by_label_contains("(no identity yet)")
                 .is_some(),
-            "the everyday spec must render the identity placeholder on Identities"
+            "the everyday spec must render the identity placeholder on Contracts"
         );
     });
 }

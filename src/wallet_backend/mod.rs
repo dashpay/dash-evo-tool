@@ -344,6 +344,20 @@ struct Inner {
     clear_shielded_test_failure: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool,
+    /// Forces the next unowned-scope read to fail, so a test can tell a
+    /// wallet-store failure apart from a mirror upstream genuinely refused.
+    #[cfg(test)]
+    unowned_read_test_failure: std::sync::atomic::AtomicBool,
+    /// Drops the next unowned-scope write, reproducing upstream's swallowed
+    /// persist failure — it logs and returns `Ok(())` — which reaches DET as a
+    /// mirror that is simply absent.
+    #[cfg(test)]
+    swallow_next_unowned_write: std::sync::atomic::AtomicBool,
+    /// Drops the next unowned-scope removal, reproducing upstream's swallowed
+    /// tombstone persist — it logs and returns the removed identity anyway —
+    /// which leaves the withdrawn row on disk.
+    #[cfg(test)]
+    swallow_next_unowned_removal: std::sync::atomic::AtomicBool,
     /// Per-wallet shared-result flights for upstream registration. Every caller
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
@@ -554,6 +568,12 @@ impl WalletBackend {
                 clear_shielded_test_failure: std::sync::atomic::AtomicBool::new(false),
                 #[cfg(test)]
                 forget_wallet_local_state_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                unowned_read_test_failure: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                swallow_next_unowned_write: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(test)]
+                swallow_next_unowned_removal: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -1069,6 +1089,27 @@ impl WalletBackend {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_unowned_read_test_failure(&self, fail: bool) {
+        self.inner
+            .unowned_read_test_failure
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_swallow_next_unowned_write(&self) {
+        self.inner
+            .swallow_next_unowned_write
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_swallow_next_unowned_removal(&self) {
+        self.inner
+            .swallow_next_unowned_removal
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_clear_shielded_test_failure(&self, fail: bool) {
         self.inner
             .clear_shielded_test_failure
@@ -1560,6 +1601,10 @@ impl WalletBackend {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "PlatformWalletError is an upstream type we cannot shrink"
+    )]
     async fn start_once(&self) -> Result<(), PlatformWalletError> {
         let config = self.build_client_config();
 
@@ -1674,22 +1719,16 @@ impl WalletBackend {
         }
         // `pwm.shutdown()` quiesces the periodic coordinators — draining any
         // in-flight pass and its persister / host-callback fan-out — then drains
-        // the wallet-event adapter task. Best-effort: a non-clean report used to
-        // flag a still-live worker or orphan, which teardown proceeds past
-        // regardless — log it rather than surface it.
-        //
-        // TODO(platform-pr3954): `shutdown()` returns `()` at this rev (no
-        // clean-shutdown report type yet) — the report check below is
-        // commented out rather than dropped outright; restore once platform
-        // re-adds the report type. User-confirmed removal of the
-        // shutdown-failure warning log for this rev.
-        self.inner.pwm.shutdown().await;
-        // if !report.all_clean() {
-        //     tracing::warn!(
-        //         ?report,
-        //         "Wallet manager shutdown did not complete cleanly; continuing teardown"
-        //     );
-        // }
+        // the wallet-event adapter task. Best-effort: a non-clean report flags a
+        // still-live worker or orphan, which teardown proceeds past regardless —
+        // log it rather than surface it.
+        let report = self.inner.pwm.shutdown().await;
+        if !report.all_clean() {
+            tracing::warn!(
+                ?report,
+                "Wallet manager shutdown did not complete cleanly; continuing teardown"
+            );
+        }
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -1740,9 +1779,24 @@ impl WalletBackend {
         // 2. Quiesce the coordinators (consumers) directly — do NOT call
         //    `pwm.shutdown()`, which would also tear down the non-restartable
         //    wallet-event adapter.
-        self.inner.pwm.platform_address_sync_arc().quiesce().await;
-        self.inner.pwm.identity_sync_arc().quiesce().await;
-        self.inner.pwm.shielded_sync_arc().quiesce().await;
+        //    A coordinator that does not drain within its budget leaves its
+        //    upstream quiescing gate closed, so the reconnect cannot restart
+        //    it — name the one that wedged instead of reconnecting silently.
+        if !self.inner.pwm.platform_address_sync_arc().quiesce().await {
+            tracing::warn!(
+                "Platform address sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
+        if !self.inner.pwm.identity_sync_arc().quiesce().await {
+            tracing::warn!(
+                "Identity sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
+        if !self.inner.pwm.shielded_sync_arc().quiesce().await {
+            tracing::warn!(
+                "Shielded sync did not drain during disconnect; it stays inactive until a later stop drains it"
+            );
+        }
         // 3. Re-arm the DET start gates for the next start() on this backend.
         self.inner.start_latch.reset();
         self.inner.coordinator_gate.reset();
@@ -2448,6 +2502,21 @@ impl WalletBackend {
             .clone()
     }
 
+    /// Confirmation state of `txid` across every loaded wallet's history, or
+    /// `None` when none of them has seen the transaction.
+    ///
+    /// Answers "did that payment land?" for a transaction whose broadcast
+    /// outcome was ambiguous. Reads the same published history the wallet
+    /// screen renders, so the answer can never contradict the row the user is
+    /// looking at. Linear in the combined history length — for the occasional
+    /// pending-confirmation watch, not a per-frame read.
+    pub fn transaction_confirmation(
+        &self,
+        txid: &dash_sdk::dpp::dashcore::Txid,
+    ) -> Option<crate::model::wallet::TransactionConfirmation> {
+        self.inner.snapshots.transaction_confirmation_any(txid)
+    }
+
     /// Startup hydration status for the display-only transaction history.
     pub fn transaction_history_status(
         &self,
@@ -2868,11 +2937,20 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             source: Arc::new(other),
         },
 
+        // The funding core transaction's broadcast outcome is ambiguous. Its
+        // inputs stay reserved upstream, so the user must wait for a sync to
+        // reconcile rather than follow the generic envelope's retry advice.
+        other @ P::TransactionBroadcastUnconfirmed(_) => {
+            TaskError::TransactionConfirmationUnknown {
+                // Upstream assembles and broadcasts the funding transaction
+                // internally and returns no id, so this outcome cannot be
+                // watched for a late confirmation.
+                txid: None,
+                source: Box::new(other),
+            }
+        }
+
         // Every remaining variant → generic WalletBackend wrapper.
-        //
-        // TODO(platform-pr3954): `ShieldedShutdownIncomplete` doesn't exist on
-        // `PlatformWalletError` at this rev; it belongs in this bucket once
-        // platform re-adds it.
         other @ (P::WalletCreation(_)
         | P::PlatformNodePool(_)
         | P::PersisterLoad(_)
@@ -2892,9 +2970,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AssetLockAlreadyConsumed(_)
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBroadcast(_)
-        | P::TransactionBroadcastUnconfirmed(_)
+        | P::MasternodeWithdrawalUnconfirmed { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::Sdk(_)
         | P::AddressSync(_)
@@ -2924,7 +3003,21 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
-        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
+        | P::ShieldedKeyDerivation(_)
+        | P::PlatformShieldCapacityExceeded { .. }
+        | P::CorePooledInsufficientFunds { .. }
+        | P::InsufficientIdentityCredits { .. }
+        | P::IdentityDiscoveryIncomplete { .. }
+        | P::DpnsNameNotFound { .. }
+        | P::ContestedNameNotTradable { .. }
+        | P::DocumentNotForSale { .. }
+        | P::DocumentPriceChanged { .. }
+        | P::InvalidParameter(_)
+        | P::MessageSigningAddressInvalid { .. }
+        | P::MessageSigningMessageInvalid { .. }
+        | P::MessageSigningKeyUnavailable { .. }
+        | P::MessageSigningFailed { .. }
+        | P::ShutdownIncomplete(_)) => TaskError::WalletBackend {
             source: Arc::new(other),
         },
     }
@@ -2977,6 +3070,12 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
             source: Box::new(e),
         },
+        IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
+            source: Box::new(e),
+        },
         // Registration creates the identity, so it cannot legitimately raise a
         // "not managed" lookup error — fold into the generic envelope.
         IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
@@ -3015,6 +3114,12 @@ fn map_identity_top_up_error(
         },
         IdentityOpErrorKind::NotManaged => TaskError::IdentityNotManaged {
             identity_id,
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
             source: Box::new(e),
         },
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
@@ -3083,6 +3188,12 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
             source: Box::new(e),
         },
+        IdentityOpErrorKind::ConfirmationUnknown => TaskError::TransactionConfirmationUnknown {
+            // The orchestrator broadcasts its own funding transaction and
+            // returns no id, so there is nothing to watch.
+            txid: None,
+            source: Box::new(e),
+        },
         // Platform-address funding does not consult the identity manager, so a
         // "not managed" classification is not meaningful here — fold into the
         // generic envelope alongside the other preconditions.
@@ -3105,6 +3216,10 @@ enum IdentityOpErrorKind {
     /// op (top-up) cannot find it — retrying the same op cannot help; the
     /// identity must be reloaded.
     NotManaged,
+    /// The funding transaction's broadcast outcome is ambiguous — it may
+    /// already be on the network, so this is neither a rejection nor a finality
+    /// timeout, and the caller must not re-submit (the next sync reconciles).
+    ConfirmationUnknown,
     /// Anything else — preconditions, wallet state, builder failures.
     Other,
 }
@@ -3128,6 +3243,13 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // manager registration, not a transient fault.
         P::IdentityNotFound(_) | P::IdentityIndexNotSet(_) => IdentityOpErrorKind::NotManaged,
 
+        // Broadcast was accepted but its execution result is unconfirmed — the
+        // op may already be on chain, so it is neither a rejection nor a
+        // finality timeout. The upstream contract says the caller must not
+        // re-submit (the next sync reconciles), so this must not reach the
+        // generic envelope, whose message asks the user to retry.
+        P::TransactionBroadcastUnconfirmed(_) => IdentityOpErrorKind::ConfirmationUnknown,
+
         // Everything else — preconditions, wallet state, builder errors.
         P::WalletCreation(_)
         | P::PlatformNodePool(_)
@@ -3145,6 +3267,7 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockFundingMismatch { .. }
         | P::TransactionBuild(_)
         | P::CoreInsufficientFunds { .. }
+        | P::AssetLockInsufficientFunds { .. }
         | P::NoSpendableInputs { .. }
         | P::AddressSync(_)
         | P::AddressOperation(_)
@@ -3182,12 +3305,37 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // op may already be on chain, so it is neither a rejection nor a
         // finality timeout. Bucket as Other; the upstream contract says the
         // caller must not re-submit (the next sync reconciles).
-        | P::TransactionBroadcastUnconfirmed(_)
+        | P::MasternodeWithdrawalUnconfirmed { .. }
+        // Shielded ambiguity is unreachable here — identity funding runs no
+        // shielded op. `map_shielded_op_error` routes it where it can occur.
         | P::ShieldedBroadcastUnconfirmed { .. }
-        | P::ShieldedSpendUnconfirmed { .. } => IdentityOpErrorKind::Other,
-        // TODO(platform-pr3954): `ShieldedShutdownIncomplete` doesn't exist on
-        // `PlatformWalletError` at this rev; it belongs in the `Other` bucket
-        // once platform re-adds it.
+        | P::ShieldedSpendUnconfirmed { .. }
+        // Funding and credit shortfalls, like their `CoreInsufficientFunds`
+        // sibling above: the submission never reached Platform.
+        | P::CorePooledInsufficientFunds { .. }
+        | P::InsufficientIdentityCredits { .. }
+        | P::PlatformShieldCapacityExceeded { .. }
+        // DPNS / document-trading preconditions. No identity register or
+        // top-up reaches them, and none describes a Platform rejection of
+        // *this* op.
+        | P::DpnsNameNotFound { .. }
+        | P::ContestedNameNotTradable { .. }
+        | P::DocumentNotForSale { .. }
+        | P::DocumentPriceChanged { .. }
+        | P::InvalidParameter(_)
+        // Message signing is a wallet-local operation with no Platform
+        // submission at all.
+        | P::MessageSigningAddressInvalid { .. }
+        | P::MessageSigningMessageInvalid { .. }
+        | P::MessageSigningKeyUnavailable { .. }
+        | P::MessageSigningFailed { .. }
+        // A gap-limit scan that left probes unanswered means "we do not
+        // know", so it is not `NotManaged` (which asserts the identity is
+        // absent and must be reloaded); upstream's contract is to retry.
+        | P::IdentityDiscoveryIncomplete { .. }
+        // Background sync failed to quiesce — a shutdown fault, unrelated to
+        // whether this op reached Platform.
+        | P::ShutdownIncomplete(_) => IdentityOpErrorKind::Other,
     }
 }
 
@@ -3564,6 +3712,30 @@ mod tests {
         assert!(
             matches!(mapped, TaskError::WalletBackend { .. }),
             "Expected WalletBackend fallthrough, got: {mapped:?}"
+        );
+    }
+
+    /// An incomplete identity-discovery scan means "we do not know", not "this
+    /// identity is not in the wallet": it must not classify as `NotManaged`,
+    /// whose user-facing advice is to reload the identity.
+    #[test]
+    fn map_identity_register_error_discovery_incomplete_is_not_not_managed() {
+        let inner = platform_wallet::error::PlatformWalletError::IdentityDiscoveryIncomplete {
+            start_index: 0,
+            probed: 20,
+            failed_probes: 3,
+            source: Box::new(dash_sdk::Error::Config("no node reachable".to_string())),
+        };
+        assert!(
+            matches!(identity_op_error_kind(&inner), IdentityOpErrorKind::Other),
+            "an unanswered discovery probe must not claim the identity is unmanaged"
+        );
+        assert!(
+            matches!(
+                map_identity_register_error(inner),
+                TaskError::WalletBackend { .. }
+            ),
+            "the register façade wraps it in the generic envelope"
         );
     }
 
@@ -4058,5 +4230,47 @@ mod tests {
             map_shielded_op_error(P::ShieldedNotBound),
             TaskError::ShieldedNotBound
         ));
+    }
+
+    fn broadcast_unconfirmed() -> platform_wallet::error::PlatformWalletError {
+        platform_wallet::error::PlatformWalletError::TransactionBroadcastUnconfirmed(
+            "peer timed out after send".to_string(),
+        )
+    }
+
+    /// An ambiguous core broadcast must never reach the generic `WalletBackend`
+    /// envelope, whose message tells the user to retry: upstream's contract is
+    /// that the transaction may already be on the network and must not be
+    /// re-submitted. Covers every façade that funds an operation from a core
+    /// transaction, so no path can regress to "please retry" independently.
+    #[test]
+    fn broadcast_unconfirmed_never_maps_to_retry_advice() {
+        let identity_id = dash_sdk::platform::Identifier::random();
+        let mapped = [
+            map_identity_register_error(broadcast_unconfirmed()),
+            map_identity_top_up_error(identity_id, broadcast_unconfirmed()),
+            map_platform_address_fund_error(broadcast_unconfirmed()),
+            map_shielded_op_error(broadcast_unconfirmed()),
+            // The payment and asset-lock-creation façades share this one.
+            super::payments::map_core_broadcast_error(None, broadcast_unconfirmed()),
+        ];
+        for error in mapped {
+            assert!(
+                matches!(error, TaskError::TransactionConfirmationUnknown { .. }),
+                "Expected TransactionConfirmationUnknown, got: {error:?}"
+            );
+        }
+    }
+
+    /// The bucket is distinct from `Other`: an ambiguous broadcast is not a
+    /// precondition fault, and collapsing the two would restore the retry
+    /// advice for every consumer of `identity_op_error_kind`.
+    #[test]
+    fn identity_op_error_kind_buckets_broadcast_unconfirmed_separately() {
+        let kind = identity_op_error_kind(&broadcast_unconfirmed());
+        assert!(
+            matches!(kind, IdentityOpErrorKind::ConfirmationUnknown),
+            "an ambiguous broadcast must not share a bucket with preconditions"
+        );
     }
 }

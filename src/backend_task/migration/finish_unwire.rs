@@ -403,7 +403,7 @@ async fn refresh_dapi_nodes_once(app_context: &Arc<AppContext>) {
 
 /// Runs one best-effort refresh with an injected discovery operation.
 ///
-/// Run-triggered passes still hold their per-context `migration_run`, while migration and manual refresh
+/// Run-triggered passes still hold their per-context `prepare_gate`, while migration and manual refresh
 /// share a process-wide guard across whole-file config persistence, including different network contexts.
 async fn refresh_dapi_nodes_once_with<D, F>(app_context: &Arc<AppContext>, discover: D)
 where
@@ -598,10 +598,10 @@ fn write_dapi_refresh_completion(
 /// both signals) rather than an `Err` that this boundary would publish as a
 /// plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
-    let _run_guard = match app_context.migration_run.try_lock() {
+    let _run_guard = match app_context.try_lock_prepare_gate() {
         Ok(guard) => guard,
         Err(_) => {
-            let guard = app_context.migration_run.lock().await;
+            let guard = app_context.lock_prepare_gate().await;
             match app_context.migration_status().state().as_ref() {
                 MigrationState::Failed { error } => {
                     let result = Err(super::migration_task_error(Arc::clone(error)));
@@ -617,6 +617,26 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
+    run_gated(app_context, &_run_guard).await
+}
+
+/// The drain body, for a caller that already owns
+/// [`AppContext::prepare_gate`](crate::context::AppContext), proved by the
+/// borrowed guard.
+///
+/// [`AppContext::prepare_storage`] holds the gate across wiring *and* the drain
+/// so the two are one ordering rather than two racing claims; it therefore
+/// cannot go through [`run`], whose own acquire would deadlock against it. The
+/// guard parameter is proof, not decoration: without it this function is a
+/// silently unguarded copy of [`run`] that any future caller could reach.
+///
+/// # Errors
+///
+/// Same as [`run`].
+pub(crate) async fn run_gated(
+    app_context: &Arc<AppContext>,
+    _gate: &crate::context::PrepareGateGuard<'_>,
+) -> Result<bool, TaskError> {
     match run_under_guard(app_context).await {
         Ok(did_work) => Ok(did_work),
         Err(task_error) => {
@@ -634,7 +654,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     }
 }
 
-/// Waits for the launching pass, then holds `migration_run` through refresh.
+/// Waits for the launching pass, then holds `prepare_gate` through refresh.
 /// Operations that claim this guard stay gated until the detached work completes.
 fn spawn_dapi_refresh<F>(app_context: &Arc<AppContext>, refresh: F) -> tokio::task::JoinHandle<()>
 where
@@ -642,7 +662,7 @@ where
 {
     let ctx = Arc::clone(app_context);
     tokio::spawn(async move {
-        let _refresh_guard = ctx.migration_run.lock().await;
+        let _refresh_guard = ctx.lock_prepare_gate().await;
         refresh.await;
     })
 }
@@ -1591,7 +1611,7 @@ fn write_identity_progress(
 
 /// Record an explicit identity deletion before removing its modern record.
 /// A later partial-pass retry then skips the stale legacy row. The caller holds
-/// `migration_run` across this marker and the complete modern-store deletion.
+/// `prepare_gate` across this marker and the complete modern-store deletion.
 pub(crate) fn record_identity_deletion(
     app_context: &AppContext,
     id: [u8; 32],
@@ -1708,7 +1728,16 @@ fn migrate_identities(
                     "Importing an identity whose wallet is not present; the link is kept so it re-attaches when that wallet is restored",
                 );
             }
-            app_context.insert_local_qualified_identity(qi, wallet)
+            // Gated exactly as a discovery pass is, and through the same
+            // critical section: an import is the machine finding an identity,
+            // never the user asking for one back, so it consults the unload
+            // marker and never retires it.
+            let mut qi = qi.clone();
+            app_context.store_discovered_identity(
+                &mut qi,
+                wallet,
+                crate::model::identity_discovery::DiscoveryIntent::Automatic,
+            )
         },
     )?;
 
@@ -1716,6 +1745,7 @@ fn migrate_identities(
         target = "migration::finish_unwire",
         imported = outcome.imported,
         skipped_existing = outcome.skipped_existing,
+        skipped_unloaded = outcome.skipped_unloaded,
         unreadable = outcome.unreadable,
         network = ?network,
         "Identity migration pass complete",
@@ -1759,7 +1789,7 @@ fn migrate_identities_from_conn<R, H, I>(
 where
     R: FnMut(&BTreeSet<[u8; 32]>) -> Result<(), MigrationError>,
     H: FnMut([u8; 32]) -> Result<bool, TaskError>,
-    I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<(), TaskError>,
+    I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<bool, TaskError>,
 {
     let import_failed = |source: TaskError| MigrationError::IdentityImportFailed {
         source: Box::new(source),
@@ -1805,7 +1835,16 @@ where
         // The wallet link travels verbatim, never nulled — even when that wallet
         // did not come across: it is what re-attaches the identity when the
         // wallet is restored or unlocked later.
-        insert(&row.qi, &row.wallet).map_err(import_failed)?;
+        if !insert(&row.qi, &row.wallet).map_err(import_failed)? {
+            // Counted apart from `skipped_existing`, which would state
+            // something untrue about why this row was left out: nothing is in
+            // the store, and the row was declined rather than found redundant.
+            // Not recorded as processed either — a later pass re-offers it, and
+            // is declined again unless the user has loaded the identity back by
+            // then, which is the only thing that should change the answer.
+            outcome.skipped_unloaded = outcome.skipped_unloaded.saturating_add(1);
+            continue;
+        }
         processed.insert(row.id);
         record_processed(processed)?;
         outcome.imported = outcome.imported.saturating_add(1);
@@ -1821,6 +1860,11 @@ struct IdentityMigrationOutcome {
     imported: u32,
     /// Identities already in the store and therefore left untouched.
     skipped_existing: u32,
+    /// Identities the user unloaded from this device, which the import must not
+    /// hand back. Distinct from `skipped_existing`: nothing is in the store for
+    /// these, and saying otherwise would make the migration report misstate its
+    /// own reason for skipping them.
+    skipped_unloaded: u32,
     /// Legacy rows that could not be decoded. Recorded as a durable
     /// [`UnreadableIdentitiesWarning`] so the user still hears about them, but
     /// never fails the pass — the identities that *did* decode must not be held
@@ -2611,9 +2655,9 @@ impl From<MigrationError> for TaskError {
 }
 
 /// Test-only synchronization helper: `run` deliberately detaches its DAPI
-/// refresh onto a spawned task that queues for `migration_run` behind the
+/// refresh onto a spawned task that queues for `prepare_gate` behind the
 /// caller's own guard (see [`spawn_dapi_refresh`]). A test that calls another
-/// `migration_run`-guarded operation (e.g. `delete_local_qualified_identity`)
+/// `prepare_gate`-guarded operation (e.g. `delete_local_qualified_identity`)
 /// right after `run` returns races that detached task — yield so it queues
 /// for the guard, then acquire the same guard after the refresh releases it.
 ///
@@ -2623,7 +2667,7 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 pub(crate) async fn wait_for_dapi_refresh(app_context: &Arc<AppContext>) {
     tokio::task::yield_now().await;
-    let guard = app_context.migration_run.lock().await;
+    let guard = app_context.lock_prepare_gate().await;
     drop(guard);
 }
 
@@ -3572,7 +3616,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("an undecodable row must not fail the pass");
@@ -3617,7 +3661,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("import");
@@ -3655,7 +3699,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("presence check");
@@ -3694,7 +3738,7 @@ mod tests {
                     if id == failing {
                         Err(TaskError::WalletNotFound)
                     } else {
-                        Ok(())
+                        Ok(true)
                     }
                 },
             );
@@ -3712,7 +3756,7 @@ mod tests {
                 |_| Ok(false),
                 |qi, _| {
                     attempts.borrow_mut().push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("retry");
@@ -3749,7 +3793,7 @@ mod tests {
                         .imported
                         .borrow_mut()
                         .push(qi.identity.id().to_buffer());
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("import");
@@ -3789,7 +3833,7 @@ mod tests {
                 |_| Ok(false),
                 |_, wallet| {
                     links.borrow_mut().push(*wallet);
-                    Ok(())
+                    Ok(true)
                 },
             )
             .expect("import");
@@ -5202,7 +5246,7 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
         let deleted = [0x44; 32];
-        let _migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let _migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
 
         assert!(matches!(
             ctx.delete_local_qualified_identity(&Identifier::from(deleted)),
@@ -5221,7 +5265,7 @@ mod tests {
     async fn public_migration_run_waits_behind_idle_deletion_guard() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let follower_ctx = Arc::clone(&ctx);
         let follower = tokio::spawn(async move { run(&follower_ctx).await });
         tokio::task::yield_now().await;
@@ -5249,7 +5293,7 @@ mod tests {
     async fn public_migration_follower_returns_the_published_failure() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = fresh_app_context(tmp.path());
-        let migration_guard = ctx.migration_run.try_lock().expect("claim migration lock");
+        let migration_guard = ctx.try_lock_prepare_gate().expect("claim migration lock");
         let source = Arc::new(MigrationError::WalletBackendUnavailable);
         ctx.migration_status().set_state(MigrationState::Failed {
             error: Arc::clone(&source),
@@ -5291,6 +5335,76 @@ mod tests {
         );
     }
 
+    /// The import is gated on the unload marker itself, not only on the
+    /// progress set. That matters because the progress set does not cover every
+    /// unload: `record_identity_deletion` is a no-op once migration reports
+    /// success, and the devnet wipe clears identities without touching it at
+    /// all — so an import that trusted progress alone would hand those back.
+    ///
+    /// The pass here is handed an empty progress set, which is what a lost or
+    /// never-written progress key looks like.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unloaded_identity_is_declined_by_the_import_and_counted_apart() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let unloaded = [0x66; 32];
+        ctx.delete_local_qualified_identity(&Identifier::from(unloaded))
+            .expect("unload through the normal path");
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        identities::create_identity_table(&conn);
+        identities::insert_identity(
+            &conn,
+            unloaded,
+            Some(identities::identity_blob(unloaded)),
+            true,
+        );
+
+        let inserted = std::cell::Cell::new(false);
+        let outcome = migrate_identities_from_conn(
+            &conn,
+            ctx.network,
+            &mut BTreeSet::new(),
+            |_| Ok(()),
+            |_| Ok(false),
+            |qi, wallet| {
+                inserted.set(true);
+                let mut qi = qi.clone();
+                ctx.store_discovered_identity(
+                    &mut qi,
+                    wallet,
+                    crate::model::identity_discovery::DiscoveryIntent::Automatic,
+                )
+                .map_err(|_| TaskError::WalletNotFound)
+            },
+        )
+        .expect("migration pass");
+
+        assert!(
+            inserted.get(),
+            "precondition: the row must reach the import, or this proves nothing about the gate"
+        );
+        assert_eq!(
+            outcome.skipped_unloaded, 1,
+            "an unloaded identity must be counted as declined"
+        );
+        assert_eq!(
+            outcome.skipped_existing, 0,
+            "and never as already present, which would state something untrue about why \
+             it was left out"
+        );
+        assert_eq!(outcome.imported, 0, "nothing was imported");
+        assert!(
+            !ctx.has_local_qualified_identity(&Identifier::from(unloaded))
+                .expect("read identity store"),
+            "the unloaded identity must stay off this device"
+        );
+
+        backend.shutdown().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deletion_first_keeps_a_pending_legacy_identity_absent() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -5322,7 +5436,7 @@ mod tests {
             |_| Ok(false),
             |_, _| {
                 inserted.set(true);
-                Ok(())
+                Ok(true)
             },
         )
         .expect("migration pass");

@@ -101,6 +101,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Closing password-entry screens no longer aborts debug builds**: secret
+  buffers now own separate guarded memory pages, so releasing one password
+  field cannot interfere with another field that is still in use.
+
+- **A payment whose confirmation couldn't be verified now confirms itself**:
+  the app used to tell you to wait and check your balance, and then never
+  mention it again — leaving you to work out by hand whether the payment
+  actually went. It now keeps watching that payment and, the moment the network
+  takes it, replaces the message with a confirmation naming that payment. The
+  confirmation waits for you instead of timing out, so stepping away while a
+  payment is in the air no longer means returning to a blank screen with the
+  answer already expired, and because it names the payment you can tell which
+  one landed when more than one is waiting. If it is
+  still unconfirmed after eleven minutes, the message changes once to point you
+  at the wallet's transaction history and to warn against sending again in the
+  meantime; the watch carries on, so a late confirmation still resolves it. The
+  app never claims a payment has failed — the Dash network has no way to say
+  so, and guessing could tell you it was safe to send again when it was not.
+  Several unverified payments can be waiting at once, and answering one of them
+  leaves every other message exactly where it was. If you switch networks while
+  one is waiting, the payment is left alone rather than followed on the network
+  you moved to, where it could never be found. Creating an asset lock is also
+  covered by the earlier fix below: it was still asking you to retry an outcome
+  that may already be on its way.
+
+  While a payment is still unaccounted for, its message also survives other
+  notifications crowding it out: only five are shown at once, and the app used
+  to let ordinary ones quietly push this one off the screen for good. If that
+  happens the message comes back on its own. Closing it yourself still closes
+  it for good — the app restores what it lost, not what you dismissed.
+- **The app now opens maximized the very first time it runs**: on a fresh
+  install, the window used to open at a small default size that didn't fit
+  the onboarding page. It now opens maximized on first launch; any size or
+  position you set afterward is remembered and used on every later start, as
+  before.
+
+- **A sent payment whose confirmation couldn't be verified no longer tells you
+  to retry it**: when the network doesn't confirm a payment quickly enough,
+  the app used to show a generic "please retry" message — but the payment may
+  already be on its way, and sending it again risked sending it twice. The
+  app now tells you plainly that the payment was sent and its confirmation is
+  still unknown, and asks you to wait and check your balance before trying
+  again.
+
+- **Masternodes and evonodes are now recorded in the wallet store too**: a node
+  loaded from its ProTxHash was only ever written to this app's own records, so
+  the wallet store the app shares with the rest of the wallet stack had no entry
+  for it at all. Such a node is now recorded there as belonging to no wallet,
+  which is what it is — nodes already on this device are added the next time the
+  app starts, with nothing to press. Recording it under one of your wallets was
+  not an option: removing that wallet would then have deleted the node along
+  with it, keys and alias included.
+
 - **Wallet data no longer lives inside the deletable network-cache folder**:
   each network's wallet database used to sit inside the same folder as the
   temporary blockchain sync cache, so clearing or losing that cache folder
@@ -347,9 +400,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A funding transaction found again on the network is now labelled honestly**:
+  when the app rediscovers a saved funding transaction from the chain rather
+  than tracking it from the start, it can tell that the network confirmed it but
+  not whether it was already spent on an identity. The funding list says exactly
+  that instead of claiming it is ready to use or already used. Selecting it still
+  works — the network has the final say and refuses one that was already spent.
+
 - **Upstream wallet backend updated (`platform-wallet` / `platform-wallet-storage`)**:
   the `dashpay/platform` dependency is bumped to the PR #3968 tip
-  (`d18020f` → `288a6ca`), which lands an embeddable SQLite persistence backend with
+  (`d18020f` → `67d4ef3f`), which lands an embeddable SQLite persistence backend with
   *seedless rehydration*. The wallet manager now restores watch-only wallet state
   (accounts, balances, identities, platform addresses) from the on-disk store
   without the HD seed, re-deriving spend authority just-in-time from the seed only
@@ -369,7 +429,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (measured in bytes, not characters, so a 4-character non-ASCII password like
   `öäüß` — 8 bytes — is accepted); existing wallets with shorter passwords
   that are still in DET's legacy encrypted format remain usable instead of
-  failing during lazy migration. Protected (Tier-2) shielded wallets now resolve
+  failing during lazy migration. New wallet passwords and key passphrases that
+  are too long for secure storage are now refused before anything is saved,
+  with guidance specific to the credential being edited. Protected (Tier-2) shielded wallets now resolve
   their seed just in time for every operation that spends or binds their Orchard
   keys (initialization, shield from Core, shield from Platform, transfer,
   unshield, and withdraw). Each operation prompts for the passphrase unless the

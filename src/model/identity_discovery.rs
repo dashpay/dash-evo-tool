@@ -74,6 +74,30 @@ pub fn should_continue_scan(current_index: u32, highest_found: Option<u32>) -> b
     }
 }
 
+/// Why a discovery pass is running, which decides whether it may re-add an
+/// identity the user unloaded from this device.
+///
+/// Unloading is a per-device decision, so a pass the user did not ask for must
+/// not undo it — automatic passes are refused by the unload marker, while a
+/// pass the user explicitly started is itself the request to have the identity
+/// back and retires the marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryIntent {
+    /// Background or side-effect discovery: the boot sweep, an unlock, a wallet
+    /// import. Never re-adds an unloaded identity.
+    Automatic,
+    /// The user asked for identities to be loaded, so an unloaded one is being
+    /// asked for back.
+    UserRequested,
+}
+
+impl DiscoveryIntent {
+    /// Whether a pass with this intent may store an identity the user unloaded.
+    pub fn may_restore_unloaded(self) -> bool {
+        matches!(self, Self::UserRequested)
+    }
+}
+
 /// Outcome counts of one gap-limited discovery pass over a single wallet.
 ///
 /// `found` is the number of indices that resolved to an on-chain identity;

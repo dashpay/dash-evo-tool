@@ -342,8 +342,17 @@ fn format_withdrawal_documents_with_daily_limit(
         .map(|document| format_withdrawal_line(document, network))
         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
+    // INTENTIONAL: `daily_withdrawal_limit`'s v2 algorithm wants the total
+    // credits Platform held a day ago, and the network's actual active
+    // protocol version — we pass today's current total and `latest()`
+    // instead. Accepted gap, not a bug to fix here: this value is
+    // display-only (an informational text panel, nothing reads it back to
+    // gate or execute a withdrawal), the mismatch only bites during the
+    // narrow window around a protocol version upgrade, and the pinned SDK
+    // exposes no query for the day-old historical total (it's
+    // Drive-internal) to compute the exact figure anyway.
     let daily_withdrawal_limit =
-        daily_withdrawal_limit(total_credits_on_platform, PlatformVersion::latest())
+        daily_withdrawal_limit(Some(total_credits_on_platform), PlatformVersion::latest())
             .map_err(|e| WithdrawalParseError::DailyLimit(Box::new(e)))?;
 
     Ok(format!(
@@ -717,10 +726,12 @@ impl AppContext {
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![],
+                    time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
                     having: Vec::new(),
                     order_by_clauses: vec![],
                     limit: 50,
+                    offset: None,
                     start: None,
                 };
 
@@ -772,6 +783,7 @@ impl AppContext {
                             Value::U8(WithdrawalStatus::EXPIRED as u8),
                         ]),
                     }],
+                    time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
                     having: Vec::new(),
                     order_by_clauses: vec![
@@ -785,6 +797,7 @@ impl AppContext {
                         },
                     ],
                     limit: 100,
+                    offset: None,
                     start: None,
                 };
 
@@ -891,10 +904,12 @@ impl AppContext {
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses,
+                    time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
                     having: Vec::new(),
                     order_by_clauses,
                     limit: page_limit,
+                    offset: None,
                     start,
                 };
 

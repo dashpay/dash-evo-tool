@@ -14,7 +14,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, try_open_wallet_no_password};
-use crate::ui::identities::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
+use crate::ui::identity::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;
@@ -709,21 +709,19 @@ impl ScreenLike for CreateAssetLockScreen {
                             MessageType::Success,
                         );
                     }
+                    // The asset-lock transaction surfaced as a received UTXO.
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
-                    ) => {
-                        // The asset-lock transaction surfaced as a received UTXO.
-                        if tx.special_transaction_payload.is_some() {
-                            self.asset_lock_tx_id = Some(tx.txid().to_string());
-                            let mut step = self.step.write_recover();
-                            *step = WalletFundedScreenStep::Success;
-                            drop(step);
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "Asset lock created successfully!",
-                                MessageType::Success,
-                            );
-                        }
+                    ) if tx.special_transaction_payload.is_some() => {
+                        self.asset_lock_tx_id = Some(tx.txid().to_string());
+                        let mut step = self.step.write_recover();
+                        *step = WalletFundedScreenStep::Success;
+                        drop(step);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Asset lock created successfully!",
+                            MessageType::Success,
+                        );
                     }
                     _ => {}
                 }
@@ -742,21 +740,19 @@ impl ScreenLike for CreateAssetLockScreen {
                             MessageType::Success,
                         );
                     }
+                    // The asset-lock transaction surfaced as a received UTXO.
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
-                    ) => {
-                        // The asset-lock transaction surfaced as a received UTXO.
-                        if tx.special_transaction_payload.is_some() {
-                            self.asset_lock_tx_id = Some(tx.txid().to_string());
-                            let mut step = self.step.write_recover();
-                            *step = WalletFundedScreenStep::Success;
-                            drop(step);
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "Asset lock created successfully!",
-                                MessageType::Success,
-                            );
-                        }
+                    ) if tx.special_transaction_payload.is_some() => {
+                        self.asset_lock_tx_id = Some(tx.txid().to_string());
+                        let mut step = self.step.write_recover();
+                        *step = WalletFundedScreenStep::Success;
+                        drop(step);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Asset lock created successfully!",
+                            MessageType::Success,
+                        );
                     }
                     _ => {}
                 }

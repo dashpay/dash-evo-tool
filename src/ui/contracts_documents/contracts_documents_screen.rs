@@ -230,8 +230,10 @@ impl DocumentQueryScreen {
                 self.selected_document_type = self.pending_document_type.clone();
                 self.document_fields_selection = self.pending_fields_selection.clone();
 
-                let parser =
-                    DocumentQueryTextInputParser::new(self.selected_data_contract.contract.clone());
+                let parser = DocumentQueryTextInputParser::new(
+                    self.selected_data_contract.contract.clone(),
+                    self.app_context.platform_version(),
+                );
                 match parser.parse_input(&self.document_query) {
                     Ok(parsed_query) => {
                         // Set the status to waiting

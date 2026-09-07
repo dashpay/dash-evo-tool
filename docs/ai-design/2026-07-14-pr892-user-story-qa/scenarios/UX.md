@@ -123,6 +123,12 @@ point, given the component's demonstrated quality, a PASS looks very achievable.
 
 ## UX-002: Blocking SPV-sync overlay with a "continue in the background" escape — PASS
 
+> **Superseded (2026-08-31).** The "Continue in the background" button tested below was replaced
+> by a two-step "Cancel" → confirm ("Stop syncing?" / "Keep syncing") — see `docs/user-stories.md`
+> UX-002 and `docs/ai-design/2026-08-31-startup-linearization/`. This section is left as the
+> historical record of the PR892 pass; do not use "Continue in the background" as a repro step
+> against the current build.
+
 Acceptance criteria: full-window block with jargon-free please-wait text + "Step N of 5" while
 user-initiated sync connects; always-visible "Continue in the background" secondary button that
 lowers the block and doesn't re-raise for the rest of that sync episode; keyboard-reachable via

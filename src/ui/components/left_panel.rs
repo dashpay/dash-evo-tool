@@ -16,11 +16,9 @@ use std::sync::Arc;
 /// optional feature gate)`. Entries whose feature gate evaluates to false are
 /// filtered out at render time.
 ///
-/// The former standalone `Identities` ([`RootScreenType::RootScreenIdentities`])
-/// and `Dashpay` ([`RootScreenType::RootScreenDashPayProfile`]) entries are
-/// intentionally hidden from the nav; their screens, routes, and backend paths
-/// stay intact and remain reachable through other means (deep links, MCP tools,
-/// direct screen construction). The Identities hub
+/// `Dashpay` ([`RootScreenType::RootScreenDashPayProfile`]) is intentionally
+/// absent: its screens and backend paths stay wired, reached from the Identity
+/// Hub rather than from the nav. The hub
 /// ([`RootScreenType::RootScreenIdentityHub`]) is the single user-facing
 /// `Identities` entry.
 fn nav_button_specs() -> &'static [(
@@ -370,18 +368,12 @@ pub fn add_left_panel(
 mod tests {
     use super::*;
 
-    /// The nav sidebar hides the legacy standalone `Identities` and `Dashpay`
-    /// entries and surfaces the Identity Hub as the single `Identities` entry.
+    /// The nav sidebar hides the `Dashpay` entry and surfaces the Identity Hub
+    /// as the single `Identities` entry.
     #[test]
-    fn nav_hides_legacy_identities_and_dashpay_and_labels_hub_as_identities() {
+    fn nav_hides_dashpay_and_labels_hub_as_identities() {
         let specs = nav_button_specs();
 
-        assert!(
-            !specs
-                .iter()
-                .any(|(_, screen, _, _)| *screen == RootScreenType::RootScreenIdentities),
-            "the legacy standalone Identities entry must be hidden from the nav"
-        );
         assert!(
             !specs
                 .iter()

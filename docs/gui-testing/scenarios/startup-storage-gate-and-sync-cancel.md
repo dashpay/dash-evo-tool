@@ -89,7 +89,10 @@ DASH_EVO_DATA_DIR="$DATADIR" nohup "$BIN" >"$LOG" 2>&1 &
 
 Perform on the launch from step 9, while chain sync is still running.
 
-10. Locate the sync overlay's own action row. Record every button label on it.
+10. Locate the sync overlay's own action row. Record every button label on it, and record
+    whether the rest of the app responds while the block is up (try a left-navigation entry).
+    Expect exactly one control, a Cancel that only asks — the block is meant to hold the app
+    until the sync episode ends.
 11. Press **Enter**, then **Escape** (separately, one at a time, re-observing between
     them). Record what each key does. Neither may disconnect the wallet on its own.
 12. Activate the row's **Cancel** control. Record what appears. Record which control
@@ -145,7 +148,13 @@ Step by step, "it worked" means:
 - **6**: whichever network is reported, it is recorded, not assumed. This step exists
   because a wrong assumption here has previously caused a healthy fixture to be
   misdiagnosed as dead — see "Known gotchas".
-- **10–11**: neither Enter nor Escape stops the sync by itself. Either may open the
+- **10**: while the block is up, the action row offers **exactly one** control, and it is a
+  Cancel that only asks. There is deliberately **no** affordance for dismissing the block while
+  leaving the sync running: blocking until the episode reaches Synced or Error is the intended
+  design, and an extra "continue in the background" style control appearing here would be the
+  deviation to report, not its absence. The rest of the app is expected to be inert meanwhile —
+  a left-nav entry that responds while the block is up is a failure.
+- **11**: neither Enter nor Escape stops the sync by itself. Either may open the
   confirmation or do nothing; neither may disconnect. A single keypress that
   disconnects the wallet is a failure.
 - **12**: the Cancel control **asks** rather than acting. The question names both the
@@ -153,7 +162,8 @@ Step by step, "it worked" means:
   syncing.
 - **13**: Enter on the confirmation resolves to **keep syncing**. Enter resolving to
   stop is a failure — that is the exact defect the two-step design exists to prevent.
-- **14**: after keeping, sync is demonstrably still running.
+- **14**: after keeping, sync is demonstrably still running — and the block is expected to be
+  back up. "Keep syncing" returns the user to the block; it does not release the app.
 - **15–16**: stopping is honoured, the app says so, and the route the question named
   really does restart sync. A confirmation that names a route which does not work is a
   failure of the message, not only of the flow.
@@ -189,6 +199,13 @@ the scenario regardless of what the screen showed.
   progress row and the confirmation row. A screenshot taken during that swap can catch
   a frame with no overlay at all; take a second one before concluding the block was
   released.
+- **The block holds the whole app until the sync episode ends, and that is intended.** An armed
+  episode (boot auto-start, the Networks screen's Connect button, post-onboarding auto-start)
+  blocks until the connection state reaches Synced or Error; the only user-facing exit is the
+  confirmed Cancel. A full first sync can therefore hold the app for several minutes. Switching
+  networks from the Networks screen disarms the episode, so a sync started that way does **not**
+  block. Do not file the blocking itself as a defect — record the duration, and file only a block
+  that never releases, releases into a broken app, or can be escaped by a single keypress.
 - **Check the log, not only the screen.** A crash or a failed migration does not always
   surface in the UI. Read `det.log` and `det-stderr.log` in the scenario's own data
   directory for both builds.

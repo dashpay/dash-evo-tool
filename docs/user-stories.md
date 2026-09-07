@@ -1630,6 +1630,7 @@ As a masternode operator, I want to open a node and vote on the DPNS contests it
 As a masternode operator, I want to remove a masternode from DET, so that I can stop tracking a node I no longer operate.
 
 - The detail view's "Remove masternode" action shows a confirmation dialog before proceeding.
+- The confirmation explains that removal deletes local private keys and that loading the node again requires its ProTxHash and a private-key backup.
 - Confirming forgets the masternode and its associated voter identity, and the card disappears from the list.
 
 ### MN-005: Keep the everyday surface clean [Implemented]

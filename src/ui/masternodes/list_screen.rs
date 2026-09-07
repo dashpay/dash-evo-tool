@@ -3,6 +3,7 @@
 //! identity-picker card visual language via [`MasternodeCard`]; a card click
 //! opens the detail view.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -102,6 +103,8 @@ pub struct MasternodesScreen {
     /// [`TaskError::IdentityLoadInProgress`](crate::backend_task::error::TaskError::IdentityLoadInProgress)
     /// instead of racing.
     pending_load: Option<PendingLoad>,
+    /// Identity removals dispatched by this screen whose results have not arrived.
+    pending_removals: BTreeSet<Identifier>,
 }
 
 #[cfg(test)]
@@ -125,6 +128,7 @@ impl MasternodesScreen {
             nodes: Vec::new(),
             view: MasternodesView::List,
             pending_load: None,
+            pending_removals: BTreeSet::new(),
         };
         screen.reload();
         screen
@@ -200,6 +204,15 @@ impl MasternodesScreen {
         }
     }
 
+    fn capture_removal_dispatch(&mut self, action: &AppAction) {
+        if let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+            identity_id,
+        })) = action
+        {
+            self.pending_removals.insert(*identity_id);
+        }
+    }
+
     /// Reset the screen after a network switch. A load form or detail
     /// view left open belongs to the previous network's node — keeping it
     /// actionable would let the user submit a cross-network operation. Drop back
@@ -207,6 +220,7 @@ impl MasternodesScreen {
     pub fn reset_for_network_change(&mut self) {
         self.view = MasternodesView::List;
         self.pending_load = None;
+        self.pending_removals.clear();
         self.reload();
     }
 
@@ -399,19 +413,16 @@ impl MasternodesScreen {
             MasternodesView::Detail(detail) => detail.show(ui, network_accent),
             _ => return AppAction::None,
         };
-        match outcome {
+        let action = match outcome {
             DetailOutcome::None => AppAction::None,
             DetailOutcome::Back => {
                 self.view = MasternodesView::List;
                 AppAction::None
             }
-            DetailOutcome::Removed => {
-                self.view = MasternodesView::List;
-                self.reload();
-                AppAction::None
-            }
             DetailOutcome::Forward(action) => *action,
-        }
+        };
+        self.capture_removal_dispatch(&action);
+        action
     }
 
     /// Render the list view: toolbar (`+ Load`, `Refresh`) + empty state or grid.
@@ -611,6 +622,39 @@ impl ScreenLike for MasternodesScreen {
                     completion_message(!applied.is_empty()),
                     MessageType::Success,
                 );
+            }
+            BackendTaskSuccessResult::RemovedIdentities {
+                identity_ids,
+                associated_cleanup_failed,
+                local_data_cleanup_failed,
+                cleanup_deferred,
+            } => {
+                let removes_open_node = matches!(
+                    &self.view,
+                    MasternodesView::Detail(detail) if identity_ids.contains(&detail.node_id())
+                );
+                let answers_this_screen = identity_ids
+                    .iter()
+                    .any(|identity_id| self.pending_removals.remove(identity_id));
+                if !removes_open_node && !answers_this_screen {
+                    return;
+                }
+
+                if removes_open_node {
+                    self.view = MasternodesView::List;
+                }
+                self.reload();
+                let (message, message_type) = crate::ui::identity::removed_identities_banner(
+                    associated_cleanup_failed,
+                    cleanup_deferred,
+                    local_data_cleanup_failed,
+                );
+                let handle =
+                    MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
+                if message_type == MessageType::Warning {
+                    handle.disable_auto_dismiss();
+                }
+                return;
             }
             _ => {}
         }
@@ -864,6 +908,87 @@ mod tests {
         // Leaving the detail view clears the pill's selection.
         screen.view = MasternodesView::List;
         assert_eq!(screen.selected_node_id(), None);
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn masternode_removal_result_returns_the_screen_to_the_list() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        assert!(matches!(screen.view, MasternodesView::Detail(_)));
+
+        ctx.delete_local_qualified_identity(&node)
+            .expect("the backend task removed the node before returning its result");
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![node],
+            associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(
+            matches!(screen.view, MasternodesView::List),
+            "a completed removal must close the now-stale detail view"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn masternode_removal_result_for_another_identity_leaves_the_open_node_unchanged() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![Identifier::from([0x77; 32])],
+            associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("another identity's removal must not close this node");
+        };
+        assert_eq!(detail.node_id(), node);
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn masternode_removal_result_refreshes_after_navigating_back_to_the_list() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        let action =
+            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+                identity_id: node,
+            }));
+        screen.capture_removal_dispatch(&action);
+
+        screen.view = MasternodesView::List;
+        ctx.delete_local_qualified_identity(&node)
+            .expect("the backend task removed the node before returning its result");
+        screen.display_task_result(BackendTaskSuccessResult::RemovedIdentities {
+            identity_ids: vec![node],
+            associated_cleanup_failed: false,
+            local_data_cleanup_failed: false,
+            cleanup_deferred: false,
+        });
+
+        assert!(screen.nodes.is_empty(), "the removed card must disappear");
+        assert!(
+            screen.pending_removals.is_empty(),
+            "the completed removal must no longer be tracked"
+        );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

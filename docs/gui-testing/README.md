@@ -291,7 +291,7 @@ accounting for it afterwards is **not** sufficient. Steps that only read state
 
 ## Scenario index
 
-These six scenarios are written **build-neutral**: the same procedure runs
+These scenarios are written **build-neutral**: the same procedure runs
 unmodified against either binary of an A/B campaign, with the blocker rule and
 the fixture requirement from the [A/B build comparison
 contract](#ab-build-comparison-contract) above applied in each file's own
@@ -305,5 +305,6 @@ contract](#ab-build-comparison-contract) above applied in each file's own
 | [`error-banners-identity-home-actions.md`](scenarios/error-banners-identity-home-actions.md) | Error-banner wording, validation consistency, identity-removal responsiveness, Identity Home's action row, already-consumed-deposit messaging, deposit-verification crash fix (#927, #934) |
 | [`platform-shielded-availability-after-sync.md`](scenarios/platform-shielded-availability-after-sync.md) | Shielded features correctly activate right after SPV/platform sync instead of silently staying disabled (#936, #938) |
 | [`dapi-budget-resilience-after-resync.md`](scenarios/dapi-budget-resilience-after-resync.md) | Repeated SPV `Syncing`↔`Synced` transitions no longer exhaust the shared DAPI request budget and break unrelated actions like identity top-up (#950) |
+| [`startup-storage-gate-and-sync-cancel.md`](scenarios/startup-storage-gate-and-sync-cancel.md) | Cold-boot storage preparation raises exactly one blocking gate that always releases before chain sync starts, and cancelling the SPV overlay is a two-step choice no single keypress can turn into a disconnect (#970) |
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

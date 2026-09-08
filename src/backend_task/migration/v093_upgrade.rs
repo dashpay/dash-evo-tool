@@ -1536,7 +1536,7 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
     ctx.set_identity_alias(&Identifier::from(IDENTITY_ID), Some("my-renamed-node"))
         .expect("rename identity");
     // The first migration's best-effort DAPI refresh is detached onto a spawned
-    // task that queues for `migration_run` right behind it (see
+    // task that queues for `prepare_gate` right behind it (see
     // `finish_unwire::spawn_dapi_refresh`). `delete_local_qualified_identity`
     // claims that same guard via `try_lock`, so calling it immediately here
     // races the detached refresh — flaky under load, not a real contention

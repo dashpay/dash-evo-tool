@@ -3,5 +3,5 @@
 # bump here is what they run — and, because both are triggered by changes to
 # this file, a bump is tested by the toolchain it introduces.
 [toolchain]
-channel = "1.92"
+channel = "1.98"
 components = ["clippy", "rustfmt"]

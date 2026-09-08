@@ -187,7 +187,7 @@ fn seed_node_with_unprotected_held_key(app_context: &Arc<AppContext>, byte: u8, 
 #[test]
 fn nav_gated_by_expert_mode() {
     with_isolated_data_dir(|| {
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         app_context.set_user_role(UserRole::Everyday);
@@ -223,7 +223,7 @@ fn de_gating_falls_back_to_identity_hub() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         // Power role on, select the Masternodes tab — it stays selected.
@@ -273,7 +273,7 @@ fn empty_state_renders_canonical_copy() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         activate_masternodes_tab(&mut harness, &app_context);
 
@@ -395,7 +395,7 @@ fn card_grid_renders_seeded_nodes() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         seed_node(&app_context, 0x91, "mn-east-01", IdentityType::Masternode);
@@ -451,7 +451,7 @@ fn load_form_opens_from_cta_and_cancels() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         activate_masternodes_tab(&mut harness, &app_context);
 
@@ -519,7 +519,7 @@ fn load_form_back_link_returns_to_list() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         activate_masternodes_tab(&mut harness, &app_context);
 
@@ -557,7 +557,7 @@ fn detail_view_opens_from_card_with_sections_and_back() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(&app_context, 0x93, "mn-detail-01", IdentityType::Masternode);
         seed_node(&app_context, 0x94, "evo-detail-02", IdentityType::Evonode);
@@ -630,7 +630,7 @@ fn detail_dpns_voting_button_opens_active_contests() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(&app_context, 0x95, "mn-vote-01", IdentityType::Masternode);
         activate_masternodes_tab(&mut harness, &app_context);
@@ -667,7 +667,7 @@ fn masternode_selection_never_leaks_to_app_global_identity() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(&app_context, 0x96, "mn-leak-01", IdentityType::Masternode);
 
@@ -693,14 +693,7 @@ fn masternode_selection_never_leaks_to_app_global_identity() {
             "a masternode must never resolve as the app-global identity"
         );
 
-        // Navigate away to Identities and Identity Hub — still no leak.
-        harness.state_mut().selected_main_screen = RootScreenType::RootScreenIdentities;
-        harness.run_steps(3);
-        assert!(
-            app_context.selected_identity_id().is_none(),
-            "the app-global identity stays unset on Identities after MN selection"
-        );
-
+        // Navigate away to the Identity Hub — still no leak.
         harness.state_mut().selected_main_screen = RootScreenType::RootScreenIdentityHub;
         harness.run_steps(3);
         assert!(
@@ -719,7 +712,7 @@ fn remove_flow_deletes_only_target_node() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(&app_context, 0x97, "mn-remove-me", IdentityType::Masternode);
         seed_node(&app_context, 0x98, "mn-keep-me", IdentityType::Masternode);
@@ -782,7 +775,7 @@ fn remove_flow_deletes_associated_voter_identity() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         let voter_id = seed_node_with_voter(&app_context, 0xA1, "mn-with-voter");
         activate_masternodes_tab(&mut harness, &app_context);
@@ -848,7 +841,7 @@ fn manage_keys_button_opens_key_info_screen() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node_with_voter_key(&app_context, 0x71, "mn-keys-01");
         activate_masternodes_tab(&mut harness, &app_context);
@@ -899,7 +892,7 @@ fn add_password_protection_opens_confirmation_dialog() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node_with_unprotected_held_key(&app_context, 0x72, "mn-protect-01");
         activate_masternodes_tab(&mut harness, &app_context);
@@ -940,7 +933,7 @@ fn left_nav_return_to_masternodes_resets_detail_to_list() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(
             &app_context,
@@ -977,7 +970,7 @@ fn active_masternodes_left_nav_resets_detail_to_list() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node(
             &app_context,
@@ -1018,7 +1011,7 @@ fn left_nav_return_preserves_pending_masternode_load_form_fields() {
         let (blocking_release, blocking_wait) = std::sync::mpsc::channel::<()>();
         let _blocking_task = tokio::task::spawn_blocking(move || blocking_wait.recv());
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         activate_masternodes_tab(&mut harness, &app_context);
 
@@ -1113,7 +1106,7 @@ fn go_to_main_screen_from_key_info_preserves_masternode_detail() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node_with_voter_key(&app_context, 0x73, "mn-nav-back-01");
         activate_masternodes_tab(&mut harness, &app_context);
@@ -1218,7 +1211,7 @@ fn key_info_names_a_voter_key_as_the_masternode_key_list_does() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node_with_non_voting_purpose_voter_key(&app_context, 0x9a, "mn-voter-label-01");
         activate_masternodes_tab(&mut harness, &app_context);
@@ -1356,7 +1349,7 @@ fn the_masternode_page_resolves_held_keys_the_way_the_keys_list_does() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         seed_node_with_purpose_filed_voting_key(&app_context, 0x9b, "mn-filed-by-purpose-01");
         activate_masternodes_tab(&mut harness, &app_context);

@@ -976,7 +976,7 @@ impl TokensScreen {
 
     fn update_selected_wallet(&mut self) {
         if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            let new_wallet = crate::ui::identities::get_selected_wallet(qid, None, Some(key))
+            let new_wallet = crate::ui::identity::get_selected_wallet(qid, None, Some(key))
                 .unwrap_or_else(|e| {
                     MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
                     None

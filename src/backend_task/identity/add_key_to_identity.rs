@@ -9,6 +9,7 @@ use crate::wallet_backend::secret_prompt::SecretScope;
 use crate::wallet_backend::{SecretAccess, VerifiedIdentityPassword};
 use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
+use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
@@ -161,14 +162,78 @@ impl AppContext {
             PrivateKeyOnMainIdentity,
             public_key_to_add.identity_public_key.id(),
         );
+        self.persist_added_identity_key(
+            &mut qualified_identity,
+            new_key,
+            &private_key,
+            verified_password,
+        )?;
+        Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
+    }
+
+    /// Seal the new key and store the updated record, both under this
+    /// identity's record guard.
+    ///
+    /// The guard spans the seal because the seal writes private key material
+    /// and the write is what makes anything point at it. Without it, an unload
+    /// completing during the broadcast leaves the removal deleting only the
+    /// placements the stored blob named — not this one, which is not in it yet
+    /// — and clearing its cleanup manifest; the seal then lands afterwards and
+    /// the record write is declined. The key would sit in the vault for an
+    /// identity with no record, no roster entry and no manifest: unreachable
+    /// through the identity model, so no sweep can ever collect it, on a device
+    /// that told the user it had destroyed that identity's keys.
+    ///
+    /// So the roster is rechecked under the guard first, and a delisted
+    /// identity ends the task before anything is sealed. Nothing is lost that
+    /// the user does not already have: the private key came from the add-key
+    /// screen, typed in by them.
+    fn persist_added_identity_key(
+        &self,
+        qualified_identity: &mut QualifiedIdentity,
+        new_key: (crate::model::qualified_identity::PrivateKeyTarget, KeyID),
+        private_key: &[u8; 32],
+        verified_password: Option<VerifiedIdentityPassword>,
+    ) -> Result<(), TaskError> {
+        let identity_id = qualified_identity.identity.id();
+        let lock = self.identity_record_lock(identity_id);
+        let _record_guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if !self.is_identity_listed(&identity_id)? {
+            tracing::warn!(
+                target = "backend_task::identity",
+                identity_id = %identity_id,
+                "Identity was removed from this device while its new key was being added; the key is on the network and was not sealed here",
+            );
+            return Err(TaskError::IdentityKeyAddedButIdentityUnloaded);
+        }
+
+        // A password-protected identity must never acquire a keyless
+        // key. The object password was already verified up front (before the
+        // broadcast above), so here we just seal the newly-added key Tier-2
+        // under that SAME password and mark it `InVault` BEFORE saving, so the
+        // at-rest encode writes no plaintext for it. The encode-path guard
+        // (`encode_identity_blob_vault_first` → `IdentityKeyProtectionDowngrade`)
+        // still fails closed if this seal is ever skipped.
+        //
+        // This seal is the one fallible disk write between the broadcast above
+        // and the persist below, and on-chain + local cannot be made atomic. If
+        // it fails (I/O error, corrupt keystore), the key is already on-chain but
+        // not saved here: fail with the typed, actionable
+        // `IdentityKeyAddedButNotSaved` (the key is on the network; retry after
+        // freeing disk space) instead of a silent loss or a misleading storage
+        // error — and NEVER fall back to a keyless write (that would strip the
+        // protection this branch exists to preserve).
         if let Some(password) = verified_password {
             self.wallet_backend()?
                 .secret_access()
                 .seal_new_identity_key_with_password(
-                    qualified_identity.identity.id().to_buffer(),
+                    identity_id.to_buffer(),
                     &new_key.0,
                     new_key.1,
-                    &private_key,
+                    private_key,
                     &password,
                 )
                 .map_err(key_added_but_not_saved)?;
@@ -186,8 +251,7 @@ impl AppContext {
             }
         }
 
-        self.update_local_qualified_identity(&qualified_identity)?;
-        Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
+        self.write_local_qualified_identity_locked(qualified_identity)
     }
 }
 
@@ -282,6 +346,89 @@ mod tests {
             target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
             key_id,
         }
+    }
+
+    /// R1: an unload that completes during the broadcast must not leave the new
+    /// key's private half in the vault.
+    ///
+    /// The removal deletes the placements the *stored blob* names. The key
+    /// being added is not in that blob yet, so it is not in the removal's
+    /// delete set and not in the cleanup manifest it clears. A seal that lands
+    /// afterwards writes private key material for an identity with no record,
+    /// no roster entry and no manifest — unreachable through the identity
+    /// model, so no sweep can ever collect it, on a device that has just told
+    /// the user it destroyed that identity's keys.
+    ///
+    /// The record guard now spans the recheck, the seal and the write, so a
+    /// delisted identity ends the task before anything is sealed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unload_during_the_broadcast_leaves_no_key_in_the_vault() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys_using_prompt;
+        use crate::model::secret::Secret;
+
+        const PW: &str = "identity-object-passwordpw";
+        const NEW_KEY_ID: u32 = 9;
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)]));
+        let staged = stage_identity_with_vaulted_keys_using_prompt(
+            Network::Testnet,
+            Some(prompt),
+            [0xAA; 32],
+            [0xBB; 32],
+        )
+        .await;
+        let ctx = &staged.ctx;
+
+        // A password-protected identity, which is the shape that seals.
+        ctx.protect_identity_keys(staged.id, Secret::new(PW), None)
+            .expect("seal the identity Tier-2");
+        let mut qualified_identity = ctx
+            .get_local_qualified_identity(&staged.id)
+            .expect("read the protected identity")
+            .expect("identity present");
+
+        // The precondition the real flow satisfies before broadcasting.
+        let verify_scope = ctx
+            .protected_identity_verify_scope(&qualified_identity)
+            .expect("read the verify scope")
+            .expect("a protected identity has one");
+        let password = ctx
+            .wallet_backend()
+            .expect("backend wired")
+            .secret_access()
+            .verify_identity_object_password(&verify_scope)
+            .await
+            .expect("the scripted password verifies");
+
+        // The user unloads the identity while the broadcast is in flight.
+        ctx.delete_local_qualified_identity(&staged.id)
+            .expect("unload the identity");
+
+        let new_key = (PrivateKeyTarget::PrivateKeyOnMainIdentity, NEW_KEY_ID);
+        let error = ctx
+            .persist_added_identity_key(
+                &mut qualified_identity,
+                (new_key.0.clone(), new_key.1),
+                &[0xCD; 32],
+                Some(password),
+            )
+            .expect_err("an identity that is gone cannot take a new key");
+        assert!(
+            matches!(error, TaskError::IdentityKeyAddedButIdentityUnloaded),
+            "expected IdentityKeyAddedButIdentityUnloaded, got {error:?}",
+        );
+
+        assert!(
+            crate::wallet_backend::IdentityKeyView::new(&staged.store, staged.id.to_buffer())
+                .get(&new_key.0, new_key.1)
+                .expect("read the vault")
+                .is_none(),
+            "the new key must not be sealed for an identity whose keys the removal \
+             just destroyed — nothing would ever point at it or collect it",
+        );
+        assert!(
+            !ctx.is_identity_listed(&staged.id).expect("read the roster"),
+            "and the identity must not be put back on the roster",
+        );
     }
 
     /// O-2 fail-closed: a HEADLESS add-key precondition for a PROTECTED identity

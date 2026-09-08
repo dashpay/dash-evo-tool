@@ -10,6 +10,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 #[cfg(test)]
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Color32, RichText, Ui};
 
 #[cfg(test)]
@@ -26,9 +27,9 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::legacy_recovery_section::host_offer;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
+use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::masternodes::card::{
     PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
@@ -41,6 +42,13 @@ use crate::ui::{MessageType, Screen, ScreenType};
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
+const REMOVE_MASTERNODE_CONFIRMATION: &str = "This removes the node and its voting identity, including their private keys, from this device. To load the node again, you need its ProTxHash and a backup of its private keys.";
+
+fn remove_node_action(identity_id: Identifier) -> AppAction {
+    AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+        identity_id,
+    }))
+}
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
 
@@ -80,8 +88,6 @@ pub enum DetailOutcome {
     None,
     /// Return to the card list (`‹ All masternodes`).
     Back,
-    /// The node was removed — return to the list and reload.
-    Removed,
     /// Push a reused screen / navigate. Boxed because `AppAction` is large.
     Forward(Box<AppAction>),
 }
@@ -292,8 +298,8 @@ impl MasternodeDetailView {
                 outcome = DetailOutcome::Forward(Box::new(action));
             }
             ui.add_space(12.0);
-            if self.render_remove_section(ui, dark_mode) {
-                outcome = DetailOutcome::Removed;
+            if let Some(action) = self.render_remove_section(ui, dark_mode) {
+                outcome = DetailOutcome::Forward(Box::new(action));
             }
         });
 
@@ -628,8 +634,7 @@ impl MasternodeDetailView {
             })
     }
 
-    /// Returns `true` once the node has been removed.
-    fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> bool {
+    fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> Option<AppAction> {
         let migration_in_progress = self.app_context.migration_status().state().is_in_progress();
         if ui
             .add_enabled(
@@ -642,54 +647,24 @@ impl MasternodeDetailView {
             .clicked()
         {
             self.remove_dialog = Some(
-                ConfirmationDialog::new(
-                    "Remove masternode",
-                    "This removes the node and its voting identity from this device. \
-                     You can load it again later with its ProTxHash.",
-                )
-                .danger_mode(true)
-                // §7 confirm verb (TC-US4-02).
-                .confirm_text(Some("Remove masternode")),
+                ConfirmationDialog::new("Remove masternode", REMOVE_MASTERNODE_CONFIRMATION)
+                    .danger_mode(true)
+                    // §7 confirm verb (TC-US4-02).
+                    .confirm_text(Some("Remove masternode")),
             );
         }
 
-        let mut removed = false;
+        let mut action = None;
         if let Some(dialog) = self.remove_dialog.as_mut() {
             let response = dialog.show(ui);
             if let Some(status) = response.inner.dialog_response {
                 self.remove_dialog = None;
                 if status == ConfirmationStatus::Confirmed {
-                    removed = self.remove_node(ui.ctx());
+                    action = Some(remove_node_action(self.identity.identity.id()));
                 }
             }
         }
-        removed
-    }
-
-    /// Delete the node and its associated voter identity from local storage.
-    /// On the primary delete failing, surface an actionable error banner rather
-    /// than failing silently, and keep the detail view open so the user can
-    /// retry. The secondary voter-identity delete failing is non-fatal (the node
-    /// is already gone) and only logged.
-    fn remove_node(&self, ctx: &egui::Context) -> bool {
-        let node_id = self.identity.identity.id();
-        if let Err(e) = self.app_context.delete_local_qualified_identity(&node_id) {
-            MessageBanner::set_global(
-                ctx,
-                "This masternode couldn't be removed from this device. Try again in a moment.",
-                MessageType::Error,
-            )
-            .with_details(e);
-            return false;
-        }
-        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref()
-            && let Err(e) = self
-                .app_context
-                .delete_local_qualified_identity(&voter.id())
-        {
-            tracing::warn!("Failed to remove voter identity: {e}");
-        }
-        true
+        action
     }
 }
 
@@ -697,6 +672,30 @@ impl MasternodeDetailView {
 mod tests {
     use super::*;
     use crate::model::secret::Secret;
+
+    #[test]
+    fn masternode_removal_dispatches_the_identity_backend_task() {
+        let identity_id = Identifier::from([0x42; 32]);
+
+        let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+            identity_id: dispatched_id,
+        })) = remove_node_action(identity_id)
+        else {
+            panic!("masternode removal must run through the identity backend task");
+        };
+
+        assert_eq!(dispatched_id, identity_id);
+    }
+
+    #[test]
+    fn masternode_removal_confirmation_requires_a_key_backup() {
+        assert!(REMOVE_MASTERNODE_CONFIRMATION.contains("private keys"));
+        assert!(REMOVE_MASTERNODE_CONFIRMATION.contains("backup"));
+        assert!(
+            !REMOVE_MASTERNODE_CONFIRMATION.contains("again later with its ProTxHash"),
+            "the confirmation must not imply that the public ProTxHash restores deleted keys"
+        );
+    }
 
     #[test]
     fn tc_fr5_01_actions_render_before_keys() {

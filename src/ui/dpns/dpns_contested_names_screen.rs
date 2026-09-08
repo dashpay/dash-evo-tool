@@ -33,7 +33,7 @@ use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
+use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::state::dpns_contests::{ActiveDpnsContestSnapshot, ActiveDpnsContestView};
 use crate::ui::state::dpns_vote_operations::{DpnsVoteOperationSnapshot, ScheduledDpnsVoteRow};
 use crate::ui::state::dpns_vote_state::DpnsVoteStateSnapshot;
@@ -2627,6 +2627,22 @@ mod tests {
         (ctx, temp_dir)
     }
 
+    async fn wired_ctx() -> (
+        Arc<AppContext>,
+        tempfile::TempDir,
+        tokio::sync::mpsc::Receiver<crate::app::TaskResult>,
+    ) {
+        let (ctx, temp_dir) = offline_ctx();
+        let (tx, events) = tokio::sync::mpsc::channel(32);
+        ctx.ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+            tx,
+            ctx.egui_ctx().clone(),
+        ))
+        .await
+        .expect("wire the wallet backend offline");
+        (ctx, temp_dir, events)
+    }
+
     /// A masternode identity as the DPNS screen sees it: `voting` decides whether
     /// its voter identity — the key the vote submission path needs — is loaded.
     fn masternode_identity(
@@ -3030,9 +3046,9 @@ mod tests {
     /// VOTE-TC-013: a masternode loaded without its voting key must not reach the
     /// composer — the actionable "no voting key" state has to come first. This is
     /// distinct from having no masternode loaded at all.
-    #[test]
-    fn a_loaded_masternode_without_a_voting_key_cannot_compose_votes() {
-        let (ctx, _temp_dir) = kv_ctx();
+    #[tokio::test]
+    async fn a_loaded_masternode_without_a_voting_key_cannot_compose_votes() {
+        let (ctx, _temp_dir, _events) = wired_ctx().await;
         ctx.insert_local_qualified_identity(
             &masternode_identity(41, "read-only-node", false, ctx.network()),
             &None,
@@ -3053,9 +3069,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_loaded_masternode_with_a_voting_key_can_compose_votes() {
-        let (ctx, _temp_dir) = kv_ctx();
+    #[tokio::test]
+    async fn a_loaded_masternode_with_a_voting_key_can_compose_votes() {
+        let (ctx, _temp_dir, _events) = wired_ctx().await;
         ctx.insert_local_qualified_identity(
             &masternode_identity(42, "voting-node", true, ctx.network()),
             &None,

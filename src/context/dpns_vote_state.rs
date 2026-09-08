@@ -249,7 +249,7 @@ impl AppContext {
 async fn fetch_votes_for_voter(
     sdk: &Sdk,
     voter_id: Identifier,
-) -> Result<BTreeMap<[u8; 32], ResourceVoteChoice>, dash_sdk::Error> {
+) -> Result<BTreeMap<[u8; 32], ResourceVoteChoice>, Box<dash_sdk::Error>> {
     let mut votes = BTreeMap::new();
     let mut start_at = None;
     loop {

@@ -79,7 +79,7 @@ use crate::{
     },
     ui::contracts_documents::group_actions_screen::GroupActionsScreen,
     ui::theme::DashColors,
-    ui::{RootScreenType, Screen, identities::keys::add_key_screen::AddKeyScreen},
+    ui::{RootScreenType, Screen, identity::keys::add_key_screen::AddKeyScreen},
 };
 use arboard::Clipboard;
 use dash_sdk::{

@@ -36,9 +36,9 @@ use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
-use crate::ui::identities::get_selected_wallet;
-use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use super::tokens_screen::IdentityTokenBasicInfo;
 
 /// States for the claim flow

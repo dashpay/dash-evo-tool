@@ -1,0 +1,688 @@
+use crate::app::AppAction;
+use crate::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
+use crate::context::AppContext;
+use crate::model::dpns::{DpnsNameValidationResult, DpnsRegistrationOutcome, validate_dpns_name};
+use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
+use crate::ui::components::{
+    MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ResultBannerExt,
+};
+use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
+use crate::ui::theme::{DashColors, ResponseExt};
+use crate::ui::{MessageType, ScreenLike};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::identity::Purpose;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use eframe::egui::{Context, Frame, Margin};
+use egui::{Color32, RichText, Ui};
+use std::sync::Arc;
+use std::sync::RwLock;
+
+use super::get_selected_wallet;
+
+/// Tracks where the user navigated from to reach this screen
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RegisterDpnsNameSource {
+    #[default]
+    Dpns,
+    Identities,
+}
+
+#[derive(PartialEq)]
+pub enum RegisterDpnsNameStatus {
+    NotStarted,
+    WaitingForResult,
+    Error,
+    Complete,
+}
+
+pub struct RegisterDpnsNameScreen {
+    pub show_identity_selector: bool,
+    pub qualified_identities: Vec<QualifiedIdentity>,
+    pub selected_qualified_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
+    pub selected_key: Option<IdentityPublicKey>,
+    name_input: String,
+    register_dpns_name_status: RegisterDpnsNameStatus,
+    pub app_context: Arc<AppContext>,
+    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
+    show_advanced_options: bool,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
+    registration_outcome: Option<DpnsRegistrationOutcome>,
+    // Source of navigation to this screen
+    pub source: RegisterDpnsNameSource,
+    /// Bucket A overlay-adoption pattern: a button-less full-window block raised
+    /// when the bounded registration is dispatched and torn down on every
+    /// terminal result. It replaces the old progress banner and, by blocking the
+    /// whole window, closes the double-submit hole the banner left open.
+    op_overlay: Option<OverlayHandle>,
+}
+
+impl RegisterDpnsNameScreen {
+    pub fn new(app_context: &Arc<AppContext>, source: RegisterDpnsNameSource) -> Self {
+        let qualified_identities: Vec<_> =
+            app_context.load_local_user_identities().unwrap_or_default();
+
+        // Seed from the app-scoped selected identity (W2 SYNC); fall back to first.
+        let selected_qualified_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| {
+                qualified_identities
+                    .iter()
+                    .find(|qi| qi.identity.id() == id)
+                    .cloned()
+            })
+            .or_else(|| qualified_identities.first().cloned());
+
+        let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
+            get_selected_wallet(identity, Some(app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None)
+        } else {
+            None
+        };
+
+        // Auto-select a suitable key for DPNS registration
+        // Note: MASTER keys cannot be used for document operations,
+        // only MEDIUM, HIGH, or CRITICAL security levels are allowed
+        let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
+            use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+            identity
+                .identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    [
+                        SecurityLevel::CRITICAL,
+                        SecurityLevel::HIGH,
+                        SecurityLevel::MEDIUM,
+                    ]
+                    .into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned()
+        });
+
+        let selected_identity_string = selected_qualified_identity
+            .as_ref()
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
+        let show_identity_selector = qualified_identities.len() > 1;
+        Self {
+            show_identity_selector,
+            qualified_identities,
+            selected_qualified_identity,
+            selected_identity_string,
+            selected_key,
+            name_input: String::new(),
+            register_dpns_name_status: RegisterDpnsNameStatus::NotStarted,
+            app_context: app_context.clone(),
+            selected_wallet,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
+            show_advanced_options: false,
+            completed_fee_result: None,
+            registration_outcome: None,
+            source,
+            op_overlay: None,
+        }
+    }
+
+    pub fn select_identity(&mut self, identity_id: Identifier) {
+        // Find the qualified identity with the matching identity_id
+        if let Some(qi) = self
+            .qualified_identities
+            .iter()
+            .find(|qi| qi.identity.id() == identity_id)
+        {
+            // Set the selected_qualified_identity to the found identity
+            self.selected_qualified_identity = Some(qi.clone());
+            self.selected_identity_string = qi
+                .identity
+                .id()
+                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+
+            // Auto-select a suitable key for DPNS registration
+            // Note: MASTER keys cannot be used for document operations,
+            // only MEDIUM, HIGH, or CRITICAL security levels are allowed
+            use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+            self.selected_key = qi
+                .identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    [
+                        SecurityLevel::CRITICAL,
+                        SecurityLevel::HIGH,
+                        SecurityLevel::MEDIUM,
+                    ]
+                    .into(),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned();
+
+            // Update the selected wallet
+            self.selected_wallet = get_selected_wallet(qi, Some(&self.app_context), None)
+                .or_show_error(self.app_context.egui_ctx())
+                .unwrap_or(None);
+            self.wallet_open_attempted = false;
+        } else {
+            // If not found, you might want to handle this case
+            // For now, we'll set selected_qualified_identity to None
+            self.selected_qualified_identity = None;
+            self.selected_identity_string = String::new();
+            self.selected_key = None;
+            self.selected_wallet = None;
+            self.wallet_open_attempted = false;
+        }
+    }
+
+    fn render_identity_id_selection(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        // Identity selector — SYNC: write-back via syncing_global on user pick.
+        let response = ui.add(
+            IdentitySelector::new(
+                "dpns_register_identity_selector",
+                &mut self.selected_identity_string,
+                &self.qualified_identities,
+            )
+            .selected_identity(&mut self.selected_qualified_identity)
+            .unwrap()
+            .width(300.0)
+            .label("Identity:")
+            .other_option(false)
+            .syncing_global(self.app_context.clone()),
+        );
+
+        // Handle identity change - auto-select key and update wallet
+        if response.changed() {
+            if let Some(identity) = &self.selected_qualified_identity {
+                // Auto-select a suitable key for DPNS registration
+                // Note: MASTER keys cannot be used for document operations,
+                // only MEDIUM, HIGH, or CRITICAL security levels are allowed
+                use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+                self.selected_key = identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        [
+                            SecurityLevel::CRITICAL,
+                            SecurityLevel::HIGH,
+                            SecurityLevel::MEDIUM,
+                        ]
+                        .into(),
+                        KeyType::all_key_types().into(),
+                        false,
+                    )
+                    .cloned();
+
+                // Update wallet
+                self.selected_wallet = get_selected_wallet(identity, Some(&self.app_context), None)
+                    .or_show_error(self.app_context.egui_ctx())
+                    .unwrap_or(None);
+                self.wallet_open_attempted = false;
+            } else {
+                self.selected_key = None;
+                self.selected_wallet = None;
+                self.wallet_open_attempted = false;
+            }
+        }
+
+        // Key selector (only shown in advanced mode)
+        if self.show_advanced_options {
+            ui.add_space(10.0);
+            if let Some(identity) = &self.selected_qualified_identity {
+                let key_action = add_key_chooser_with_doc_type(
+                    ui,
+                    &self.app_context,
+                    identity,
+                    &mut self.selected_key,
+                    TransactionType::DocumentAction,
+                    self.app_context
+                        .dpns_contract
+                        .document_type_cloned_for_name("domain")
+                        .ok()
+                        .as_ref(),
+                );
+                if !matches!(key_action, AppAction::None) {
+                    action = key_action;
+                }
+            }
+        }
+
+        action
+    }
+
+    fn register_dpns_name_clicked(&mut self) -> AppAction {
+        let Some(qualified_identity) = self.selected_qualified_identity.as_ref() else {
+            return AppAction::None;
+        };
+        let Some(_selected_key) = self.selected_key.as_ref() else {
+            return AppAction::None;
+        };
+        let dpns_name_input = RegisterDpnsNameInput {
+            qualified_identity: qualified_identity.clone(),
+            name_input: self.name_input.trim().to_string(),
+        };
+
+        AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(
+            dpns_name_input,
+        )))
+    }
+
+    /// Dispatch the registration and raise the Bucket A blocking overlay.
+    ///
+    /// The overlay is raised only when a real task is produced (an identity and a
+    /// signing key are selected), so a no-op click never strands a block. The
+    /// full-window block is the in-progress feedback that replaces the old banner
+    /// and prevents a second submit while the first is in flight.
+    fn begin_registration(&mut self, ctx: &Context) -> AppAction {
+        let action = self.register_dpns_name_clicked();
+        if matches!(action, AppAction::BackendTask(_)) {
+            self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult;
+            self.raise_progress_overlay(ctx);
+        }
+        action
+    }
+
+    fn raise_progress_overlay(&mut self, ctx: &Context) {
+        self.op_overlay.raise(
+            ctx,
+            "Registering your username on the network.",
+            OverlayConfig::default(),
+        );
+    }
+
+    /// Test seam: run the exact production overlay-raise the Register button uses,
+    /// so the Bucket A adoption (raise + guaranteed teardown) is exercisable in
+    /// kittests without funding an identity. Mirrors `force_input_for_test`.
+    #[doc(hidden)]
+    pub fn raise_progress_overlay_for_test(&mut self, ctx: &Context) {
+        self.raise_progress_overlay(ctx);
+    }
+
+    pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(outcome) = self.registration_outcome else {
+            return AppAction::None;
+        };
+        let success_message = match outcome {
+            DpnsRegistrationOutcome::Registered => {
+                "Your username is registered. You can use it now."
+            }
+            DpnsRegistrationOutcome::PendingCommunityVote => {
+                "Your username request was submitted. Other people can also request this name, so the community will vote on who receives it. Check the Pending label on your identity for updates."
+            }
+        };
+        let action = crate::ui::helpers::show_success_screen_with_info(
+            ui,
+            success_message.to_string(),
+            vec![
+                ("Back".to_string(), AppAction::PopScreenAndRefresh),
+                (
+                    "Register another name".to_string(),
+                    AppAction::Custom("register_another".to_string()),
+                ),
+            ],
+            None,
+        );
+
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action
+            && s == "register_another"
+        {
+            self.name_input = String::new();
+            self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+            self.completed_fee_result = None;
+            self.registration_outcome = None;
+            return AppAction::None;
+        }
+
+        action
+    }
+}
+
+impl ScreenLike for RegisterDpnsNameScreen {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        // Tear down the blocking overlay on the error terminal path so a
+        // failed registration can never hard-lock the window.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.op_overlay.take_and_clear();
+            self.register_dpns_name_status = RegisterDpnsNameStatus::Error;
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        // Tear down the blocking overlay on the success terminal path.
+        if let BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        } = backend_task_success_result
+        {
+            self.op_overlay.take_and_clear();
+            self.completed_fee_result = Some(fee_result);
+            self.registration_outcome = Some(outcome);
+            self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        // Build breadcrumbs based on where we came from
+        let breadcrumbs = match self.source {
+            RegisterDpnsNameSource::Dpns => vec![
+                (
+                    "DPNS",
+                    AppAction::SetMainScreen(
+                        crate::ui::RootScreenType::RootScreenDPNSActiveContests,
+                    ),
+                ),
+                ("Register Name", AppAction::None),
+            ],
+            RegisterDpnsNameSource::Identities => vec![
+                (
+                    "Identities",
+                    AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenIdentityHub),
+                ),
+                ("Register Name", AppAction::None),
+            ],
+        };
+
+        let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
+
+        // Use the appropriate left panel highlight based on source
+        let root_screen = match self.source {
+            RegisterDpnsNameSource::Dpns => crate::ui::RootScreenType::RootScreenDPNSActiveContests,
+            RegisterDpnsNameSource::Identities => crate::ui::RootScreenType::RootScreenIdentityHub,
+        };
+        action |= add_left_panel(ui, &self.app_context, root_screen);
+
+        // Don't show the tools/dpns subscreen chooser panels for this screen
+
+        action |= island_central_panel(ui, |ui| {
+            let mut inner_action = AppAction::None;
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    if self.register_dpns_name_status == RegisterDpnsNameStatus::Complete {
+                        inner_action |= self.show_success(ui);
+                        return;
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.heading("Register DPNS Name");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                        });
+                    });
+                    ui.add_space(10.0);
+
+            // If no identities loaded, give message
+            if self.qualified_identities.is_empty() {
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    "No identities loaded. Please load an identity first.",
+                );
+                return;
+            }
+
+            // Check if any identity has suitable private keys for DPNS registration
+            let has_suitable_keys = self.qualified_identities.iter().any(|qi| {
+                qi.private_keys.identity_public_keys().iter().any(|key_ref| {
+                    let key = &key_ref.1.identity_public_key;
+                    // DPNS registration requires Authentication keys
+                    key.purpose() == Purpose::AUTHENTICATION
+                })
+            });
+
+            if !has_suitable_keys {
+                ui.colored_label(
+                    egui::Color32::DARK_RED,
+                    "No identities with authentication private keys loaded. Please load identity keys to register a DPNS name.",
+                );
+                return;
+            }
+
+            // Select the identity to register the name for
+            ui.heading("1. Select Identity");
+            ui.add_space(5.0);
+            inner_action |= self.render_identity_id_selection(ui);
+            ui.add_space(5.0);
+            if let Some(identity) = &self.selected_qualified_identity {
+                ui.label(format!(
+                    "Identity balance: {balance:.6}",
+                    balance = identity.identity.balance() as f64 * 1e-11
+                ));
+            }
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            if self.selected_wallet.is_some()
+                && let Some(wallet) = &self.selected_wallet {
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
+                        }
+                        self.wallet_open_attempted = true;
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                        return;
+                    }
+                }
+
+            // Input for the name
+            ui.heading("2. Enter the Name to Register:");
+            ui.add_space(5.0);
+            ui.horizontal(|ui| {
+                ui.label("Name (without \".dash\"):");
+                ui.text_edit_singleline(&mut self.name_input);
+            });
+
+            // Display validation status and cost information
+            let name = self.name_input.trim();
+            if !name.is_empty() {
+                ui.add_space(10.0);
+
+                // Validate the name
+                let validation_result = validate_dpns_name(name);
+
+                match validation_result {
+                    DpnsNameValidationResult::Valid => {
+                        ui.colored_label(
+                            egui::Color32::DARK_GREEN,
+                            "Valid name format",
+                        );
+
+                        // Show contested status and cost if valid
+                        if is_contested_name(&name.to_lowercase()) {
+                            ui.colored_label(
+                                egui::Color32::DARK_RED,
+                                "This is a contested name.",
+                            );
+                            ui.colored_label(
+                                egui::Color32::DARK_RED,
+                                "Cost ≈ 0.2006 Dash",
+                            );
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::DARK_GREEN,
+                                "This is not a contested name.",
+                            );
+                        }
+                    }
+                    _ => {
+                        if let Some(error_msg) = validation_result.error_message() {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                error_msg,
+                            );
+                        }
+                    }
+                }
+            }
+
+            ui.add_space(10.0);
+
+            // Fee estimation
+            let fee_estimator = self.app_context.fee_estimator();
+            let estimated_fee = fee_estimator.estimate_document_create();
+            let dark_mode = ui.style().visuals.dark_mode;
+
+            Frame::new()
+                .fill(DashColors::surface(dark_mode))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Estimated fee:")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(14.0),
+                        );
+                        ui.label(
+                            RichText::new(format_credits_as_dash(estimated_fee))
+                                .color(DashColors::text_primary(dark_mode))
+                                .size(14.0),
+                        );
+                    });
+                });
+
+            ui.add_space(10.0);
+
+            // Check if identity has enough balance
+            let has_enough_balance = self
+                .selected_qualified_identity
+                .as_ref()
+                .map(|id| id.identity.balance() > estimated_fee)
+                .unwrap_or(false);
+
+            // Register button
+            let mut new_style = (**ui.style()).clone();
+            new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
+            ui.set_style(new_style);
+            let name_is_valid = validate_dpns_name(self.name_input.trim()) == DpnsNameValidationResult::Valid;
+            let button_enabled = self.selected_qualified_identity.is_some()
+                && self.selected_key.is_some()
+                && name_is_valid
+                && has_enough_balance;
+
+            let hover_text = if !has_enough_balance {
+                format!(
+                    "Insufficient identity balance for fee (need at least {fee})",
+                    fee = format_credits_as_dash(estimated_fee)
+                )
+            } else if !name_is_valid {
+                "Please enter a valid name".to_string()
+            } else if self.selected_key.is_none() {
+                "Please select a signing key".to_string()
+            } else {
+                "Register DPNS name".to_string()
+            };
+
+            let button = egui::Button::new(RichText::new("Register Name").color(Color32::WHITE))
+                .fill(if button_enabled {
+                    DashColors::DASH_BLUE
+                } else {
+                    Color32::GRAY
+                })
+                .frame(true)
+                .corner_radius(3.0);
+            if ui.add_enabled(button_enabled, button)
+                .clickable_tooltip(&hover_text)
+                .disabled_tooltip(&hover_text)
+                .clicked()
+            {
+                inner_action = self.begin_registration(ui.ctx());
+            }
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            // DPNS Name Constraints Explanation
+            ui.heading("DPNS Name Constraints:");
+            ui.add_space(5.0);
+            ui.label("  • Minimum length: 3 characters");
+            ui.label("  • Maximum length: 63 characters");
+            ui.label("  • Allowed characters: letters (A-Z, case-insensitive), numbers (0-9), and hyphens (-)");
+            ui.label("  • Cannot start or end with a hyphen (-)");
+            ui.label("  • Names are case-sensitive");
+
+            ui.add_space(20.0);
+
+            // Contested Names Explanation
+            ui.heading("Contested Names Info:");
+            ui.add_space(5.0);
+            ui.label("  • To prevent name front-running, some names are contested and require a higher fee to register.");
+            ui.label("  • Masternodes vote whether or not to award contested names to contestants.");
+            ui.label("  • Contests last two weeks and new contenders can only join during the first week.");
+            ui.label("  • Contested names are those that are:");
+            ui.label("  • Less than 20 characters long (i.e. “alice”, “quantumexplorer”)");
+            ui.label("  • AND");
+            ui.label("  • Contain no numbers or only contain the number(s) 0 and/or 1 (i.e. “bob”, “carol01”)");
+                });
+            inner_action
+        });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
+        action
+    }
+}
+
+pub fn is_contested_name(name: &str) -> bool {
+    let length = name.len();
+    if length >= 20 {
+        return false;
+    }
+    for c in name.chars() {
+        if c.is_ascii_digit() && c != '0' && c != '1' {
+            return false;
+        }
+    }
+    true
+}

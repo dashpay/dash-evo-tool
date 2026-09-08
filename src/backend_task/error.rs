@@ -956,6 +956,17 @@ pub enum TaskError {
     )]
     DpnsCurrentVoteUnavailable,
 
+    /// A newer refresh or confirmation superseded a submission's proved snapshot.
+    #[error("Newer voting information is available. Refresh vote state and try again.")]
+    DpnsVoteStateChanged,
+
+    /// Retains the per-voter cause of a strict current-vote preflight failure.
+    #[error("This node's current vote could not be checked. Refresh vote state before submitting.")]
+    DpnsVotePreflightFailed {
+        #[source]
+        source: std::sync::Arc<TaskError>,
+    },
+
     /// A local identity record could not be read or written in the
     /// per-network wallet k/v store.
     #[error("Could not access your saved identities. Check available disk space and try again.")]

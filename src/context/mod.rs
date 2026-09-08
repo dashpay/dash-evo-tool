@@ -236,6 +236,8 @@ pub struct AppContext {
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
     /// Serializes operation journal writes and target-lock acquisition.
     dpns_vote_operation_guard: Mutex<()>,
+    /// Coordinates proof publication and short state-to-journal validation.
+    dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications,
     /// Serializes all nonce-consuming vote submissions per voter across tasks,
     /// while bounding unrelated voters globally.
     pub(crate) dpns_vote_dispatch: DpnsVoteDispatchCoordinator,
@@ -585,6 +587,7 @@ impl AppContext {
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             dpns_vote_operation_guard: Mutex::new(()),
             dpns_vote_dispatch: DpnsVoteDispatchCoordinator::default(),
+            dpns_vote_state_publications: dpns_vote_state::DpnsVoteStatePublications::default(),
             dpns_vote_recovery: tokio::sync::Mutex::new(false),
             dpns_vote_diagnostics: Mutex::new(BTreeMap::new()),
             dpns_vote_diagnostic_sequence: AtomicU64::new(0),

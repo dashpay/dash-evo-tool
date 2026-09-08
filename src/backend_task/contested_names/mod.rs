@@ -100,15 +100,10 @@ fn missing_voter_outcome(
 fn classify_reconciled_vote(
     observed: Option<ResourceVoteChoice>,
     requested: ResourceVoteChoice,
-    previous_observation: Option<ResourceVoteChoice>,
 ) -> Option<DpnsVoteTargetStatus> {
     match observed {
         Some(choice) if choice == requested => Some(DpnsVoteTargetStatus::Confirmed),
-        // Two consecutive identical mismatches filter one stale/racing read while
-        // releasing the lock promptly once Platform consistently proves another vote.
-        Some(choice) if previous_observation == Some(choice) => {
-            Some(DpnsVoteTargetStatus::NotApplied)
-        }
+        // A different current choice does not establish that this transition cannot apply.
         Some(_) | None => None,
     }
 }
@@ -371,6 +366,40 @@ impl AppContext {
         Ok(operation)
     }
 
+    fn revalidate_dpns_vote_preflight(
+        &self,
+        operation: &mut DpnsVoteOperation,
+        was_persisted: bool,
+        key: &DpnsVoteTargetKey,
+        state: DpnsCurrentVoteState,
+    ) -> Result<(), TaskError> {
+        if was_persisted {
+            self.revalidate_queued_dpns_vote_target(operation.id, key, state)?;
+            return Ok(());
+        }
+        let Some(outcome) = operation
+            .targets
+            .iter_mut()
+            .find(|outcome| outcome.target.key == *key)
+        else {
+            return Ok(());
+        };
+        match state {
+            DpnsCurrentVoteState::Available(current) => {
+                outcome.target.current_choice = current;
+                if current == Some(outcome.target.requested_choice) {
+                    outcome.status = DpnsVoteTargetStatus::Confirmed;
+                    outcome.failure = None;
+                }
+            }
+            DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
+                (outcome.status, outcome.failure) =
+                    unavailable_preflight_outcome(outcome.target.timing);
+            }
+        }
+        Ok(())
+    }
+
     async fn execute_dpns_vote_operation(
         self: &Arc<Self>,
         mut operation: DpnsVoteOperation,
@@ -385,7 +414,7 @@ impl AppContext {
             });
         }
         let was_persisted = self.dpns_vote_operation(operation.id)?.is_some();
-        let mut preflight_unavailable = false;
+        let mut preflight_error = None;
         if operation
             .targets
             .iter()
@@ -393,7 +422,7 @@ impl AppContext {
         {
             // A fresh proved snapshot is a submission precondition. This also
             // prevents a due schedule from replaying a vote already observed.
-            self.refresh_dpns_vote_states(sdk).await;
+            let refreshed = self.refresh_dpns_vote_states(sdk).await.map_err(Arc::new);
             let queued_keys = operation
                 .targets
                 .iter()
@@ -401,37 +430,50 @@ impl AppContext {
                 .map(|outcome| outcome.target.key.clone())
                 .collect::<Vec<_>>();
             for key in queued_keys {
-                let state = self.dpns_current_vote_state(key.voter_id, key.vote_poll_id)?;
-                let unavailable = matches!(
-                    state,
-                    DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable
-                );
-                if was_persisted {
-                    self.revalidate_queued_dpns_vote_target(operation.id, &key, state)?;
-                    preflight_unavailable |= unavailable;
-                    continue;
-                }
-                let Some(outcome) = operation
-                    .targets
-                    .iter_mut()
-                    .find(|outcome| outcome.target.key == key)
-                else {
-                    continue;
+                let snapshot = match &refreshed {
+                    Ok(results) => results
+                        .get(&key.voter_id)
+                        .ok_or_else(|| Arc::new(TaskError::DpnsCurrentVoteUnavailable))
+                        .and_then(|result| result.as_ref().map_err(Arc::clone)),
+                    Err(error) => Err(Arc::clone(error)),
                 };
-                match state {
-                    DpnsCurrentVoteState::Available(current) => {
-                        outcome.target.current_choice = current;
-                        if current == Some(outcome.target.requested_choice) {
-                            outcome.status = DpnsVoteTargetStatus::Confirmed;
-                            outcome.failure = None;
-                        }
+                let validation = snapshot.and_then(|snapshot| {
+                    snapshot
+                        .with_state(self, key.vote_poll_id, |state| {
+                            matches!(state, DpnsCurrentVoteState::Available(_)).then(|| {
+                                self.revalidate_dpns_vote_preflight(
+                                    &mut operation,
+                                    was_persisted,
+                                    &key,
+                                    state,
+                                )
+                            })
+                        })
+                        .map_err(Arc::new)
+                });
+                let source = match validation {
+                    Ok(Some(result)) => {
+                        result?;
+                        continue;
                     }
-                    DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
-                        (outcome.status, outcome.failure) =
-                            unavailable_preflight_outcome(outcome.target.timing);
-                        preflight_unavailable = true;
-                    }
-                }
+                    Ok(None) => Arc::new(TaskError::DpnsCurrentVoteUnavailable),
+                    Err(source) => source,
+                };
+                self.record_dpns_vote_diagnostic_with_dapi_context(
+                    operation.id,
+                    key.clone(),
+                    TaskError::DpnsVotePreflightFailed {
+                        source: Arc::clone(&source),
+                    },
+                    sdk,
+                );
+                self.revalidate_dpns_vote_preflight(
+                    &mut operation,
+                    was_persisted,
+                    &key,
+                    DpnsCurrentVoteState::Unavailable,
+                )?;
+                preflight_error.get_or_insert(source);
             }
         }
 
@@ -677,8 +719,8 @@ impl AppContext {
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?;
 
-        if preflight_unavailable {
-            return Err(TaskError::DpnsCurrentVoteUnavailable);
+        if let Some(source) = preflight_error {
+            return Err(TaskError::DpnsVotePreflightFailed { source });
         }
 
         Ok(BackendTaskSuccessResult::DpnsVoteOperationUpdated {
@@ -751,11 +793,8 @@ impl AppContext {
                         .get(&poll_id)
                         .and_then(Option::as_ref)
                         .map(ResourceVoteGettersV0::resource_vote_choice);
-                    let reconciled_status = classify_reconciled_vote(
-                        observed,
-                        outcome.target.requested_choice,
-                        outcome.target.current_choice,
-                    );
+                    let reconciled_status =
+                        classify_reconciled_vote(observed, outcome.target.requested_choice);
                     let status = reconciled_status.unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
                     if !self.update_dpns_vote_reconciliation(
                         operation_id,
@@ -1157,6 +1196,44 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn preflight_diagnostics_preserve_network_cause_and_exhaustion_context() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = context.sdk();
+        let addresses = sdk.address_list();
+        for address in addresses.get_live_addresses() {
+            assert!(addresses.ban(&address));
+        }
+        let source = Arc::new(dapi_connection_refused_error());
+        let operation_id = DpnsVoteOperationId::from_bytes([3; 16]);
+        context.record_dpns_vote_diagnostic_with_dapi_context(
+            operation_id,
+            DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([4; 32]),
+                vote_poll_id: Identifier::from([5; 32]),
+            },
+            TaskError::DpnsVotePreflightFailed {
+                source: Arc::clone(&source),
+            },
+            &sdk,
+        );
+        let diagnostics = context.dpns_vote_operation_diagnostics(operation_id);
+        let TaskError::DapiAllAddressesExhausted {
+            source: contextualized,
+        } = diagnostics[0].as_ref()
+        else {
+            panic!("preflight diagnostics must explain exhausted addresses");
+        };
+        let TaskError::DpnsVotePreflightFailed { source: retained } = contextualized.as_ref()
+        else {
+            panic!("preflight diagnostics must retain the typed envelope");
+        };
+        assert!(Arc::ptr_eq(&source, retained));
+        assert!(diagnostics[0].contains_dapi_reachability_failure());
+    }
+
     /// VOTE-TC-033: an inner scheduled rejection is never classified as success.
     #[test]
     fn scheduled_inner_rejection_needs_attention() {
@@ -1186,35 +1263,23 @@ mod tests {
     #[test]
     fn exact_reconciliation_confirms_only_the_requested_choice() {
         assert_eq!(
-            classify_reconciled_vote(
-                Some(ResourceVoteChoice::Lock),
-                ResourceVoteChoice::Lock,
-                None,
-            ),
+            classify_reconciled_vote(Some(ResourceVoteChoice::Lock), ResourceVoteChoice::Lock,),
             Some(DpnsVoteTargetStatus::Confirmed)
         );
         assert_eq!(
-            classify_reconciled_vote(
-                Some(ResourceVoteChoice::Abstain),
-                ResourceVoteChoice::Lock,
-                None,
-            ),
+            classify_reconciled_vote(Some(ResourceVoteChoice::Abstain), ResourceVoteChoice::Lock,),
             None,
             "a mismatched row may predate the submitted transition and remains ambiguous"
         );
         assert_eq!(
-            classify_reconciled_vote(
-                None,
-                ResourceVoteChoice::Lock,
-                Some(ResourceVoteChoice::Abstain),
-            ),
+            classify_reconciled_vote(None, ResourceVoteChoice::Lock,),
             None,
             "an absent exact row remains ambiguous and must not release its lock"
         );
     }
 
     #[test]
-    fn proved_different_reconciliation_releases_target_lock_after_corroboration() {
+    fn repeated_mismatches_keep_an_ambiguous_vote_locked() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let context = crate::context::test_support::test_app_context(temp_dir.path());
         let kv = crate::wallet_backend::DetKv::from_store(Arc::new(
@@ -1260,7 +1325,7 @@ mod tests {
         );
 
         let observed = Some(ResourceVoteChoice::Abstain);
-        let first_status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock, None)
+        let first_status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock)
             .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
         assert!(
             context
@@ -1270,12 +1335,8 @@ mod tests {
         assert_eq!(first_status, DpnsVoteTargetStatus::Unconfirmed);
 
         let persisted = context.dpns_vote_operation(operation_id).unwrap().unwrap();
-        let second_status = classify_reconciled_vote(
-            observed,
-            ResourceVoteChoice::Lock,
-            persisted.targets[0].target.current_choice,
-        )
-        .expect("the repeated different choice must be proved not applied");
+        let second_status = classify_reconciled_vote(observed, ResourceVoteChoice::Lock)
+            .unwrap_or(DpnsVoteTargetStatus::Unconfirmed);
         assert!(
             context
                 .update_dpns_vote_reconciliation(
@@ -1293,9 +1354,12 @@ mod tests {
             .unwrap()
             .unwrap()
             .targets[0];
-        assert_eq!(target.status, DpnsVoteTargetStatus::NotApplied);
-        assert!(!target.status.holds_lock());
-        assert_eq!(context.dpns_vote_target_status(&key).unwrap(), None);
+        assert_eq!(target.status, DpnsVoteTargetStatus::Unconfirmed);
+        assert!(target.status.holds_lock());
+        assert_eq!(
+            context.dpns_vote_target_status(&key).unwrap(),
+            Some(DpnsVoteTargetStatus::Unconfirmed)
+        );
     }
 
     #[test]

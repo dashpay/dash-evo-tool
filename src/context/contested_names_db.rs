@@ -916,7 +916,7 @@ mod tests {
 
     impl KvStore for CurrentVotesReadCounter {
         fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            if key.starts_with("det:dpns_current_votes:v2:") {
+            if key.starts_with("det:dpns_current_votes:v3:") {
                 self.snapshot_reads.fetch_add(1, Ordering::Relaxed);
             }
             self.inner.get(scope, key)

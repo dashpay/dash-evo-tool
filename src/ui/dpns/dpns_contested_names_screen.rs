@@ -3085,17 +3085,25 @@ mod tests {
 
     /// The review sheet must expand every node × contest pair, suppress the
     /// targets that already hold the requested choice, and count what it dropped.
-    #[test]
-    fn review_plan_expands_every_node_and_contest_and_suppresses_no_ops() {
+    #[tokio::test]
+    async fn review_plan_expands_every_node_and_contest_and_suppresses_no_ops() {
         let (ctx, _temp_dir) = kv_ctx();
         let alpha = ctx.dpns_vote_poll_id("alpha").expect("alpha poll id");
         let beta = ctx.dpns_vote_poll_id("beta").expect("beta poll id");
         let first = masternode_identity(1, "node-one", true, ctx.network());
         let second = masternode_identity(2, "node-two", true, ctx.network());
-        ctx.cache_confirmed_dpns_vote(first.identity.id(), alpha, ResourceVoteChoice::Lock)
-            .expect("seed first node's proved vote");
-        ctx.cache_confirmed_dpns_vote(second.identity.id(), beta, ResourceVoteChoice::Abstain)
-            .expect("seed second node's proved vote");
+        ctx.seed_proved_dpns_votes_for_test(
+            first.identity.id(),
+            std::collections::BTreeMap::from([(alpha.to_buffer(), ResourceVoteChoice::Lock)]),
+        )
+        .await
+        .expect("seed first node's complete proved votes");
+        ctx.seed_proved_dpns_votes_for_test(
+            second.identity.id(),
+            std::collections::BTreeMap::from([(beta.to_buffer(), ResourceVoteChoice::Abstain)]),
+        )
+        .await
+        .expect("seed second node's complete proved votes");
 
         let mut screen = DPNSScreen::new(&ctx, DPNSSubscreen::Active);
         screen.voting_identities = vec![first.clone(), second.clone()];

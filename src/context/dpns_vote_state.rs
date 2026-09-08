@@ -20,10 +20,14 @@ use dash_sdk::platform::{FetchMany, Identifier};
 use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const LEGACY_CURRENT_VOTES_KEY: &str = "det:dpns_current_votes:v1";
-const CURRENT_VOTES_KEY_PREFIX: &str = "det:dpns_current_votes:v2:";
+const CURRENT_VOTES_KEY_PREFIX: &str = "det:dpns_current_votes:v3:";
 const VOTE_QUERY_PAGE_SIZE: u16 = 100;
 const CURRENT_VOTE_MAX_AGE_MS: u64 = 120_000;
 
@@ -32,6 +36,67 @@ struct StoredCurrentVotes {
     available: bool,
     updated_at: u64,
     votes: BTreeMap<[u8; 32], ResourceVoteChoice>,
+    confirmed: BTreeMap<[u8; 32], (u64, ResourceVoteChoice)>,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct DpnsVoteStatePublications {
+    sequence: AtomicU64,
+    voters: Mutex<BTreeMap<Identifier, u64>>,
+}
+
+impl DpnsVoteStatePublications {
+    fn next_generation(&self) -> Result<u64, TaskError> {
+        self.sequence
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| TaskError::DpnsVoteStateChanged)
+    }
+}
+
+pub(crate) type DpnsVoteRefreshResults =
+    BTreeMap<Identifier, Result<RefreshedDpnsVotes, Arc<TaskError>>>;
+
+#[derive(Debug)]
+pub(crate) struct RefreshedDpnsVotes {
+    voter_id: Identifier,
+    generation: u64,
+    snapshot: StoredCurrentVotes,
+}
+
+impl RefreshedDpnsVotes {
+    /// Consume this proof while excluding newer publications through journal revalidation.
+    pub(crate) fn with_state<T>(
+        &self,
+        app_context: &AppContext,
+        poll_id: Identifier,
+        consume: impl FnOnce(DpnsCurrentVoteState) -> T,
+    ) -> Result<T, TaskError> {
+        // Lock order: vote-state publications, then the operation journal.
+        let publications = app_context
+            .dpns_vote_state_publications
+            .voters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if publications.get(&self.voter_id) != Some(&self.generation) {
+            return Err(TaskError::DpnsVoteStateChanged);
+        }
+        Ok(consume(snapshot_vote_state(
+            Some(&self.snapshot),
+            poll_id,
+            now_ms(),
+        )))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state(
+        &self,
+        app_context: &AppContext,
+        poll_id: Identifier,
+    ) -> Result<DpnsCurrentVoteState, TaskError> {
+        self.with_state(app_context, poll_id, std::convert::identity)
+    }
 }
 
 fn vote_state_err(source: KvAdapterError) -> TaskError {
@@ -60,14 +125,11 @@ fn load_snapshot(
     {
         return Ok(Some(snapshot));
     }
-    if kv
-        .get::<StoredCurrentVotes>(scope, LEGACY_CURRENT_VOTES_KEY)
-        .map_err(vote_state_err)?
-        .is_some()
-    {
-        kv.delete(scope, LEGACY_CURRENT_VOTES_KEY)
-            .map_err(vote_state_err)?;
-    }
+    // Cached v1/v2 values have no independent per-poll freshness and must be re-proved.
+    kv.delete(scope, LEGACY_CURRENT_VOTES_KEY)
+        .map_err(vote_state_err)?;
+    let previous_key = current_votes_key(network).replace(":v3:", ":v2:");
+    kv.delete(scope, &previous_key).map_err(vote_state_err)?;
     Ok(None)
 }
 
@@ -90,6 +152,12 @@ fn snapshot_vote_state(
     vote_poll_id: Identifier,
     checked_at_ms: u64,
 ) -> DpnsCurrentVoteState {
+    if let Some((updated_at, choice)) =
+        snapshot.and_then(|snapshot| snapshot.confirmed.get(&vote_poll_id.to_buffer()))
+        && checked_at_ms.saturating_sub(*updated_at) <= CURRENT_VOTE_MAX_AGE_MS
+    {
+        return DpnsCurrentVoteState::Available(Some(*choice));
+    }
     match snapshot {
         None => DpnsCurrentVoteState::Checking,
         Some(snapshot)
@@ -105,6 +173,65 @@ fn snapshot_vote_state(
 }
 
 impl AppContext {
+    #[cfg(test)]
+    pub(crate) async fn seed_proved_dpns_votes_for_test(
+        &self,
+        voter_id: Identifier,
+        votes: BTreeMap<[u8; 32], ResourceVoteChoice>,
+    ) -> Result<(), TaskError> {
+        self.refresh_dpns_vote_state_with(&self.det_kv()?, voter_id, async { Ok(votes) })
+            .await
+            .map(|_| ())
+    }
+
+    async fn refresh_dpns_vote_state_with(
+        &self,
+        kv: &DetKv,
+        voter_id: Identifier,
+        fetch: impl Future<
+            Output = Result<BTreeMap<[u8; 32], ResourceVoteChoice>, Box<dash_sdk::Error>>,
+        >,
+    ) -> Result<RefreshedDpnsVotes, TaskError> {
+        let generation = self.dpns_vote_state_publications.next_generation()?;
+        let checked_at = now_ms();
+        let result = fetch.await;
+        let mut publications = self
+            .dpns_vote_state_publications
+            .voters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if publications
+            .get(&voter_id)
+            .is_some_and(|published| *published > generation)
+        {
+            return Err(TaskError::DpnsVoteStateChanged);
+        }
+        let confirmed = if result.is_err() {
+            load_snapshot(kv, self.network, &voter_id)?
+                .unwrap_or_default()
+                .confirmed
+        } else {
+            BTreeMap::new()
+        };
+        let snapshot = StoredCurrentVotes {
+            available: result.is_ok(),
+            updated_at: checked_at,
+            votes: result.as_ref().cloned().unwrap_or_default(),
+            confirmed,
+        };
+        publications.insert(voter_id, generation);
+        save_snapshot(kv, self.network, &voter_id, &snapshot)?;
+        if let Err(error) = result {
+            tracing::warn!(?error, %voter_id, "Proved DPNS vote-state query was unavailable");
+            return Err(TaskError::from(*error));
+        }
+        Ok(RefreshedDpnsVotes {
+            voter_id,
+            generation,
+            snapshot,
+        })
+    }
+
     /// Build the exact Platform vote-poll ID for one normalized DPNS label.
     pub fn dpns_vote_poll_id(&self, name: &str) -> Result<Identifier, TaskError> {
         let document_type = self
@@ -163,71 +290,31 @@ impl AppContext {
     }
 
     /// Refresh proved vote state once per loaded masternode, paging only as needed.
-    pub(crate) async fn refresh_dpns_vote_states(&self, sdk: &Sdk) {
-        let voters = match self.load_local_masternode_identities() {
-            Ok(voters) => voters,
-            Err(error) => {
-                tracing::warn!(?error, "Could not load nodes for DPNS vote-state refresh");
-                return;
-            }
-        };
-        let kv = match self.det_kv() {
-            Ok(kv) => kv,
-            Err(error) => {
-                tracing::warn!(?error, "Could not open DPNS vote-state storage");
-                return;
-            }
-        };
+    pub(crate) async fn refresh_dpns_vote_states(
+        &self,
+        sdk: &Sdk,
+    ) -> Result<DpnsVoteRefreshResults, TaskError> {
+        let voters = self.load_local_masternode_identities()?;
+        let kv = self.det_kv()?;
 
-        stream::iter(voters)
+        Ok(stream::iter(voters)
             .map(|voter| {
                 let sdk = sdk.clone();
                 let kv = kv.clone();
-                let network = self.network;
                 async move {
                     let voter_id = voter.identity.id();
-                    match fetch_votes_for_voter(&sdk, voter_id).await {
-                        Ok(votes) => {
-                            let snapshot = StoredCurrentVotes {
-                                available: true,
-                                updated_at: now_ms(),
-                                votes,
-                            };
-                            if let Err(error) = save_snapshot(&kv, network, &voter_id, &snapshot) {
-                                tracing::warn!(
-                                    ?error,
-                                    voter_id = %voter_id,
-                                    "Could not save proved DPNS vote state"
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            let snapshot = StoredCurrentVotes {
-                                available: false,
-                                updated_at: now_ms(),
-                                votes: BTreeMap::new(),
-                            };
-                            if let Err(storage_error) =
-                                save_snapshot(&kv, network, &voter_id, &snapshot)
-                            {
-                                tracing::warn!(
-                                    ?storage_error,
-                                    voter_id = %voter_id,
-                                    "Could not save unavailable DPNS vote state"
-                                );
-                            }
-                            tracing::warn!(
-                                ?error,
-                                voter_id = %voter_id,
-                                "Proved DPNS vote-state query was unavailable"
-                            );
-                        }
+                    let result = self.refresh_dpns_vote_state_with(
+                        &kv, voter_id, fetch_votes_for_voter(&sdk, voter_id),
+                    ).await.map_err(Arc::new);
+                    if let Err(error) = &result {
+                        tracing::warn!(?error, %voter_id, "Could not refresh proved DPNS vote state");
                     }
+                    (voter_id, result)
                 }
             })
             .buffer_unordered(4)
-            .collect::<Vec<_>>()
-            .await;
+            .collect::<BTreeMap<_, _>>()
+            .await)
     }
 
     /// Update the proved-state cache after a confirmed target.
@@ -237,11 +324,24 @@ impl AppContext {
         vote_poll_id: Identifier,
         choice: ResourceVoteChoice,
     ) -> Result<(), TaskError> {
+        let mut publications = self
+            .dpns_vote_state_publications
+            .voters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        publications.insert(
+            voter_id,
+            self.dpns_vote_state_publications.next_generation()?,
+        );
         let kv = self.det_kv()?;
         let mut snapshot = load_snapshot(&kv, self.network, &voter_id)?.unwrap_or_default();
-        snapshot.available = true;
-        snapshot.updated_at = now_ms();
-        snapshot.votes.insert(vote_poll_id.to_buffer(), choice);
+        let confirmed_at = now_ms();
+        snapshot.confirmed.retain(|_, (updated_at, _)| {
+            confirmed_at.saturating_sub(*updated_at) <= CURRENT_VOTE_MAX_AGE_MS
+        });
+        snapshot
+            .confirmed
+            .insert(vote_poll_id.to_buffer(), (confirmed_at, choice));
         save_snapshot(&kv, self.network, &voter_id, &snapshot)
     }
 }
@@ -330,6 +430,336 @@ mod tests {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
     }
 
+    fn connection_error() -> Box<dash_sdk::Error> {
+        use dash_sdk::dapi_client::{DapiClientError, transport::TransportError};
+        Box::new(dash_sdk::Error::DapiClientError(
+            DapiClientError::Transport(TransportError::Grpc(
+                dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error"),
+            )),
+        ))
+    }
+
+    #[tokio::test]
+    async fn an_older_refresh_cannot_replace_a_newer_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let older = context.refresh_dpns_vote_state_with(&kv, voter, async {
+            started_tx.send(()).unwrap();
+            finish_rx.await.unwrap();
+            Ok(BTreeMap::from([(
+                poll.to_buffer(),
+                ResourceVoteChoice::Abstain,
+            )]))
+        });
+        let newer = async {
+            started_rx.await.unwrap();
+            let result = context
+                .refresh_dpns_vote_state_with(&kv, voter, async {
+                    Ok(BTreeMap::from([(
+                        poll.to_buffer(),
+                        ResourceVoteChoice::Lock,
+                    )]))
+                })
+                .await;
+            finish_tx.send(()).unwrap();
+            result
+        };
+        let (older, newer) = tokio::join!(older, newer);
+        newer.unwrap();
+        assert!(
+            older.is_err(),
+            "a superseded result cannot authorize preflight"
+        );
+        assert_eq!(
+            context.dpns_current_vote_state(voter, poll).unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delayed_refresh_failure_cannot_erase_a_confirmation() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let refresh = context.refresh_dpns_vote_state_with(&kv, voter, async {
+            started_tx.send(()).unwrap();
+            finish_rx.await.unwrap();
+            Err(connection_error())
+        });
+        let confirmation = async {
+            started_rx.await.unwrap();
+            context
+                .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+                .unwrap();
+            finish_tx.send(()).unwrap();
+        };
+        let (result, ()) = tokio::join!(refresh, confirmation);
+        assert!(result.is_err());
+        assert_eq!(
+            context.dpns_current_vote_state(voter, poll).unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_returned_snapshot_cannot_authorize_preflight_after_confirmation() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let result = context
+            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .await
+            .unwrap();
+        context
+            .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+            .unwrap();
+        assert!(result.state(&context, poll).is_err());
+
+        use crate::model::dpns_voting::{
+            DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+        };
+        let key = DpnsVoteTargetKey {
+            network: Network::Testnet,
+            voter_id: voter,
+            vote_poll_id: poll,
+        };
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            key: key.clone(),
+            voter_alias: None,
+            contested_name: "example".to_owned(),
+            current_choice: None,
+            requested_choice: ResourceVoteChoice::Abstain,
+            timing: VoteTiming::Now,
+        }]);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        assert!(
+            result
+                .with_state(&context, poll, |state| {
+                    context.revalidate_queued_dpns_vote_target(operation.id, &key, state)
+                })
+                .is_err()
+        );
+        assert_eq!(
+            context.dpns_vote_target_status(&key).unwrap(),
+            Some(DpnsVoteTargetStatus::Queued)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_failed_refresh_preserves_unexpired_confirmed_polls() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        context
+            .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+            .unwrap();
+        assert!(
+            context
+                .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            context.dpns_current_vote_state(voter, poll).unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+        assert_eq!(
+            context
+                .dpns_current_vote_state(voter, Identifier::from([3; 32]))
+                .unwrap(),
+            DpnsCurrentVoteState::Unavailable
+        );
+    }
+
+    #[test]
+    fn concurrent_confirmations_retain_every_poll() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv);
+        let voter = Identifier::from([1; 32]);
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for poll_byte in 2..10 {
+                let context = &context;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    context
+                        .cache_confirmed_dpns_vote(
+                            voter,
+                            Identifier::from([poll_byte; 32]),
+                            ResourceVoteChoice::Lock,
+                        )
+                        .unwrap();
+                });
+            }
+        });
+        for poll_byte in 2..10 {
+            assert_eq!(
+                context
+                    .dpns_current_vote_state(voter, Identifier::from([poll_byte; 32]))
+                    .unwrap(),
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+            );
+        }
+    }
+
+    #[test]
+    fn per_poll_confirmation_expires_without_authorizing_other_polls() {
+        let poll = Identifier::from([2; 32]);
+        let other = Identifier::from([3; 32]);
+        let snapshot = StoredCurrentVotes {
+            confirmed: BTreeMap::from([(poll.to_buffer(), (10, ResourceVoteChoice::Lock))]),
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot_vote_state(Some(&snapshot), poll, 11),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+        assert_eq!(
+            snapshot_vote_state(Some(&snapshot), other, 11),
+            DpnsCurrentVoteState::Unavailable
+        );
+        assert_eq!(
+            snapshot_vote_state(Some(&snapshot), poll, 11 + CURRENT_VOTE_MAX_AGE_MS),
+            DpnsCurrentVoteState::Checking
+        );
+    }
+
+    #[test]
+    fn v2_snapshot_is_invalidated_without_decoding_a_new_wire_shape() {
+        let kv = kv();
+        let voter = Identifier::from([1; 32]);
+        let key = "det:dpns_current_votes:v2:testnet";
+        let old = (
+            true,
+            now_ms(),
+            BTreeMap::<[u8; 32], ResourceVoteChoice>::new(),
+        );
+        kv.put(DetScope::Identity(&voter.to_buffer()), key, &old)
+            .unwrap();
+        assert_eq!(load_snapshot(&kv, Network::Testnet, &voter).unwrap(), None);
+        assert!(
+            kv.get::<(bool, u64, BTreeMap<[u8; 32], ResourceVoteChoice>)>(
+                DetScope::Identity(&voter.to_buffer()),
+                key
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_preserves_its_typed_network_cause() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let error = context
+            .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+            .await
+            .unwrap_err();
+        assert!(error.contains_dapi_reachability_failure());
+        assert_eq!(
+            context
+                .dpns_current_vote_state(voter, Identifier::from([2; 32]))
+                .unwrap(),
+            DpnsCurrentVoteState::Unavailable
+        );
+    }
+
+    #[test]
+    fn confirming_one_poll_preserves_other_polls_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let kv = kv();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let confirmed = Identifier::from([2; 32]);
+        let other = Identifier::from([3; 32]);
+        save_snapshot(
+            &kv,
+            Network::Testnet,
+            &voter,
+            &StoredCurrentVotes {
+                available: false,
+                updated_at: now_ms(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        context
+            .cache_confirmed_dpns_vote(voter, confirmed, ResourceVoteChoice::Lock)
+            .unwrap();
+
+        assert_eq!(
+            context.dpns_current_vote_state(voter, confirmed).unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+        assert_eq!(
+            context.dpns_current_vote_state(voter, other).unwrap(),
+            DpnsCurrentVoteState::Unavailable
+        );
+    }
+
+    #[test]
+    fn confirming_one_poll_does_not_renew_an_expired_full_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let kv = kv();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let confirmed = Identifier::from([2; 32]);
+        let other = Identifier::from([3; 32]);
+        save_snapshot(
+            &kv,
+            Network::Testnet,
+            &voter,
+            &StoredCurrentVotes {
+                available: true,
+                updated_at: 1,
+                votes: BTreeMap::from([(other.to_buffer(), ResourceVoteChoice::Abstain)]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        context
+            .cache_confirmed_dpns_vote(voter, confirmed, ResourceVoteChoice::Lock)
+            .unwrap();
+
+        assert_eq!(
+            context.dpns_current_vote_state(voter, confirmed).unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+        assert_eq!(
+            context.dpns_current_vote_state(voter, other).unwrap(),
+            DpnsCurrentVoteState::Checking
+        );
+    }
+
     /// VOTE-TC-001: a proved current choice round-trips by node and poll.
     #[test]
     fn proved_current_vote_round_trips() {
@@ -340,6 +770,7 @@ mod tests {
             available: true,
             updated_at: 3,
             votes: BTreeMap::from([(poll.to_buffer(), ResourceVoteChoice::Lock)]),
+            ..Default::default()
         };
         save_snapshot(&kv, Network::Testnet, &voter, &snapshot).unwrap();
 
@@ -372,6 +803,7 @@ mod tests {
             available: true,
             updated_at: now_ms(),
             votes: BTreeMap::new(),
+            ..Default::default()
         };
         save_snapshot(&kv, Network::Testnet, &voter, &snapshot).unwrap();
 
@@ -390,6 +822,7 @@ mod tests {
             available: true,
             updated_at: now_ms(),
             votes: BTreeMap::new(),
+            ..Default::default()
         };
         kv.put(
             DetScope::Identity(&voter.to_buffer()),
@@ -425,6 +858,7 @@ mod tests {
             available: true,
             updated_at: 1,
             votes: BTreeMap::from([(poll.to_buffer(), ResourceVoteChoice::Lock)]),
+            ..Default::default()
         };
 
         assert_eq!(
@@ -450,6 +884,7 @@ mod tests {
                 available: true,
                 updated_at: now_ms(),
                 votes: BTreeMap::new(),
+                ..Default::default()
             },
         )
         .expect("seed current-vote snapshot");

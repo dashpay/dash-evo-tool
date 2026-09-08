@@ -6292,15 +6292,17 @@ async fn a_constraint_registration_persist_failure_rolls_back_the_in_memory_acco
     backend.shutdown().await;
 }
 
-/// A write that starts transient and then fails terminally is terminal: the
-/// staged changeset is gone, so the account must be rolled back rather than
-/// kept on the strength of the first, softer error.
-///
-/// This is the one ordering where misclassifying strands funds — keeping an
-/// account whose registration was discarded means the next attempt
-/// early-returns success on a row that will never exist.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_transient_write_that_escalates_to_a_terminal_one_rolls_back() {
+async fn a_terminal_retry_preserves_a_registration_committed_by_another_writer() {
+    assert_terminal_retry_preserves_registration(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_terminal_retry_keeps_a_discarded_registration_pending_for_rewrite() {
+    assert_terminal_retry_preserves_registration(false).await;
+}
+
+async fn assert_terminal_retry_preserves_registration(foreign_commit: bool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let (ctx, sender) = offline_testnet_context_at(dir.path());
     ctx.ensure_wallet_backend(sender)
@@ -6316,29 +6318,56 @@ async fn a_transient_write_that_escalates_to_a_terminal_one_rolls_back() {
         PersistenceErrorKind::Transient,
         PersistenceErrorKind::Fatal,
     ]);
-    backend
+    if foreign_commit {
+        backend.commit_staged_registration_buffer_before_write(2);
+    }
+    let error = backend
         .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
         .await
         .expect_err("the escalated failure must surface");
-
-    assert!(
-        backend
-            .identity_funding_account(&seed_hash, fault_topup_account_type())
-            .await
-            .expect("probe the funding account")
-            .is_none(),
-        "escalation to a terminal failure must roll the account back",
+    assert!(matches!(
+        error,
+        TaskError::IdentityFundingAccountPersistFailed { .. }
+    ));
+    assert_eq!(
+        persisted_account_registration_rows(dir.path(), "identity_topup", FAULT_TOPUP_INDEX),
+        i64::from(foreign_commit),
+        "the foreign writer determines whether the row is already durable",
     );
+
+    let account = backend
+        .identity_funding_account(&seed_hash, fault_topup_account_type())
+        .await
+        .expect("probe the funding account")
+        .expect("an earlier transient failure makes durability ambiguous");
+    assert!(account.managed);
     assert!(
         !backend.registration_persist_buffer_is_staged(),
         "a terminal failure must take the staged changeset with it",
     );
     assert!(
-        !backend.has_pending_account_registrations(&seed_hash),
-        "a terminal failure must leave nothing pending to rewrite",
+        backend.has_pending_account_registrations(&seed_hash),
+        "an ambiguous write must remain pending for an idempotent rewrite",
     );
 
+    backend
+        .ensure_identity_funding_accounts(&seed_hash, &seed, FAULT_TOPUP_INDEX)
+        .await
+        .expect("the next attempt must rewrite the pending registration");
+    assert!(!backend.has_pending_account_registrations(&seed_hash));
+    assert_eq!(
+        backend
+            .identity_funding_account(&seed_hash, fault_topup_account_type())
+            .await
+            .unwrap(),
+        Some(account),
+    );
     backend.shutdown().await;
+    assert_eq!(
+        persisted_account_registration_rows(dir.path(), "identity_topup", FAULT_TOPUP_INDEX),
+        1,
+        "the rewrite must leave exactly one durable registration",
+    );
 }
 
 /// Removing a wallet must drop its pending registrations.

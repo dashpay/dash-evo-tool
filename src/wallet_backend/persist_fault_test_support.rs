@@ -51,6 +51,7 @@ pub(crate) struct PersistFaults {
     /// One-based index of the `store` call before which the staged buffer is
     /// dropped; `0` disables the probe.
     discard_before_write: std::sync::atomic::AtomicUsize,
+    commit_before_write: std::sync::atomic::AtomicUsize,
     store_calls: std::sync::atomic::AtomicUsize,
     flush_calls: std::sync::atomic::AtomicUsize,
 }
@@ -87,6 +88,12 @@ impl PersistFaults {
     /// loop.
     pub(crate) fn discard_staged_before_write(&self, write: usize) {
         self.discard_before_write
+            .store(write, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Commit the staged buffer before the selected retry, as a foreign writer would.
+    pub(crate) fn commit_staged_before_write(&self, write: usize) {
+        self.commit_before_write
             .store(write, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -186,6 +193,15 @@ impl PlatformWalletPersistence for PersistFaultInjector<'_> {
     ) -> Result<(), PersistenceError> {
         self.faults.record_store();
         self.faults.apply_pending_discard();
+        if self.faults.commit_before_write.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |remaining| remaining.checked_sub(1),
+        ) == Ok(1)
+            && let Some(staged) = self.faults.take_staged(&wallet_id)
+        {
+            self.inner.store(wallet_id, staged)?;
+        }
         match self.faults.next() {
             // Contract: a transient failure preserves the changeset, so a
             // later write still commits it.

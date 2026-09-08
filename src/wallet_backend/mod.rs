@@ -399,22 +399,8 @@ struct Inner {
     /// Per-wallet serialisation for identity-funding provisioning. See
     /// [`identity_ops::FundingProvisionLocks`].
     funding_provision_locks: identity_ops::FundingProvisionLocks,
-    /// Per wallet, the identity-funding accounts whose registration a
-    /// transient write failure could not make durable, each with the account
-    /// xpub still owed to the manifest. The accounts stay live in memory (the
-    /// rows can still land), so the next provisioning attempt for that wallet
-    /// rewrites them instead of taking the idempotent early return and
-    /// reporting success on rows that are not there.
-    ///
-    /// Carries the xpub, not just the account identity, so the rewrite
-    /// resupplies the entry rather than betting on a shared persister buffer
-    /// this call site does not own — and so a terminal failure only evicts an
-    /// account still carrying the xpub whose write was lost.
-    ///
-    /// Entries are dropped when the write succeeds, when it fails terminally,
-    /// and when the wallet is removed ([`Self::forget_wallet_local_state`]) —
-    /// a stale entry would otherwise be inherited by a same-seed re-import,
-    /// which computes the same `WalletId`.
+    /// Registrations with uncertain durability, rewritten before funding can proceed.
+    /// Retained after terminal retries too; cleared on successful write or wallet removal.
     buffered_account_registrations: std::sync::Mutex<
         std::collections::BTreeMap<
             WalletId,
@@ -1240,6 +1226,12 @@ impl WalletBackend {
     #[cfg(test)]
     pub(crate) fn discard_staged_registration_buffer_before_write(&self, write: usize) {
         self.inner.persist_faults.discard_staged_before_write(write);
+    }
+
+    /// Commit an injected pending registration before the selected retry.
+    #[cfg(test)]
+    pub(crate) fn commit_staged_registration_buffer_before_write(&self, write: usize) {
+        self.inner.persist_faults.commit_staged_before_write(write);
     }
 
     /// `store` calls the identity-funding registration path has made since this

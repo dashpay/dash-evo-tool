@@ -177,17 +177,12 @@ impl FundingProvisionLocks {
     }
 }
 
-/// Why an account registration did not reach disk — and therefore what the
-/// caller must do with the account it just put in memory.
+/// Whether a failed registration write permits removing the account from memory.
 enum RegistrationPersistFailure {
-    /// The retry budget ran out while the failure was still transient. The
-    /// changeset may still be buffered and land later, so the account MUST
-    /// stay in memory — dropping it while the row can still appear would leave
-    /// a manifest the live wallet disagrees with. The registration is recorded
-    /// as pending and rewritten by the next attempt.
+    /// A transient attempt exposed the registration to the shared buffer.
+    /// It may already be durable; retain the account and its pending rewrite.
     Staged(PersistenceError),
-    /// A terminal failure discarded the staged changeset. The row will never
-    /// land, so the account must leave memory.
+    /// The first attempt failed terminally, without an earlier buffered write.
     Discarded(PersistenceError),
 }
 
@@ -214,8 +209,11 @@ where
     loop {
         match op() {
             Ok(()) => return Ok(()),
-            Err(e) if !e.is_transient() => return Err(RegistrationPersistFailure::Discarded(e)),
-            Err(e) if attempt >= PERSIST_RETRY_MAX_ATTEMPTS => {
+            Err(e) if !e.is_transient() && attempt == 1 => {
+                return Err(RegistrationPersistFailure::Discarded(e));
+            }
+            // A previous transient attempt may have been committed by another writer.
+            Err(e) if !e.is_transient() || attempt >= PERSIST_RETRY_MAX_ATTEMPTS => {
                 return Err(RegistrationPersistFailure::Staged(e));
             }
             Err(e) => {

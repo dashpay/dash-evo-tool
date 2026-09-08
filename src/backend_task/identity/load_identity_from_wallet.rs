@@ -108,6 +108,7 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(identity_id.into()),
             }],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],
@@ -283,6 +284,10 @@ impl AppContext {
                 &wallet_arc_ref.wallet,
                 seed_identity_index,
                 true,
+                // The user typed an index and pressed Search, so this pass is a
+                // request for what it finds — including an identity they
+                // unloaded earlier and are now asking for back.
+                crate::model::identity_discovery::DiscoveryIntent::UserRequested,
                 Some(&sender),
             )
             .await?;

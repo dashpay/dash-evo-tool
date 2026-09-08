@@ -20,8 +20,8 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -34,7 +34,7 @@ use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use crate::ui::identities::get_selected_wallet;
+use crate::ui::identity::get_selected_wallet;
 use crate::ui::tokens::validate_signing_key;
 
 use super::tokens_screen::IdentityTokenBalance;

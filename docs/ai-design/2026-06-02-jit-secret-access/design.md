@@ -314,7 +314,7 @@ pub struct SecretSession<'a> { /* &held plaintext */ }
 ```
 
 > **On `AsyncFnOnce`.** The batch form must hold the plaintext across `await`s (a payment signs
-> several inputs, each an upstream async call). Rust 1.92 (project MSRV, `CLAUDE.md`) supports
+> several inputs, each an upstream async call). Rust 1.98 (project MSRV, `CLAUDE.md`) supports
 > `async` closures; `with_secret_session` takes an `AsyncFnOnce`. If the closure ergonomics prove
 > awkward in review, the fallback is an explicit RAII guard returned to the caller
 > (`let guard = sa.acquire(scope).await?; guard.sign(...).await?;`) that zeroizes on drop. Either

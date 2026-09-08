@@ -10,7 +10,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::identities::funding_common::generate_qr_code_image;
+use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};

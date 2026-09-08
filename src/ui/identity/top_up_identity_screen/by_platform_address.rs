@@ -8,7 +8,7 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::identity::funding_common::WalletFundedScreenStep;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;

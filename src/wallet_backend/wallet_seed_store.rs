@@ -261,14 +261,16 @@ fn scope_for(seed_hash: &WalletSeedHash) -> SecretWalletId {
 }
 
 fn map_err(source: SecretStoreError) -> TaskError {
-    TaskError::WalletSeedStorage {
-        source: Box::new(source),
-    }
+    crate::backend_task::error::vault_error(source, |source| TaskError::WalletSeedStorage {
+        source,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use platform_wallet_storage::secrets::MAX_SECRET_LEN;
+
     use crate::wallet_backend::single_key::open_secret_store;
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
@@ -296,6 +298,24 @@ mod tests {
             uses_password: false,
             xpub_encoded: vec![0x22; 78],
         }
+    }
+
+    /// The upstream vault refuses a single secret over
+    /// [`MAX_SECRET_LEN`] at the write boundary, and its envelope decoder
+    /// declines to read one back past the same bound — so a DET secret that
+    /// outgrew it would be unwritable here and unreadable in a vault an
+    /// older build had already written. This envelope is the largest value
+    /// DET ever hands the vault; every other write is a fixed 32-byte
+    /// identity key or 64-byte seed. A future field that inflates it fails
+    /// on this assertion rather than on a user's wallet.
+    #[test]
+    fn largest_stored_secret_stays_within_the_vault_cap() {
+        let encoded = encode_with_version(&sample_password_envelope()).expect("encode");
+        assert!(
+            encoded.len() < MAX_SECRET_LEN,
+            "DET's largest secret write is {} bytes, past the vault's {MAX_SECRET_LEN}-byte cap",
+            encoded.len(),
+        );
     }
 
     /// TC-W-001 (storage half) — a written envelope round-trips

@@ -403,7 +403,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             RegisterDpnsNameSource::Identities => vec![
                 (
                     "Identities",
-                    AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenIdentities),
+                    AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenIdentityHub),
                 ),
                 ("Register Name", AppAction::None),
             ],
@@ -414,7 +414,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
         // Use the appropriate left panel highlight based on source
         let root_screen = match self.source {
             RegisterDpnsNameSource::Dpns => crate::ui::RootScreenType::RootScreenDPNSActiveContests,
-            RegisterDpnsNameSource::Identities => crate::ui::RootScreenType::RootScreenIdentities,
+            RegisterDpnsNameSource::Identities => crate::ui::RootScreenType::RootScreenIdentityHub,
         };
         action |= add_left_panel(ui, &self.app_context, root_screen);
 

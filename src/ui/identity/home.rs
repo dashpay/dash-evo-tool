@@ -31,7 +31,7 @@ use crate::context::AppContext;
 use crate::model::contested_name::PendingUsername;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
-use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
+use crate::ui::identity::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::identity::tabs::IdentityHubTab;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape, Spacing, network_label};
 #[cfg(test)]

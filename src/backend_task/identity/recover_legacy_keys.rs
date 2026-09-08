@@ -200,8 +200,7 @@ impl AppContext {
         // The storage migration owns the identity store while it runs; the
         // delete path takes the same two-part guard for the same reason.
         let _migration_guard = self
-            .migration_run
-            .try_lock()
+            .try_lock_prepare_gate()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
@@ -284,8 +283,7 @@ impl AppContext {
     /// check.
     fn require_storage_migration_idle(&self) -> Result<(), TaskError> {
         let _probe = self
-            .migration_run
-            .try_lock()
+            .try_lock_prepare_gate()
             .map_err(|_| TaskError::WalletStorageNotReady)?;
         if self.migration_status().state().is_in_progress() {
             return Err(TaskError::WalletStorageNotReady);
@@ -1314,6 +1312,76 @@ mod tests {
     /// write section re-reads it, and the write must refuse rather than seal
     /// the merged keys under a password state nothing ever verified.
     ///
+    /// The unload-marker guard in `write_local_qualified_identity_locked`
+    /// cannot make this task's success report a lie, and this pins why: the
+    /// record is re-read *under the same guard the write takes*, so an identity
+    /// unloaded before the recovery started is refused at that read, and one
+    /// unloaded during it cannot land between the read and the write at all.
+    ///
+    /// Which also means no key material is re-created for an unloaded identity:
+    /// the refusal happens before any merged key is sealed into the vault.
+    ///
+    /// A refactor that moves the read out from under the guard, or that
+    /// tolerates an absent record here, would reach the write with nothing
+    /// stored — declined, while the task still reported keys restored. This
+    /// fails first if that happens.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_refuses_an_unloaded_identity_before_it_seals_anything() {
+        let offline = Offline::new(Some(Arc::new(TestPrompt::never()))).await;
+        let ctx = &offline.ctx;
+
+        let owner = test_key(1, Purpose::OWNER, 0x1A);
+        let stranded = test_key(2, Purpose::TRANSFER, 0x2B);
+        let modern = identity_with_keys(
+            0xB2,
+            IdentityType::Masternode,
+            &[&stranded],
+            vec![(M, &owner, owner.clear())],
+        );
+        let identity_id = modern.identity.id();
+        ctx.insert_local_qualified_identity(&modern, &None)
+            .expect("insert the keyless modern record");
+        let legacy = identity_with_keys(
+            0xB2,
+            IdentityType::Masternode,
+            &[],
+            vec![(M, &stranded, stranded.clear())],
+        );
+        offline.stage_legacy(&legacy);
+
+        let approved = vec![RecoveryItem::Key {
+            target: M,
+            key_id: 2,
+        }];
+
+        // The user unloads the identity, which destroys its keys and records
+        // the unload.
+        ctx.delete_local_qualified_identity(&identity_id)
+            .expect("unload the identity");
+
+        let error = ctx
+            .persist_legacy_recovery(identity_id, &approved, None)
+            .expect_err("recovery must refuse an identity that is no longer on this device");
+        assert!(
+            matches!(error, TaskError::IdentityNotFoundLocally),
+            "expected IdentityNotFoundLocally, got {error:?}",
+        );
+        assert!(
+            ctx.stored_identity_blob(&identity_id)
+                .expect("read stored blob")
+                .is_none(),
+            "recovery must not put the unloaded identity's record back",
+        );
+        assert!(
+            offline
+                .with_keys(identity_id, |view| view.get(&M, 2).expect("read the vault"))
+                .is_none(),
+            "and must not seal a legacy key into the vault for it",
+        );
+
+        offline.shutdown().await;
+    }
+
     /// Drives `persist_legacy_recovery` directly with the `None` the dry run
     /// produced, the way B5 drives `verify_recovery_password`: a Tier-1 restore
     /// never prompts, so there is no await point between the two for a
@@ -1515,7 +1583,7 @@ mod tests {
             .delete_local_qualified_identity(&unrelated_id)
             .expect("removing an unrelated identity must not wait on an open password prompt");
         assert!(
-            offline.ctx.migration_run.try_lock().is_ok(),
+            offline.ctx.try_lock_prepare_gate().is_ok(),
             "the storage-migration mutex must stay free while a prompt is open",
         );
 

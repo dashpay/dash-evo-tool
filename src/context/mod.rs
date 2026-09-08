@@ -3,12 +3,17 @@ mod contested_names_db;
 mod contract_token_db;
 pub mod feature_gate;
 mod identity_db;
+#[cfg(test)]
+pub(crate) mod lock_probe;
+#[cfg(test)]
+pub(crate) use identity_db::test_staging;
 pub(crate) mod identity_load_registry;
 pub mod migration_status;
 mod settings_db;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod wallet_lifecycle;
+pub use wallet_lifecycle::PrepareGateGuard;
 
 pub use wallet_lifecycle::WalletUnlockRetention;
 
@@ -159,10 +164,16 @@ pub struct AppContext {
     /// frame from the UI. Always present and idle on fresh installs;
     /// driven by [`MigrationTask::FinishUnwire`](crate::backend_task::migration::MigrationTask).
     pub(crate) migration_status: Arc<MigrationStatus>,
-    /// Serializes complete storage-update runs, including the detached automatic
-    /// DAPI refresh that continues after migration publishes terminal status.
-    /// This also prevents duplicate password waiters for the same wallet.
-    pub(crate) migration_run: tokio::sync::Mutex<()>,
+    /// Serializes the whole storage-preparation sequence — backend wiring,
+    /// hydration, the legacy drain, and the detached DAPI refresh that keeps
+    /// running after the drain publishes terminal status. Held by
+    /// [`AppContext::prepare_storage`]; also prevents duplicate password waiters
+    /// for the same wallet.
+    prepare_gate: tokio::sync::Mutex<()>,
+    /// Set after this context completes wiring, migration, and cleanup once.
+    /// Read while holding `prepare_gate`, except for the final release store,
+    /// so concurrent callers cannot observe partial preparation.
+    storage_prepared: AtomicBool,
     /// Process-local claim shared by every UI surface before a paid DashPay
     /// request action enters its backend flow.
     contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
@@ -305,7 +316,7 @@ impl AppContext {
     /// [`delete_local_qualified_identity`](Self::delete_local_qualified_identity),
     /// so coverage does not depend on remembering it at ~20 call sites.
     ///
-    /// Lock order is `migration_run` → this guard, never the reverse: the
+    /// Lock order is `prepare_gate` → this guard, never the reverse: the
     /// delete and legacy-recovery paths both take the storage-migration mutex
     /// first. Nothing may be held across an `.await`.
     ///
@@ -317,6 +328,13 @@ impl AppContext {
     /// holder is a key-protection tier change, whose per-key derivation runs in
     /// the low hundreds of milliseconds. Different identities never contend.
     pub(crate) fn identity_record_lock(&self, identity_id: Identifier) -> Arc<Mutex<()>> {
+        // Counted before the caller's blocking acquire, so a test holding the
+        // lock learns a background worker reached it rather than merely being
+        // slow to start — which elapsed time cannot distinguish. Reported only
+        // to the probe the calling thread attached itself to, so a test never
+        // sees the suite's other lock traffic.
+        #[cfg(test)]
+        lock_probe::note_request(lock_probe::LockSite::RecordRequest);
         self.identity_record_locks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -492,7 +510,8 @@ impl AppContext {
             token_balance_refresh_in_flight: AtomicBool::new(false),
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
-            migration_run: tokio::sync::Mutex::new(()),
+            prepare_gate: tokio::sync::Mutex::new(()),
+            storage_prepared: AtomicBool::new(false),
             contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
@@ -653,8 +672,10 @@ impl AppContext {
             passphrase,
         )
         .map(Arc::new)
-        .map_err(|source| TaskError::SecretStore {
-            source: Box::new(source),
+        .map_err(|source| {
+            crate::backend_task::error::vault_error(source, |source| TaskError::SecretStore {
+                source,
+            })
         })
     }
 
@@ -1319,7 +1340,7 @@ impl AppContext {
     fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
         let identities = self.load_local_qualified_identities().ok()?;
         let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
-        let wallet = crate::ui::identities::get_selected_wallet(&qi, Some(self), None).ok()??;
+        let wallet = crate::ui::identity::get_selected_wallet(&qi, Some(self), None).ok()??;
         let hash = wallet.read().ok()?.seed_hash();
         Some(hash)
     }

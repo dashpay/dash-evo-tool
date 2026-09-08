@@ -158,6 +158,21 @@ impl ConfirmationDialog {
         self
     }
 
+    /// The dialog's message as plain text. Test-only: lets a caller assert
+    /// what a destructive prompt actually says without rendering a frame.
+    #[cfg(test)]
+    pub(crate) fn message_text(&self) -> &str {
+        self.message.text()
+    }
+
+    /// Whether the dialog blocks input to the controls behind it. Test-only:
+    /// lets a caller assert that a destructive prompt cannot be answered while
+    /// the user has navigated elsewhere.
+    #[cfg(test)]
+    pub(crate) fn is_input_blocking(&self) -> bool {
+        self.blocks_input
+    }
+
     fn confirmation_text_matches(&self) -> bool {
         self.required_confirmation_text
             .as_ref()

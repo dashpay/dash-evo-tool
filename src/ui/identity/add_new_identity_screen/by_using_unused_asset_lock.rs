@@ -2,10 +2,10 @@ use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::MessageType;
 use crate::ui::components::message_banner::MessageBanner;
-use crate::ui::identities::add_new_identity_screen::{
+use crate::ui::identity::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
-use crate::ui::identities::funding_common::{
+use crate::ui::identity::funding_common::{
     FundingAssetLockPicker, actionable_asset_locks, asset_lock_address, asset_lock_status_label,
 };
 use crate::ui::theme::{ComponentStyles, DashColors};

@@ -751,6 +751,7 @@ pub async fn create_or_update_contact_info(
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
 
         let mut builder = DocumentCreateTransitionBuilder::new(
@@ -856,6 +857,7 @@ mod tests {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         })
     }
 
@@ -890,6 +892,7 @@ mod tests {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         })
     }
 

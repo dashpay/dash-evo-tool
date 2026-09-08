@@ -106,6 +106,7 @@ impl AppContext {
             data_contract,
             document_type_name: document_type.name().to_string(),
             where_clauses: vec![],
+            time_range_clauses: Vec::new(),
             group_by: Vec::new(),
             having: Vec::new(),
             order_by_clauses: vec![],

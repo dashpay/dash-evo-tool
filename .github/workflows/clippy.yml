@@ -52,8 +52,8 @@ jobs:
 
       # No `toolchain` or `components` input: the action installs the channel and
       # the components rust-toolchain.toml pins, so a bump there is linted by the
-      # compiler it introduces. Naming 1.92 here duplicated that pin and would
-      # silently keep linting 1.92 after the file moved on.
+      # compiler it introduces. Naming a version here would duplicate that pin
+      # and silently keep linting the old compiler after the file moved on.
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:

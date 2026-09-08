@@ -7,8 +7,8 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
-use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
-use crate::ui::identities::funding_common::generate_qr_code_image;
+use crate::ui::identity::add_new_identity_screen::AddNewIdentityScreen;
+use crate::ui::identity::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
@@ -267,7 +267,7 @@ impl AddNewWalletScreen {
 
             if ui.button("Create Platform Identity").clicked() {
                 action = AppAction::PopThenAddScreenToMainScreen(
-                    RootScreenType::RootScreenIdentities,
+                    RootScreenType::RootScreenIdentityHub,
                     Screen::AddNewIdentityScreen(AddNewIdentityScreen::new_with_wallet(
                         &self.app_context,
                         self.created_wallet_seed_hash,

@@ -874,7 +874,7 @@ where
 
     // Sort addresses by balance descending so the largest balance is used first
     let mut sorted_addresses = filtered;
-    sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+    sorted_addresses.sort_by_key(|a| std::cmp::Reverse(a.2));
 
     // Early return if no addresses available after filtering
     if sorted_addresses.is_empty() {

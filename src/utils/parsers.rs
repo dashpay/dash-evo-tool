@@ -32,8 +32,13 @@ impl TextInputParser for DocumentQueryTextInputParser {
     type Output = DocumentQuery;
 
     fn parse_input(&self, input: &str) -> Result<Self::Output, String> {
-        DriveDocumentQuery::from_sql_expr(input, &self.data_contract, None, self.platform_version)
-            .map(Into::into)
-            .map_err(|e| e.to_string())
+        let query = DriveDocumentQuery::from_sql_expr(
+            input,
+            &self.data_contract,
+            None,
+            self.platform_version,
+        )
+        .map_err(|e| e.to_string())?;
+        DocumentQuery::try_from(query).map_err(|e| e.to_string())
     }
 }

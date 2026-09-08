@@ -19,8 +19,8 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::identities::get_selected_wallet;
-use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
+use crate::ui::identity::get_selected_wallet;
+use crate::ui::identity::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::{DashColors, Typography};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

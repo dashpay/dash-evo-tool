@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
+use crate::ui::identity::top_up_identity_screen::TopUpIdentityScreen;
 use egui::Ui;
 
 impl TopUpIdentityScreen {

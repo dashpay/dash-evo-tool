@@ -407,7 +407,9 @@ pub(super) fn prune_terminal_operations(kv: &DetKv, network: Network) -> Result<
         .map(|operation| operation.id)
         .collect::<Vec<_>>();
     let scheduled_count = delete_terminal_operations(kv, network, &terminal_ids)?;
-    Ok(scheduled_count + prune_immediate_history(kv, network, None)?)
+    let immediate_count = prune_immediate_history(kv, network, None)?;
+    prune_orphaned_schedule_dismissals(kv, network)?;
+    Ok(scheduled_count + immediate_count)
 }
 
 fn prune_immediate_history(
@@ -464,6 +466,32 @@ fn prune_immediate_history(
             .map_err(operation_err)?;
     }
     Ok(removed)
+}
+
+/// A record delete may succeed before its dismissal-sidecar delete fails.
+/// Recover directly from the owned key namespaces so rebuilding the operation
+/// index cannot make that cleanup obligation unreachable.
+fn prune_orphaned_schedule_dismissals(kv: &DetKv, network: Network) -> Result<(), TaskError> {
+    let operation_prefix = operation_key_prefix(network);
+    let dismissal_prefix = format!("{SCHEDULE_DISMISSAL_KEY_PREFIX}{}:", network_tag(network));
+    let live_suffixes = kv
+        .list(DetScope::Global, Some(&operation_prefix))
+        .map_err(unreadable_operation_err)?
+        .into_iter()
+        .filter_map(|key| key.strip_prefix(&operation_prefix).map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    for key in kv
+        .list(DetScope::Global, Some(&dismissal_prefix))
+        .map_err(unreadable_operation_err)?
+    {
+        if key
+            .strip_prefix(&dismissal_prefix)
+            .is_some_and(|suffix| !live_suffixes.contains(suffix))
+        {
+            kv.delete(DetScope::Global, &key).map_err(operation_err)?;
+        }
+    }
+    Ok(())
 }
 
 fn delete_terminal_operations(
@@ -1152,6 +1180,7 @@ impl AppContext {
             }
         }
         prune_immediate_history(&kv, self.network, None)?;
+        prune_orphaned_schedule_dismissals(&kv, self.network)?;
         Ok(())
     }
 
@@ -2537,6 +2566,58 @@ mod tests {
                 .unwrap()
                 .get(&unresolved.targets[0].target.key),
             Some(&unresolved.id)
+        );
+    }
+
+    #[test]
+    fn orphaned_schedule_dismissal_cleanup_retries_after_record_deletion() {
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let completed = scheduled_operation(DpnsVoteTargetStatus::Confirmed, 2, "dismissed");
+        persist_operation(&kv, Network::Testnet, &completed).unwrap();
+        dismiss_scheduled_target(
+            &kv,
+            Network::Testnet,
+            completed.id,
+            &completed.targets[0].target.key,
+        )
+        .unwrap();
+        let unresolved = scheduled_operation(DpnsVoteTargetStatus::Unconfirmed, 3, "unresolved");
+        persist_operation(&kv, Network::Testnet, &unresolved).unwrap();
+        dismiss_scheduled_target(
+            &kv,
+            Network::Testnet,
+            unresolved.id,
+            &unresolved.targets[0].target.key,
+        )
+        .unwrap();
+        store.fail_next_deletes_containing(SCHEDULE_DISMISSAL_KEY_PREFIX, 1);
+        assert!(prune_terminal_operations(&kv, Network::Testnet).is_err());
+        assert!(
+            kv.get::<DpnsVoteOperation>(
+                DetScope::Global,
+                &operation_key(Network::Testnet, completed.id)
+            )
+            .unwrap()
+            .is_none()
+        );
+        prune_terminal_operations(&kv, Network::Testnet).unwrap();
+        assert!(
+            kv.get::<BTreeSet<DpnsVoteTargetKey>>(
+                DetScope::Global,
+                &schedule_dismissal_key(Network::Testnet, completed.id)
+            )
+            .unwrap()
+            .is_none(),
+            "retry must remove the orphaned dismissal sidecar"
+        );
+        assert!(
+            kv.get::<BTreeSet<DpnsVoteTargetKey>>(
+                DetScope::Global,
+                &schedule_dismissal_key(Network::Testnet, unresolved.id)
+            )
+            .unwrap()
+            .is_some()
         );
     }
 

@@ -884,6 +884,16 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.import_local_qualified_identity_locked(qualified_identity, wallet_and_identity_id_info)
+    }
+
+    /// Explicit import, including retirement of an unload marker. The caller
+    /// must hold this identity's record guard across authorization and this write.
+    pub(crate) fn import_local_qualified_identity_locked(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+    ) -> std::result::Result<(), TaskError> {
         // Deliberate: asking for an identity is the one act that means the user
         // changed their mind about unloading it, so this is the only place the
         // unload marker is retired. Under the same guard as the write, so a
@@ -1812,6 +1822,7 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         super::dpns_vote_operations::cancel_removed_identity_votes(&kv, self.network, *identifier)?;
         index_remove_identity(&kv, &id)?;
+        self.invalidate_identity_load(*identifier);
         purge_identity_scope(&kv, &id)?;
         let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
         // Mirror removal into the upstream unowned scope; wallet-owned identities are unaffected.

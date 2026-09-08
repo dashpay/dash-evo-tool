@@ -1783,6 +1783,10 @@ pub enum TaskError {
     )]
     IdentityLoadInProgress { identity_id: Identifier },
 
+    /// The load was invalidated by removal or a scoped target changed protection.
+    #[error("This node changed while its key was loading. Open the current node and try again.")]
+    IdentityLoadSuperseded { identity_id: Identifier },
+
     /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
     /// id. Carries the offending input (data, not a message).
     #[error(

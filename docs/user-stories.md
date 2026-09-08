@@ -793,7 +793,7 @@ As a masternode operator, I want to vote on contested DPNS name registrations so
 As a masternode operator, I want to schedule votes for later execution so that I can plan my voting strategy in advance.
 
 - Set vote to be cast at a future time.
-- View and manage scheduled votes under DPNS → Scheduled votes, which remains available in the persistent DPNS subnavigation.
+- View and manage scheduled votes under DPNS → Scheduled votes, which remains available in the persistent DPNS subnavigation. Edit changes the choice or absolute UTC time of a vote that has not started, keeping the same node and contest. An edit is rejected if the schedule changed or began executing while the editor was open.
 - Scheduled and immediate votes share the same target locks and result states.
 - Removing a scheduled vote takes it off the list for good; it does not come back on the next refresh.
 - An ambiguous result remains visible for checking and is never automatically rebroadcast.
@@ -804,7 +804,8 @@ As a masternode operator, I want to schedule votes for later execution so that I
 As a masternode operator, I want to apply voting choices across multiple contests in bulk so that I do not have to vote on each contest individually.
 
 - Review and cast defaults to all loaded voting nodes and Cast now.
-- The advanced per-node disclosure can set each node to Cast now, Schedule, or Do not use this node.
+- The advanced per-node disclosure can set each node to Cast now, Schedule after a delay, or Do not use this node. The common UTC picker preserves its absolute timestamp while the review is open.
+- Switching networks clears staged votes and open review/edit dialogs; choices from the previous network are never carried into the new one.
 - When no loaded node has a voting key, Active contests shows an actionable Load a masternode state instead of vote controls. A masternode loaded without its voting key is not a voting node, so it reaches that state instead of the composer.
 - Per-node timing overrides and multi-contest selections create exact node × contest targets.
 - Review and cast lists each of those targets with its node, contest, requested choice, current choice, and timing, and reports how many targets it skipped because the node already holds the requested choice.
@@ -1716,7 +1717,7 @@ As a masternode operator, I want the Masternodes tab to reset to a clean state w
 As a masternode operator, I want a Refresh control on the Masternodes tab, so that I can pull the latest node identity state without leaving the page.
 
 - The card-list toolbar and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches one identity refresh per loaded node, or for the single open node on the detail view.
-- Refresh is a no-op when no node is loaded. DPNS Active contests owns its separate contest refresh action.
+- The card-list Refresh also queries DPNS contests when at least one node is loaded; the detail-view Refresh updates only that node's identity. Refresh is a no-op when no node is loaded. DPNS Active contests also exposes its own contest refresh action.
 
 ### MN-012: Switch wallet/identity from the Masternodes header [Implemented]
 **Persona:** Priya

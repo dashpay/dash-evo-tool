@@ -727,6 +727,11 @@ impl Screen {
                 screen.reset_for_context_change();
                 return;
             }
+            Screen::DPNSScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_for_network_switch();
+                return;
+            }
             Screen::MasternodesScreen(screen) => {
                 screen.app_context = app_context;
                 // A network switch invalidates any open load form or detail view
@@ -742,7 +747,6 @@ impl Screen {
         // The `skip` list must exactly match the explicit match arms above.
         set_ctx!(
             set:
-            DPNSScreen,
             AddExistingIdentityScreen,
             KeyInfoScreen,
             KeysScreen,
@@ -785,6 +789,7 @@ impl Screen {
             PauseTokensScreen,
             ResumeTokensScreen;
             skip:
+            DPNSScreen,
             MasternodesScreen,
             NetworkChooserScreen,
             AddNewWalletScreen,

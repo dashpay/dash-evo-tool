@@ -314,7 +314,7 @@ fn masternodes_has_no_operator_voting_subnavigation() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
         activate_masternodes_tab(&mut harness, &app_context);
 
@@ -643,7 +643,7 @@ fn detail_dpns_voting_button_opens_active_contests() {
                 .query_by_label_contains("DPNS name contests to vote on")
                 .is_none()
         );
-        assert!(harness.query_by_label("Add voting key").is_none());
+        assert!(harness.query_by_label("Add voting key").is_some());
         assert!(harness.query_by_label_contains("Review ").is_none());
 
         harness.get_by_label("DPNS Voting").click();
@@ -703,6 +703,22 @@ fn masternode_selection_never_leaks_to_app_global_identity() {
     });
 }
 
+/// Drain the asynchronous removal result before asserting the resulting UI/storage state.
+fn wait_for_node_removal(
+    harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+    alias: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while harness.query_all_by_label(alias).count() > 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node removal must finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        harness.run_steps(1);
+    }
+}
+
 /// TC-US4-01/02/06/07 — the detail Remove flow: the danger button opens a
 /// confirmation with the `Remove masternode` verb; confirming deletes only the
 /// target node (its card disappears) and leaves other nodes intact (isolation).
@@ -743,6 +759,7 @@ fn remove_flow_deletes_only_target_node() {
             .expect("confirm button present");
         confirm.click();
         harness.run_steps(3);
+        wait_for_node_removal(&mut harness, "mn-remove-me");
 
         // Only the target node was deleted; the other remains (isolation).
         let remaining = app_context
@@ -808,6 +825,7 @@ fn remove_flow_deletes_associated_voter_identity() {
             .expect("confirm button present");
         confirm.click();
         harness.run_steps(3);
+        wait_for_node_removal(&mut harness, "mn-with-voter");
 
         // Both the node and its voter identity are deleted.
         assert_eq!(

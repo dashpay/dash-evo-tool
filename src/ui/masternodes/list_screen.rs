@@ -582,7 +582,8 @@ impl ScreenLike for MasternodesScreen {
     fn on_leave(&mut self) {
         match &mut self.view {
             MasternodesView::Load(form) => form.clear_secrets(),
-            MasternodesView::List | MasternodesView::Detail(_) => {}
+            MasternodesView::Detail(detail) => detail.clear_secrets(),
+            MasternodesView::List => {}
         }
     }
 
@@ -1737,6 +1738,25 @@ mod tests {
             "the non-secret fields survive so the load can be resumed",
         );
 
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voting_ui_leaving_detail_clears_the_scoped_voting_key_prompt() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+        let mut detail = MasternodeDetailView::new(
+            &ctx,
+            masternode_identity(&ctx, Identifier::from([0x45; 32])),
+        );
+        detail.set_voter_key_prompt_for_test("unsubmitted-test-input");
+        assert!(detail.has_voter_key_prompt_for_test());
+        screen.view = MasternodesView::Detail(Box::new(detail));
+        screen.on_leave();
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("detail");
+        };
+        assert!(!detail.has_voter_key_prompt_for_test());
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 

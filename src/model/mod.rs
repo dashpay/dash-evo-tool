@@ -6,6 +6,7 @@ pub mod dashpay;
 pub mod dashpay_derivation;
 pub(crate) mod data_migration;
 pub mod dpns;
+pub(crate) mod dpns_vote_schedule;
 pub mod dpns_voting;
 pub mod fee_estimation;
 pub mod grovestark_prover;

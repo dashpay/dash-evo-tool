@@ -17,16 +17,18 @@ use eframe::egui::{self, Color32, RichText, Ui};
 use std::collections::BTreeMap;
 
 use crate::app::AppAction;
-use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
+use crate::model::secret::Secret;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::legacy_recovery_section::host_offer;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
@@ -105,6 +107,7 @@ pub struct MasternodeDetailView {
     node_id_short: String,
     key_presence: MasternodeKeyPresence,
     remove_dialog: Option<ConfirmationDialog>,
+    voter_key_prompt: Option<PasswordInput>,
     /// The offer to restore keys this node left behind in the previous
     /// version's saved data (issue #889).
     recovery: LegacyRecoveryState,
@@ -112,6 +115,18 @@ pub struct MasternodeDetailView {
 
 #[cfg(test)]
 impl MasternodeDetailView {
+    /// Open the `Add voting key` prompt on a key, as typing into it would.
+    pub(crate) fn set_voter_key_prompt_for_test(&mut self, value: &str) {
+        let mut prompt = PasswordInput::new();
+        prompt.set_text(value);
+        self.voter_key_prompt = Some(prompt);
+    }
+
+    /// Whether the `Add voting key` prompt is open — and thus holding a key.
+    pub(crate) fn has_voter_key_prompt_for_test(&self) -> bool {
+        self.voter_key_prompt.is_some()
+    }
+
     /// Whether a recovery offer is currently on screen for this node.
     pub(crate) fn has_recovery_offer_for_test(&self) -> bool {
         self.recovery.has_offer()
@@ -158,6 +173,7 @@ impl MasternodeDetailView {
             node_id_short,
             key_presence,
             remove_dialog: None,
+            voter_key_prompt: None,
             recovery,
         }
     }
@@ -538,12 +554,90 @@ impl MasternodeDetailView {
             action = Some(self.open_key_info_with_protection_prompt(&key));
         }
 
+        if !self.identity.can_cast_masternode_vote()
+            && let Some(key_action) = self.render_missing_voter(ui, dark_mode)
+        {
+            action = Some(key_action);
+        }
         if let Some(approved) = self.render_recovery_section(ui)
             && let Some(task) = self.recovery.restore(approved)
         {
             action = Some(AppAction::BackendTask(task));
         }
         action
+    }
+
+    fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        let mut action = None;
+        ui.label(
+            RichText::new(
+                "This node has no voting key loaded. Add its voting private key to cast votes.",
+            )
+            .color(DashColors::warning_color(dark_mode)),
+        );
+
+        match self.voter_key_prompt.as_mut() {
+            None => {
+                if ui.button("Add voting key").clicked() {
+                    // Node context is already bound (`self.identity`) — the
+                    // prompt only asks for the voting key, no ProTxHash re-entry.
+                    self.voter_key_prompt = Some(
+                        PasswordInput::new()
+                            .with_hint_text("Voting private key (WIF or hex)")
+                            .with_monospace(),
+                    );
+                }
+            }
+            Some(prompt) => {
+                prompt.show(ui);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.voter_key_prompt = None;
+                    }
+                    let has_key = !self
+                        .voter_key_prompt
+                        .as_ref()
+                        .map(PasswordInput::is_empty)
+                        .unwrap_or(true);
+                    if ui.add_enabled(has_key, egui::Button::new("Save")).clicked() {
+                        action = self.submit_voter_key();
+                    }
+                });
+            }
+        }
+        action
+    }
+
+    /// Close the `Add voting key` prompt, zeroizing the key typed into it. Called
+    /// when the Masternodes tab is left: the tab is a root screen that outlives
+    /// navigation, and an unsubmitted key must not.
+    pub fn clear_secrets(&mut self) {
+        self.voter_key_prompt = None;
+    }
+
+    /// Merge a voting key into this node without replacing its other keys.
+    fn submit_voter_key(&mut self) -> Option<AppAction> {
+        let voting_key = self.voter_key_prompt.as_mut()?.take_secret();
+        self.voter_key_prompt = None;
+        let input = IdentityInputToLoad {
+            identity_id_input: self.node_id_hex_full.clone(),
+            identity_type: self.identity.identity_type,
+            alias_input: self.identity.alias.clone().unwrap_or_default(),
+            voting_private_key_input: voting_key,
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            // The backend preserves existing keys and their protection tier.
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            // The backend creates and owns this load's registry record.
+            load_token: None,
+        };
+        Some(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::LoadIdentity(input),
+        )))
     }
 
     /// Render the offer at the foot of the keys section, returning the items the
@@ -672,6 +766,48 @@ impl MasternodeDetailView {
 mod tests {
     use super::*;
     use crate::model::secret::Secret;
+
+    #[test]
+    fn voting_ui_scoped_key_update_merges_into_the_current_node() {
+        use crate::model::qualified_identity::{IdentityStatus, encrypted_key_storage::KeyStorage};
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let id = Identifier::from([0x47; 32]);
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(id, PlatformVersion::latest()).unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: Some("my-node".into()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        };
+        let mut detail = MasternodeDetailView::new(&ctx, identity);
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        let Some(AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
+            input,
+        )))) = detail.submit_voter_key()
+        else {
+            panic!("scoped identity merge");
+        };
+        assert_eq!(input.identity_id_input, id.to_string(Encoding::Hex));
+        assert_eq!(input.load_mode, IdentityLoadMode::MergeIntoExisting);
+        assert_eq!(input.alias_input, "my-node");
+        assert!(!input.voting_private_key_input.is_blank());
+        assert!(input.owner_private_key_input.is_blank());
+        assert!(input.payout_address_private_key_input.is_blank());
+        assert!(input.encryption_password.is_none());
+        assert!(!detail.has_voter_key_prompt_for_test());
+    }
 
     #[test]
     fn masternode_removal_dispatches_the_identity_backend_task() {

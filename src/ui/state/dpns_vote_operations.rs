@@ -1,6 +1,7 @@
 //! Per-screen DPNS vote-operation snapshot for immediate-mode render paths.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
@@ -19,6 +20,8 @@ pub(crate) struct ScheduledDpnsVoteRow {
 #[derive(Debug, Clone, Default)]
 pub struct DpnsVoteOperationSnapshot {
     operations: Vec<DpnsVoteOperation>,
+    recent_operations: Arc<[DpnsVoteOperation]>,
+    dismissed_schedules: BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
     target_statuses: BTreeMap<DpnsVoteTargetKey, DpnsVoteTargetStatus>,
     loaded: bool,
 }
@@ -31,12 +34,19 @@ impl DpnsVoteOperationSnapshot {
     }
 
     pub fn refresh(&mut self, app_context: &AppContext) -> Result<(), TaskError> {
-        self.replace(app_context.dpns_vote_operations()?);
+        let operations = app_context.dpns_vote_operations()?;
+        let dismissals = app_context.dismissed_dpns_vote_schedules()?;
+        self.replace(operations);
+        self.dismissed_schedules = dismissals;
         Ok(())
     }
 
     pub fn operations(&self) -> &[DpnsVoteOperation] {
         &self.operations
+    }
+
+    pub(crate) fn recent_operations(&self) -> Arc<[DpnsVoteOperation]> {
+        Arc::clone(&self.recent_operations)
     }
 
     pub fn operation(&self, id: DpnsVoteOperationId) -> Option<&DpnsVoteOperation> {
@@ -104,6 +114,11 @@ impl DpnsVoteOperationSnapshot {
             .into_values()
             .map(|(_, row)| row)
             .filter(|row| row.status != DpnsVoteTargetStatus::Cancelled)
+            .filter(|row| {
+                !row.journal_target
+                    .as_ref()
+                    .is_some_and(|key| self.dismissed_schedules.contains(key))
+            })
             .collect::<Vec<_>>();
         rows.extend(
             legacy_votes
@@ -131,6 +146,12 @@ impl DpnsVoteOperationSnapshot {
             .filter(|outcome| outcome.status.holds_lock())
             .map(|outcome| (outcome.target.key.clone(), outcome.status))
             .collect();
+        let mut recent = operations
+            .iter()
+            .filter(|operation| !operation.targets.is_empty())
+            .collect::<Vec<_>>();
+        recent.sort_by_key(|operation| operation.created_at);
+        self.recent_operations = recent.into_iter().rev().take(5).cloned().collect();
         self.operations = operations;
         self.loaded = true;
     }
@@ -144,6 +165,59 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn voting_ui_recent_activity_is_bounded_ordered_and_shared_between_frames() {
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        let operations = (0..20)
+            .map(|created_at| {
+                let mut operation = operation(DpnsVoteTargetStatus::Confirmed);
+                operation.created_at = created_at;
+                operation
+            })
+            .collect();
+        snapshot.replace(operations);
+        let first = snapshot.recent_operations();
+        let second = snapshot.recent_operations();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(
+            first
+                .iter()
+                .map(|operation| operation.created_at)
+                .collect::<Vec<_>>(),
+            vec![19, 18, 17, 16, 15]
+        );
+        assert_eq!(snapshot.operations().len(), 20);
+    }
+
+    #[test]
+    fn voting_ui_dismissed_terminal_row_suppresses_its_mirror_and_preserves_siblings() {
+        let mut operation = scheduled_operation(
+            10,
+            DpnsVoteTargetStatus::Confirmed,
+            ResourceVoteChoice::Lock,
+            100,
+        );
+        let dismissed = (operation.id, operation.targets[0].target.key.clone());
+        let original = operation.targets[0].clone();
+        let mut sibling = original.clone();
+        sibling.target.key.vote_poll_id = Identifier::from([12; 32]);
+        sibling.target.contested_name = "bob".into();
+        operation.targets.push(sibling);
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        snapshot.replace(vec![operation]);
+        snapshot.dismissed_schedules.insert(dismissed);
+        let rows = snapshot.scheduled_vote_rows(&[legacy_vote(
+            original.target.key.voter_id,
+            "alice",
+            ResourceVoteChoice::Lock,
+            100,
+            true,
+        )]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].vote.contested_name, "bob");
+        assert_eq!(snapshot.operations()[0].targets[0], original);
+    }
 
     fn operation(status: DpnsVoteTargetStatus) -> DpnsVoteOperation {
         let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {

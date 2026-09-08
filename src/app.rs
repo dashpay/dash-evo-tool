@@ -475,18 +475,23 @@ fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
 }
 
-fn dpns_result_needs_hidden_active_contests_route(
-    selected: RootScreenType,
-    screen_stack_is_empty: bool,
-    result: &BackendTaskSuccessResult,
-) -> bool {
+fn is_dpns_vote_result(result: &BackendTaskSuccessResult) -> bool {
     matches!(
         result,
         BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
             | BackendTaskSuccessResult::RefreshedDpnsContests
             | BackendTaskSuccessResult::ScheduledVoteSweepCompleted { .. }
             | BackendTaskSuccessResult::ScheduledVotesCleared(_)
-    ) && (selected != RootScreenType::RootScreenDPNSActiveContests || !screen_stack_is_empty)
+    )
+}
+
+fn dpns_result_needs_hidden_route(
+    target: RootScreenType,
+    selected: RootScreenType,
+    screen_stack_is_empty: bool,
+    result: &BackendTaskSuccessResult,
+) -> bool {
+    is_dpns_vote_result(result) && (selected != target || !screen_stack_is_empty)
 }
 
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
@@ -2651,24 +2656,48 @@ impl AppState {
         }
     }
 
-    fn route_dpns_vote_result_to_hidden_active_contests(
+    fn route_dpns_vote_result_to_hidden_screens(
         &mut self,
         context: &BackendTaskContext,
         result: &BackendTaskSuccessResult,
     ) {
-        if !dpns_result_needs_hidden_active_contests_route(
-            self.selected_main_screen,
-            self.screen_stack.is_empty(),
-            result,
-        ) {
+        for root in [
+            RootScreenType::RootScreenDPNSActiveContests,
+            RootScreenType::RootScreenDPNSScheduledVotes,
+        ] {
+            if dpns_result_needs_hidden_route(
+                root,
+                self.selected_main_screen,
+                self.screen_stack.is_empty(),
+                result,
+            ) && let Some(screen) = self.main_screens.get_mut(&root)
+            {
+                screen.display_backend_task_result(context, result.clone());
+                if matches!(result, BackendTaskSuccessResult::RefreshedDpnsContests) {
+                    screen.refresh();
+                }
+            }
+        }
+    }
+
+    fn route_dpns_vote_error_to_hidden_screens(
+        &mut self,
+        context: &BackendTaskContext,
+        error: &TaskError,
+    ) {
+        if !context.is_dpns_vote_task() {
             return;
         }
-        if let Some(screen) = self
-            .main_screens
-            .get_mut(&RootScreenType::RootScreenDPNSActiveContests)
-        {
-            screen.display_backend_task_result(context, result.clone());
-            screen.refresh();
+        for root in [
+            RootScreenType::RootScreenDPNSActiveContests,
+            RootScreenType::RootScreenDPNSScheduledVotes,
+        ] {
+            if (self.selected_main_screen != root || !self.screen_stack.is_empty())
+                && let Some(screen) = self.main_screens.get_mut(&root)
+            {
+                screen.display_backend_task_error(context, error);
+                screen.display_task_error(error);
+            }
         }
     }
 
@@ -3049,10 +3078,7 @@ impl App for AppState {
                     let unboxed_message = *message;
                     clear_profile_saving_banner_after_success(ctx, &context, &unboxed_message);
                     self.route_contact_request_result_to_hidden_hub(&unboxed_message);
-                    self.route_dpns_vote_result_to_hidden_active_contests(
-                        &context,
-                        &unboxed_message,
-                    );
+                    self.route_dpns_vote_result_to_hidden_screens(&context, &unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::RemovedIdentities { .. } => {
                             deliver_identity_removal_result(
@@ -3243,12 +3269,13 @@ impl App for AppState {
                             ) {
                                 self.scheduled_vote_recovery_last_attempt.remove(&network);
                             }
-                            if self.selected_main_screen
-                                == RootScreenType::RootScreenDPNSActiveContests
-                                && self.screen_stack.is_empty()
-                            {
-                                self.visible_screen_mut().refresh();
-                            }
+                            self.visible_screen_mut().display_backend_task_result(
+                                &context,
+                                BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                                    network,
+                                    preserve_eligibility_since_ms,
+                                },
+                            );
                         }
                         BackendTaskSuccessResult::ScheduledVotesCleared(outcomes) => {
                             let (message, message_type) = scheduled_vote_clear_feedback(&outcomes);
@@ -3344,6 +3371,7 @@ impl App for AppState {
                         &context,
                         &err,
                     );
+                    self.route_dpns_vote_error_to_hidden_screens(&context, &err);
                     self.visible_screen_mut()
                         .display_backend_task_error(&context, &err);
                     let handled = self.visible_screen_mut().display_task_error(&err);
@@ -3367,6 +3395,7 @@ impl App for AppState {
                         &err,
                     );
                     self.route_contact_request_error_to_hidden_hub(&err);
+                    self.route_dpns_vote_error_to_hidden_screens(&context, &err);
                     let is_database_clear = context == BackendTaskContext::ClearNetworkDatabase;
                     let suppress_stale_error = !is_database_clear
                         && self
@@ -4260,23 +4289,53 @@ mod dpns_result_routing_tests {
     };
 
     #[test]
+    fn voting_ui_results_route_to_each_hidden_dpns_screen_only_once() {
+        let result = BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+            network: Network::Testnet,
+            preserve_eligibility_since_ms: None,
+        };
+        for root in [
+            RootScreenType::RootScreenDPNSActiveContests,
+            RootScreenType::RootScreenDPNSScheduledVotes,
+        ] {
+            assert!(!dpns_result_needs_hidden_route(root, root, true, &result));
+            assert!(dpns_result_needs_hidden_route(root, root, false, &result));
+            assert!(dpns_result_needs_hidden_route(
+                root,
+                RootScreenType::RootScreenIdentityHub,
+                true,
+                &result
+            ));
+            assert!(!dpns_result_needs_hidden_route(
+                root,
+                RootScreenType::RootScreenIdentityHub,
+                true,
+                &BackendTaskSuccessResult::None
+            ));
+        }
+    }
+
+    #[test]
     fn correlated_vote_result_routes_when_active_contests_is_hidden() {
         let result = BackendTaskSuccessResult::DpnsVoteOperationUpdated {
             network: Network::Testnet,
             operation_id: DpnsVoteOperationId::from_bytes([7; 16]),
         };
 
-        assert!(dpns_result_needs_hidden_active_contests_route(
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenWalletsBalances,
             true,
             &result,
         ));
-        assert!(dpns_result_needs_hidden_active_contests_route(
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenDPNSActiveContests,
             false,
             &result,
         ));
-        assert!(!dpns_result_needs_hidden_active_contests_route(
+        assert!(!dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenDPNSActiveContests,
             true,
             &result,
@@ -4285,7 +4344,8 @@ mod dpns_result_routing_tests {
 
     #[test]
     fn refreshed_contests_route_when_active_contests_is_hidden() {
-        assert!(dpns_result_needs_hidden_active_contests_route(
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenWalletsBalances,
             true,
             &BackendTaskSuccessResult::RefreshedDpnsContests,
@@ -4299,17 +4359,20 @@ mod dpns_result_routing_tests {
             preserve_eligibility_since_ms: None,
         };
 
-        assert!(dpns_result_needs_hidden_active_contests_route(
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenWalletsBalances,
             true,
             &result,
         ));
-        assert!(dpns_result_needs_hidden_active_contests_route(
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenDPNSActiveContests,
             false,
             &result,
         ));
-        assert!(!dpns_result_needs_hidden_active_contests_route(
+        assert!(!dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenDPNSActiveContests,
             true,
             &result,
@@ -4318,7 +4381,8 @@ mod dpns_result_routing_tests {
 
     #[test]
     fn cleared_scheduled_votes_route_when_active_contests_is_hidden() {
-        assert!(dpns_result_needs_hidden_active_contests_route(
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenDPNSScheduledVotes,
             true,
             &BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),

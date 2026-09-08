@@ -10,6 +10,7 @@
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{
     IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
 };
@@ -233,8 +234,22 @@ async fn cross_wallet_topup_e2e() {
     .await;
 
     match resume_result {
-        Err(e) => {
+        // Two valid rejection paths, both meaning "the reuse was refused":
+        // - `AssetLockAlreadyUsed`: the wallet's own tracked-lock status is
+        //   already `Consumed` (caught locally before any network call).
+        // - `PlatformAlreadyExists`: the local status was NOT `Consumed` (the
+        //   documented gap this test exists to cover — see the module doc),
+        //   so the task went ahead and Platform itself rejected the
+        //   already-broadcast transaction.
+        // Any other error is unexpected and must fail the test loudly rather
+        // than be silently accepted as "refused".
+        Err(e @ (TaskError::AssetLockAlreadyUsed | TaskError::PlatformAlreadyExists { .. })) => {
             tracing::info!("resuming the spent lock was correctly refused: {:?}", e);
+        }
+        Err(e) => {
+            panic!(
+                "resuming the spent lock failed with an unexpected error, not a recognized rejection: {e:?}"
+            );
         }
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(qi, fee_result)) => {
             panic!(

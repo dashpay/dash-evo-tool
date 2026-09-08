@@ -132,6 +132,25 @@ pub async fn run_task_with_nonce_retry(
     Err(last_err.expect("loop always sets last_err before exhausting attempts"))
 }
 
+/// Assert a task answered with a broadcast asset lock, returning its txid.
+///
+/// `CoreTask::CreateRegistrationAssetLock` and `CoreTask::CreateTopUpAssetLock`
+/// answer only with [`BackendTaskSuccessResult::AssetLockBroadcast`]; the txid
+/// identifies the broadcast funding transaction. `label` names the test case in
+/// the panic message.
+pub fn expect_asset_lock_broadcast(result: BackendTaskSuccessResult, label: &str) -> String {
+    match result {
+        BackendTaskSuccessResult::AssetLockBroadcast { txid } => {
+            assert!(
+                txid.len() == 64 && txid.chars().all(|c| c.is_ascii_hexdigit()),
+                "{label}: AssetLockBroadcast must carry a 64-character hex txid, got: {txid:?}"
+            );
+            txid
+        }
+        other => panic!("{label}: expected AssetLockBroadcast, got: {other:?}"),
+    }
+}
+
 // NOTE: `run_task_with_retry` was removed because retrying ConfirmationTimeout
 // is a workaround for the IS lock relay bug. Tests should fail clearly when
 // confirmation times out — that surfaces the real issue instead of hiding it.

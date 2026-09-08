@@ -20,10 +20,10 @@ belt-and-suspenders for any code path outside that runtime.
 
 ```bash
 # Run all backend E2E tests
-cargo test --test backend-e2e --all-features -- --ignored --nocapture
+cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
 
 # Run a single test
-cargo test --test backend-e2e --all-features -- --ignored --nocapture test_create_identity
+cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1 test_create_identity
 ```
 
 **Required flags:**
@@ -34,6 +34,7 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture test_creat
 | `--all-features` | Enables feature-gated dependencies |
 | `--ignored` | Tests are `#[ignore]` by default |
 | `--nocapture` | Shows progress output (SPV sync, balance polling) |
+| `--test-threads=1` | Required: all tests share one singleton `BackendTestContext`/SQLite DB; running on parallel OS threads races on DB access (e.g. `AlreadyOpen` errors) |
 
 ### Environment variables
 

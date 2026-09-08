@@ -101,6 +101,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Identity creation and top-up accounts are saved before payment and restored
+  after restarting the app. Temporary save failures are retried a few times;
+  if saving still fails, the payment stops and the app asks you to try again.
+
 - **Closing password-entry screens no longer aborts debug builds**: secret
   buffers now own separate guarded memory pages, so releasing one password
   field cannot interfere with another field that is still in use.

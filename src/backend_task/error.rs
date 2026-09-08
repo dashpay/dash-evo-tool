@@ -185,6 +185,18 @@ pub enum TaskError {
         source: dash_sdk::dpp::key_wallet::Error,
     },
 
+    /// An identity-funding account was derived but could not be saved. Saving
+    /// it is what lets a restart find the account again, so the operation is
+    /// stopped rather than left able to strand a funding lock the app could no
+    /// longer spend. The technical cause lives in `Debug` and the logs.
+    #[error(
+        "Your wallet could not save the account this payment needs. Check that your disk is not full, then try again."
+    )]
+    IdentityFundingAccountPersistFailed {
+        #[source]
+        source: Box<platform_wallet::changeset::PersistenceError>,
+    },
+
     /// Single-key wallets are not supported in this version. Their data is
     /// preserved; HD (recovery-phrase) wallets remain fully functional.
     #[error(

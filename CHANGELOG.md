@@ -97,6 +97,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Platform allows up to four changes after the initial vote. The
   Masternodes detail screen no longer casts votes inline — its "DPNS
   Voting" button takes you straight to Active contests instead.
+  Review shows each node's current and requested choice and warns when a
+  change uses the limited allowance; it does not claim a remaining count.
+  Uncertain results stay visible and blocked from repeat submission.
+  Scheduled votes retain the selected UTC time and can be edited before
+  execution starts. Removing a node cancels its unstarted scheduled votes.
+  Contests remain readable without a voting key, and a missing voting key
+  can be added from the node's detail page without replacing its other keys.
 
 - **Wallet/identity indicator on more screens (rollout in progress)**: the
   wallet and identity picker previously shown only at the top of the Identity

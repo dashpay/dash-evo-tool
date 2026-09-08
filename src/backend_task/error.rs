@@ -950,6 +950,22 @@ pub enum TaskError {
     )]
     DpnsScheduledVoteAlreadyStarted,
 
+    /// The schedule changed or started after the edit dialog opened.
+    #[error("This scheduled vote has changed or already started. Refresh the schedule and try again.")]
+    DpnsScheduledVoteNotEditable,
+
+    /// A requested schedule does not fall inside the remaining voting window.
+    #[error("This voting time is outside the available window. Choose a future time before voting ends.")]
+    DpnsScheduledVoteInvalidTime,
+
+    /// The requested contender is absent from the current contest.
+    #[error("This choice is no longer available. Refresh the contest and choose another option.")]
+    DpnsScheduledVoteInvalidChoice,
+
+    /// The original voter has been removed or lacks an eligible voting key.
+    #[error("This node is no longer available for voting. Load a node with its voting key and try again.")]
+    DpnsScheduledVoteVoterUnavailable,
+
     /// Current proved state is required to suppress duplicate/no-op votes safely.
     #[error(
         "This node's current vote could not be checked. Refresh vote state before submitting."

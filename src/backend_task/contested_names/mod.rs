@@ -1,3 +1,4 @@
+mod edit_scheduled_vote;
 mod query_dpns_contested_resources;
 mod query_dpns_vote_contenders;
 mod query_ending_times;
@@ -56,6 +57,14 @@ pub enum ContestedResourceTask {
         operation_id: DpnsVoteOperationId,
         key: DpnsVoteTargetKey,
         contested_name: String,
+    },
+    EditScheduledDpnsVote {
+        operation_id: Option<DpnsVoteOperationId>,
+        key: DpnsVoteTargetKey,
+        expected_choice: ResourceVoteChoice,
+        expected_timestamp: u64,
+        choice: ResourceVoteChoice,
+        unix_timestamp: u64,
     },
 }
 
@@ -237,6 +246,28 @@ impl AppContext {
             } => {
                 self.cancel_scheduled_dpns_vote_target(operation_id, &key, &contested_name)?;
                 Ok(BackendTaskSuccessResult::Refresh)
+            }
+            ContestedResourceTask::EditScheduledDpnsVote {
+                operation_id,
+                key,
+                expected_choice,
+                expected_timestamp,
+                choice,
+                unix_timestamp,
+            } => {
+                self.edit_scheduled_dpns_vote(
+                    crate::model::dpns_voting::DpnsScheduledVoteEdit {
+                        operation_id,
+                        key,
+                        expected_choice,
+                        expected_timestamp,
+                        choice,
+                        unix_timestamp,
+                    },
+                    sdk,
+                    sender,
+                )
+                .await
             }
         }
     }

@@ -888,10 +888,19 @@ impl AppContext {
         // changed their mind about unloading it, so this is the only place the
         // unload marker is retired. Under the same guard as the write, so a
         // discovery pass cannot observe a retired marker and a missing record.
-        self.clear_identity_unloaded(
-            &self.det_kv()?,
-            &qualified_identity.identity.id().to_buffer(),
-        )?;
+        let kv = self.det_kv()?;
+        let id = qualified_identity.identity.id();
+        if !identity_is_listed(&kv, &id.to_buffer())?
+            && self.is_identity_unloaded(&kv, &id.to_buffer())?
+        {
+            let _vote_guard = self
+                .dpns_vote_operation_guard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            super::dpns_vote_operations::cancel_removed_identity_votes(&kv, self.network, id)?;
+            delete_scheduled_votes_for_voter(&kv, &id.to_buffer())?;
+        }
+        self.clear_identity_unloaded(&kv, &id.to_buffer())?;
         self.insert_local_qualified_identity_locked(qualified_identity, wallet_and_identity_id_info)
     }
 
@@ -1794,6 +1803,14 @@ impl AppContext {
         // storage says the identity is absent. The reverse order would leave a
         // delisted identity with no marker, which is the defect itself.
         self.mark_identity_unloaded(&kv, &id)?;
+        // Identity-record guard is outermost. Hold the journal guard until the
+        // roster and mirrors are gone, so neither claiming nor broadcasting
+        // can race cancellation and a re-import cannot revive an old schedule.
+        let _vote_guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::dpns_vote_operations::cancel_removed_identity_votes(&kv, self.network, *identifier)?;
         index_remove_identity(&kv, &id)?;
         purge_identity_scope(&kv, &id)?;
         let sidecar_cleanup = self.finish_identity_removal_cleanup(&kv, &id, vault_keys)?;
@@ -1973,7 +1990,17 @@ impl AppContext {
                         continue;
                     }
                 };
-            if let Err(error) = purge_identity_scope(&kv, &id) {
+            let _vote_guard = self
+                .dpns_vote_operation_guard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Err(error) = super::dpns_vote_operations::cancel_removed_identity_votes(
+                &kv,
+                self.network,
+                Identifier::from(id),
+            )
+            .and_then(|()| purge_identity_scope(&kv, &id))
+            {
                 tracing::warn!(
                     identity = %Identifier::from(id),
                     %error,
@@ -2433,7 +2460,12 @@ impl AppContext {
 
     /// Drop every scheduled vote that has already been cast successfully.
     pub fn clear_executed_scheduled_votes(&self) -> std::result::Result<(), TaskError> {
+        let _vote_guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kv = self.det_kv()?;
+        super::dpns_vote_operations::dismiss_confirmed_scheduled_targets(&kv, self.network)?;
         let voters = load_scheduled_vote_voters(&kv)?;
         for voter in &voters {
             let scope = DetScope::Identity(voter);
@@ -2450,7 +2482,7 @@ impl AppContext {
             }
             prune_vote_voter_if_empty(&kv, voter)?;
         }
-        self.prune_terminal_dpns_vote_operations()?;
+        super::dpns_vote_operations::prune_terminal_operations(&kv, self.network)?;
         Ok(())
     }
 
@@ -4406,6 +4438,144 @@ mod tests {
     /// `purge_identity_scope`'s first step drops the blob before the index
     /// removal that actually delists the identity has even run for the case
     /// this distinction exists to catch (a failure strictly after delisting).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_removal_cancels_executable_journal_targets_and_preserves_uncertainty() {
+        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let imported = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let mut operations = Vec::new();
+        for (index, status) in [
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Queued,
+            DpnsVoteTargetStatus::Submitting,
+            DpnsVoteTargetStatus::Confirming,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut operation = scheduled_operation(staged.id, index as u8 + 1, "removed", status);
+            if index == 0 {
+                let mut sibling = operation.targets[0].clone();
+                sibling.target.key.voter_id = Identifier::from([99; 32]);
+                operation.targets.push(sibling);
+            }
+            staged
+                .ctx
+                .insert_dpns_vote_operation(&mut operation, None)
+                .unwrap();
+            operations.push(operation);
+        }
+        staged
+            .ctx
+            .insert_scheduled_votes(&[scheduled_vote(staged.id, "removed", false)])
+            .unwrap();
+        staged
+            .ctx
+            .delete_local_qualified_identity(&staged.id)
+            .unwrap();
+        assert!(staged.ctx.get_scheduled_votes().unwrap().is_empty());
+        for (index, operation) in operations.iter().enumerate() {
+            let saved = staged
+                .ctx
+                .dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap();
+            let expected = if index < 3 {
+                DpnsVoteTargetStatus::Cancelled
+            } else {
+                operation.targets[0].status
+            };
+            assert_eq!(saved.targets[0].status, expected);
+            if index == 0 {
+                assert_eq!(saved.targets[1].status, DpnsVoteTargetStatus::Scheduled);
+            }
+        }
+        let cancelled = &operations[2];
+        let key = &cancelled.targets[0].target.key;
+        assert!(
+            !staged
+                .ctx
+                .mark_dpns_vote_broadcast(cancelled.id, key)
+                .unwrap()
+        );
+        staged
+            .ctx
+            .update_dpns_vote_target(cancelled.id, key, DpnsVoteTargetStatus::Scheduled, None)
+            .unwrap();
+        assert_eq!(
+            staged
+                .ctx
+                .dpns_vote_operation(cancelled.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Cancelled
+        );
+        staged
+            .ctx
+            .insert_local_qualified_identity(&imported, &None)
+            .unwrap();
+        staged
+            .ctx
+            .recover_interrupted_dpns_vote_operations()
+            .unwrap();
+        assert!(
+            !staged
+                .ctx
+                .queue_scheduled_dpns_vote_target(cancelled.id, key)
+                .unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_removal_cleanup_cancels_votes_left_by_an_interrupted_removal() {
+        let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let id = staged.id.to_buffer();
+        let placements = staged.ctx.pending_vault_key_placements(&kv, &id).unwrap();
+        staged
+            .ctx
+            .persist_vault_cleanup_manifest(&kv, &id, &placements)
+            .unwrap();
+        staged.ctx.mark_identity_unloaded(&kv, &id).unwrap();
+        index_remove_identity(&kv, &id).unwrap();
+        let mut scheduled =
+            scheduled_operation(staged.id, 9, "interrupted", DpnsVoteTargetStatus::Scheduled);
+        staged
+            .ctx
+            .insert_dpns_vote_operation(&mut scheduled, None)
+            .unwrap();
+        staged
+            .ctx
+            .insert_scheduled_votes(&[scheduled_vote(staged.id, "interrupted", false)])
+            .unwrap();
+
+        staged.ctx.resume_pending_vault_cleanups();
+
+        assert_eq!(
+            staged
+                .ctx
+                .dpns_vote_operation(scheduled.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Cancelled
+        );
+        assert!(staged.ctx.get_scheduled_votes().unwrap().is_empty());
+        assert!(
+            !staged
+                .ctx
+                .queue_scheduled_dpns_vote_target(scheduled.id, &scheduled.targets[0].target.key)
+                .unwrap()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn is_identity_listed_tracks_the_index_not_the_blob() {
         let staged = stage_identity_with_vaulted_keys([0x77; 32], [0x88; 32]).await;

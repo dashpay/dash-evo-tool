@@ -107,6 +107,45 @@ mod tests {
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("wif"));
     }
+
+    #[test]
+    fn scheduled_edit_validation_rejects_past_deadline_and_unknown_contender() {
+        let mut contest = crate::model::contested_name::ContestedName {
+            normalized_contested_name: "name".to_owned(),
+            contestants: Some(vec![]),
+            locked_votes: None,
+            abstain_votes: None,
+            awarded_to: None,
+            end_time: Some(200),
+            state: crate::model::contested_name::ContestState::Ongoing,
+            last_updated: None,
+            my_votes: Default::default(),
+        };
+        assert_eq!(
+            validate_dpns_schedule_edit(ResourceVoteChoice::Lock, 101, 100, &contest),
+            Ok(())
+        );
+        for time in [0, 100, 200, u64::MAX] {
+            assert_eq!(
+                validate_dpns_schedule_edit(ResourceVoteChoice::Lock, time, 100, &contest),
+                Err(DpnsScheduleEditValidationError::Time)
+            );
+        }
+        assert_eq!(
+            validate_dpns_schedule_edit(
+                ResourceVoteChoice::TowardsIdentity(Identifier::from([1; 32])),
+                101,
+                100,
+                &contest
+            ),
+            Err(DpnsScheduleEditValidationError::Choice)
+        );
+        contest.state = crate::model::contested_name::ContestState::Locked;
+        assert_eq!(
+            validate_dpns_schedule_edit(ResourceVoteChoice::Abstain, 101, 100, &contest),
+            Err(DpnsScheduleEditValidationError::Contest)
+        );
+    }
 }
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
@@ -164,6 +203,49 @@ pub struct DpnsVoteTargetKey {
     /// The masternode ProTxHash used by Platform's proved vote query.
     pub voter_id: Identifier,
     pub vote_poll_id: Identifier,
+}
+
+/// Compare-and-set request for one scheduled target; the voter and poll cannot change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DpnsScheduledVoteEdit {
+    pub operation_id: Option<DpnsVoteOperationId>,
+    pub key: DpnsVoteTargetKey,
+    pub expected_choice: ResourceVoteChoice,
+    pub expected_timestamp: u64,
+    pub choice: ResourceVoteChoice,
+    pub unix_timestamp: u64,
+}
+
+/// Reason a schedule edit cannot be applied to the selected contest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsScheduleEditValidationError {
+    Time,
+    Choice,
+    Contest,
+}
+
+/// Validate the new schedule against the current time and the selected contest.
+pub fn validate_dpns_schedule_edit(
+    choice: ResourceVoteChoice,
+    unix_timestamp: u64,
+    now_ms: u64,
+    contest: &crate::model::contested_name::ContestedName,
+) -> Result<(), DpnsScheduleEditValidationError> {
+    if !contest.is_votable() {
+        return Err(DpnsScheduleEditValidationError::Contest);
+    }
+    if unix_timestamp <= now_ms || contest.end_time.is_some_and(|end| unix_timestamp >= end) {
+        return Err(DpnsScheduleEditValidationError::Time);
+    }
+    if let ResourceVoteChoice::TowardsIdentity(id) = choice
+        && !contest
+            .contestants
+            .as_ref()
+            .is_some_and(|contenders| contenders.iter().any(|contender| contender.id == id))
+    {
+        return Err(DpnsScheduleEditValidationError::Choice);
+    }
+    Ok(())
 }
 
 /// Durable identity of one scheduled-vote compatibility mirror row.

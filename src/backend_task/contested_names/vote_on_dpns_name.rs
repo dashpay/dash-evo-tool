@@ -127,15 +127,12 @@ where
 }
 
 impl AppContext {
-    pub(super) async fn submit_dpns_vote(
-        self: &Arc<Self>,
-        operation_id: DpnsVoteOperationId,
-        key: &DpnsVoteTargetKey,
+    /// Build a DPNS poll only after proving that it currently exists.
+    pub(super) async fn checked_dpns_vote_poll(
+        &self,
         name: &str,
-        vote_choice: ResourceVoteChoice,
-        qualified_identity: &QualifiedIdentity,
         sdk: &Sdk,
-    ) -> Result<DpnsVoteAttempt, TaskError> {
+    ) -> Result<ContestedDocumentResourceVotePoll, TaskError> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
@@ -184,7 +181,19 @@ impl AppContext {
                 name: name.to_owned(),
             });
         }
+        Ok(vote_poll)
+    }
 
+    pub(super) async fn submit_dpns_vote(
+        self: &Arc<Self>,
+        operation_id: DpnsVoteOperationId,
+        key: &DpnsVoteTargetKey,
+        name: &str,
+        vote_choice: ResourceVoteChoice,
+        qualified_identity: &QualifiedIdentity,
+        sdk: &Sdk,
+    ) -> Result<DpnsVoteAttempt, TaskError> {
+        let vote_poll = self.checked_dpns_vote_poll(name, sdk).await?;
         let Some((_, public_key)) = &qualified_identity.associated_voter_identity else {
             return Err(TaskError::NoVotingIdentity {
                 identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),

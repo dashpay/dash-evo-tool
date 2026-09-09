@@ -181,6 +181,7 @@ mod tests {
             vote_poll_id: Identifier::from([2; 32]),
         };
         let row = ScheduledDpnsVoteRow {
+            failure: None,
             vote: ScheduledDPNSVote {
                 voter_id: key.voter_id,
                 contested_name: "alice".into(),

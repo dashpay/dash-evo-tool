@@ -7,7 +7,8 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
-    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
+    DpnsVoteTargetStatus, VoteTiming,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,6 +16,7 @@ pub(crate) struct ScheduledDpnsVoteRow {
     pub vote: ScheduledDPNSVote,
     pub journal_target: Option<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
     pub status: DpnsVoteTargetStatus,
+    pub failure: Option<DpnsVoteFailure>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,6 +102,7 @@ impl DpnsVoteOperationSnapshot {
                             },
                             journal_target: Some((operation.id, outcome.target.key.clone())),
                             status: outcome.status,
+                            failure: outcome.failure,
                         },
                     ),
                 );
@@ -129,6 +132,7 @@ impl DpnsVoteOperationSnapshot {
                 .map(|vote| ScheduledDpnsVoteRow {
                     vote: vote.clone(),
                     journal_target: None,
+                    failure: None,
                     status: if vote.executed_successfully {
                         DpnsVoteTargetStatus::Confirmed
                     } else {
@@ -151,7 +155,25 @@ impl DpnsVoteOperationSnapshot {
             .filter(|operation| !operation.targets.is_empty())
             .collect::<Vec<_>>();
         recent.sort_by_key(|operation| operation.created_at);
-        self.recent_operations = recent.into_iter().rev().take(5).cloned().collect();
+        // Pending operations must remain reachable even after newer batches complete.
+        let mut completed_count = 0;
+        self.recent_operations = recent
+            .into_iter()
+            .rev()
+            .filter(|operation| {
+                if operation
+                    .targets
+                    .iter()
+                    .any(|outcome| outcome.status.holds_lock())
+                {
+                    true
+                } else {
+                    completed_count += 1;
+                    completed_count <= 5
+                }
+            })
+            .cloned()
+            .collect();
         self.operations = operations;
         self.loaded = true;
     }
@@ -165,6 +187,28 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn voting_ui_unresolved_activity_survives_newer_completed_batches() {
+        let mut snapshot = DpnsVoteOperationSnapshot::default();
+        let mut unresolved = operation(DpnsVoteTargetStatus::Unconfirmed);
+        unresolved.created_at = 0;
+        let unresolved_id = unresolved.id;
+        let mut operations = vec![unresolved];
+        for created_at in 1..=8 {
+            let mut completed = operation(DpnsVoteTargetStatus::Confirmed);
+            completed.created_at = created_at;
+            operations.push(completed);
+        }
+        snapshot.replace(operations);
+        let visible = snapshot.recent_operations();
+        assert!(
+            visible
+                .iter()
+                .any(|operation| operation.id == unresolved_id)
+        );
+        assert_eq!(visible.len(), 6);
+    }
 
     #[test]
     fn voting_ui_recent_activity_is_bounded_ordered_and_shared_between_frames() {

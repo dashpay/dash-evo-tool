@@ -173,6 +173,23 @@ fn snapshot_vote_state(
 }
 
 impl AppContext {
+    /// Publish a deterministic proof failure without network I/O.
+    #[cfg(test)]
+    pub(crate) async fn fail_proved_dpns_votes_for_test(
+        &self,
+        voter_id: Identifier,
+    ) -> Result<(), TaskError> {
+        self.refresh_dpns_vote_state_with(
+            &self.det_kv()?,
+            voter_id,
+            std::future::ready(Err(Box::new(dash_sdk::Error::InvalidProvedResponse(
+                "test proof unavailable".into(),
+            )))),
+        )
+        .await
+        .map(|_| ())
+    }
+
     #[cfg(test)]
     pub(crate) async fn seed_proved_dpns_votes_for_test(
         &self,

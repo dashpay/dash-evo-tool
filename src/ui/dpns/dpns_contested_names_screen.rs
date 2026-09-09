@@ -23,8 +23,9 @@ use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::dpns::normalize_dpns_label;
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteOperation, DpnsVoteOperationId,
-    DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
+    DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::ui::components::component_trait::Component;
@@ -154,6 +155,35 @@ fn target_status_label(status: DpnsVoteTargetStatus) -> &'static str {
         DpnsVoteTargetStatus::FailedBeforeSubmission => "Not submitted",
         DpnsVoteTargetStatus::NotApplied => "Not applied",
         DpnsVoteTargetStatus::Cancelled => "Cancelled",
+    }
+}
+
+fn target_outcome_label(
+    status: DpnsVoteTargetStatus,
+    failure: Option<DpnsVoteFailure>,
+) -> &'static str {
+    if scheduled_failure_guidance(status, failure).is_some() {
+        "Not submitted"
+    } else {
+        target_status_label(status)
+    }
+}
+
+fn scheduled_failure_guidance(
+    status: DpnsVoteTargetStatus,
+    failure: Option<DpnsVoteFailure>,
+) -> Option<&'static str> {
+    if status != DpnsVoteTargetStatus::Scheduled {
+        return None;
+    }
+    match failure? {
+        DpnsVoteFailure::CurrentVoteUnavailable => Some(
+            "Current vote could not be verified. In Scheduled Votes, use Cast now to check again or Edit to reschedule.",
+        ),
+        DpnsVoteFailure::SubmissionFailed => Some(
+            "The vote could not be submitted. Check your connection and voting key, then use Cast now or Edit in Scheduled Votes.",
+        ),
+        DpnsVoteFailure::PlatformRejected | DpnsVoteFailure::ResultUnconfirmed => None,
     }
 }
 
@@ -462,11 +492,10 @@ impl DPNSScreen {
             .iter()
             .map(|identity| identity.identity.id())
             .collect::<Vec<_>>();
-        let vote_state = DpnsVoteStateSnapshot::load(app_context, &voter_ids, &vote_poll_ids)
-            .unwrap_or_else(|error| {
-                tracing::warn!(?error, "Could not cache proved DPNS vote state");
-                DpnsVoteStateSnapshot::default()
-            });
+        let mut vote_state = DpnsVoteStateSnapshot::default();
+        if let Err(error) = vote_state.refresh(app_context, &voter_ids, &vote_poll_ids) {
+            tracing::warn!(?error, "Could not cache proved DPNS vote state");
+        }
 
         // Initialize vote handling pop-up state to hidden
         let identity_count = voting_identities.len();
@@ -1048,7 +1077,7 @@ impl DPNSScreen {
 
         let dark_mode = ui.style().visuals.dark_mode;
         ui.add_space(12.0);
-        ui.heading("Recent voting activity");
+        ui.heading("Voting activity");
         for operation in operations.iter() {
             let settled = operation
                 .targets
@@ -1077,7 +1106,7 @@ impl DPNSScreen {
                                 )
                                 .as_deref(),
                             ),
-                            target_status_label(outcome.status),
+                            target_outcome_label(outcome.status, outcome.failure),
                         ));
                         if outcome.status == DpnsVoteTargetStatus::Unconfirmed
                             && ComponentStyles::add_secondary_button(
@@ -1114,6 +1143,9 @@ impl DPNSScreen {
                             self.review_failed_target(outcome);
                         }
                     });
+                    if let Some(guidance) = scheduled_failure_guidance(outcome.status, outcome.failure) {
+                        ui.label(guidance);
+                    }
                     if matches!(
                         outcome.status,
                         DpnsVoteTargetStatus::Confirming
@@ -1503,7 +1535,7 @@ impl DPNSScreen {
                 .column(Column::auto().resizable(true)) // Voter
                 .column(Column::auto().resizable(true)) // Choice
                 .column(Column::auto().resizable(true)) // Time
-                .column(Column::auto().resizable(true)) // Status
+                .column(Column::initial(280.0).resizable(true)) // Status
                 .column(Column::auto().resizable(true)) // Actions
                 .header(30.0, |mut header| {
                     header.col(|ui| {
@@ -1552,7 +1584,8 @@ impl DPNSScreen {
                             voter_id: vote.voter_id,
                             contested_name: vote.contested_name.clone(),
                         };
-                        body.row(25.0, |mut row| {
+                        let failure_guidance = scheduled_failure_guidance(scheduled_row.status, scheduled_row.failure);
+                        body.row(if failure_guidance.is_some() { 95.0 } else { 25.0 }, |mut row| {
                             row.col(|ui| {
                                 ui.add(Label::new(format!("{}.dash", vote.contested_name)));
                             });
@@ -1598,10 +1631,13 @@ impl DPNSScreen {
                             });
                             row.col(|ui| {
                                 let dark_mode = ui.style().visuals.dark_mode;
-                                ui.label(
-                                    RichText::new(target_status_label(scheduled_row.status))
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(target_outcome_label(scheduled_row.status, scheduled_row.failure))
+                                        .color(DashColors::text_primary(dark_mode)));
+                                    if let Some(guidance) = failure_guidance {
+                                        ui.add(Label::new(guidance).wrap());
+                                    }
+                                });
                             });
                             row.col(|ui| {
                                 let remove_enabled =
@@ -2201,6 +2237,19 @@ impl DPNSScreen {
             };
             voters.push(identity.clone());
             for selected_vote in &self.selected_votes {
+                if let VoteTiming::Scheduled(timestamp) = timing {
+                    validate_dpns_schedule_time(
+                        timestamp,
+                        now.timestamp_millis() as u64,
+                        selected_vote.end_time,
+                    )
+                    .map_err(|_| {
+                        format!(
+                            "Choose a future time before the contest ends for {}.dash.",
+                            selected_vote.contested_name
+                        )
+                    })?;
+                }
                 let voter_id = identity.identity.id();
                 let vote_poll_id = self
                     .app_context
@@ -2460,6 +2509,12 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if let Err(refresh_error) = self.vote_state.reload(&self.app_context) {
+            tracing::warn!(
+                ?refresh_error,
+                "Could not refresh proved DPNS votes after a task error"
+            );
+        }
         if self.clear_vote_overlay_on_error {
             self.vote_overlay.take_and_clear();
             self.pending_vote_operation = None;
@@ -2718,6 +2773,9 @@ impl ScreenLike for DPNSScreen {
                         self.render_active_contests(ui);
                     } else {
                         inner_action |= self.render_no_active_contests_or_owned_names(ui);
+                        egui::ScrollArea::vertical()
+                            .id_salt("voting_activity_without_contests")
+                            .show(ui, |ui| self.render_voting_activity(ui));
                     }
                 }
                 DPNSSubscreen::Past => {
@@ -3180,11 +3238,13 @@ mod tests {
             vote: vote.clone(),
             journal_target: Some((operation_id, key.clone())),
             status: DpnsVoteTargetStatus::Scheduled,
+            failure: None,
         };
         let legacy_row = ScheduledDpnsVoteRow {
             vote,
             journal_target: None,
             status: DpnsVoteTargetStatus::Scheduled,
+            failure: None,
         };
 
         assert!(matches!(
@@ -3325,6 +3385,193 @@ mod tests {
         screen.vote_state =
             DpnsVoteStateSnapshot::load(&ctx, &[voter.identity.id()], &[poll]).unwrap();
         (screen, temp_dir)
+    }
+
+    #[test]
+    fn voting_ui_unconfirmed_activity_is_reachable_without_active_contests_after_restart() {
+        use egui_kittest::kittest::Queryable;
+        let (screen, _dir) = voting_ui_review_fixture();
+        let target = screen.build_review_plan().unwrap().entries[0]
+            .target
+            .clone();
+        let mut operation = DpnsVoteOperation::new(vec![target]);
+        operation.targets[0].status = DpnsVoteTargetStatus::Unconfirmed;
+        screen
+            .app_context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let mut reopened = DPNSScreen::new(&screen.app_context, DPNSSubscreen::Active);
+        assert!(reopened.active_contests.is_empty());
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 1200.0))
+            .build_ui(move |ui| {
+                reopened.ui(ui);
+            });
+        harness.run();
+        assert!(harness.query_by_label("Check again").is_some());
+    }
+
+    #[test]
+    fn voting_ui_scheduled_failure_reason_survives_reopening() {
+        use crate::model::dpns_voting::DpnsVoteFailure;
+        use egui_kittest::kittest::Queryable;
+        for (failure, reason) in [
+            (
+                DpnsVoteFailure::CurrentVoteUnavailable,
+                "Current vote could not be verified. In Scheduled Votes, use Cast now to check again or Edit to reschedule.",
+            ),
+            (
+                DpnsVoteFailure::SubmissionFailed,
+                "The vote could not be submitted. Check your connection and voting key, then use Cast now or Edit in Scheduled Votes.",
+            ),
+        ] {
+            let (screen, _dir) = voting_ui_review_fixture();
+            let mut target = screen.build_review_plan().unwrap().entries[0]
+                .target
+                .clone();
+            target.timing = VoteTiming::Scheduled(Utc::now().timestamp_millis() as u64);
+            let mut operation = DpnsVoteOperation::new(vec![target]);
+            operation.targets[0].failure = Some(failure);
+            screen
+                .app_context
+                .insert_dpns_vote_operation(&mut operation, None)
+                .unwrap();
+            for subscreen in [DPNSSubscreen::ScheduledVotes, DPNSSubscreen::Active] {
+                let scheduled = subscreen == DPNSSubscreen::ScheduledVotes;
+                let mut reopened = DPNSScreen::new(&screen.app_context, subscreen);
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size(egui::vec2(1600.0, 1200.0))
+                    .build_ui(move |ui| {
+                        reopened.ui(ui);
+                    });
+                harness.run();
+                if scheduled {
+                    assert!(harness.query_by_label("Not submitted").is_some());
+                }
+                assert!(harness.query_by_label(reason).is_some());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn voting_ui_constructor_keeps_other_voters_when_one_snapshot_read_fails() {
+        let (context, _dir, _events) = wired_ctx().await;
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let kv = crate::wallet_backend::DetKv::from_store(store.clone());
+        context.set_det_kv_override_for_test(kv);
+        for id in [1, 2] {
+            let voter = masternode_identity(id, &format!("node-{id}"), true, context.network());
+            context
+                .insert_local_qualified_identity(&voter, &None)
+                .unwrap();
+            let poll = context.dpns_vote_poll_id("alpha").unwrap();
+            context
+                .cache_confirmed_dpns_vote(voter.identity.id(), poll, ResourceVoteChoice::Lock)
+                .unwrap();
+        }
+        context
+            .insert_name_contests_as_normalized_names(vec!["alpha".into()])
+            .unwrap();
+        store.fail_next_gets_containing("det:dpns_current_votes:v3:", 1);
+        let screen = DPNSScreen::new(&context, DPNSSubscreen::Active);
+        assert_eq!(screen.voting_identities.len(), 2);
+        let poll = context.dpns_vote_poll_id("alpha").unwrap();
+        assert_eq!(
+            screen
+                .vote_state
+                .state(screen.voting_identities[0].identity.id(), poll),
+            DpnsCurrentVoteState::Unavailable
+        );
+        assert_eq!(
+            screen
+                .vote_state
+                .state(screen.voting_identities[1].identity.id(), poll),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+    }
+
+    #[tokio::test]
+    async fn voting_ui_task_error_reloads_current_state_and_preserves_valid_confirmations() {
+        let (context, _dir) = kv_ctx();
+        let voter = Identifier::from([1; 32]);
+        let poll = context.dpns_vote_poll_id("alpha").unwrap();
+        let other = context.dpns_vote_poll_id("beta").unwrap();
+        context
+            .seed_proved_dpns_votes_for_test(
+                voter,
+                BTreeMap::from([(poll.to_buffer(), ResourceVoteChoice::Lock)]),
+            )
+            .await
+            .unwrap();
+        context
+            .cache_confirmed_dpns_vote(voter, other, ResourceVoteChoice::Lock)
+            .unwrap();
+        let mut screen = DPNSScreen::new(&context, DPNSSubscreen::Active);
+        screen
+            .vote_state
+            .refresh(&context, &[voter], &[poll, other])
+            .unwrap();
+        assert_eq!(
+            screen.vote_state.state(voter, poll),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+        let error = TaskError::DpnsVotePreflightFailed {
+            source: Arc::new(
+                context
+                    .fail_proved_dpns_votes_for_test(voter)
+                    .await
+                    .unwrap_err(),
+            ),
+        };
+        assert_eq!(
+            context.dpns_current_vote_state(voter, poll).unwrap(),
+            DpnsCurrentVoteState::Unavailable
+        );
+        screen.display_task_error(&error);
+        assert_eq!(
+            screen.vote_state.state(voter, poll),
+            DpnsCurrentVoteState::Unavailable
+        );
+        assert_eq!(
+            screen.vote_state.state(voter, other),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+    }
+
+    #[test]
+    fn voting_ui_review_rejects_absolute_and_relative_schedules_at_contest_deadline() {
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let now = Utc::now();
+        let scheduled_at = (now + chrono::Duration::hours(1)).timestamp_millis() as u64;
+        for option in [
+            VoteOption::ScheduledAt(scheduled_at),
+            VoteOption::Scheduled {
+                days: 0,
+                hours: 1,
+                minutes: 0,
+            },
+        ] {
+            screen.bulk_identity_options = vec![option];
+            for deadline in [scheduled_at - 1, scheduled_at, scheduled_at + 1] {
+                screen.selected_votes[0].end_time = Some(deadline);
+                assert_eq!(
+                    screen.build_review_plan_at(now).is_ok(),
+                    deadline > scheduled_at
+                );
+            }
+        }
+        screen.selected_votes.push(SelectedVote {
+            contested_name: "beta".into(),
+            vote_choice: ResourceVoteChoice::Abstain,
+            end_time: Some(scheduled_at),
+        });
+        assert!(
+            screen
+                .build_review_plan_at(now)
+                .err()
+                .expect("the second contest has ended before the schedule")
+                .contains("beta.dash")
+        );
     }
 
     #[test]

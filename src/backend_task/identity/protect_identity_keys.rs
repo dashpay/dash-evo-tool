@@ -167,9 +167,7 @@ impl AppContext {
     }
 }
 
-/// Fail-closed guard for two of the three boundaries that seal an identity's
-/// keys — the protect opt-in and the legacy-recovery merge, but *not* the
-/// merge-load path (see the TODO at its seal in `load_identity.rs`): reject an
+/// Protection and import preflights reject an
 /// identity that still carries resident plaintext (`Clear`/`AlwaysClear`) keys
 /// on disk. Such a
 /// key means the eager load-path vault migration did not complete — its vault

@@ -2,7 +2,7 @@
 
 use crate::framework::fixtures;
 use crate::framework::harness::ctx;
-use crate::framework::task_runner::run_task;
+use crate::framework::task_runner::{expect_asset_lock_broadcast, run_task};
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::single_key::SingleKeyWallet;
@@ -140,15 +140,8 @@ async fn test_tc004_create_registration_asset_lock() {
         .await
         .expect("CreateRegistrationAssetLock should succeed");
 
-    match result {
-        BackendTaskSuccessResult::Message(msg) => {
-            tracing::info!("TC-004: asset lock broadcast message: {}", msg);
-        }
-        other => panic!(
-            "TC-004: expected Message from CreateRegistrationAssetLock, got: {:?}",
-            other
-        ),
-    }
+    let txid = expect_asset_lock_broadcast(result, "TC-004");
+    tracing::info!("TC-004: asset lock broadcast in {}", txid);
 }
 
 // TC-005: CreateTopUpAssetLock
@@ -181,15 +174,8 @@ async fn test_tc005_create_top_up_asset_lock() {
         .await
         .expect("CreateTopUpAssetLock should succeed");
 
-    match result {
-        BackendTaskSuccessResult::Message(msg) => {
-            tracing::info!("TC-005: asset lock broadcast message: {}", msg);
-        }
-        other => panic!(
-            "TC-005: expected Message from CreateTopUpAssetLock, got: {:?}",
-            other
-        ),
-    }
+    let txid = expect_asset_lock_broadcast(result, "TC-005");
+    tracing::info!("TC-005: asset lock broadcast in {}", txid);
 }
 
 // TC-006: RecoverAssetLocks — REMOVED (Decision #8: hard-removed; upstream
@@ -431,13 +417,6 @@ async fn test_tc012_create_registration_asset_lock_late_added_wallet() {
         .await
         .expect("CreateRegistrationAssetLock should succeed for a freshly-added, funded wallet");
 
-    match result {
-        BackendTaskSuccessResult::Message(msg) => {
-            tracing::info!("TC-012: asset lock broadcast message: {}", msg);
-        }
-        other => panic!(
-            "TC-012: expected Message from CreateRegistrationAssetLock, got: {:?}",
-            other
-        ),
-    }
+    let txid = expect_asset_lock_broadcast(result, "TC-012");
+    tracing::info!("TC-012: asset lock broadcast in {}", txid);
 }

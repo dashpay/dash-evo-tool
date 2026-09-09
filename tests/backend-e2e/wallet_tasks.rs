@@ -1,7 +1,9 @@
 // Tests implemented in Task 2 (WalletTask tests: TC-012 to TC-019)
 
 use crate::framework::harness;
-use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
+use crate::framework::task_runner::{
+    expect_asset_lock_broadcast, run_task, run_task_with_nonce_retry,
+};
 use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -665,13 +667,10 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
         .await
         .expect("TC-018: CreateRegistrationAssetLock failed");
 
-    // The task broadcasts the tx and returns a Message (broadcast confirmation).
-    // The IS lock arrives asynchronously via SPV and populates unused_asset_locks.
-    assert!(
-        matches!(create_result, BackendTaskSuccessResult::Message(_)),
-        "TC-018: expected Message from CreateRegistrationAssetLock, got: {:?}",
-        create_result
-    );
+    // The task broadcasts the funding tx and answers with its txid. The IS lock
+    // arrives asynchronously via SPV and populates unused_asset_locks.
+    let txid = expect_asset_lock_broadcast(create_result, "TC-018");
+    tracing::info!("TC-018: asset lock broadcast in {}", txid);
 
     // Step 2: Wait for a tracked asset lock with the expected amount and a
     // ready proof from the upstream `AssetLockManager`.

@@ -92,13 +92,15 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
   testnet with SPV running
 - **`framework_wallet_hash`** -- the `WalletSeedHash` of the "bank" wallet used
   to fund per-test wallets
-- **`_workdir`** -- path to a persistent temp directory keyed by git revision
-  (e.g., `/tmp/dash-evo-e2e-testnet-abc1234`)
+- **`_workdir`** -- path to a persistent temp directory (e.g.,
+  `/tmp/dash-evo-e2e-testnet`, or a numbered fallback slot; see "Persistent
+  workdir" below -- not git-rev-keyed)
 
 ### Initialization sequence
 
 1. Initialize tracing subscriber for structured log output.
-2. Create a persistent workdir under `/tmp/` keyed by `git rev-parse --short HEAD`.
+2. Create a persistent workdir under `/tmp/` (deterministic path, with numbered
+   fallback slots guarded by a `.lock` file -- see "Persistent workdir" below).
 3. Copy `.env.example` into the workdir via `ensure_env_file()`.
 4. Create a SQLite database and `AppContext` for `Network::Testnet`, passing the workdir as `data_dir`.
 5. Start SPV in light-client mode and wait for peer connections (60s timeout).
@@ -110,10 +112,14 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 
 ### Persistent workdir
 
-The workdir survives across test runs for the same git revision. This means:
+The workdir is deterministic, not git-rev-keyed: it's always
+`<tmp>/dash-evo-e2e-testnet` (slot 0), with numbered fallback slots
+(`dash-evo-e2e-testnet-1`, `-2`, ...) that `pick_available_workdir` cycles
+through via a per-slot `.lock` file when an earlier slot is still locked by
+another process (see `framework/harness.rs`). This means:
 
-- The SQLite database is reused, so wallets registered in prior runs are already
-  present.
+- The SQLite database is reused across runs, so wallets registered previously
+  are already present, regardless of which commit produced them.
 - The framework wallet registration handles the "already imported" case
   gracefully.
 - SPV sync is faster on repeat runs because prior state may be cached.
@@ -121,7 +127,7 @@ The workdir survives across test runs for the same git revision. This means:
 Clean the workdir manually if you need a fresh start:
 
 ```bash
-rm -rf /tmp/dash-evo-e2e-testnet-*
+rm -rf /tmp/dash-evo-e2e-testnet*
 ```
 
 ## Wallet architecture
@@ -182,14 +188,32 @@ Located in `tests/backend-e2e/framework/`:
 
 ## Test modules
 
+Registered in `tests/backend-e2e/main.rs` -- that file is the authoritative
+list; keep this table in sync when adding or removing a module.
+
 | Module | What it tests |
 |---|---|
-| `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |
-| `send_funds` | Core payment between two wallets (send and return) |
+| `cleanup_only` | Standalone cleanup -- sweeps orphaned test wallets on init |
 | `fetch_contract` | Platform contract queries (DashPay, non-existent ID, with descriptions) |
 | `identity_create` | Identity registration funded from a wallet |
-| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification |
+| `identity_masternode_withdraw` | Headless masternode/evonode load + credit withdrawal |
 | `identity_withdraw` | Identity credit withdrawal to a Core address |
+| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification |
+| `send_funds` | Core payment between two wallets (send and return) |
+| `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |
+| `tx_is_ours` | `is_ours` flag correctness for SPV transactions |
+| `identity_cold_boot` | Identity funding on a cold-booted watch-only wallet (scenarios C/D) |
+| `spv_reconnect` | SPV reconnect regression (`stop_spv` + `ensure_wallet_backend_and_start_spv`) |
+| `core_tasks` | `CoreTask` variants (TC-001 to TC-012) |
+| `cross_wallet_topup` | Cross-wallet identity top-up, including spent-lock reuse rejection (#954/#956) |
+| `event_bridge_live` | Live `EventBridge` wiring: SPV sync -> `ConnectionStatus` -> frame-loop repaint |
+| `identity_in_vault_sign` | TS-SIGN-E2E-01 -- state transition signed by a migrated `InVault` identity key |
+| `identity_tasks` | `IdentityTask` variants (TC-020 to TC-030) |
+| `shielded_tasks` | `ShieldedTask` variants (TC-074 to TC-083); skippable via `E2E_SKIP_SHIELDED` |
+| `token_tasks` | Full token lifecycle: registration, query, mint, burn (TC-045 to TC-065) |
+| `wallet_reregistration` | Wallets re-register with upstream SPV so received funds stay visible |
+| `wallet_tasks` | `WalletTask` variants (TC-012 to TC-019) |
+| `z_broadcast_st_tasks` | `BroadcastStateTransition` (TC-066, TC-067) |
 
 ## Writing new tests
 

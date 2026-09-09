@@ -224,6 +224,18 @@ pub enum DpnsScheduleEditValidationError {
     Contest,
 }
 
+/// Validate a future voting time against the contest deadline, when known.
+pub fn validate_dpns_schedule_time(
+    unix_timestamp: u64,
+    now_ms: u64,
+    end_time: Option<u64>,
+) -> Result<(), DpnsScheduleEditValidationError> {
+    if unix_timestamp <= now_ms || end_time.is_some_and(|end| unix_timestamp >= end) {
+        return Err(DpnsScheduleEditValidationError::Time);
+    }
+    Ok(())
+}
+
 /// Validate the new schedule against the current time and the selected contest.
 pub fn validate_dpns_schedule_edit(
     choice: ResourceVoteChoice,
@@ -234,9 +246,7 @@ pub fn validate_dpns_schedule_edit(
     if !contest.is_votable() {
         return Err(DpnsScheduleEditValidationError::Contest);
     }
-    if unix_timestamp <= now_ms || contest.end_time.is_some_and(|end| unix_timestamp >= end) {
-        return Err(DpnsScheduleEditValidationError::Time);
-    }
+    validate_dpns_schedule_time(unix_timestamp, now_ms, contest.end_time)?;
     if let ResourceVoteChoice::TowardsIdentity(id) = choice
         && !contest
             .contestants

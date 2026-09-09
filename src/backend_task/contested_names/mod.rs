@@ -9,9 +9,10 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
 use crate::context::AppContext;
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteFailure, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
-    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, failed_before_broadcast_outcome,
-    unavailable_preflight_outcome,
+    DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsVoteFailure, DpnsVoteOperation,
+    DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    failed_before_broadcast_outcome, unavailable_preflight_outcome, validate_dpns_schedule_edit,
+    validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
@@ -392,8 +393,15 @@ impl AppContext {
             VoteTiming::Scheduled(scheduled_vote.unix_timestamp),
             false,
         )?;
-        let mut operation = DpnsVoteOperation::new(vec![target]);
-        operation.targets[0].status = DpnsVoteTargetStatus::Queued;
+        // An explicit retry must reach fresh preflight even if the cached
+        // choice matches. Preflight records an already-satisfied target durably.
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            current_choice: None,
+            ..target
+        }]);
+        for outcome in &mut operation.targets {
+            outcome.status = DpnsVoteTargetStatus::Queued;
+        }
         Ok(operation)
     }
 
@@ -431,6 +439,45 @@ impl AppContext {
         Ok(())
     }
 
+    fn validate_new_dpns_schedules(&self, targets: &[DpnsVoteTarget]) -> Result<(), TaskError> {
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let now_ms = UNIX_EPOCH.elapsed().unwrap_or_default().as_millis() as u64;
+        // Reject invalid times even when the contest has not been cached yet.
+        for target in targets {
+            if let VoteTiming::Scheduled(timestamp) = target.timing {
+                validate_dpns_schedule_time(timestamp, now_ms, None)
+                    .map_err(|_| TaskError::DpnsScheduledVoteInvalidTime)?;
+            }
+        }
+        let contests = self.all_contested_names()?;
+        for target in targets {
+            let VoteTiming::Scheduled(timestamp) = target.timing else {
+                continue;
+            };
+            let contest = contests
+                .iter()
+                .find(|contest| contest.normalized_contested_name == target.contested_name)
+                .ok_or_else(|| TaskError::VotePollNotFound {
+                    name: target.contested_name.clone(),
+                })?;
+            validate_dpns_schedule_edit(target.requested_choice, timestamp, now_ms, contest)
+                .map_err(|error| match error {
+                    DpnsScheduleEditValidationError::Time => {
+                        TaskError::DpnsScheduledVoteInvalidTime
+                    }
+                    DpnsScheduleEditValidationError::Choice => {
+                        TaskError::DpnsScheduledVoteInvalidChoice
+                    }
+                    DpnsScheduleEditValidationError::Contest => TaskError::VotePollNotFound {
+                        name: target.contested_name.clone(),
+                    },
+                })?;
+        }
+        Ok(())
+    }
+
     async fn execute_dpns_vote_operation(
         self: &Arc<Self>,
         mut operation: DpnsVoteOperation,
@@ -445,6 +492,13 @@ impl AppContext {
             });
         }
         let was_persisted = self.dpns_vote_operation(operation.id)?.is_some();
+        let new_schedules = operation
+            .targets
+            .iter()
+            .filter(|outcome| !was_persisted && outcome.status == DpnsVoteTargetStatus::Scheduled)
+            .map(|outcome| outcome.target.clone())
+            .collect::<Vec<_>>();
+        self.validate_new_dpns_schedules(&new_schedules)?;
         let mut preflight_error = None;
         if operation
             .targets
@@ -513,6 +567,7 @@ impl AppContext {
                 .dpns_vote_operation(operation.id)?
                 .ok_or(TaskError::DpnsVoteOperationRecordMissing)?;
         } else {
+            self.validate_new_dpns_schedules(&new_schedules)?;
             let scheduled_votes = operation
                 .targets
                 .iter()
@@ -883,42 +938,30 @@ impl AppContext {
         })
     }
 
-    /// Cast every scheduled vote that is now due, off the UI thread.
-    ///
-    /// Queries the scheduled-vote table, keeps the votes whose time has arrived
-    /// (and are not already executed or stale beyond
-    /// [`SCHEDULED_VOTE_MAX_LATENESS_MS`]), pairs each with its local voting
-    /// identity, and casts them independently so one failure cannot abort the
-    /// rest. Emits [`ScheduledVotesInProgress`] before casting; terminal state
-    /// is persisted in the shared operation journal and legacy executed flag.
-    ///
-    /// [`ScheduledVotesInProgress`]: BackendTaskSuccessResult::ScheduledVotesInProgress
-    async fn cast_due_scheduled_votes(
-        self: &Arc<Self>,
-        sdk: &Sdk,
-        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    /// Preserve durable due targets and catch up after unrelated reconciliation.
+    async fn prepare_due_scheduled_votes(
+        &self,
+        clock: impl Fn() -> u64,
         preserve_eligibility_since_ms: Option<u64>,
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        for operation in self
-            .dpns_vote_operations()?
-            .into_iter()
-            .filter(|operation| {
-                operation
-                    .targets
-                    .iter()
-                    .any(|outcome| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
-            })
-        {
-            let result = self
-                .reconcile_dpns_vote_operation(operation.id, sdk)
-                .await?;
-            let _ = sender.send(TaskResult::unattributed_success(result)).await;
-        }
+        reconcile: impl std::future::Future<Output = Result<(), TaskError>>,
+    ) -> Result<(Vec<DpnsVoteOperation>, Vec<ScheduledDPNSVote>), TaskError> {
+        let started_at = clock();
+        let eligibility_cutoff = preserve_eligibility_since_ms.unwrap_or(started_at);
+        // Persist entry admissions before the await so errors or interruption
+        // cannot turn an eligible target into a stale schedule on the next sweep.
+        self.queue_due_scheduled_votes_at(started_at, eligibility_cutoff)?;
+        let reconciliation = reconcile.await;
+        // Also admit schedules that became due while reconciliation was waiting.
+        let admitted = self.queue_due_scheduled_votes_at(clock(), eligibility_cutoff)?;
+        reconciliation?;
+        Ok(admitted)
+    }
 
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+    fn queue_due_scheduled_votes_at(
+        &self,
+        now_ms: u64,
+        eligibility_cutoff: u64,
+    ) -> Result<(Vec<DpnsVoteOperation>, Vec<ScheduledDPNSVote>), TaskError> {
         let mut due_operations = Vec::new();
         let mut in_progress = Vec::new();
         for mut operation in self.dpns_vote_operations()? {
@@ -931,7 +974,7 @@ impl AppContext {
                     outcome.status,
                     scheduled_at,
                     now_ms,
-                    preserve_eligibility_since_ms,
+                    Some(eligibility_cutoff),
                 ) {
                     continue;
                 }
@@ -954,6 +997,46 @@ impl AppContext {
                 due_operations.push(operation);
             }
         }
+        Ok((due_operations, in_progress))
+    }
+
+    /// Reconcile unresolved votes and execute each admitted scheduled operation.
+    /// Emits progress before execution; terminal results remain in the journal.
+    async fn cast_due_scheduled_votes(
+        self: &Arc<Self>,
+        sdk: &Sdk,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        preserve_eligibility_since_ms: Option<u64>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let (due_operations, in_progress) = self
+            .prepare_due_scheduled_votes(
+                || {
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0)
+                },
+                preserve_eligibility_since_ms,
+                async {
+                    for operation in
+                        self.dpns_vote_operations()?
+                            .into_iter()
+                            .filter(|operation| {
+                                operation.targets.iter().any(|outcome| {
+                                    outcome.status == DpnsVoteTargetStatus::Unconfirmed
+                                })
+                            })
+                    {
+                        let result = self
+                            .reconcile_dpns_vote_operation(operation.id, sdk)
+                            .await?;
+                        let _ = sender.send(TaskResult::unattributed_success(result)).await;
+                    }
+
+                    Ok(())
+                },
+            )
+            .await?;
         if due_operations.is_empty() {
             return Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
                 network: self.network,
@@ -1103,6 +1186,246 @@ mod tests {
             status: IdentityStatus::Active,
             network: Network::Testnet,
         }
+    }
+
+    fn r2_context() -> (tempfile::TempDir, Arc<AppContext>) {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(Arc::new(
+            crate::wallet_backend::kv_test_support::InMemoryKv::default(),
+        )));
+        (temp, context)
+    }
+
+    fn r2_schedule(context: &AppContext, name: &str, timestamp: u64) -> DpnsVoteOperation {
+        DpnsVoteOperation::new(vec![
+            context
+                .dpns_vote_target(
+                    &qualified_identity(1),
+                    name,
+                    ResourceVoteChoice::Lock,
+                    VoteTiming::Scheduled(timestamp),
+                    false,
+                )
+                .unwrap(),
+        ])
+    }
+
+    #[test]
+    fn r2_terminal_retry_with_matching_cache_reaches_durable_no_op_preflight() {
+        let (_temp, context) = r2_context();
+        let mut previous = r2_schedule(&context, "alice", 42);
+        previous.targets[0].status = DpnsVoteTargetStatus::Rejected;
+        context
+            .insert_dpns_vote_operation(&mut previous, None)
+            .unwrap();
+        let key = previous.targets[0].target.key.clone();
+        context
+            .cache_confirmed_dpns_vote(key.voter_id, key.vote_poll_id, ResourceVoteChoice::Lock)
+            .unwrap();
+        let scheduled = ScheduledDPNSVote {
+            voter_id: key.voter_id,
+            contested_name: "alice".into(),
+            choice: ResourceVoteChoice::Lock,
+            unix_timestamp: 42,
+            executed_successfully: false,
+        };
+        let mut retry = context
+            .operation_for_scheduled_vote(&scheduled, &qualified_identity(1))
+            .unwrap();
+        assert_eq!(retry.targets.len(), 1);
+        assert_eq!(
+            retry.targets[0].status,
+            DpnsVoteTargetStatus::Queued,
+            "cache alone must not confirm a retry"
+        );
+        context
+            .revalidate_dpns_vote_preflight(
+                &mut retry,
+                false,
+                &key,
+                DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock)),
+            )
+            .unwrap();
+        context
+            .insert_dpns_vote_operation_with_scheduled_mirror(&mut retry, None, &[scheduled])
+            .unwrap();
+        let saved = context.dpns_vote_operation(retry.id).unwrap().unwrap();
+        assert_eq!(saved.targets[0].status, DpnsVoteTargetStatus::Confirmed);
+        assert!(!saved.targets[0].status.holds_lock());
+        assert_eq!(
+            context
+                .dpns_vote_operation(previous.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn r2_sweep_preserves_due_votes_across_slow_reconciliation() {
+        let (_temp, context) = r2_context();
+        let started = 1_000_000;
+        let clock = std::cell::Cell::new(started);
+        let mut operation = r2_schedule(&context, "alice", started);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        let (due, _) = context
+            .prepare_due_scheduled_votes(|| clock.get(), None, async {
+                clock.set(started + SCHEDULED_VOTE_MAX_LATENESS_MS + 1);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            due.len(),
+            1,
+            "reconciliation must not expire a schedule eligible at sweep entry"
+        );
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Queued
+        );
+    }
+
+    #[tokio::test]
+    async fn r2_sweep_reconciliation_failure_retains_durable_due_admission() {
+        let (_temp, context) = r2_context();
+        let started = 1_000_000;
+        let clock = std::cell::Cell::new(started);
+        let mut due = r2_schedule(&context, "alice", started);
+        let mut newly_due = r2_schedule(&context, "bob", started + 10);
+        context.insert_dpns_vote_operation(&mut due, None).unwrap();
+        context
+            .insert_dpns_vote_operation(&mut newly_due, None)
+            .unwrap();
+        let result = context
+            .prepare_due_scheduled_votes(|| clock.get(), None, async {
+                clock.set(started + SCHEDULED_VOTE_MAX_LATENESS_MS * 2);
+                Err(TaskError::DpnsVoteTargetBusy)
+            })
+            .await;
+        assert!(matches!(result, Err(TaskError::DpnsVoteTargetBusy)));
+        for id in [due.id, newly_due.id] {
+            assert_eq!(
+                context.dpns_vote_operation(id).unwrap().unwrap().targets[0].status,
+                DpnsVoteTargetStatus::Queued,
+                "failed reconciliation must retain entry and newly due admissions"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn r2_new_schedule_rejects_past_time_before_persistence() {
+        let (_temp, context) = r2_context();
+        let operation = r2_schedule(&context, "alice", 1);
+        let result = context
+            .execute_dpns_vote_operation(operation, vec![], None, &context.sdk())
+            .await;
+        assert!(matches!(
+            result,
+            Err(TaskError::DpnsScheduledVoteInvalidTime)
+        ));
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn r2_new_schedule_validates_known_deadline_and_unknown_deadline_policy() {
+        let now = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let end = now + 120_000;
+        for (timestamp, deadline, expected_valid) in [
+            (end - 1, Some(end), true),
+            (end, Some(end), false),
+            (end + 1, Some(end), false),
+            (end, None, true),
+        ] {
+            let (_temp, context) = r2_context();
+            context.seed_dpns_contest_for_test("alice", deadline, false);
+            let operation = r2_schedule(&context, "alice", timestamp);
+            let result = context
+                .execute_dpns_vote_operation(operation, vec![], None, &context.sdk())
+                .await;
+            if expected_valid {
+                result.unwrap();
+                assert_eq!(context.dpns_vote_operations().unwrap().len(), 1);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(TaskError::DpnsScheduledVoteInvalidTime)
+                ));
+                assert!(context.dpns_vote_operations().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn r2_new_schedule_rejects_mixed_deadlines_atomically_and_missing_or_closed_contests() {
+        let now = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let timestamp = now + 60_000;
+        let (_temp, context) = r2_context();
+        context.seed_dpns_contest_for_test("alice", Some(timestamp + 1), false);
+        context.seed_dpns_contest_for_test("bob", Some(timestamp), false);
+        let mut targets = r2_schedule(&context, "alice", timestamp).targets;
+        targets.extend(r2_schedule(&context, "bob", timestamp).targets);
+        let operation = DpnsVoteOperation::new(targets.into_iter().map(|o| o.target).collect());
+        let result = context
+            .execute_dpns_vote_operation(operation, vec![], None, &context.sdk())
+            .await;
+        assert!(matches!(
+            result,
+            Err(TaskError::DpnsScheduledVoteInvalidTime)
+        ));
+        assert!(context.dpns_vote_operations().unwrap().is_empty());
+        assert!(context.get_scheduled_votes().unwrap().is_empty());
+        for name in ["missing", "closed"] {
+            if name == "closed" {
+                context.seed_dpns_contest_for_test(name, None, true);
+            }
+            let result = context
+                .execute_dpns_vote_operation(
+                    r2_schedule(&context, name, timestamp),
+                    vec![],
+                    None,
+                    &context.sdk(),
+                )
+                .await;
+            assert!(matches!(result, Err(TaskError::VotePollNotFound { .. })));
+            assert!(context.dpns_vote_operations().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn r2_sweep_preserves_newly_due_but_excludes_already_stale_and_future_targets() {
+        let (_temp, context) = r2_context();
+        let started = 1_000_000;
+        let finished = started + SCHEDULED_VOTE_MAX_LATENESS_MS * 2;
+        let clock = std::cell::Cell::new(started);
+        for (name, timestamp) in [
+            ("newlydue", started + 10),
+            ("stale", started - SCHEDULED_VOTE_MAX_LATENESS_MS - 1),
+            ("future", finished + 1),
+        ] {
+            context
+                .insert_dpns_vote_operation(&mut r2_schedule(&context, name, timestamp), None)
+                .unwrap();
+        }
+        let (due, _) = context
+            .prepare_due_scheduled_votes(|| clock.get(), None, async {
+                clock.set(finished);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].targets[0].target.contested_name, "newlydue");
     }
 
     #[test]

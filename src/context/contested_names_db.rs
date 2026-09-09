@@ -13,7 +13,8 @@ use crate::model::contested_name::{
     pending_usernames_in,
 };
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteTargetStatus, VoteTiming,
+    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
+    DpnsVoteTargetStatus, VoteTiming,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::wallet_backend::{DetScope, KvAdapterError};
@@ -27,7 +28,7 @@ use dash_sdk::dpp::voting::vote_info_storage::contested_document_vote_poll_winne
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::Contenders;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 /// Key prefix for DPNS contest cache entries in the per-network wallet
@@ -42,6 +43,7 @@ fn contested_name_key(normalized_name: &str) -> String {
 fn scheduled_vote_journal_summary(
     operations: &[DpnsVoteOperation],
     voter_id: Identifier,
+    dismissed: &BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
 ) -> (bool, bool) {
     let latest_by_target = operations
         .iter()
@@ -72,7 +74,7 @@ fn scheduled_vote_journal_summary(
         matches!(
             outcome.status,
             DpnsVoteTargetStatus::Rejected | DpnsVoteTargetStatus::FailedBeforeSubmission
-        )
+        ) && !dismissed.contains(&(outcome.operation_id, outcome.target.key.clone()))
     });
     (pending, failed)
 }
@@ -337,6 +339,37 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Seed a current contest through the persisted shape for backend contract tests.
+    #[cfg(test)]
+    pub(crate) fn seed_dpns_contest_for_test(
+        &self,
+        name: &str,
+        end_time: Option<u64>,
+        closed: bool,
+    ) {
+        let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let stored = StoredContestedName {
+            normalized_contested_name: name.into(),
+            end_time,
+            locked: closed,
+            contestants: vec![StoredContestant {
+                id: [3; 32],
+                name: name.into(),
+                info: String::new(),
+                votes: 0,
+                created_at: Some(now),
+                created_at_block_height: None,
+                created_at_core_block_height: None,
+                document_id: [4; 32],
+            }],
+            ..Default::default()
+        };
+        self.det_kv()
+            .unwrap()
+            .put(DetScope::Global, &contested_name_key(name), &stored)
+            .unwrap();
+    }
+
     /// Summarise a masternode/evonode node's DPNS voting position for its card.
     ///
     /// `voter_id` is the node's voter-identity id (`associated_voter_identity`);
@@ -390,8 +423,11 @@ impl AppContext {
             .count();
         let vote_state = vote_state_summary(&states);
 
-        let (has_scheduled_vote, has_failed_scheduled_vote) =
-            scheduled_vote_journal_summary(&self.dpns_vote_operations()?, voter_id);
+        let (has_scheduled_vote, has_failed_scheduled_vote) = scheduled_vote_journal_summary(
+            &self.dpns_vote_operations()?,
+            voter_id,
+            &self.dismissed_dpns_vote_schedules()?,
+        );
 
         Ok(crate::model::contested_name::MasternodeContestSummary {
             open_contest_count,
@@ -827,6 +863,65 @@ mod tests {
     }
 
     #[test]
+    fn r2_dismissed_failure_does_not_hide_unresolved_sibling() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = test_app_context(temp.path());
+        context.set_det_kv_override_for_test(empty_kv());
+        let voter_id = Identifier::from([7; 32]);
+        let targets = ["alice", "bob"].map(|name| crate::model::dpns_voting::DpnsVoteTarget {
+            key: crate::model::dpns_voting::DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id,
+                vote_poll_id: context.dpns_vote_poll_id(name).unwrap(),
+            },
+            voter_alias: None,
+            contested_name: name.into(),
+            requested_choice:
+                dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(42),
+        });
+        let mut operation = DpnsVoteOperation::new(targets.into());
+        operation.targets[0].status = DpnsVoteTargetStatus::Rejected;
+        operation.targets[1].status = DpnsVoteTargetStatus::Unconfirmed;
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+        assert!(
+            context
+                .masternode_contest_summary(Some(voter_id))
+                .unwrap()
+                .has_failed_scheduled_vote
+        );
+        context
+            .remove_scheduled_dpns_vote(
+                Some(operation.id),
+                &operation.targets[0].target.key,
+                "alice",
+            )
+            .unwrap();
+        let summary = context.masternode_contest_summary(Some(voter_id)).unwrap();
+        assert!(
+            !summary.has_failed_scheduled_vote,
+            "dismissed terminal history is not an actionable failure"
+        );
+        assert!(
+            summary.has_scheduled_vote,
+            "unresolved sibling remains visible"
+        );
+        assert_eq!(
+            context
+                .dpns_vote_operation(operation.id)
+                .unwrap()
+                .unwrap()
+                .targets[0]
+                .status,
+            DpnsVoteTargetStatus::Rejected,
+            "removal must retain the original result"
+        );
+    }
+
+    #[test]
     fn terminal_schedule_failure_is_not_reported_as_pending() {
         let voter_id = Identifier::from([7; 32]);
         let mut operation = DpnsVoteOperation::new(vec![
@@ -846,7 +941,7 @@ mod tests {
         operation.targets[0].status = DpnsVoteTargetStatus::FailedBeforeSubmission;
 
         assert_eq!(
-            scheduled_vote_journal_summary(&[operation], voter_id),
+            scheduled_vote_journal_summary(&[operation], voter_id, &BTreeSet::new()),
             (false, true)
         );
     }
@@ -871,7 +966,7 @@ mod tests {
         operation.targets[0].status = DpnsVoteTargetStatus::Cancelled;
 
         assert_eq!(
-            scheduled_vote_journal_summary(&[operation], voter_id),
+            scheduled_vote_journal_summary(&[operation], voter_id, &BTreeSet::new()),
             (false, false)
         );
     }
@@ -900,7 +995,7 @@ mod tests {
         confirmed.targets[0].status = DpnsVoteTargetStatus::Confirmed;
 
         assert_eq!(
-            scheduled_vote_journal_summary(&[failed, confirmed], voter_id),
+            scheduled_vote_journal_summary(&[failed, confirmed], voter_id, &BTreeSet::new()),
             (false, false)
         );
     }

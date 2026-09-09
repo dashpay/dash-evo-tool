@@ -132,6 +132,12 @@ or shortened Base58 identifier, a human-readable choice, absolute UTC time plus
 relative time, typed status, and only valid actions. Past contests describe the
 winner or locked outcome in words rather than exposing an unexplained raw ID.
 
+Unresolved voting operations remain accessible even when no active contests
+remain. Completed recent history has a separate limit, so new batches cannot
+hide an uncertain result or its check action. A failed scheduled attempt shows
+its saved failure reason and an applicable action after navigation or restart.
+New schedules and edits reject times at or after a known contest deadline.
+
 ## Accessibility and responsive behavior
 
 - Tally chips have no click or keyboard behavior.

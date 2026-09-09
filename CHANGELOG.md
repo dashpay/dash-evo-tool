@@ -100,8 +100,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Review shows each node's current and requested choice and warns when a
   change uses the limited allowance; it does not claim a remaining count.
   Uncertain results stay visible and blocked from repeat submission.
+  Unresolved operations remain accessible after a contest closes and are
+  not displaced by newer completed votes. Failed scheduled attempts retain
+  an actionable explanation after restarting the app.
   Scheduled votes retain the selected UTC time and can be edited before
-  execution starts. Removing a node cancels its unstarted scheduled votes.
+  execution starts. New schedules must precede the contest's known deadline;
+  checking older uncertain votes does not discard schedules already due.
+  Removing a node cancels its unstarted scheduled votes.
   Contests remain readable without a voting key, and a missing voting key
   can be added from the node's detail page without replacing its other keys.
 

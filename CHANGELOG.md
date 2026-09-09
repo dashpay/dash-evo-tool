@@ -101,6 +101,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The backend wallet lifecycle test reserves the withdrawal fee instead of
+  attempting to withdraw the entire Platform address balance.
+
 - Identity creation and top-up accounts are saved before payment and restored
   after restarting the app. Temporary save failures are retried a few times;
   if saving still fails, the payment stops and the app asks you to try again.

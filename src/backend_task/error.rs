@@ -908,7 +908,7 @@ pub enum TaskError {
     /// An indexed journal row could not be decoded, so unresolved target locks
     /// cannot be reconstructed safely.
     #[error(
-        "Saved DPNS voting progress is unreadable. Restore the saved data or remove the damaged voting record before trying again."
+        "Saved DPNS voting progress is unreadable. Restart the app and retry loading. If this continues, restore a backup of the saved data before managing votes."
     )]
     DpnsVoteOperationUnreadable {
         #[source]
@@ -917,7 +917,7 @@ pub enum TaskError {
 
     /// An operation index referenced a missing row, so target locks are unknown.
     #[error(
-        "Saved DPNS voting progress is incomplete. Restore the saved data or remove the damaged voting record before trying again."
+        "Saved DPNS voting progress is incomplete. Restart the app and retry loading. If this continues, restore a backup of the saved data before managing votes."
     )]
     DpnsVoteOperationRecordMissing,
 
@@ -1253,6 +1253,10 @@ pub enum TaskError {
     /// The requested identity was not found on the platform.
     #[error("Identity not found on the platform. Please check the ID or name and try again.")]
     IdentityNotFound,
+
+    /// No voter identity exists for the selected node and supplied key address.
+    #[error("This voting key could not be matched to the selected node. Check that node's voting private key and try again.")]
+    MasternodeVotingKeyNotFound,
 
     /// An owner-key withdrawal was directed at an address other than the
     /// masternode's registered payout address, which the network does not allow.

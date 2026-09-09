@@ -1,9 +1,25 @@
+/// Grace period for admitting a scheduled vote to automatic execution.
+pub const SCHEDULED_VOTE_MAX_LATENESS_MS: u64 = 120_000;
+
+/// Whether the normal automatic admission window has passed.
+pub fn dpns_schedule_is_overdue(scheduled_at_ms: u64, now_ms: u64) -> bool {
+    scheduled_at_ms.saturating_add(SCHEDULED_VOTE_MAX_LATENESS_MS) < now_ms
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn additional_scenarios_automatic_window_boundary_and_overflow() {
+        assert!(!dpns_schedule_is_overdue(1_000, 121_000));
+        assert!(dpns_schedule_is_overdue(1_000, 121_001));
+        assert!(!dpns_schedule_is_overdue(1_000, 999));
+        assert!(!dpns_schedule_is_overdue(u64::MAX, u64::MAX));
+    }
 
     fn target(
         voter: u8,

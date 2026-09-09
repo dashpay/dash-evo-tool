@@ -25,7 +25,7 @@ use crate::model::dpns::normalize_dpns_label;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-    validate_dpns_schedule_time,
+    dpns_schedule_is_overdue, validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::ui::components::component_trait::Component;
@@ -62,6 +62,13 @@ enum ActiveContestGroup {
 
 const NO_VOTING_NODES_MESSAGE: &str = "None of your loaded nodes has a voting key.";
 const NO_VOTING_NODES_DETAIL: &str = "Load a masternode with its voting key to cast votes.";
+const JOURNAL_UNAVAILABLE_MESSAGE: &str = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
+const MISSED_SCHEDULE_GUIDANCE: &str = "The automatic voting time was missed. In Scheduled Votes, use Cast now to vote, Edit to reschedule, or Remove to cancel.";
+
+fn schedule_is_missed(status: DpnsVoteTargetStatus, timing: VoteTiming, now_ms: u64) -> bool {
+    status == DpnsVoteTargetStatus::Scheduled
+        && matches!(timing, VoteTiming::Scheduled(timestamp) if dpns_schedule_is_overdue(timestamp, now_ms))
+}
 
 fn candidate_choice_label(candidate_name: &str) -> String {
     format!("Vote for {candidate_name}")
@@ -429,6 +436,7 @@ pub struct DPNSScreen {
     pub dpns_subscreen: DPNSSubscreen,
     refreshing_status: RefreshingStatus,
     refresh_banner: Option<BannerHandle>,
+    journal_error_banner: Option<BannerHandle>,
 
     /// Selected vote handling
     show_bulk_schedule_popup: bool,
@@ -442,14 +450,7 @@ pub struct DPNSScreen {
 
 impl DPNSScreen {
     pub fn new(app_context: &Arc<AppContext>, dpns_subscreen: DPNSSubscreen) -> Self {
-        let vote_operations =
-            DpnsVoteOperationSnapshot::load(app_context).unwrap_or_else(|error| {
-                tracing::warn!(
-                    ?error,
-                    "Could not cache DPNS vote operations for the DPNS screen"
-                );
-                DpnsVoteOperationSnapshot::default()
-            });
+        let vote_operations = DpnsVoteOperationSnapshot::load(app_context);
         let legacy_scheduled_votes = app_context.get_scheduled_votes().unwrap_or_default();
         let scheduled_votes = Arc::new(Mutex::new(
             vote_operations.scheduled_vote_rows(&legacy_scheduled_votes),
@@ -529,6 +530,7 @@ impl DPNSScreen {
             dpns_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
             refresh_banner: None,
+            journal_error_banner: None,
 
             // Vote handling
             show_bulk_schedule_popup: false,
@@ -572,6 +574,7 @@ impl DPNSScreen {
         self.scheduled_vote_editor = None;
         self.vote_overlay.take_and_clear();
         self.refresh_banner.take_and_clear();
+        self.journal_error_banner.take_and_clear();
         self.refreshing_status = RefreshingStatus::NotRefreshing;
         self.voting_identities.clear();
         self.voting_identity_load_error = None;
@@ -1093,6 +1096,7 @@ impl DPNSScreen {
                     .strong(),
                 );
                 for outcome in &operation.targets {
+                    let missed = schedule_is_missed(outcome.status, outcome.target.timing, Utc::now().timestamp_millis().max(0) as u64);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(format!(
                             "{} — {}.dash — {} — {}",
@@ -1106,7 +1110,7 @@ impl DPNSScreen {
                                 )
                                 .as_deref(),
                             ),
-                            target_outcome_label(outcome.status, outcome.failure),
+                            if missed { "Missed automatic vote" } else { target_outcome_label(outcome.status, outcome.failure) },
                         ));
                         if outcome.status == DpnsVoteTargetStatus::Unconfirmed
                             && ComponentStyles::add_secondary_button(
@@ -1145,6 +1149,9 @@ impl DPNSScreen {
                     });
                     if let Some(guidance) = scheduled_failure_guidance(outcome.status, outcome.failure) {
                         ui.label(guidance);
+                    }
+                    if missed {
+                        ui.label(MISSED_SCHEDULE_GUIDANCE);
                     }
                     if matches!(
                         outcome.status,
@@ -1584,7 +1591,8 @@ impl DPNSScreen {
                             voter_id: vote.voter_id,
                             contested_name: vote.contested_name.clone(),
                         };
-                        let failure_guidance = scheduled_failure_guidance(scheduled_row.status, scheduled_row.failure);
+                        let missed = schedule_is_missed(scheduled_row.status, VoteTiming::Scheduled(vote.unix_timestamp), Utc::now().timestamp_millis().max(0) as u64);
+                        let failure_guidance = if missed { Some(MISSED_SCHEDULE_GUIDANCE) } else { scheduled_failure_guidance(scheduled_row.status, scheduled_row.failure) };
                         body.row(if failure_guidance.is_some() { 95.0 } else { 25.0 }, |mut row| {
                             row.col(|ui| {
                                 ui.add(Label::new(format!("{}.dash", vote.contested_name)));
@@ -1632,7 +1640,7 @@ impl DPNSScreen {
                             row.col(|ui| {
                                 let dark_mode = ui.style().visuals.dark_mode;
                                 ui.vertical(|ui| {
-                                    ui.label(RichText::new(target_outcome_label(scheduled_row.status, scheduled_row.failure))
+                                    ui.label(RichText::new(if missed { "Missed automatic vote" } else { target_outcome_label(scheduled_row.status, scheduled_row.failure) })
                                         .color(DashColors::text_primary(dark_mode)));
                                     if let Some(guidance) = failure_guidance {
                                         ui.add(Label::new(guidance).wrap());
@@ -2716,6 +2724,27 @@ impl ScreenLike for DPNSScreen {
         // Main panel
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
+            if let Some(error) = self.vote_operations.read_error() {
+                if self.journal_error_banner.is_none() || self.journal_error_banner.was_evicted() {
+                    self.journal_error_banner.raise_persistent(ui.ctx(), "Saved voting progress could not be read. Retry loading before managing votes.", MessageType::Warning);
+                    if let Some(handle) = &self.journal_error_banner {
+                        handle.with_details(error);
+                    }
+                }
+                ui.label(JOURNAL_UNAVAILABLE_MESSAGE);
+                if ComponentStyles::add_secondary_button(
+                    ui,
+                    "Retry loading",
+                    ui.visuals().dark_mode,
+                )
+                .clicked()
+                {
+                    self.refresh();
+                }
+                ui.separator();
+            } else {
+                self.journal_error_banner.take_and_clear();
+            }
             if let Some((clear_all, dialog)) = self.scheduled_clear_dialog.as_mut()
                 && let Some(status) = dialog.show(ui).inner.dialog_response
             {
@@ -3409,6 +3438,85 @@ mod tests {
             });
         harness.run();
         assert!(harness.query_by_label("Check again").is_some());
+    }
+
+    #[test]
+    fn additional_scenarios_missed_schedule_is_explained_after_reopening() {
+        use egui_kittest::kittest::Queryable;
+        for status in [
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Queued,
+        ] {
+            let (screen, _dir) = voting_ui_review_fixture();
+            let mut target = screen.build_review_plan().unwrap().entries[0]
+                .target
+                .clone();
+            target.timing = VoteTiming::Scheduled(1);
+            let mut operation = DpnsVoteOperation::new(vec![target]);
+            operation.targets[0].status = status;
+            screen
+                .app_context
+                .insert_dpns_vote_operation(&mut operation, None)
+                .unwrap();
+            let mut reopened = DPNSScreen::new(&screen.app_context, DPNSSubscreen::ScheduledVotes);
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1600.0, 1200.0))
+                .build_ui(move |ui| {
+                    reopened.ui(ui);
+                });
+            harness.run();
+            assert_eq!(
+                harness.query_by_label("Missed automatic vote").is_some(),
+                status == DpnsVoteTargetStatus::Scheduled
+            );
+            if status == DpnsVoteTargetStatus::Scheduled {
+                assert!(harness.query_by_label("The automatic voting time was missed. In Scheduled Votes, use Cast now to vote, Edit to reschedule, or Remove to cancel.").is_some());
+                assert!(harness.query_by_label("Cast now").is_some());
+                assert!(harness.query_by_label("Edit").is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn additional_scenarios_journal_failure_stays_visible_until_refresh_succeeds() {
+        use egui_kittest::kittest::Queryable;
+        for fail_at_construction in [true, false] {
+            let (context, _dir) = kv_ctx();
+            let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+            context.set_det_kv_override_for_test(crate::wallet_backend::DetKv::from_store(
+                store.clone(),
+            ));
+            if fail_at_construction {
+                store.fail_next_gets_containing("det:dpns_vote_operations:v2:", 1);
+            }
+            let mut screen = DPNSScreen::new(&context, DPNSSubscreen::ScheduledVotes);
+            if !fail_at_construction {
+                store.fail_next_gets_containing("det:dpns_vote_operations:v2:", 1);
+                screen.refresh();
+            }
+            let screen = Arc::new(Mutex::new(screen));
+            let rendering = screen.clone();
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(1600.0, 1200.0))
+                .build_ui(move |ui| {
+                    rendering.lock_recover().ui(ui);
+                });
+            harness.run();
+            let message = "Saved voting progress could not be read. The displayed history may be incomplete or out of date. Retry loading before managing votes.";
+            assert!(harness.query_by_label(message).is_some());
+            screen
+                .lock_recover()
+                .journal_error_banner
+                .as_ref()
+                .unwrap()
+                .clone()
+                .clear();
+            harness.run();
+            assert!(harness.query_by_label(message).is_some());
+            harness.get_by_label("Retry loading").click();
+            harness.run();
+            assert!(harness.query_by_label(message).is_none());
+        }
     }
 
     #[test]

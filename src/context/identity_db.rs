@@ -2513,6 +2513,10 @@ impl AppContext {
         identity_id: &[u8],
         contested_name: String,
     ) -> std::result::Result<(), TaskError> {
+        let _guard = self
+            .dpns_vote_operation_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let voter = voter_buffer(identity_id)?;
         let key = scheduled_vote_key(&contested_name);
         let scope = DetScope::Identity(&voter);

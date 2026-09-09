@@ -284,7 +284,7 @@ impl AppContext {
                     .await?
                     {
                         Ok(Some(identity)) => identity,
-                        Ok(None) => return Err(TaskError::IdentityNotFound),
+                        Ok(None) => return Err(TaskError::MasternodeVotingKeyNotFound),
                         Err(e) => return Err(TaskError::from(e)),
                     };
 
@@ -849,6 +849,94 @@ mod tests {
 
     const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
     const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn additional_scenarios_wrong_node_voting_key_is_rejected_without_merge() {
+        let staged = crate::context::test_staging::stage_identity_with_vaulted_keys(
+            rand::random(),
+            rand::random(),
+        )
+        .await;
+        let before = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let private_key = PrivateKey::from_byte_array(&rand::random(), Network::Testnet).unwrap();
+        let address = private_key.public_key(&Secp256k1::new()).pubkey_hash();
+        let other_node = Identifier::from([0x75; 32]);
+        let other_voter =
+            Identifier::create_voter_identifier(other_node.as_bytes(), address.as_ref());
+        let selected_voter =
+            Identifier::create_voter_identifier(staged.id.as_bytes(), address.as_ref());
+        assert_ne!(selected_voter, other_voter);
+        let mut sdk = Sdk::new_mock();
+        sdk.mock()
+            .expect_fetch(staged.id, Some(before.identity.clone()))
+            .await
+            .unwrap();
+        let mut other_identity =
+            Identity::create_basic_identity(other_voter, PlatformVersion::latest()).unwrap();
+        other_identity.add_public_keys([IdentityPublicKey::V0(
+            dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0 {
+                id: 0,
+                purpose: dash_sdk::dpp::identity::Purpose::VOTING,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                key_type: KeyType::ECDSA_HASH160,
+                read_only: false,
+                data: address.to_byte_array().to_vec().into(),
+                disabled_at: None,
+            },
+        )]);
+        staged
+            .ctx
+            .verify_voting_key_exists_on_identity(
+                &other_identity,
+                &private_key.inner.secret_bytes(),
+            )
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(other_voter, Some(other_identity))
+            .await
+            .unwrap();
+        sdk.mock()
+            .expect_fetch(selected_voter, None::<Identity>)
+            .await
+            .unwrap();
+        let input = IdentityInputToLoad {
+            identity_id_input: staged.id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(private_key.to_wif()),
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            load_token: None,
+        };
+        let error = staged.ctx.load_identity(&sdk, input).await.unwrap_err();
+        let after = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.associated_voter_identity,
+            before.associated_voter_identity
+        );
+        assert!(
+            after.private_keys == before.private_keys,
+            "a rejected key must preserve all stored key placements and values"
+        );
+        assert_eq!(
+            error.to_string(),
+            "This voting key could not be matched to the selected node. Check that node's voting private key and try again."
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn scoped_merge_cannot_restore_an_identity_removed_during_loading() {

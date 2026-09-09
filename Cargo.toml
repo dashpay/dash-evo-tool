@@ -129,6 +129,7 @@ cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "67d4ef3f6340a1e983229b6870ef60cf7573602a", features = ["mocks"] }
 egui_kittest = { version = "0.35.0", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
 criterion = "0.5.1"

@@ -26,21 +26,36 @@ pub struct DpnsVoteOperationSnapshot {
     dismissed_schedules: BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
     target_statuses: BTreeMap<DpnsVoteTargetKey, DpnsVoteTargetStatus>,
     loaded: bool,
+    read_error: Option<Arc<TaskError>>,
 }
 
 impl DpnsVoteOperationSnapshot {
-    pub fn load(app_context: &AppContext) -> Result<Self, TaskError> {
+    pub fn load(app_context: &AppContext) -> Self {
         let mut snapshot = Self::default();
-        snapshot.refresh(app_context)?;
-        Ok(snapshot)
+        let _ = snapshot.refresh(app_context);
+        snapshot
     }
 
-    pub fn refresh(&mut self, app_context: &AppContext) -> Result<(), TaskError> {
-        let operations = app_context.dpns_vote_operations()?;
-        let dismissals = app_context.dismissed_dpns_vote_schedules()?;
+    pub fn refresh(&mut self, app_context: &AppContext) -> Result<(), Arc<TaskError>> {
+        let result = (|| {
+            Ok::<_, TaskError>((
+                app_context.dpns_vote_operations()?,
+                app_context.dismissed_dpns_vote_schedules()?,
+            ))
+        })();
+        let (operations, dismissals) = result.map_err(|error| {
+            let error = Arc::new(error);
+            self.read_error = Some(error.clone());
+            error
+        })?;
         self.replace(operations);
         self.dismissed_schedules = dismissals;
+        self.read_error = None;
         Ok(())
+    }
+
+    pub(crate) fn read_error(&self) -> Option<&Arc<TaskError>> {
+        self.read_error.as_ref()
     }
 
     pub fn operations(&self) -> &[DpnsVoteOperation] {

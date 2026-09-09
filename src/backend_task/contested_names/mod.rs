@@ -11,8 +11,8 @@ use crate::context::AppContext;
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsVoteFailure, DpnsVoteOperation,
     DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
-    failed_before_broadcast_outcome, unavailable_preflight_outcome, validate_dpns_schedule_edit,
-    validate_dpns_schedule_time,
+    dpns_schedule_is_overdue, failed_before_broadcast_outcome, unavailable_preflight_outcome,
+    validate_dpns_schedule_edit, validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
@@ -29,10 +29,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Widest window past a scheduled vote's time that the sweep will still cast it.
-/// Beyond this a due vote is considered stale and left for the user to reschedule
-/// rather than cast late (mirrors the original 2-minute UI-poll grace).
-const SCHEDULED_VOTE_MAX_LATENESS_MS: u64 = 120_000;
+#[cfg(test)]
+use crate::model::dpns_voting::SCHEDULED_VOTE_MAX_LATENESS_MS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContestedResourceTask {
@@ -1125,7 +1123,7 @@ fn scheduled_vote_is_due(
     let eligibility_cutoff_ms = preserve_eligibility_since_ms.unwrap_or(now_ms);
     !executed_successfully
         && scheduled_at_ms <= now_ms
-        && scheduled_at_ms.saturating_add(SCHEDULED_VOTE_MAX_LATENESS_MS) >= eligibility_cutoff_ms
+        && !dpns_schedule_is_overdue(scheduled_at_ms, eligibility_cutoff_ms)
 }
 
 fn scheduled_target_should_execute(
@@ -1796,6 +1794,31 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn additional_scenarios_failed_migration_retries_in_the_same_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let kv = crate::wallet_backend::DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        store.fail_next_gets_containing("det:dpns_vote_operations:v2:", 1);
+        assert!(
+            context
+                .ensure_dpns_vote_recovery(&context.sdk())
+                .await
+                .is_err()
+        );
+        assert!(!*context.dpns_vote_recovery.lock().await);
+        context
+            .ensure_dpns_vote_recovery(&context.sdk())
+            .await
+            .unwrap();
+        assert!(*context.dpns_vote_recovery.lock().await);
     }
 
     #[tokio::test]

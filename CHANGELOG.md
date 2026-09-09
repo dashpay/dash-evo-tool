@@ -122,6 +122,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
+
 - Identity creation and top-up accounts are saved before payment and restored
   after restarting the app. Temporary save failures are retried a few times;
   if saving still fails, the payment stops and the app asks you to try again.

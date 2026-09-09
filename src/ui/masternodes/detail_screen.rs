@@ -807,6 +807,45 @@ mod tests {
         assert!(input.payout_address_private_key_input.is_blank());
         assert!(input.encryption_password.is_none());
         assert!(!detail.has_voter_key_prompt_for_test());
+        assert!(
+            detail.submit_voter_key().is_none(),
+            "a repeated Save cannot dispatch another load"
+        );
+
+        use egui_kittest::kittest::Queryable;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let observed = dispatched.clone();
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
+            if matches!(
+                detail.render_missing_voter(ui, false),
+                Some(AppAction::BackendTask(BackendTask::IdentityTask(
+                    IdentityTask::LoadIdentity(_)
+                )))
+            ) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        harness.run();
+        let position = harness.get_by_label("Save").rect().center();
+        harness.get_by_label("Save").click();
+        harness.run();
+        assert!(harness.query_by_label("Save").is_none());
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        harness.run();
+        assert_eq!(
+            dispatched.load(Ordering::Relaxed),
+            1,
+            "repeated clicks at Save must dispatch only one load"
+        );
     }
 
     #[test]

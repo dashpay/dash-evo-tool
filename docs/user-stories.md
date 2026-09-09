@@ -797,6 +797,8 @@ As a masternode operator, I want to schedule votes for later execution so that I
 - Scheduled and immediate votes share the same target locks and result states.
 - Removing a scheduled vote takes it off the list for good; it does not come back on the next refresh.
 - An ambiguous result remains visible for checking and is never automatically rebroadcast.
+- Votes that miss the normal automatic voting window show guidance to cast manually, edit, or remove them. Already queued votes retain their eligibility.
+- Completed scheduled and mixed batches retain the latest 256 operations per network, without discarding unresolved votes or bringing removed schedules back.
 
 ### DPN-007: Batch voting across contests [Implemented]
 **Persona:** Priya
@@ -820,6 +822,7 @@ the same vote again.
 
 - The exact network, node, and contest remain locked while the result is unconfirmed.
 - Navigation and restart preserve the operation and its target-level progress.
+- If saved voting progress cannot be read, show a persistent incomplete-history notice with a retry action, preserve cached progress, and keep unknown vote locks protected.
 - DET reconciles against proved current vote state without rebroadcasting.
 - A confirmed match updates the current vote and releases the target lock.
 

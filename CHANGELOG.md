@@ -25,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Add wallet-derived identity keys**: the Add Key screen defaults to deriving
+  secp256k1 or HASH160 keys from the identity's wallet, selects the first free
+  index, and disables used indices. Uncheck derivation to enter a private key.
+  Derived keys retain their wallet path for signing and seed recovery.
+
 - **Keys saved on this device but not on the identity's key lists are now
   listed**: a key can be saved here while appearing on none of the identity's
   key lists — for example when adding it to the network did not finish. The

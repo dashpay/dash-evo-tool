@@ -472,6 +472,8 @@ pub enum IdentityTask {
         wallet_seed_hash: WalletSeedHash,
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
+    /// Add a key from the identity's wallet at the selected derivation index.
+    AddDerivedKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, u32),
     /// Opt-in: seal every keyless (Tier-1) vault-stored key of this
     /// identity under ONE per-identity object `password` (Tier-2), and store
     /// `hint` for the sign-time prompt copy. Idempotent (an already-protected
@@ -881,6 +883,10 @@ impl AppContext {
             }
             IdentityTask::AddKeyToIdentity(qualified_identity, public_key_to_add, private_key) => {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
+                    .await
+            }
+            IdentityTask::AddDerivedKeyToIdentity(identity, key, index) => {
+                self.add_derived_key_to_identity(sdk, identity, key, index)
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {

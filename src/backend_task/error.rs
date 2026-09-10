@@ -607,6 +607,15 @@ pub enum TaskError {
     )]
     IdentityKeySlotOccupied,
 
+    #[error("The wallet for this identity could not be determined. Load the identity from its wallet or enter a private key.")]
+    DerivedKeyWalletRequired,
+
+    #[error("This key type cannot be derived here. Choose secp256k1 or HASH160, or enter a private key.")]
+    DerivedKeyTypeUnsupported,
+
+    #[error("This key index is unavailable. Refresh the identity and choose an unused index.")]
+    DerivedKeyIndexUnavailable,
+
     /// An identity private key was found in the vault but its bytes are not a
     /// usable signing key (vault corruption or a truncated write). Distinct
     /// from [`Self::IdentityKeyMissing`] (genuinely absent) so the user gets

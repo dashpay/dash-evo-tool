@@ -2,18 +2,27 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::derived_identity_key::{
+    derivation_index_limit, derivation_wallet, occupied_indices,
+};
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData, WalletDerivationPath,
+};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::wallet_backend::secret_prompt::SecretScope;
 use crate::wallet_backend::{SecretAccess, VerifiedIdentityPassword};
 use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::KeyID;
+use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
@@ -25,9 +34,88 @@ impl AppContext {
     pub(super) async fn add_key_to_identity(
         &self,
         sdk: &Sdk,
+        qualified_identity: QualifiedIdentity,
+        public_key_to_add: QualifiedIdentityPublicKey,
+        private_key: [u8; 32],
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.add_identity_key(
+            sdk,
+            qualified_identity,
+            public_key_to_add,
+            Some(private_key),
+        )
+        .await
+    }
+
+    pub(super) async fn add_derived_key_to_identity(
+        &self,
+        sdk: &Sdk,
+        identity: QualifiedIdentity,
+        mut key: QualifiedIdentityPublicKey,
+        index: u32,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        if !matches!(
+            key.identity_public_key.key_type(),
+            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
+        ) {
+            return Err(TaskError::DerivedKeyTypeUnsupported);
+        }
+        let identity = self
+            .get_local_qualified_identity(&identity.identity.id())?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
+        let (seed_hash, identity_index) = derivation_wallet(&identity, self.network)
+            .ok_or(TaskError::DerivedKeyWalletRequired)?;
+        if index >= derivation_index_limit(identity.identity.get_public_key_max_id()) {
+            return Err(TaskError::DerivedKeyIndexUnavailable);
+        }
+        let wallet = self.wallet_arc(&seed_hash)?;
+        self.resolve_identity_auth_pubkeys_data_map(
+            &wallet,
+            true,
+            true,
+            identity_index,
+            index..index + 1,
+        )
+        .await?;
+        let cache = self
+            .wallet_backend()?
+            .auth_pubkey_cache()
+            .get(self.network, &seed_hash);
+        if occupied_indices(&identity, self.network, seed_hash, identity_index, &cache)
+            .contains(&index)
+        {
+            return Err(TaskError::DerivedKeyIndexUnavailable);
+        }
+        let public_key = cache
+            .get(self.network, identity_index, index)
+            .ok_or(TaskError::WalletKeyLookupFailed)?;
+        let data = match key.identity_public_key.key_type() {
+            KeyType::ECDSA_SECP256K1 => public_key.to_bytes(),
+            KeyType::ECDSA_HASH160 => {
+                let hash: [u8; 20] = public_key.pubkey_hash().into();
+                hash.to_vec()
+            }
+            _ => return Err(TaskError::DerivedKeyTypeUnsupported),
+        };
+        key.identity_public_key.set_data(data.into());
+        key.in_wallet_at_derivation_path = Some(WalletDerivationPath {
+            wallet_seed_hash: seed_hash,
+            derivation_path: DerivationPath::identity_authentication_path(
+                self.network,
+                KeyDerivationType::ECDSA,
+                identity_index,
+                index,
+            ),
+        });
+        self.add_identity_key(sdk, identity, key, None).await
+    }
+
+    async fn add_identity_key(
+        &self,
+        sdk: &Sdk,
         mut qualified_identity: QualifiedIdentity,
         mut public_key_to_add: QualifiedIdentityPublicKey,
-        private_key: [u8; 32],
+        private_key: Option<[u8; 32]>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // O-2: enforce the protected-identity precondition BEFORE any
         // on-chain side effect. If this identity is password-protected, prompt
@@ -63,13 +151,17 @@ impl AppContext {
         // broadcast (e.g. restored from an old blob) can hold `max_id + 1`,
         // and it may be a misfiled key's only private half — so refuse rather
         // than overwrite.
-        qualified_identity.private_keys.insert_non_encrypted(
-            (
-                PrivateKeyOnMainIdentity,
-                public_key_to_add.identity_public_key.id(),
-            ),
-            (public_key_to_add.clone(), private_key),
-        )?;
+        let placement = (
+            PrivateKeyOnMainIdentity,
+            public_key_to_add.identity_public_key.id(),
+        );
+        if let Some(private_key) = private_key {
+            qualified_identity
+                .private_keys
+                .insert_non_encrypted(placement, (public_key_to_add.clone(), private_key))?;
+        } else {
+            insert_derived_key(&mut qualified_identity, &public_key_to_add)?;
+        }
         // Track balance before operation for fee calculation
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_identity_update();
@@ -165,7 +257,7 @@ impl AppContext {
         self.persist_added_identity_key(
             &mut qualified_identity,
             new_key,
-            &private_key,
+            private_key.as_ref(),
             verified_password,
         )?;
         Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
@@ -192,7 +284,7 @@ impl AppContext {
         &self,
         qualified_identity: &mut QualifiedIdentity,
         new_key: (crate::model::qualified_identity::PrivateKeyTarget, KeyID),
-        private_key: &[u8; 32],
+        private_key: Option<&[u8; 32]>,
         verified_password: Option<VerifiedIdentityPassword>,
     ) -> Result<(), TaskError> {
         let identity_id = qualified_identity.identity.id();
@@ -226,7 +318,7 @@ impl AppContext {
         // freeing disk space) instead of a silent loss or a misleading storage
         // error — and NEVER fall back to a keyless write (that would strip the
         // protection this branch exists to preserve).
-        if let Some(password) = verified_password {
+        if let (Some(password), Some(private_key)) = (verified_password, private_key) {
             self.wallet_backend()?
                 .secret_access()
                 .seal_new_identity_key_with_password(
@@ -253,6 +345,42 @@ impl AppContext {
 
         self.write_local_qualified_identity_locked(qualified_identity)
     }
+}
+
+fn insert_derived_key(
+    identity: &mut QualifiedIdentity,
+    key: &QualifiedIdentityPublicKey,
+) -> Result<(), TaskError> {
+    let placement = (PrivateKeyOnMainIdentity, key.identity_public_key.id());
+    // Recheck the fetched identity: another device may have used this key.
+    let hash = key
+        .identity_public_key
+        .public_key_hash()
+        .map_err(SdkError::Protocol)?;
+    if identity
+        .identity
+        .public_keys()
+        .values()
+        .any(|key| key.public_key_hash().ok() == Some(hash))
+    {
+        return Err(TaskError::DerivedKeyIndexUnavailable);
+    }
+    if identity
+        .private_keys
+        .get_cloned_private_key_data_and_wallet_info(&placement)
+        .is_some()
+    {
+        return Err(TaskError::IdentityKeySlotOccupied);
+    }
+    let path = key
+        .in_wallet_at_derivation_path
+        .clone()
+        .ok_or(TaskError::DerivedKeyWalletRequired)?;
+    identity.private_keys.insert_if_absent(
+        placement,
+        (key.clone(), PrivateKeyData::AtWalletDerivationPath(path)),
+    );
+    Ok(())
 }
 
 /// O-2 add-key precondition (no SDK, no network): when the target
@@ -310,6 +438,105 @@ mod tests {
         SecretBytes, SecretStore, SecretString, WalletId as SecretWalletId,
     };
     use std::sync::Arc;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_persists_as_path_and_signs_after_reload() {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::model::derived_identity_key::test_support::fixture;
+        use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let (mut identity, cache, seed_hash, seed) = fixture();
+        identity.identity.set_id(staged.id);
+        staged
+            .ctx
+            .wallets
+            .write()
+            .unwrap()
+            .extend(identity.associated_wallets.clone());
+        let mut key = identity.private_keys.identity_public_keys()[0].1.clone();
+        key.identity_public_key.set_id(5);
+        key.identity_public_key
+            .set_security_level(dash_sdk::dpp::identity::SecurityLevel::HIGH);
+        key.identity_public_key
+            .set_data(cache.get(Network::Testnet, 0, 3).unwrap().to_bytes().into());
+        key.in_wallet_at_derivation_path = Some(WalletDerivationPath {
+            wallet_seed_hash: seed_hash,
+            derivation_path: DerivationPath::identity_authentication_path(
+                Network::Testnet,
+                KeyDerivationType::ECDSA,
+                0,
+                3,
+            ),
+        });
+        insert_derived_key(&mut identity, &key).unwrap();
+        identity
+            .identity
+            .add_public_key(key.identity_public_key.clone());
+        let placement = (PrivateKeyOnMainIdentity, 5);
+        staged
+            .ctx
+            .persist_added_identity_key(&mut identity, placement.clone(), None, None)
+            .unwrap();
+        let restored = staged
+            .ctx
+            .get_local_qualified_identity(&staged.id)
+            .unwrap()
+            .unwrap();
+        let (data, path) = restored
+            .private_keys
+            .get_cloned_private_key_data_and_wallet_info(&placement)
+            .unwrap();
+        assert!(matches!(data, PrivateKeyData::AtWalletDerivationPath(_)));
+        assert_eq!(path, key.in_wallet_at_derivation_path);
+        assert!(
+            crate::wallet_backend::IdentityKeyView::new(&staged.store, staged.id.to_buffer())
+                .get(&placement.0, placement.1)
+                .unwrap()
+                .is_none()
+        );
+        let wallets = restored
+            .associated_wallets
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let (_, bytes) = restored
+            .private_keys
+            .get_resolve_with_seed(&placement, &wallets, &seed, Network::Testnet)
+            .unwrap()
+            .unwrap();
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(bytes.as_ref()).unwrap();
+        let message = Message::from_digest([1; 32]);
+        let signature = secp.sign_ecdsa(&message, &secret);
+        secp.verify_ecdsa(
+            &message,
+            &signature,
+            &cache.get(Network::Testnet, 0, 3).unwrap().inner,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn derived_key_rechecks_network_hash_aliases_and_local_slots() {
+        use crate::model::derived_identity_key::test_support::fixture;
+        let (mut identity, _, _, _) = fixture();
+        let mut key = identity.private_keys.identity_public_keys()[0].1.clone();
+        key.identity_public_key.set_id(1);
+        let hash = key.identity_public_key.public_key_hash().unwrap();
+        key.identity_public_key.set_key_type(KeyType::ECDSA_HASH160);
+        key.identity_public_key.set_data(hash.to_vec().into());
+        assert!(matches!(
+            insert_derived_key(&mut identity, &key),
+            Err(TaskError::DerivedKeyIndexUnavailable)
+        ));
+        identity.identity.set_public_keys(Default::default());
+        key.identity_public_key.set_id(0);
+        assert!(matches!(
+            insert_derived_key(&mut identity, &key),
+            Err(TaskError::IdentityKeySlotOccupied)
+        ));
+    }
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
         Arc::new(open_secret_store(&dir.join("secrets.pwsvault")).expect("open vault"))
@@ -408,7 +635,7 @@ mod tests {
             .persist_added_identity_key(
                 &mut qualified_identity,
                 (new_key.0.clone(), new_key.1),
-                &[0xCD; 32],
+                Some(&[0xCD; 32]),
                 Some(password),
             )
             .expect_err("an identity that is gone cannot take a new key");

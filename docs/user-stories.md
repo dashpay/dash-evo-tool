@@ -767,6 +767,7 @@ As a user, I want to see all DPNS usernames I own so that I can manage my regist
 As a power user, I want to view active DPNS name contests so that I can participate in voting on contested names.
 
 - Lists all contests with status and vote counts.
+- Contest refresh remains available if saved voting progress cannot be recovered.
 
 ### DPN-004: View past name contests [Implemented]
 **Persona:** Priya
@@ -781,11 +782,13 @@ As a power user, I want to review past DPNS contests so that I can see outcomes 
 As a masternode operator, I want to vote on contested DPNS name registrations so that I can participate in network governance.
 
 - See the node's proved current choice before casting, changing, or abstaining.
-- Active contests groups cards into Needs your vote, Voted, and Not votable by your nodes; a staged choice takes precedence over the proved highlight until submission.
+- Active contests groups cards into Needs your vote, Voted, Vote state unavailable, and Not votable by your nodes; a staged choice takes precedence over the proved highlight until submission.
+- Unavailable or expired voting information keeps the affected contests visible and offers Refresh voting before enabling their vote controls.
 - A node may vote five times in total per contest: the initial vote plus up to four changes.
 - Choosing the current choice submits nothing.
 - Evonode/masternode identity required.
 - The Active-contests screen explains the four-change limit without inventing a remaining-change count; Platform enforces the limit.
+- If a first immediate vote becomes a change after review, return to review with the current choice and change-limit warning. A matching current choice still submits nothing.
 
 ### DPN-006: Schedule votes [Implemented]
 **Persona:** Priya
@@ -798,6 +801,7 @@ As a masternode operator, I want to schedule votes for later execution so that I
 - Removing a scheduled vote takes it off the list for good; it does not come back on the next refresh.
 - An ambiguous result remains visible for checking and is never automatically rebroadcast.
 - Votes that miss the normal automatic voting window show guidance to cast manually, edit, or remove them. Already queued votes retain their eligibility.
+- Concurrent scheduled votes use the latest successfully saved voting information without losing their queued eligibility. Cast now retries the selected scheduled choice even when a different immediate vote succeeded afterward.
 - Completed scheduled and mixed batches retain the latest 256 operations per network, without discarding unresolved votes or bringing removed schedules back.
 
 ### DPN-007: Batch voting across contests [Implemented]
@@ -812,6 +816,7 @@ As a masternode operator, I want to apply voting choices across multiple contest
 - Per-node timing overrides and multi-contest selections create exact node × contest targets.
 - Review and cast lists each of those targets with its node, contest, requested choice, current choice, and timing, and reports how many targets it skipped because the node already holds the requested choice.
 - Immediate and scheduled targets submitted together belong to one operation.
+- A successful mixed batch reports both cast and scheduled counts as success, without a warning about remaining work.
 
 ### DPN-010: Recover an ambiguous vote result [Implemented]
 **Persona:** Priya

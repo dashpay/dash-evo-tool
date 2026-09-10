@@ -57,6 +57,7 @@ pub enum DPNSSubscreen {
 enum ActiveContestGroup {
     NeedsVote,
     Voted,
+    VoteStateUnavailable,
     NotVotable,
 }
 
@@ -88,15 +89,20 @@ fn classify_vote_states(
     states: impl IntoIterator<Item = DpnsCurrentVoteState>,
 ) -> ActiveContestGroup {
     let mut has_vote = false;
+    let mut has_unavailable_state = false;
     for state in states {
         match state {
             DpnsCurrentVoteState::Available(None) => return ActiveContestGroup::NeedsVote,
             DpnsCurrentVoteState::Available(Some(_)) => has_vote = true,
-            DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {}
+            DpnsCurrentVoteState::Checking | DpnsCurrentVoteState::Unavailable => {
+                has_unavailable_state = true;
+            }
         }
     }
     if has_vote {
         ActiveContestGroup::Voted
+    } else if has_unavailable_state {
+        ActiveContestGroup::VoteStateUnavailable
     } else {
         ActiveContestGroup::NotVotable
     }
@@ -750,12 +756,13 @@ impl DPNSScreen {
 
         let filter = normalize_dpns_label(&self.active_filter_term);
         let contests = self.active_contests.contests();
-        let mut groups = [Vec::new(), Vec::new(), Vec::new()];
+        let mut groups = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for contest in contests.iter() {
             let index = match self.contest_group(contest.vote_poll_id) {
                 ActiveContestGroup::NeedsVote => 0,
                 ActiveContestGroup::Voted => 1,
-                ActiveContestGroup::NotVotable => 2,
+                ActiveContestGroup::VoteStateUnavailable => 2,
+                ActiveContestGroup::NotVotable => 3,
             };
             groups[index].push(contest);
         }
@@ -795,10 +802,21 @@ impl DPNSScreen {
             .show(ui, |ui| {
                 self.render_contest_group(ui, "Needs your vote", &groups[0], true, true, false);
                 self.render_contest_group(ui, "Voted", &groups[1], false, true, true);
+                if !groups[2].is_empty() {
+                    ui.label("Current votes are unavailable or out of date. Refresh voting to check these nodes.");
+                    if ui.button("Refresh voting").clicked() {
+                        self.pending_backend_task = Some(BackendTask::ContestedResourceTask(
+                            ContestedResourceTask::QueryDPNSContests,
+                        ));
+                    }
+                    self.render_contest_group(
+                        ui, "Vote state unavailable", &groups[2], true, false, false,
+                    );
+                }
                 self.render_contest_group(
                     ui,
                     "Not votable by your nodes",
-                    &groups[2],
+                    &groups[3],
                     self.voting_identities.is_empty(),
                     false,
                     false,
@@ -3102,7 +3120,7 @@ mod tests {
                 DpnsCurrentVoteState::Checking,
                 DpnsCurrentVoteState::Unavailable,
             ]),
-            ActiveContestGroup::NotVotable
+            ActiveContestGroup::VoteStateUnavailable
         ));
     }
 
@@ -3772,6 +3790,100 @@ mod tests {
         screen.reset_for_network_switch();
         assert!(screen.pending_scheduled_actions.is_empty());
         assert!(!screen.finish_scheduled_dispatch(&dispatch));
+    }
+
+    #[test]
+    fn review_fixes_unavailable_contests_offer_a_visible_refresh_action() {
+        use egui_kittest::kittest::Queryable;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        screen
+            .app_context
+            .seed_dpns_contest_for_test("alpha", None, false);
+        screen.refresh();
+        screen.vote_state = DpnsVoteStateSnapshot::default();
+        let refreshed = Arc::new(AtomicBool::new(false));
+        let received_refresh = refreshed.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 1200.0))
+            .build_ui(move |ui| {
+                if matches!(
+                    screen.ui(ui),
+                    AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                        ContestedResourceTask::QueryDPNSContests
+                    ))
+                ) {
+                    received_refresh.store(true, Ordering::Relaxed);
+                }
+            });
+        harness.run();
+        assert!(
+            harness.query_by_label("alpha.dash").is_some(),
+            "unavailable state must not hide the contest"
+        );
+        assert!(harness.query_by_label("Refresh voting").is_some());
+        assert!(harness.query_by_label(
+            "Current votes are unavailable or out of date. Refresh voting to check these nodes."
+        ).is_some());
+        harness.get_by_label("Refresh voting").click();
+        harness.run();
+        assert!(refreshed.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn review_fixes_changed_vote_error_reloads_the_review_warning() {
+        use egui_kittest::kittest::Queryable;
+        let (mut screen, _dir) = voting_ui_review_fixture();
+        let voter = screen.voting_identities[0].identity.id();
+        let poll = screen.app_context.dpns_vote_poll_id("alpha").unwrap();
+        screen
+            .app_context
+            .seed_proved_dpns_votes_for_test(voter, BTreeMap::new())
+            .await
+            .unwrap();
+        screen.vote_state.reload(&screen.app_context).unwrap();
+        assert!(matches!(
+            screen.bulk_apply_votes(),
+            AppAction::BackendTask(_)
+        ));
+        let operation_id = screen.pending_vote_operation.unwrap();
+        screen
+            .app_context
+            .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+            .unwrap();
+        let error = TaskError::DpnsVoteReviewRequired;
+        screen.display_backend_task_error(
+            &BackendTaskContext::DpnsVoteOperation {
+                network: screen.app_context.network(),
+                operation_id,
+            },
+            &error,
+        );
+        screen.display_task_error(&error);
+        assert!(screen.pending_vote_operation.is_none());
+        assert!(matches!(
+            screen.bulk_vote_handling_status,
+            VoteHandlingStatus::Failed(_)
+        ));
+        assert_eq!(
+            screen.build_review_plan().unwrap().entries[0]
+                .target
+                .current_choice,
+            Some(ResourceVoteChoice::Lock)
+        );
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui(move |ui| {
+                screen.show_review_and_cast_window(ui);
+            });
+        harness.run();
+        assert!(
+            harness
+                .query_by_label(
+                    "Changing an existing vote uses one of that node's four allowed vote changes."
+                )
+                .is_some()
+        );
     }
 
     #[test]

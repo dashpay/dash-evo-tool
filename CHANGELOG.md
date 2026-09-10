@@ -92,7 +92,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **DPNS voting redesigned around the Active contests screen**: casting,
   batching, and scheduling DPNS name-contest votes across your masternodes
   now happens in one place — DPNS → Active contests. Contests are grouped
-  into Needs your vote / Voted / Not votable by your nodes, with a Review
+  into Needs your vote / Voted / Vote state unavailable / Not votable by
+  your nodes, with a Review
   and cast step for casting now or scheduling later, plus a reminder that
   Platform allows up to four changes after the initial vote. The
   Masternodes detail screen no longer casts votes inline — its "DPNS
@@ -122,6 +123,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- DPNS scheduled retries keep the selected choice, and simultaneous scheduled votes share fresh voting information without losing their due status. If a first vote becomes a vote change before submission, DET asks for another review. Unavailable voting information stays visible with a refresh action, successful mixed batches report both cast and scheduled votes, and contest refresh remains available when saved voting progress cannot be recovered.
 - DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
 
 - Identity creation and top-up accounts are saved before payment and restored

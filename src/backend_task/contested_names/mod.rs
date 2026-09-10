@@ -180,7 +180,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let is_scheduled_sweep =
             matches!(&task, ContestedResourceTask::CastDueScheduledVotes { .. });
-        if !is_scheduled_sweep {
+        if !is_scheduled_sweep && !matches!(&task, ContestedResourceTask::QueryDPNSContests) {
             self.ensure_dpns_vote_recovery(sdk).await?;
         }
         match task {
@@ -366,14 +366,8 @@ impl AppContext {
                     | DpnsVoteTargetStatus::Confirming => {
                         return Err(TaskError::DpnsVoteTargetBusy);
                     }
-                    DpnsVoteTargetStatus::Confirmed => {
-                        self.mark_vote_executed(
-                            scheduled_vote.voter_id.as_slice(),
-                            scheduled_vote.contested_name.clone(),
-                        )?;
-                        return Ok(operation);
-                    }
-                    DpnsVoteTargetStatus::Rejected
+                    DpnsVoteTargetStatus::Confirmed
+                    | DpnsVoteTargetStatus::Rejected
                     | DpnsVoteTargetStatus::FailedBeforeSubmission
                     | DpnsVoteTargetStatus::Cancelled
                     | DpnsVoteTargetStatus::NotApplied => {
@@ -423,6 +417,13 @@ impl AppContext {
         };
         match state {
             DpnsCurrentVoteState::Available(current) => {
+                if outcome.target.timing == VoteTiming::Now
+                    && outcome.target.current_choice.is_none()
+                    && current.is_some()
+                    && current != Some(outcome.target.requested_choice)
+                {
+                    return Err(TaskError::DpnsVoteReviewRequired);
+                }
                 outcome.target.current_choice = current;
                 if current == Some(outcome.target.requested_choice) {
                     outcome.status = DpnsVoteTargetStatus::Confirmed;
@@ -520,20 +521,21 @@ impl AppContext {
                         .and_then(|result| result.as_ref().map_err(Arc::clone)),
                     Err(error) => Err(Arc::clone(error)),
                 };
-                let validation = snapshot.and_then(|snapshot| {
-                    snapshot
-                        .with_state(self, key.vote_poll_id, |state| {
-                            matches!(state, DpnsCurrentVoteState::Available(_)).then(|| {
-                                self.revalidate_dpns_vote_preflight(
-                                    &mut operation,
-                                    was_persisted,
-                                    &key,
-                                    state,
-                                )
-                            })
+                let validation = self.with_dpns_vote_preflight_state(
+                    key.voter_id,
+                    key.vote_poll_id,
+                    snapshot,
+                    |state| {
+                        matches!(state, DpnsCurrentVoteState::Available(_)).then(|| {
+                            self.revalidate_dpns_vote_preflight(
+                                &mut operation,
+                                was_persisted,
+                                &key,
+                                state,
+                            )
                         })
-                        .map_err(Arc::new)
-                });
+                    },
+                );
                 let source = match validation {
                     Ok(Some(result)) => {
                         result?;
@@ -1207,6 +1209,159 @@ mod tests {
                 )
                 .unwrap(),
         ])
+    }
+
+    #[test]
+    fn review_fixes_scheduled_retry_keeps_choice_after_different_immediate_success() {
+        let (_temp, context) = r2_context();
+        let mut previous = r2_schedule(&context, "alice", 42);
+        previous.created_at = 1;
+        previous.targets[0].status = DpnsVoteTargetStatus::Rejected;
+        context
+            .insert_dpns_vote_operation(&mut previous, None)
+            .unwrap();
+        let mut newer = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            requested_choice: ResourceVoteChoice::Abstain,
+            timing: VoteTiming::Now,
+            ..previous.targets[0].target.clone()
+        }]);
+        newer.created_at = 2;
+        newer.targets[0].status = DpnsVoteTargetStatus::Confirmed;
+        context
+            .insert_dpns_vote_operation(&mut newer, None)
+            .unwrap();
+        let retry = context
+            .operation_for_scheduled_vote(
+                &ScheduledDPNSVote {
+                    voter_id: previous.targets[0].target.key.voter_id,
+                    contested_name: "alice".into(),
+                    choice: ResourceVoteChoice::Lock,
+                    unix_timestamp: 42,
+                    executed_successfully: false,
+                },
+                &qualified_identity(1),
+            )
+            .unwrap();
+        assert_ne!(retry.id, newer.id);
+        assert_eq!(
+            retry.targets[0].target.requested_choice,
+            ResourceVoteChoice::Lock
+        );
+        assert_eq!(retry.targets[0].status, DpnsVoteTargetStatus::Queued);
+    }
+
+    #[test]
+    fn review_fixes_new_immediate_vote_requires_review_when_it_becomes_a_change() {
+        let (_temp, context) = r2_context();
+        let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+            timing: VoteTiming::Now,
+            ..r2_schedule(&context, "alice", 42).targets[0].target.clone()
+        }]);
+        let key = operation.targets[0].target.key.clone();
+        assert!(
+            context
+                .revalidate_dpns_vote_preflight(
+                    &mut operation,
+                    false,
+                    &key,
+                    DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Abstain)),
+                )
+                .is_err(),
+            "a newly required vote-change warning must return to review"
+        );
+        assert_eq!(operation.targets[0].target.current_choice, None);
+        assert!(context.dpns_vote_operation(operation.id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn review_fixes_contest_query_does_not_require_readable_vote_journal() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+        use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
+        use dash_sdk::query_types::{ContestedResource, ContestedResources};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::wallet_backend::kv_test_support::FailingKv::default());
+        let kv = crate::wallet_backend::DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv);
+        store.fail_next_gets_containing("det:dpns_vote_operations:v2:", 2);
+        let mut sdk = Sdk::new_mock();
+        let document_type = context
+            .dpns_contract
+            .document_type_for_name("domain")
+            .unwrap();
+        sdk.mock()
+            .expect_fetch_many::<Identifier, ContestedResource, _, ContestedResources>(
+                VotePollsByDocumentTypeQuery {
+                    contract_id: context.dpns_contract.id(),
+                    document_type_name: document_type.name().to_owned(),
+                    index_name: document_type.find_contested_index().unwrap().name.clone(),
+                    start_at_value: None,
+                    start_index_values: vec!["dash".into()],
+                    end_index_values: vec![],
+                    limit: Some(100),
+                    order_ascending: true,
+                },
+                Some(ContestedResources::default()),
+            )
+            .await
+            .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, context.egui_ctx().clone());
+        let result = context
+            .run_contested_resource_task(ContestedResourceTask::QueryDPNSContests, &sdk, sender)
+            .await;
+        assert!(
+            result.is_ok(),
+            "independent contest reads must survive journal errors: {result:?}"
+        );
+        assert!(
+            std::iter::from_fn(|| rx.try_recv().ok()).any(|result| matches!(
+                result, TaskResult::Success { result, .. }
+                    if matches!(*result, BackendTaskSuccessResult::RefreshedDpnsContests)
+            ))
+        );
+        assert!(
+            context.ensure_dpns_vote_recovery(&sdk).await.is_err(),
+            "vote recovery must still fail closed"
+        );
+    }
+
+    #[test]
+    fn review_fixes_preflight_preserves_matching_noop_and_reviewed_changes() {
+        let (_temp, context) = r2_context();
+        for (reviewed, observed, expected_status) in [
+            (
+                None,
+                Some(ResourceVoteChoice::Lock),
+                DpnsVoteTargetStatus::Confirmed,
+            ),
+            (
+                Some(ResourceVoteChoice::Abstain),
+                Some(ResourceVoteChoice::Abstain),
+                DpnsVoteTargetStatus::Queued,
+            ),
+            (None, None, DpnsVoteTargetStatus::Queued),
+        ] {
+            let mut operation = DpnsVoteOperation::new(vec![DpnsVoteTarget {
+                timing: VoteTiming::Now,
+                current_choice: reviewed,
+                ..r2_schedule(&context, "alice", 42).targets[0].target.clone()
+            }]);
+            let key = operation.targets[0].target.key.clone();
+            context
+                .revalidate_dpns_vote_preflight(
+                    &mut operation,
+                    false,
+                    &key,
+                    DpnsCurrentVoteState::Available(observed),
+                )
+                .unwrap();
+            assert_eq!(operation.targets[0].status, expected_status);
+        }
     }
 
     #[test]

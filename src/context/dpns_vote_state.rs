@@ -42,7 +42,14 @@ struct StoredCurrentVotes {
 #[derive(Debug, Default)]
 pub(super) struct DpnsVoteStatePublications {
     sequence: AtomicU64,
-    voters: Mutex<BTreeMap<Identifier, u64>>,
+    voters: Mutex<BTreeMap<Identifier, DpnsVoteStatePublication>>,
+}
+
+#[derive(Debug)]
+struct DpnsVoteStatePublication {
+    generation: u64,
+    // A failed publication must not authorize fallback to older stored proof.
+    persisted: Option<StoredCurrentVotes>,
 }
 
 impl DpnsVoteStatePublications {
@@ -79,7 +86,11 @@ impl RefreshedDpnsVotes {
             .voters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if publications.get(&self.voter_id) != Some(&self.generation) {
+        if publications
+            .get(&self.voter_id)
+            .map(|entry| entry.generation)
+            != Some(self.generation)
+        {
             return Err(TaskError::DpnsVoteStateChanged);
         }
         Ok(consume(snapshot_vote_state(
@@ -173,6 +184,42 @@ fn snapshot_vote_state(
 }
 
 impl AppContext {
+    /// Consume fresh proof, using a newer successful publication if superseded.
+    pub(crate) fn with_dpns_vote_preflight_state<T>(
+        &self,
+        voter_id: Identifier,
+        poll_id: Identifier,
+        refresh: Result<&RefreshedDpnsVotes, Arc<TaskError>>,
+        mut consume: impl FnMut(DpnsCurrentVoteState) -> T,
+    ) -> Result<T, Arc<TaskError>> {
+        let result = refresh.and_then(|snapshot| {
+            if snapshot.voter_id != voter_id {
+                return Err(Arc::new(TaskError::DpnsCurrentVoteUnavailable));
+            }
+            snapshot
+                .with_state(self, poll_id, &mut consume)
+                .map_err(Arc::new)
+        });
+        if !matches!(&result, Err(error) if matches!(error.as_ref(), TaskError::DpnsVoteStateChanged))
+        {
+            return result;
+        }
+        let publications = self
+            .dpns_vote_state_publications
+            .voters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = publications
+            .get(&voter_id)
+            .and_then(|entry| entry.persisted.as_ref())
+            .ok_or_else(|| Arc::new(TaskError::DpnsCurrentVoteUnavailable))?;
+        Ok(consume(snapshot_vote_state(
+            Some(snapshot),
+            poll_id,
+            now_ms(),
+        )))
+    }
+
     /// Publish a deterministic proof failure without network I/O.
     #[cfg(test)]
     pub(crate) async fn fail_proved_dpns_votes_for_test(
@@ -219,10 +266,17 @@ impl AppContext {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if publications
             .get(&voter_id)
-            .is_some_and(|published| *published > generation)
+            .is_some_and(|published| published.generation > generation)
         {
             return Err(TaskError::DpnsVoteStateChanged);
         }
+        publications.insert(
+            voter_id,
+            DpnsVoteStatePublication {
+                generation,
+                persisted: None,
+            },
+        );
         let confirmed = if result.is_err() {
             load_snapshot(kv, self.network, &voter_id)?
                 .unwrap_or_default()
@@ -236,8 +290,14 @@ impl AppContext {
             votes: result.as_ref().cloned().unwrap_or_default(),
             confirmed,
         };
-        publications.insert(voter_id, generation);
         save_snapshot(kv, self.network, &voter_id, &snapshot)?;
+        publications.insert(
+            voter_id,
+            DpnsVoteStatePublication {
+                generation,
+                persisted: Some(snapshot.clone()),
+            },
+        );
         if let Err(error) = result {
             tracing::warn!(?error, %voter_id, "Proved DPNS vote-state query was unavailable");
             return Err(TaskError::from(*error));
@@ -346,9 +406,13 @@ impl AppContext {
             .voters
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = self.dpns_vote_state_publications.next_generation()?;
         publications.insert(
             voter_id,
-            self.dpns_vote_state_publications.next_generation()?,
+            DpnsVoteStatePublication {
+                generation,
+                persisted: None,
+            },
         );
         let kv = self.det_kv()?;
         let mut snapshot = load_snapshot(&kv, self.network, &voter_id)?.unwrap_or_default();
@@ -359,7 +423,15 @@ impl AppContext {
         snapshot
             .confirmed
             .insert(vote_poll_id.to_buffer(), (confirmed_at, choice));
-        save_snapshot(&kv, self.network, &voter_id, &snapshot)
+        save_snapshot(&kv, self.network, &voter_id, &snapshot)?;
+        publications.insert(
+            voter_id,
+            DpnsVoteStatePublication {
+                generation,
+                persisted: Some(snapshot),
+            },
+        );
+        Ok(())
     }
 }
 
@@ -454,6 +526,228 @@ mod tests {
                 dash_sdk::dapi_grpc::tonic::Status::unavailable("tcp connect error"),
             )),
         ))
+    }
+
+    #[tokio::test]
+    async fn review_fixes_overlapping_refreshes_keep_both_due_targets_admitted() {
+        use crate::model::dpns_voting::{
+            DpnsVoteOperation, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let polls = [Identifier::from([2; 32]), Identifier::from([3; 32])];
+        let mut operations = polls.map(|poll| {
+            DpnsVoteOperation::new(vec![DpnsVoteTarget {
+                key: DpnsVoteTargetKey {
+                    network: context.network(),
+                    voter_id: voter,
+                    vote_poll_id: poll,
+                },
+                voter_alias: None,
+                contested_name: poll
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex),
+                requested_choice: ResourceVoteChoice::Lock,
+                current_choice: None,
+                timing: VoteTiming::Scheduled(1),
+            }])
+        });
+        for operation in &mut operations {
+            operation.targets[0].status = DpnsVoteTargetStatus::Queued;
+            context.insert_dpns_vote_operation(operation, None).unwrap();
+        }
+        let (published_tx, published_rx) = tokio::sync::oneshot::channel();
+        let first = async {
+            let snapshot = context
+                .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+                .await
+                .unwrap();
+            published_tx.send(()).unwrap();
+            snapshot
+        };
+        let second = async {
+            published_rx.await.unwrap();
+            context
+                .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+                .await
+                .unwrap()
+        };
+        let (first, second) = tokio::join!(first, second);
+        assert!(first.with_state(&context, polls[0], |_| ()).is_err());
+        for (operation, snapshot) in operations.iter().zip([&first, &second]) {
+            let key = &operation.targets[0].target.key;
+            context
+                .with_dpns_vote_preflight_state(voter, key.vote_poll_id, Ok(snapshot), |state| {
+                    context.revalidate_queued_dpns_vote_target(operation.id, key, state)
+                })
+                .expect("a successful sibling publication must supply current proof")
+                .unwrap();
+            assert_eq!(
+                context
+                    .dpns_vote_operation(operation.id)
+                    .unwrap()
+                    .unwrap()
+                    .targets[0]
+                    .status,
+                DpnsVoteTargetStatus::Queued,
+                "due admission must survive overlapping successful queries"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn review_fixes_preflight_uses_new_confirmation_and_rejects_failed_publication() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context(temp.path());
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let older = context
+            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .await
+            .unwrap();
+        context
+            .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+            .unwrap();
+        assert_eq!(
+            context
+                .with_dpns_vote_preflight_state(voter, poll, Ok(&older), |state| state)
+                .unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+        store.fail_next_puts_containing("det:dpns_current_votes:", 1);
+        assert!(
+            context
+                .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Abstain)
+                .is_err()
+        );
+        assert!(
+            context
+                .with_dpns_vote_preflight_state(voter, poll, Ok(&older), |_| ())
+                .is_err(),
+            "a failed newer write must not authorize using older persisted data"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_fixes_superseded_fetch_uses_latest_proof_but_failed_fetch_does_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+        let older = context.refresh_dpns_vote_state_with(&kv, voter, async {
+            started_tx.send(()).unwrap();
+            finish_rx.await.unwrap();
+            Ok(BTreeMap::new())
+        });
+        let newer = async {
+            started_rx.await.unwrap();
+            context
+                .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+                .unwrap();
+            finish_tx.send(()).unwrap();
+        };
+        let (older, ()) = tokio::join!(older, newer);
+        assert!(matches!(older, Err(TaskError::DpnsVoteStateChanged)));
+        assert_eq!(
+            context
+                .with_dpns_vote_preflight_state(
+                    voter,
+                    poll,
+                    older
+                        .as_ref()
+                        .map_err(|_| Arc::new(TaskError::DpnsVoteStateChanged)),
+                    |state| state,
+                )
+                .unwrap(),
+            DpnsCurrentVoteState::Available(Some(ResourceVoteChoice::Lock))
+        );
+        assert!(
+            context
+                .with_dpns_vote_preflight_state(
+                    voter,
+                    poll,
+                    Err(Arc::new(TaskError::DpnsCurrentVoteUnavailable)),
+                    |_| (),
+                )
+                .is_err(),
+            "unrelated fetch errors must not fall back to cached data"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_fixes_new_failed_refresh_keeps_fallback_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let context = crate::context::test_support::test_app_context(temp.path());
+        let kv = kv();
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let older = context
+            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .await
+            .unwrap();
+        assert!(
+            context
+                .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            context
+                .with_dpns_vote_preflight_state(voter, poll, Ok(&older), |state| state)
+                .unwrap(),
+            DpnsCurrentVoteState::Unavailable
+        );
+        context
+            .cache_confirmed_dpns_vote(voter, poll, ResourceVoteChoice::Lock)
+            .unwrap();
+        let other_poll = Identifier::from([3; 32]);
+        assert_eq!(
+            context
+                .with_dpns_vote_preflight_state(voter, other_poll, Ok(&older), |state| state)
+                .unwrap(),
+            DpnsCurrentVoteState::Unavailable,
+            "one confirmed poll cannot authorize another poll"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_fixes_failed_refresh_read_invalidates_older_publication() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+        let temp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context(temp.path());
+        context.set_det_kv_override_for_test(kv.clone());
+        let voter = Identifier::from([1; 32]);
+        let poll = Identifier::from([2; 32]);
+        let older = context
+            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .await
+            .unwrap();
+        store.fail_next_gets_containing("det:dpns_current_votes:", 1);
+        assert!(
+            context
+                .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+                .await
+                .is_err()
+        );
+        assert!(
+            context
+                .with_dpns_vote_preflight_state(voter, poll, Ok(&older), |_| ())
+                .is_err(),
+            "a failed refresh cannot leave older proof authorized after a storage error"
+        );
     }
 
     #[tokio::test]

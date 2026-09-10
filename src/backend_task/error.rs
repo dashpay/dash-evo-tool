@@ -976,6 +976,10 @@ pub enum TaskError {
     #[error("Newer voting information is available. Refresh vote state and try again.")]
     DpnsVoteStateChanged,
 
+    /// Fresh preflight discovered a vote change that the operator has not reviewed.
+    #[error("This node has voted since your review. Review its current choice and the vote-change warning before submitting again.")]
+    DpnsVoteReviewRequired,
+
     /// Retains the per-voter cause of a strict current-vote preflight failure.
     #[error("This node's current vote could not be checked. Refresh vote state before submitting.")]
     DpnsVotePreflightFailed {

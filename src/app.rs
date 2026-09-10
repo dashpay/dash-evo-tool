@@ -339,6 +339,17 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
             false,
         );
     }
+    if counts.confirmed + counts.scheduled == target_count {
+        return (
+            format!(
+                "Votes cast successfully: {confirmed}. Votes scheduled: {scheduled}.",
+                confirmed = counts.confirmed,
+                scheduled = counts.scheduled,
+            ),
+            MessageType::Success,
+            false,
+        );
+    }
     if counts.unconfirmed == target_count {
         return (
             "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.".to_owned(),
@@ -3815,6 +3826,19 @@ mod migration_banner_tests {
             outcome.status = *status;
         }
         operation
+    }
+
+    #[test]
+    fn review_fixes_mixed_immediate_and_scheduled_success_is_successful() {
+        let mut operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Scheduled,
+        ]);
+        operation.targets[1].target.timing = VoteTiming::Scheduled(u64::MAX);
+        let (message, kind, persistent) = dpns_vote_feedback(&operation);
+        assert_eq!(kind, MessageType::Success);
+        assert_eq!(message, "Votes cast successfully: 1. Votes scheduled: 1.");
+        assert!(!persistent);
     }
 
     #[test]

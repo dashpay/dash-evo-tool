@@ -404,7 +404,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `e3cd7cf`): existing
+- **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `63cf57f`): existing
   databases from the previously pinned PR are upgraded automatically with a
   retained backup and verified data transfer. Both app preferences and network
   wallet data are covered. Identity ownership changes preserve saved metadata,

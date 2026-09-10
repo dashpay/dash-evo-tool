@@ -2,9 +2,15 @@
 
 Reviewed on 2026-09-10. The four Platform dependencies move together from
 `67d4ef3f6340a1e983229b6870ef60cf7573602a` (`4.2.0-dev.2`, PR #3968)
-to `e3cd7cf5a34dd69b59d633e532a1ac570870b03f` (`4.2.0-dev.8`, `v4.2-dev`).
+to `63cf57f40d0000bf3b2b26026c8fa1c71162852d` (`4.2.0-dev.8`, `v4.2-dev`).
 The transitive rust-dashcore revision moves from `3d13d9838c80fb5e67cf1f62cf5f3f4477bd5b9a`
 to `93260bf39bac5d9d09e89bfb45e9ea3ff7fdcbcd`.
+
+The selected revision includes [#4649](https://github.com/dashpay/platform/pull/4649),
+which serializes pending contact-crypto persistence with identity removal.
+Its changes relative to `e3cd7cf` leave public APIs, dependency manifests,
+migration history and the database schema unchanged; the existing `e3cd7cf.sql`
+schema guard therefore also applies to `63cf57f`.
 
 ## What survived the PR split
 
@@ -62,9 +68,9 @@ real profile.
 ## Validation and limits
 
 - `cargo fmt --all`: completed.
-- `cargo clippy --all-features --all-targets -- -D warnings`: passed with the
+- `cargo clippy --locked --all-features --all-targets -- -D warnings`: passed with the
   exact CI flags.
-- `cargo test --lib --all-features`: 2520 passed, none failed or ignored.
+- `cargo test --locked --lib --all-features`: 2520 passed, none failed or ignored.
   This includes old app-preference and populated wallet upgrades, persisted
   balances/identities, backup preservation, interrupted-process rollback,
   WAL snapshots, writer exclusion, unknown-schema rejection and repeated open.

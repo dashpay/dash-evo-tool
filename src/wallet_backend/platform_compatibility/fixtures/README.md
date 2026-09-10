@@ -17,7 +17,10 @@ store-generation token are deterministic fixture values.
 The production bridge compares these exact histories and materialized
 schemas before translating data. The destination itself is created by the
 current public `SqlitePersister::open`, not by the fixture SQL. Updating
-either pinned revision requires reviewing and regenerating these guards.
+either schema revision requires reviewing and regenerating these guards.
+The selected dependency pin `63cf57f40d0000bf3b2b26026c8fa1c71162852d`
+has identical migration code and schema to `e3cd7cf`, so it uses the same
+destination guard.
 
 `public-rows.sql` contains only public synthetic rows from that old revision's
 `packages/rs-platform-wallet-storage/tests/fixtures/populated_v001.db`, after

@@ -152,11 +152,11 @@ impl MasternodesScreen {
                 let voter_id = qi
                     .associated_voter_identity
                     .as_ref()
-                    .map(|(identity, _)| identity.id());
+                    .map(|_| qi.identity.id());
                 let contest_summary = self
                     .app_context
                     .masternode_contest_summary(voter_id)
-                    .unwrap_or_default();
+                    .unwrap_or_else(|_| MasternodeContestSummary::unavailable());
                 NodeCardData {
                     node_id,
                     node_id_short,
@@ -706,11 +706,13 @@ impl ScreenLike for MasternodesScreen {
 
         action |= island_central_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
+            let mut action = AppAction::None;
             match self.view {
-                MasternodesView::Load(_) => self.render_load_view(ui),
-                MasternodesView::Detail(_) => self.render_detail_view(ui, network_accent),
-                MasternodesView::List => self.render_list_view(ui, network_accent),
+                MasternodesView::Load(_) => action |= self.render_load_view(ui),
+                MasternodesView::Detail(_) => action |= self.render_detail_view(ui, network_accent),
+                MasternodesView::List => action |= self.render_list_view(ui, network_accent),
             }
+            action
         });
 
         action
@@ -1739,6 +1741,25 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voting_ui_leaving_detail_clears_the_scoped_voting_key_prompt() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+        let mut detail = MasternodeDetailView::new(
+            &ctx,
+            masternode_identity(&ctx, Identifier::from([0x45; 32])),
+        );
+        detail.set_voter_key_prompt_for_test("unsubmitted-test-input");
+        assert!(detail.has_voter_key_prompt_for_test());
+        screen.view = MasternodesView::Detail(Box::new(detail));
+        screen.on_leave();
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("detail");
+        };
+        assert!(!detail.has_voter_key_prompt_for_test());
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
     /// SEC — the reported case: the user submits, navigates away while the load
     /// runs, and the load fails behind their back. The form is kept open for a
     /// corrected resubmit, so nothing else would ever drop its secrets. Leaving
@@ -1766,36 +1787,6 @@ mod tests {
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
-
-    /// SEC — the detail view's in-place `Add voting key` prompt holds a plaintext
-    /// WIF too, and lives in the very same root screen. A prompt left filled but
-    /// unsubmitted must not survive the user leaving the tab.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn leaving_the_tab_discards_an_unsubmitted_voting_key() {
-        let (ctx, _tmp) = offline_ctx().await;
-        seed_masternode(&ctx, 0xc5, None);
-        let mut screen = MasternodesScreen::new(&ctx);
-        screen.open_detail(Identifier::from([0xc5; 32]));
-
-        let MasternodesView::Detail(detail) = &mut screen.view else {
-            panic!("the detail view must be open");
-        };
-        detail.set_voter_key_prompt_for_test("voter-wif");
-
-        screen.on_leave();
-
-        let MasternodesView::Detail(detail) = &screen.view else {
-            panic!("leaving must not discard the detail view");
-        };
-        assert!(
-            !detail.has_voter_key_prompt_for_test(),
-            "an unsubmitted voting key must not outlive the tab"
-        );
-
-        ctx.wallet_backend().expect("backend").shutdown().await;
-    }
-
-    /// A node with no detail view open and no nodes at all both resolve to "no
     /// selection" — the pill falls back to its placeholder rather than naming a
     /// node the page is not showing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -767,6 +767,7 @@ As a user, I want to see all DPNS usernames I own so that I can manage my regist
 As a power user, I want to view active DPNS name contests so that I can participate in voting on contested names.
 
 - Lists all contests with status and vote counts.
+- Contest refresh remains available if saved voting progress cannot be recovered.
 
 ### DPN-004: View past name contests [Implemented]
 **Persona:** Priya
@@ -780,9 +781,14 @@ As a power user, I want to review past DPNS contests so that I can see outcomes 
 
 As a masternode operator, I want to vote on contested DPNS name registrations so that I can participate in network governance.
 
-- Cast, change, or abstain votes (max 4 vote changes per contest).
+- See the node's proved current choice before casting, changing, or abstaining.
+- Active contests groups cards into Needs your vote, Voted, Vote state unavailable, and Not votable by your nodes; a staged choice takes precedence over the proved highlight until submission.
+- Unavailable or expired voting information keeps the affected contests visible and offers Refresh voting before enabling their vote controls.
+- A node may vote five times in total per contest: the initial vote plus up to four changes.
+- Choosing the current choice submits nothing.
 - Evonode/masternode identity required.
-- Note: The max 4 vote changes constraint is enforced at the Platform protocol level, not validated in the app UI.
+- The Active-contests screen explains the four-change limit without inventing a remaining-change count; Platform enforces the limit.
+- If a first immediate vote becomes a change after review, return to review with the current choice and change-limit warning. A matching current choice still submits nothing.
 
 ### DPN-006: Schedule votes [Implemented]
 **Persona:** Priya
@@ -790,14 +796,40 @@ As a masternode operator, I want to vote on contested DPNS name registrations so
 As a masternode operator, I want to schedule votes for later execution so that I can plan my voting strategy in advance.
 
 - Set vote to be cast at a future time.
-- View and manage scheduled votes.
+- View and manage scheduled votes under DPNS → Scheduled votes, which remains available in the persistent DPNS subnavigation. Edit changes the choice or absolute UTC time of a vote that has not started, keeping the same node and contest. An edit is rejected if the schedule changed or began executing while the editor was open.
+- Scheduled and immediate votes share the same target locks and result states.
+- Removing a scheduled vote takes it off the list for good; it does not come back on the next refresh.
+- An ambiguous result remains visible for checking and is never automatically rebroadcast.
+- Votes that miss the normal automatic voting window show guidance to cast manually, edit, or remove them. Already queued votes retain their eligibility.
+- Concurrent scheduled votes use the latest successfully saved voting information without losing their queued eligibility. Cast now retries the selected scheduled choice even when a different immediate vote succeeded afterward.
+- Completed scheduled and mixed batches retain the latest 256 operations per network, without discarding unresolved votes or bringing removed schedules back.
 
 ### DPN-007: Batch voting across contests [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want to apply voting choices across multiple contests in bulk so that I do not have to vote on each contest individually.
 
-- "Set all" option for batch vote assignment.
+- Review and cast defaults to all loaded voting nodes and Cast now.
+- The advanced per-node disclosure can set each node to Cast now, Schedule after a delay, or Do not use this node. The common UTC picker preserves its absolute timestamp while the review is open.
+- Switching networks clears staged votes and open review/edit dialogs; choices from the previous network are never carried into the new one.
+- When no loaded node has a voting key, Active contests shows an actionable Load a masternode state instead of vote controls. A masternode loaded without its voting key is not a voting node, so it reaches that state instead of the composer.
+- Per-node timing overrides and multi-contest selections create exact node × contest targets.
+- Review and cast lists each of those targets with its node, contest, requested choice, current choice, and timing, and reports how many targets it skipped because the node already holds the requested choice.
+- Immediate and scheduled targets submitted together belong to one operation.
+- A successful mixed batch reports both cast and scheduled counts as success, without a warning about remaining work.
+
+### DPN-010: Recover an ambiguous vote result [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want DET to keep checking a submitted vote whose
+result was temporarily unavailable so that I do not spend credits by submitting
+the same vote again.
+
+- The exact network, node, and contest remain locked while the result is unconfirmed.
+- Navigation and restart preserve the operation and its target-level progress.
+- If saved voting progress cannot be read, show a persistent incomplete-history notice with a retry action, preserve cached progress, and keep unknown vote locks protected.
+- DET reconciles against proved current vote state without rebroadcasting.
+- A confirmed match updates the current vote and releases the target lock.
 
 ### DPN-008: Set an alias for an owned username [Implemented]
 **Persona:** Alex, Priya
@@ -1619,11 +1651,12 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 ### MN-003: Open a masternode and vote [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to open a node and vote on the DPNS contests it can vote on, so that I can fulfil my node's governance role.
+As a masternode operator, I want to open a node and continue to DPNS voting, so that I can fulfil my node's governance role.
 
-- Clicking a card opens a detail view with a keys summary, the voter identity, and a collapsible DPNS-voting section (collapsed by default, open-contest count shown in its header).
-- Votes (Abstain, Lock, or a candidate) are cast inline through the existing DPNS voting backend.
-- A node with no voter identity is told a voting key is required, with a way to add one, instead of a raw error.
+- Clicking a card opens a detail view with the keys summary and node actions.
+- A single `DPNS Voting` button opens DPNS → Active contests without carrying a node filter, draft, or other routing state.
+- Voting takes place on Active contests through the shared durable voting-operation path.
+- When no loaded node has a voting key, Active contests explains what is missing and offers a `Load a masternode` action.
 
 ### MN-004: Remove a masternode [Implemented]
 **Persona:** Priya
@@ -1689,10 +1722,10 @@ As a masternode operator, I want the Masternodes tab to reset to a clean state w
 ### MN-011: Refresh masternode and voting state [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want a Refresh control on the Masternodes tab, so that I can pull the latest identity and DPNS-contest state without leaving the page.
+As a masternode operator, I want a Refresh control on the Masternodes tab, so that I can pull the latest node identity state without leaving the page.
 
-- The card-list toolbar and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches a network re-fetch — one identity refresh per loaded node (or the single open node on the detail view) plus a DPNS-contest re-query so vote counts update too.
-- Refresh is a no-op when no node is loaded, and the detail-view re-query is skipped for a node that has no voter identity.
+- The card-list toolbar and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches one identity refresh per loaded node, or for the single open node on the detail view.
+- The card-list Refresh also queries DPNS contests when at least one node is loaded; the detail-view Refresh updates only that node's identity. Refresh is a no-op when no node is loaded. DPNS Active contests also exposes its own contest refresh action.
 
 ### MN-012: Switch wallet/identity from the Masternodes header [Implemented]
 **Persona:** Priya

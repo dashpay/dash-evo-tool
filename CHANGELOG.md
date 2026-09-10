@@ -79,15 +79,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Expert mode is on) for loading and managing masternode and evonode (HP
   masternode) identities by ProTxHash. Loaded nodes appear as a card list
   showing type, voter-key readiness, key status, and DPNS-voting status;
-  opening a card shows a detail view with inline DPNS contested-name voting,
-  Withdraw / Top up / Transfer actions, key management, and — for evonodes
-  only — a link to claim token rewards. The load form accepts an optional
-  password to encrypt the entered voting/owner/payout keys immediately
-  instead of only after a separate step; leaving it blank keeps today's
-  behavior, and protection can always be added later from the key screen.
-  This replaces loading a masternode or evonode from *Identities → Load
-  Existing Identity → Show Advanced Options*, which no longer offers those
-  identity types.
+  opening a card shows a detail view with Withdraw / Top up / Transfer
+  actions, key management, a "DPNS Voting" button that opens the DPNS Active
+  contests screen, and — for evonodes only — a link to claim token rewards.
+  The load form accepts an optional password to encrypt the entered
+  voting/owner/payout keys immediately instead of only after a separate
+  step; leaving it blank keeps today's behavior, and protection can always
+  be added later from the key screen. This replaces loading a masternode or
+  evonode from *Identities → Load Existing Identity → Show Advanced
+  Options*, which no longer offers those identity types.
+
+- **DPNS voting redesigned around the Active contests screen**: casting,
+  batching, and scheduling DPNS name-contest votes across your masternodes
+  now happens in one place — DPNS → Active contests. Contests are grouped
+  into Needs your vote / Voted / Vote state unavailable / Not votable by
+  your nodes, with a Review
+  and cast step for casting now or scheduling later, plus a reminder that
+  Platform allows up to four changes after the initial vote. The
+  Masternodes detail screen no longer casts votes inline — its "DPNS
+  Voting" button takes you straight to Active contests instead.
+  Review shows each node's current and requested choice and warns when a
+  change uses the limited allowance; it does not claim a remaining count.
+  Uncertain results stay visible and blocked from repeat submission.
+  Unresolved operations remain accessible after a contest closes and are
+  not displaced by newer completed votes. Failed scheduled attempts retain
+  an actionable explanation after restarting the app.
+  Scheduled votes retain the selected UTC time and can be edited before
+  execution starts. New schedules must precede the contest's known deadline;
+  checking older uncertain votes does not discard schedules already due.
+  Removing a node cancels its unstarted scheduled votes.
+  Contests remain readable without a voting key, and a missing voting key
+  can be added from the node's detail page without replacing its other keys.
 
 - **Wallet/identity indicator on more screens (rollout in progress)**: the
   wallet and identity picker previously shown only at the top of the Identity
@@ -100,6 +122,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- DPNS scheduled retries keep the selected choice, and simultaneous scheduled votes share fresh voting information without losing their due status. If a first vote becomes a vote change before submission, DET asks for another review. Unavailable voting information stays visible with a refresh action, successful mixed batches report both cast and scheduled votes, and contest refresh remains available when saved voting progress cannot be recovered.
+- DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
 
 - Identity creation and top-up accounts are saved before payment and restored
   after restarting the app. Temporary save failures are retried a few times;

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "artifact_name_template": "migration-fixture-<git_tag>-<profile>",
+  "fixtures": [
+    {
+      "id": "v0.9.3-wallet-identity-dpns",
+      "git_tag": "v0.9.3",
+      "det_version": "0.9.3",
+      "capture_method": "gui",
+      "profile": "wallet-identity-dpns",
+      "network": "testnet",
+      "host_platform": "x86_64-linux",
+      "binary_asset": "dash-evo-tool-x86_64-linux.zip",
+      "data_dir_env": "XDG_CONFIG_HOME",
+      "capture_scenario": "docs/gui-testing/scenarios/migration-fixture-capture.md",
+      "captured_at": null,
+      "artifact": {
+        "workflow_name": null,
+        "workflow_run_id": null,
+        "artifact_name": "migration-fixture-v0.9.3-wallet-identity-dpns",
+        "archive_filename": null,
+        "sha256": null,
+        "bytes": null,
+        "retention_days": null,
+        "expires_at": null
+      },
+      "notes": "Required baseline. v0.9.3 writes data.db at schema version 11 and has no det-<network>.sqlite, so it always upgrades through the legacy drain rather than the platform_compatibility bridge. It predates DASH_EVO_DATA_DIR, det-cli and the SPV stack, hence XDG_CONFIG_HOME isolation and a GUI capture. Its identity is registered beforehand with the current build and only loaded by ID at capture time. Artifact fields stay null until the capture workstream packs and uploads the archive."
+    }
+  ]
+}

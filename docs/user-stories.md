@@ -316,6 +316,17 @@ As a user opening an older wallet installation, I want the app to update its sto
 - The previous database is read-only throughout the update, including unlock and skip paths.
 - Standalone command-line and MCP use never wait for a window that is not present. They ask the user to open the desktop app once, then try again.
 
+### WAL-033: Wallets, addresses and identities survive an app upgrade [Gap]
+**Persona:** Alex, Priya, Jordan
+
+As a user updating from any earlier version I still have installed, I want every wallet, address and identity to be exactly as I left it after the update, so that I never have to re-import a recovery phrase or reload an identity to get my funds back.
+
+- Updating from any released version keeps each wallet with its name, its derived addresses and its password protection: a wallet that needed a password still needs the same one, and a wallet that never had one never acquires one.
+- Identities loaded before the update are still present afterwards, keeping their alias, their keys, their wallet link and their registered DPNS name, without a manual reload or refresh.
+- The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
+- Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
+- Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
+
 ---
 
 ## Send and Receive (SND)

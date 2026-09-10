@@ -166,12 +166,18 @@ pub async fn update_profile(
     let identity_id = identity.identity.id();
     let dashpay_contract = app_context.dashpay_contract.clone();
 
-    // Get the appropriate identity key for signing
+    // Get the appropriate identity key for signing.
+    //
+    // CRITICAL or HIGH, the same set contact_requests.rs uses: Platform accepts
+    // either for document creation, and the DashPay contract declares no
+    // signature security level requirement of its own. Identities that use
+    // DashPay carry AUTHENTICATION keys at MASTER and HIGH with nothing at
+    // CRITICAL, so asking for CRITICAL alone rejected every one of them.
     let identity_key = identity
         .identity
         .get_first_public_key_matching(
             Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
+            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
             KeyType::all_key_types().into(),
             false,
         )

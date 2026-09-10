@@ -837,6 +837,9 @@ As a user who has requested a username that is not yet awarded, I want to see th
 As a user, I want to create and edit my DashPay profile (name, bio, avatar) so that contacts can identify me.
 
 - Set display name, bio, and profile image.
+- Profile writes require a wallet-linked identity with an active HIGH or CRITICAL
+  ECDSA_SECP256K1 authentication key. HASH160 profile signing and clearing existing
+  fields await upstream platform-wallet support.
 - Changes are published as a state transition.
 
 ### DPY-002: Search DashPay profiles [Implemented]

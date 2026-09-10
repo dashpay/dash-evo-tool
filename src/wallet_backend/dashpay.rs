@@ -830,6 +830,54 @@ fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
 // ---------------------------------------------------------------------------
 
 impl WalletBackend {
+    /// Publish a profile through the managing wallet, signing through DET's secret-access path.
+    pub(crate) async fn dashpay_write_profile(
+        &self,
+        identity: &crate::model::qualified_identity::QualifiedIdentity,
+        input: platform_wallet::ProfileUpdate,
+        create: bool,
+    ) -> Result<(), TaskError> {
+        use crate::backend_task::dashpay::errors::DashPayError;
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+        let owner = identity.identity.id();
+        let wallet = self
+            .find_wallet_for_identity(&owner)
+            .await
+            .ok_or(DashPayError::ProfileWalletRequired)?;
+        let identity_wallet = wallet.identity();
+        let dashpay = identity_wallet.dashpay();
+        let result = if create {
+            dashpay
+                .create_profile_with_external_signer(&owner, input, identity)
+                .await
+        } else {
+            dashpay
+                .update_profile_with_external_signer(&owner, input, identity)
+                .await
+        };
+        result.map_err(|source| DashPayError::ProfileWriteFailed {
+            source: Arc::new(source),
+        })?;
+
+        let now = chrono::Utc::now().timestamp_millis().max(0);
+        let created_at = self
+            .dashpay_view()
+            .profile(&owner)
+            .await
+            .map(|profile| profile.created_at)
+            .filter(|created_at| *created_at > 0)
+            .unwrap_or(now);
+        if let Err(error) = self.dashpay_set_timestamps(&owner, created_at, now) {
+            // The broadcast succeeded; a display-metadata failure must not invite a paid retry.
+            tracing::warn!(
+                ?error,
+                "Profile saved but its local display timestamps could not be updated"
+            );
+        }
+        Ok(())
+    }
+
     /// Read-only DashPay accessor. Cheap to construct (borrow only).
     pub fn dashpay_view(&self) -> DashpayView<'_> {
         DashpayView::new(self)

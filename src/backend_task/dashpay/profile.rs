@@ -1,22 +1,15 @@
-use super::avatar_processing::{calculate_avatar_hash, calculate_dhash_fingerprint};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{DocumentV0, DocumentV0Getters, DocumentV0Setters};
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
-use dash_sdk::platform::documents::transitions::{
-    DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
-};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
-use rand::RngCore;
-use std::collections::{BTreeMap, HashSet};
+use platform_wallet::ProfileUpdate;
 use std::sync::Arc;
 
 pub async fn load_profile(
@@ -68,8 +61,14 @@ pub async fn load_profile(
                 display_name: non_empty(display_name),
                 bio: non_empty(bio),
                 avatar_url: non_empty(avatar_url),
-                avatar_hash: None,
-                avatar_fingerprint: None,
+                avatar_hash: doc
+                    .get("avatarHash")
+                    .and_then(|value| value.as_bytes_slice().ok())
+                    .and_then(|bytes| bytes.try_into().ok()),
+                avatar_fingerprint: doc
+                    .get("avatarFingerprint")
+                    .and_then(|value| value.as_bytes_slice().ok())
+                    .and_then(|bytes| bytes.try_into().ok()),
             }),
         )
         .await;
@@ -105,13 +104,7 @@ fn non_empty(s: &str) -> Option<String> {
     }
 }
 
-/// Push the profile through the `WalletBackend` adapter, updating the
-/// upstream `ManagedIdentity` and refreshing the DET-local timestamp
-/// sidecar so [`DashpayView`] reports the current state.
-///
-/// Logs at `debug!` on failure rather than propagating — the platform
-/// document write already succeeded, and a local mirror miss does not
-/// break correctness (next refresh will re-fetch from platform).
+/// Cache a fetched profile; a mirror failure leaves the next refresh to retry.
 async fn mirror_profile_to_backend(
     app_context: &Arc<AppContext>,
     owner: &Identifier,
@@ -130,11 +123,11 @@ async fn mirror_profile_to_backend(
 
     let profile = fields.map(|f| DashPayProfile {
         display_name: f.display_name,
+        public_message: f.bio.clone(),
         bio: f.bio,
         avatar_url: f.avatar_url,
         avatar_hash: f.avatar_hash,
         avatar_fingerprint: f.avatar_fingerprint,
-        public_message: None,
     });
 
     if let Err(e) = backend.dashpay_set_profile(owner, profile).await {
@@ -163,229 +156,91 @@ pub async fn update_profile(
     bio: Option<String>,
     avatar_url: Option<String>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
+    let mut input = profile_update_input(display_name, bio, avatar_url)?;
+    let backend = app_context.wallet_backend()?;
     let identity_id = identity.identity.id();
-    let dashpay_contract = app_context.dashpay_contract.clone();
-
-    // Get the appropriate identity key for signing
-    let identity_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
-            KeyType::all_key_types().into(),
-            false,
-        )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
-
-    // Check if profile already exists
-    let mut profile_query =
-        DocumentQuery::new(dashpay_contract.clone(), "profile").map_err(|e| {
+    let mut query =
+        DocumentQuery::new(app_context.dashpay_contract.clone(), "profile").map_err(|e| {
             DashPayError::QueryCreation {
                 query_target: "DashPay profile",
                 source: Box::new(e.into()),
             }
         })?;
-
-    profile_query = profile_query.with_where(WhereClause {
+    query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
         operator: WhereOperator::Equal,
         value: identity_id.to_buffer().into(),
     });
-    profile_query.limit = 1;
+    query.limit = 1;
+    let profiles = Document::fetch_many(sdk, query).await?;
+    let existing = profiles.values().flatten().next();
+    ensure_profile_fields_preserved(existing, &input)?;
 
-    let existing_profile = Document::fetch_many(sdk, profile_query).await?;
-
-    // Prepare profile data
-    let mut profile_data = BTreeMap::new();
-
-    // Keep copies for database save later
-    let display_name_for_db = display_name.clone();
-    let bio_for_db = bio.clone();
-    let avatar_url_for_db = avatar_url.clone();
-
-    // Only add non-empty fields according to DashPay DIP
-    if let Some(name) = display_name.filter(|name| !name.is_empty()) {
-        profile_data.insert("displayName".to_string(), Value::Text(name));
-    }
-    if let Some(bio_text) = bio.filter(|bio| !bio.is_empty()) {
-        profile_data.insert("publicMessage".to_string(), Value::Text(bio_text));
-    }
-    if let Some(url) = avatar_url.as_ref().filter(|url| !url.is_empty()) {
-        profile_data.insert("avatarUrl".to_string(), Value::Text(url.clone()));
-
-        // Try to fetch and process the avatar image
-        // Note: This requires an HTTP client which may not be available
-        // In production, this should be done asynchronously
+    if let Some(url) = &input.avatar_url {
         match super::avatar_processing::fetch_image_bytes(url).await {
-            Ok(image_bytes) => {
-                // Calculate SHA-256 hash of the image
-                let avatar_hash = calculate_avatar_hash(&image_bytes);
-                profile_data.insert("avatarHash".to_string(), Value::Bytes(avatar_hash.to_vec()));
-
-                // Calculate DHash perceptual fingerprint
-                match calculate_dhash_fingerprint(&image_bytes) {
-                    Ok(fingerprint) => {
-                        profile_data.insert(
-                            "avatarFingerprint".to_string(),
-                            Value::Bytes(fingerprint.to_vec()),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("Could not calculate avatar fingerprint: {}", e);
-                        // Continue without fingerprint - it's optional
-                    }
-                }
-            }
-            Err(e) => {
-                // If we can't fetch the image, just set the URL without hash/fingerprint
-                // These fields are optional according to DIP-0015
-                tracing::warn!("Could not fetch avatar image for processing: {}", e);
+            Ok(bytes) => input.avatar_bytes = Some(bytes),
+            Err(error) => {
+                tracing::debug!(
+                    ?error,
+                    "Profile avatar could not be downloaded; saving its URL only"
+                );
             }
         }
     }
 
-    if let Some((_, Some(existing_doc))) = existing_profile.iter().next() {
-        // Update existing profile using DocumentReplaceTransitionBuilder
-        let mut updated_document = existing_doc.clone();
+    backend
+        .dashpay_write_profile(&identity, input, existing.is_none())
+        .await?;
+    Ok(BackendTaskSuccessResult::DashPayProfileUpdated(identity_id))
+}
 
-        // Update the document's properties
-        for (key, value) in profile_data {
-            updated_document.set(&key, value);
-        }
-
-        // Handle avatar removal: if avatar_url is None or empty, remove avatar-related fields
-        if avatar_url.as_ref().is_none_or(|url| url.is_empty()) {
-            // Remove avatar-related fields from the document
-            let Document::V0(ref mut doc_v0) = updated_document;
-            doc_v0.properties_mut().remove("avatarUrl");
-            doc_v0.properties_mut().remove("avatarHash");
-            doc_v0.properties_mut().remove("avatarFingerprint");
-        }
-
-        // Bump revision for replacement
-        updated_document.bump_revision();
-
-        let mut builder = DocumentReplaceTransitionBuilder::new(
-            dashpay_contract,
-            "profile".to_string(),
-            updated_document,
-        );
-
-        // Add state transition options if available
-        let maybe_options = app_context.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .document_replace(builder, identity_key, &identity)
-            .await?;
-
-        // Log the proof-verified document for audit trail
-        match result {
-            dash_sdk::platform::documents::transitions::DocumentReplaceResult::Document(doc) => {
-                tracing::info!(
-                    "Profile updated: doc_id={}, revision={:?}",
-                    doc.id(),
-                    doc.revision()
-                );
-            }
-        }
-
-        // Mirror updated profile into upstream so DashpayView sees it.
-        mirror_profile_to_backend(
-            app_context,
-            &identity_id,
-            Some(BackendProfileFields {
-                display_name: display_name_for_db.clone(),
-                bio: bio_for_db.clone(),
-                avatar_url: avatar_url_for_db.clone(),
-                avatar_hash: None,
-                avatar_fingerprint: None,
-            }),
-        )
-        .await;
-
-        Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
-            identity.identity.id(),
-        ))
-    } else {
-        // Create new profile using DocumentCreateTransitionBuilder
-        // Generate random entropy for document ID (security: prevents predictable IDs)
-        let mut entropy = [0u8; 32];
-        rand::rng().fill_bytes(&mut entropy);
-
-        let profile_doc_id = Document::generate_document_id_v0(
-            &dashpay_contract.id(),
-            &identity_id,
-            "profile",
-            &entropy,
-        );
-
-        let document = Document::V0(DocumentV0 {
-            id: profile_doc_id,
-            owner_id: identity_id,
-            creator_id: None,
-            properties: profile_data,
-            revision: None,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-            contract_version: None,
-        });
-
-        let mut builder = DocumentCreateTransitionBuilder::new(
-            dashpay_contract,
-            "profile".to_string(),
-            document,
-            entropy, // Use same entropy as document ID generation
-        );
-
-        // Add state transition options if available
-        let maybe_options = app_context.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .document_create(builder, identity_key, &identity)
-            .await?;
-
-        // Log the proof-verified document for audit trail
-        match result {
-            dash_sdk::platform::documents::transitions::DocumentCreateResult::Document(doc) => {
-                tracing::info!(
-                    "Profile created: doc_id={}, revision={:?}",
-                    doc.id(),
-                    doc.revision()
-                );
-            }
-        }
-
-        // Mirror new profile into upstream so DashpayView sees it.
-        mirror_profile_to_backend(
-            app_context,
-            &identity_id,
-            Some(BackendProfileFields {
-                display_name: display_name_for_db.clone(),
-                bio: bio_for_db.clone(),
-                avatar_url: avatar_url_for_db.clone(),
-                avatar_hash: None,
-                avatar_fingerprint: None,
-            }),
-        )
-        .await;
-
-        Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
-            identity.identity.id(),
-        ))
+fn profile_update_input(
+    display_name: Option<String>,
+    bio: Option<String>,
+    avatar_url: Option<String>,
+) -> Result<ProfileUpdate, TaskError> {
+    let display_name = display_name.unwrap_or_default();
+    let bio = bio.unwrap_or_default();
+    let avatar_url = avatar_url.unwrap_or_default();
+    let errors = crate::model::dashpay::validate_profile_fields(
+        display_name.trim(),
+        bio.trim(),
+        avatar_url.trim(),
+    );
+    if !errors.is_empty() {
+        return Err(DashPayError::ProfileValidationFailed { errors }.into());
     }
+    Ok(ProfileUpdate {
+        display_name: non_empty(display_name.trim()),
+        public_message: non_empty(bio.trim()),
+        avatar_url: non_empty(avatar_url.trim()),
+        avatar_bytes: None,
+    })
+}
+
+fn ensure_profile_fields_preserved(
+    existing: Option<&Document>,
+    input: &ProfileUpdate,
+) -> Result<(), TaskError> {
+    let Some(existing) = existing else {
+        return Ok(());
+    };
+    // Upstream treats None as unchanged, so it cannot fulfill a request to clear a field.
+    for (field, replacement) in [
+        ("displayName", &input.display_name),
+        ("publicMessage", &input.public_message),
+        ("avatarUrl", &input.avatar_url),
+    ] {
+        if replacement.is_none()
+            && existing
+                .get(field)
+                .and_then(Value::as_text)
+                .is_some_and(|value| !value.is_empty())
+        {
+            return Err(DashPayError::ProfileFieldRemovalUnsupported.into());
+        }
+    }
+    Ok(())
 }
 
 pub async fn load_payment_history(
@@ -558,4 +413,132 @@ pub async fn search_profiles(
     Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(
         results,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_identity() -> QualifiedIdentity {
+        QualifiedIdentity {
+            identity: dash_sdk::platform::Identity::default_versioned(
+                dash_sdk::dpp::version::LATEST_PLATFORM_VERSION,
+            )
+            .expect("identity"),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: crate::model::qualified_identity::IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: Default::default(),
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_write_validates_fields_before_network_or_signing() {
+        let dir = tempfile::tempdir().expect("temporary app data");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let sdk = context.sdk.load_full();
+        let error = update_profile(
+            &context,
+            &sdk,
+            empty_identity(),
+            Some("x".repeat(256)),
+            None,
+            None,
+        )
+        .await
+        .expect_err("invalid input must not reach the network or signer");
+        assert!(
+            matches!(
+                error,
+                TaskError::DashPay(DashPayError::ProfileValidationFailed { .. })
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn profile_input_omits_blank_fields_and_maps_bio_to_public_message() {
+        let input = profile_update_input(
+            Some("  Alice  ".into()),
+            Some(" About me ".into()),
+            Some(" \n ".into()),
+        )
+        .expect("valid input");
+        assert_eq!(input.display_name.as_deref(), Some("Alice"));
+        assert_eq!(input.public_message.as_deref(), Some("About me"));
+        assert!(input.avatar_url.is_none());
+        assert!(input.avatar_bytes.is_none());
+        let blank = profile_update_input(Some(" ".into()), None, None).expect("empty profile");
+        assert!(blank.display_name.is_none());
+        assert!(blank.public_message.is_none());
+        assert!(ensure_profile_fields_preserved(None, &blank).is_ok());
+    }
+
+    #[test]
+    fn profile_removal_is_rejected_instead_of_silently_retaining_fields() {
+        for field in ["displayName", "publicMessage", "avatarUrl"] {
+            let existing = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+                properties: [(field.to_string(), Value::Text("existing value".into()))].into(),
+                ..Default::default()
+            });
+            let input = profile_update_input(None, None, None).expect("blank input");
+            assert!(
+                matches!(
+                    ensure_profile_fields_preserved(Some(&existing), &input),
+                    Err(TaskError::DashPay(
+                        DashPayError::ProfileFieldRemovalUnsupported
+                    ))
+                ),
+                "clearing {field} must not report a successful save"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_replacement_is_allowed_with_unchanged_optional_fields() {
+        let existing = Document::V0(dash_sdk::dpp::document::DocumentV0 {
+            properties: [("displayName".to_string(), Value::Text("Alice".into()))].into(),
+            ..Default::default()
+        });
+        let input = profile_update_input(Some("Bob".into()), None, None).expect("replacement");
+        assert!(ensure_profile_fields_preserved(Some(&existing), &input).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn profile_write_without_managing_wallet_is_an_error() {
+        let dir = tempfile::tempdir().expect("temporary app data");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let (sender, _receiver) = tokio::sync::mpsc::channel(32);
+        context
+            .ensure_wallet_backend(crate::utils::egui_mpsc::SenderAsync::new(
+                sender,
+                context.egui_ctx().clone(),
+            ))
+            .await
+            .expect("offline wallet backend");
+        let backend = context.wallet_backend().expect("backend");
+        for create in [true, false] {
+            let error = backend
+                .dashpay_write_profile(
+                    &empty_identity(),
+                    profile_update_input(Some("Alice".into()), None, None).expect("input"),
+                    create,
+                )
+                .await
+                .expect_err("a write cannot silently skip an unowned identity");
+            assert!(matches!(
+                error,
+                TaskError::DashPay(DashPayError::ProfileWalletRequired)
+            ));
+        }
+    }
 }

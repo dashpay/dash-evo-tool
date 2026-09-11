@@ -211,10 +211,13 @@ jobs:
       # header for why this is preferred over dawidd6/action-download-artifact,
       # which is the drop-in third-party alternative for the fallback branch.
       #
-      # TODO: drop `|| true` and pass --strict once
-      # tests/migration-fixtures/manifest.json carries real entries with
-      # artifact pointers. Until then a missing fixture is expected, not a
-      # regression, and hard-failing would block every PR touching these paths.
+      # --strict: an empty manifest, an entry that cannot be resolved (no run
+      # pointer, a deleted or EXPIRED artifact) or a checksum mismatch fails the
+      # job. A matrix run over an empty fixture set proves nothing, so it must
+      # never pass. Hand-captured fixtures (the v0.9.3 baseline) are uploaded by
+      # migration-fixture-bootstrap.yml with a finite retention; an expiry
+      # failure here means: re-dispatch that workflow with the same archive and
+      # record the new run id in tests/migration-fixtures/manifest.json.
       - name: Download migration fixtures
         id: fixtures
         env:
@@ -223,24 +226,30 @@ jobs:
           set -euo pipefail
           dest="$RUNNER_TEMP/migration-fixtures"
           mkdir -p "$dest"
-          scripts/migration-fixtures/download-fixtures.sh --dest "$dest" || true
+          scripts/migration-fixtures/download-fixtures.sh --strict --dest "$dest"
           count="$(find "$dest" -maxdepth 1 \( -name '*.tar.zst' -o -name '*.tar.gz' \) | wc -l)"
+          # --strict already fails on any unresolved entry. This covers what it
+          # cannot see: a run that reported success yet left no archive here.
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No migration fixture archives were resolved into $dest. The matrix refuses to run over an empty fixture set."
+            exit 1
+          fi
+          echo "Resolved $count fixture archive(s)."
           echo "count=$count" >>"$GITHUB_OUTPUT"
           echo "dir=$dest" >>"$GITHUB_OUTPUT"
-          if [ "$count" -eq 0 ]; then
-            echo "::warning::No migration fixtures were resolved. The matrix will run with an empty fixture set, which proves nothing. This is expected until the first fixture is captured and recorded in tests/migration-fixtures/manifest.json."
-          else
-            echo "Resolved $count fixture archive(s)."
-          fi
 
       - name: Run migration matrix
         env:
           # Directory of fixture archives (.tar.zst / .tar.gz plus .sha256),
           # exactly as pack.sh produced them.
           MIGRATION_FIXTURES_DIR: ${{ steps.fixtures.outputs.dir }}
-          # Provisional contract with the harness workstream: the real binary to
-          # drive. Rename or drop once tests/migration-matrix/ settles on a name.
-          MIGRATION_DET_CLI: ${{ runner.temp }}/bin/det-cli
+          # download-fixtures.sh places only archives in the fixtures directory;
+          # the harness reads manifest.json from there unless pointed at it.
+          MIGRATION_FIXTURES_MANIFEST: ${{ github.workspace }}/tests/migration-fixtures/manifest.json
+          # The binary under test, from the build job. Required, not optional:
+          # det-cli needs the `cli` feature, which `--features testing` below
+          # does not enable, so Cargo builds no det-cli for the harness to find.
+          DET_CLI_BIN: ${{ runner.temp }}/bin/det-cli
         run: cargo test --locked --test migration-matrix --features testing
 
   coverage:

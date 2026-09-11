@@ -1,0 +1,174 @@
+name: Migration Fixture Bootstrap
+
+# Manual upload path for a migration fixture archive captured OUTSIDE CI — the
+# v0.9.3 baseline needs a GUI capture against a released binary, see
+# tests/migration-fixtures/README.md. It turns local bytes into a GitHub
+# Actions build artifact without them ever entering the git tree: git history
+# is permanent, while an artifact can be deleted or left to expire.
+#
+# The archive travels base64-encoded in a workflow_dispatch input. The inputs
+# payload limit is 65,535 characters, so archives up to ~48 KB fit; the v0.9.3
+# baseline is 6 KB. Everything else — artifact name, file name, size, sha256 —
+# comes from the COMMITTED manifest entry named by `fixture_id`, so a dispatch
+# can only publish bytes a reviewed manifest already describes.
+#
+# This is not capture automation: it captures nothing, runs on no schedule and
+# opens no PR. A human dispatches it and records the run id in the manifest.
+#
+# USAGE:
+#   gh workflow run migration-fixture-bootstrap.yml \
+#     --repo dashpay/dash-evo-tool --ref <branch-carrying-the-manifest-entry> \
+#     -f fixture_id=v0.9.3-wallet-only \
+#     -f archive_b64="$(base64 -w0 dash-evo-tool-v093-fixture.tar.zst)"
+# then copy the values from the run's step summary into the entry's `artifact`
+# block in tests/migration-fixtures/manifest.json.
+#
+# RETENTION HAZARD: artifacts expire, and 90 days is the ceiling for a public
+# repository. Before the manifest's `expires_at`, re-dispatch with the same
+# bytes and record the new `workflow_run_id`/`expires_at`. Once the artifact
+# has expired, the migration matrix fails (download-fixtures.sh --strict)
+# until that is done.
+#
+# REVOCATION: `gh run delete <run-id>` removes the artifact together with the
+# run's inputs payload.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixture_id:
+        description: "Manifest entry id (tests/migration-fixtures/manifest.json .fixtures[].id)"
+        required: true
+        type: string
+      archive_b64:
+        description: "The fixture archive, base64-encoded without line wraps (base64 -w0)"
+        required: true
+        type: string
+  # Registration only. GitHub dispatches a workflow only once it exists on the
+  # default branch or has already run; this trigger makes the pull request that
+  # adds or edits this file register it, so it can be dispatched with `--ref`
+  # against that PR's branch before it reaches the default branch. The job
+  # below never runs for it.
+  pull_request:
+    paths:
+      - ".github/workflows/migration-fixture-bootstrap.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.fixture_id || github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  upload:
+    name: Upload fixture artifact
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Reads back the uploaded artifact's expiry for the step summary.
+      actions: read
+    env:
+      # Platform ceiling for a public repository; see RETENTION HAZARD above.
+      RETENTION_DAYS: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Resolve manifest entry
+        id: entry
+        env:
+          FIXTURE_ID: ${{ inputs.fixture_id }}
+        run: |
+          set -euo pipefail
+          manifest=tests/migration-fixtures/manifest.json
+          entry="$(jq -c --arg id "$FIXTURE_ID" \
+            '[.fixtures[] | select(.id == $id)] | if length == 1 then .[0] else empty end' "$manifest")"
+          if [ -z "$entry" ]; then
+            echo "::error::$manifest has no single fixture entry with id '$FIXTURE_ID'."
+            exit 1
+          fi
+          # Each value lands in $GITHUB_OUTPUT and later in a file path, so it
+          # is held to a strict shape rather than trusted as free text.
+          check() {
+            local key="$1" pattern="$2" value
+            value="$(jq -r --arg k "$key" '.artifact[$k] // empty' <<<"$entry")"
+            if ! [[ "$value" =~ $pattern ]]; then
+              echo "::error::Manifest entry '$FIXTURE_ID' has a missing or malformed artifact.$key."
+              exit 1
+            fi
+            echo "$key=$value" >>"$GITHUB_OUTPUT"
+          }
+          check artifact_name '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+          check archive_filename '^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.(zst|gz)$'
+          check sha256 '^[0-9a-f]{64}$'
+          check bytes '^[1-9][0-9]*$'
+
+      - name: Decode and verify archive
+        id: archive
+        env:
+          # Passed through the environment, never interpolated into the
+          # script, and never echoed: it is dispatch input.
+          ARCHIVE_B64: ${{ inputs.archive_b64 }}
+          ARCHIVE_FILENAME: ${{ steps.entry.outputs.archive_filename }}
+          EXPECTED_SHA256: ${{ steps.entry.outputs.sha256 }}
+          EXPECTED_BYTES: ${{ steps.entry.outputs.bytes }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/fixture"
+          mkdir -p "$dir"
+          archive="$dir/$ARCHIVE_FILENAME"
+          if ! printf '%s' "$ARCHIVE_B64" | base64 --decode >"$archive"; then
+            echo "::error::archive_b64 is not valid base64."
+            exit 1
+          fi
+          actual_bytes="$(stat -c %s "$archive")"
+          actual_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+          if [ "$actual_bytes" != "$EXPECTED_BYTES" ] || [ "$actual_sha" != "$EXPECTED_SHA256" ]; then
+            echo "::error::The dispatched archive does not match the manifest entry (manifest: $EXPECTED_BYTES bytes, sha256 $EXPECTED_SHA256; received: $actual_bytes bytes, sha256 $actual_sha). Nothing was uploaded."
+            exit 1
+          fi
+          # The checksum proves these are the bytes the manifest describes; this
+          # proves the manifest describes a readable archive.
+          tar -tf "$archive" >/dev/null
+          # Same sidecar format pack.sh writes, so the artifact matches what a
+          # CI capture would have uploaded.
+          printf '%s  %s\n' "$actual_sha" "$ARCHIVE_FILENAME" >"$archive.sha256"
+          echo "dir=$dir" >>"$GITHUB_OUTPUT"
+          echo "Verified $ARCHIVE_FILENAME: $actual_bytes bytes, sha256 $actual_sha."
+
+      - name: Upload fixture artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.entry.outputs.artifact_name }}
+          path: ${{ steps.archive.outputs.dir }}
+          retention-days: ${{ env.RETENTION_DAYS }}
+          if-no-files-found: error
+          # A name clash inside one run is a mis-dispatch, not a refresh.
+          overwrite: false
+          # Already zstd/gzip-compressed; zipping it again gains nothing.
+          compression-level: 0
+
+      - name: Record manifest values
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          FIXTURE_ID: ${{ inputs.fixture_id }}
+        run: |
+          set -euo pipefail
+          # The expiry actually granted: a repository-level retention setting
+          # can cap what RETENTION_DAYS asked for.
+          expires_at="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" --jq .expires_at)"
+          workflow="${GITHUB_WORKFLOW_REF%@*}"
+          workflow="${workflow##*/}"
+          {
+            echo "### Fixture \`$FIXTURE_ID\` uploaded"
+            echo
+            echo "Set these in the fixture's \`artifact\` block of \`tests/migration-fixtures/manifest.json\` and drop \`staging_note\`:"
+            echo
+            echo '```json'
+            jq -n --arg workflow "$workflow" --argjson run "$GITHUB_RUN_ID" \
+              --argjson days "$RETENTION_DAYS" --arg expires "$expires_at" \
+              '{workflow_name: $workflow, workflow_run_id: $run, retention_days: $days, expires_at: $expires}'
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

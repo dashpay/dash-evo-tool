@@ -138,14 +138,22 @@ while IFS= read -r entry; do
     id="$(get '.id')"
     id="${id:-$(get '.git_tag')}"
     id="${id:-unnamed}"
-    artifact_name="$(get '.artifact.name')"
+    # The `artifact.*` keys documented in tests/migration-fixtures/README.md
+    # come first; the rest are shapes this reader accepted before that schema
+    # settled, kept so an older entry still resolves.
+    artifact_name="$(get '.artifact.artifact_name')"
+    artifact_name="${artifact_name:-$(get '.artifact.name')}"
     artifact_name="${artifact_name:-$(get '.artifact_name')}"
-    run_id="$(get '.artifact.run_id')"
+    run_id="$(get '.artifact.workflow_run_id')"
+    run_id="${run_id:-$(get '.artifact.run_id')}"
     run_id="${run_id:-$(get '.run_id')}"
-    workflow="$(get '.artifact.workflow')"
+    workflow="$(get '.artifact.workflow_name')"
+    workflow="${workflow:-$(get '.artifact.workflow')}"
     workflow="${workflow:-$(get '.workflow')}"
-    expected_sha="$(get '.archive.sha256')"
+    expected_sha="$(get '.artifact.sha256')"
+    expected_sha="${expected_sha:-$(get '.archive.sha256')}"
     expected_sha="${expected_sha:-$(get '.sha256')}"
+    expected_file="$(get '.artifact.archive_filename')"
 
     note "Fixture '$id'"
 
@@ -212,6 +220,15 @@ while IFS= read -r entry; do
         continue
     fi
     archive_path="${archives[0]}"
+
+    # The harness locates the archive by this name, so a mismatch here would
+    # only resurface later as a less specific "archive not found".
+    if [ -n "$expected_file" ] && [ "$(basename -- "$archive_path")" != "$expected_file" ]; then
+        warn "Fixture '$id': artifact '$artifact_name' holds $(basename -- "$archive_path"), but the manifest names $expected_file."
+        rm -rf "$stage"
+        failed=$((failed + 1))
+        continue
+    fi
 
     # --- integrity --------------------------------------------------------
     if [ -n "$expected_sha" ]; then

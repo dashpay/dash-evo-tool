@@ -1204,104 +1204,10 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork { network, start_spv } => {
-                // Create a new AppContext for the target network, reusing shared
-                // resources (db, subtasks, connection_status) from the current context.
-                // Wrapped in block_in_place because AppContext::new() does DB init
-                // and file I/O which would block the async runtime.
-                let data_dir = self.data_dir.clone();
-                let db = self.db.clone();
-                let subtasks = self.subtasks.clone();
-                let connection_status = self.connection_status.clone();
-                let egui_ctx = self.egui_ctx().clone();
-                let app_kv = self.app_kv();
-                let secret_store = self.secret_store();
-                // Share the app-global role cell so the freshly-switched context
-                // observes the same value (and live changes) as the rest of the
-                // app — never a fresh per-context cell.
-                let user_role = self.user_role_cell();
-                let new_ctx = tokio::task::block_in_place(|| {
-                    AppContext::new(
-                        data_dir,
-                        network,
-                        db,
-                        subtasks,
-                        connection_status,
-                        egui_ctx,
-                        app_kv,
-                        secret_store,
-                        user_role,
-                    )
+                self.run_switch_network(network, start_spv, sender, |context, sender| async move {
+                    context.ensure_wallet_backend_and_start_spv(sender).await
                 })
-                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
-                new_ctx.install_secret_prompt(self.secret_prompt());
-
-                let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
-                    Ok(()) => {
-                        if let Err(error) = sender
-                            .send(TaskResult::unattributed_success(
-                                BackendTaskSuccessResult::NetworkContextRegistered {
-                                    network,
-                                    context: Arc::clone(&new_ctx),
-                                },
-                            ))
-                            .await
-                        {
-                            tracing::debug!(
-                                ?network,
-                                %error,
-                                "Network switch context registration receiver was unavailable"
-                            );
-                        }
-                        true
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            ?network,
-                            %error,
-                            "Wallet backend wiring failed after network switch"
-                        );
-                        false
-                    }
-                };
-
-                let cancellation_token = self.subtasks.cancellation_token.clone();
-                let spv_started = if start_spv
-                    && backend_wired
-                    && !cancellation_token.is_cancelled()
-                {
-                    tokio::select! {
-                        result = new_ctx.ensure_wallet_backend_and_start_spv(sender.clone()) => {
-                            match result {
-                                Ok(()) => {
-                                    tracing::info!(?network, "SPV started after network switch");
-                                    true
-                                }
-                                Err(error) => {
-                                    tracing::warn!(
-                                        ?network,
-                                        %error,
-                                        "SPV start failed after network switch"
-                                    );
-                                    false
-                                }
-                            }
-                        }
-                        _ = cancellation_token.cancelled() => false,
-                    }
-                } else {
-                    false
-                };
-                if cancellation_token.is_cancelled()
-                    && let Ok(backend) = new_ctx.wallet_backend()
-                {
-                    backend.forget_all_secrets();
-                    backend.shutdown().await;
-                }
-                Ok(BackendTaskSuccessResult::NetworkContextCreated {
-                    network,
-                    context: new_ctx,
-                    spv_started,
-                })
+                .await
             }
             BackendTask::DiscoverDapiNodes { network } => {
                 let devnet_name = self
@@ -1322,6 +1228,113 @@ impl AppContext {
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
+    }
+
+    async fn run_switch_network<F>(
+        self: &Arc<Self>,
+        network: Network,
+        start_spv: bool,
+        sender: SenderAsync<TaskResult>,
+        start_backend: impl FnOnce(Arc<Self>, SenderAsync<TaskResult>) -> F,
+    ) -> Result<BackendTaskSuccessResult, TaskError>
+    where
+        F: Future<Output = Result<(), TaskError>>,
+    {
+        // Create a new AppContext for the target network, reusing shared
+        // resources (db, subtasks, connection_status) from the current context.
+        // Wrapped in block_in_place because AppContext::new() does DB init
+        // and file I/O which would block the async runtime.
+        let data_dir = self.data_dir.clone();
+        let db = self.db.clone();
+        let subtasks = self.subtasks.clone();
+        let connection_status = self.connection_status.clone();
+        let egui_ctx = self.egui_ctx().clone();
+        let app_kv = self.app_kv();
+        let secret_store = self.secret_store();
+        // Share the app-global role cell so the freshly-switched context
+        // observes the same value (and live changes) as the rest of the
+        // app — never a fresh per-context cell.
+        let user_role = self.user_role_cell();
+        let new_ctx = tokio::task::block_in_place(|| {
+            AppContext::new(
+                data_dir,
+                network,
+                db,
+                subtasks,
+                connection_status,
+                egui_ctx,
+                app_kv,
+                secret_store,
+                user_role,
+            )
+        })
+        .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+        new_ctx.install_secret_prompt(self.secret_prompt());
+
+        let backend_wired = match new_ctx.ensure_wallet_backend(sender.clone()).await {
+            Ok(()) => {
+                if let Err(error) = sender
+                    .send(TaskResult::unattributed_success(
+                        BackendTaskSuccessResult::NetworkContextRegistered {
+                            network,
+                            context: Arc::clone(&new_ctx),
+                        },
+                    ))
+                    .await
+                {
+                    tracing::debug!(
+                        ?network,
+                        %error,
+                        "Network switch context registration receiver was unavailable"
+                    );
+                }
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    ?network,
+                    %error,
+                    "Wallet backend wiring failed after network switch"
+                );
+                false
+            }
+        };
+
+        let cancellation_token = self.subtasks.cancellation_token.clone();
+        let spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
+            tokio::select! {
+                result = start_backend(Arc::clone(&new_ctx), sender.clone()) => {
+                    match result {
+                        Ok(()) => {
+                            tracing::info!(?network, "SPV started after network switch");
+                            true
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                ?network,
+                                %error,
+                                "SPV start failed after network switch"
+                            );
+                            false
+                        }
+                    }
+                }
+                _ = cancellation_token.cancelled() => false,
+            }
+        } else {
+            false
+        };
+        if cancellation_token.is_cancelled()
+            && let Ok(backend) = new_ctx.wallet_backend()
+        {
+            backend.forget_all_secrets();
+            backend.shutdown().await;
+        }
+        Ok(BackendTaskSuccessResult::NetworkContextCreated {
+            network,
+            context: new_ctx,
+            spv_started,
+        })
     }
 
     async fn run_wallet_task(
@@ -1465,6 +1478,50 @@ mod tests {
     use crate::context::feature_gate::FeatureGate;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn switch_network_keeps_registration_queued_after_completion() {
+        use crate::context::test_support::test_app_context;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let context = test_app_context(dir.path());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        let completed = context
+            .run_backend_task(
+                BackendTask::SwitchNetwork {
+                    network: Network::Mainnet,
+                    start_spv: false,
+                },
+                sender,
+            )
+            .await
+            .expect("switch network");
+        let BackendTaskSuccessResult::NetworkContextCreated {
+            context: completed_context,
+            spv_started,
+            ..
+        } = completed
+        else {
+            panic!("expected completed network context");
+        };
+        assert!(!spv_started);
+
+        let mut registered = None;
+        while let Ok(TaskResult::Success { result, .. }) = rx.try_recv() {
+            if let BackendTaskSuccessResult::NetworkContextRegistered { context, .. } = *result {
+                registered = Some(context);
+                break;
+            }
+        }
+        let registered = registered.expect("registration remains queued after completion");
+        assert!(Arc::ptr_eq(&registered, &completed_context));
+        registered
+            .wallet_backend()
+            .expect("registered backend")
+            .shutdown()
+            .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn switch_network_registers_wired_backend_before_cancellation_teardown() {
         use crate::context::test_support::test_app_context;
         use crate::wallet_backend::{RememberPolicy, SecretPlaintext, SecretScope};
@@ -1474,12 +1531,11 @@ mod tests {
         let context = test_app_context(temp_dir.path());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, context.egui_ctx().clone());
-        let mut switch = Box::pin(context.run_backend_task(
-            BackendTask::SwitchNetwork {
-                network: Network::Mainnet,
-                start_spv: true,
-            },
+        let mut switch = Box::pin(context.run_switch_network(
+            Network::Mainnet,
+            true,
             sender,
+            |_, _| std::future::pending(),
         ));
 
         let registered_context = tokio::time::timeout(Duration::from_secs(5), async {

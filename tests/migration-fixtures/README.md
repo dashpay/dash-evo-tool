@@ -56,7 +56,8 @@ Treat every byte in it as **published**.
   design, it does not go into this repository — not into `manifest.json`, not
   into a profile checklist, not into a scenario file, and not into a commit
   message. Capture reads it at run time from `MIGRATION_FIXTURE_MNEMONIC`
-  (protected wallet: `MIGRATION_FIXTURE_PROTECTED_MNEMONIC`), matching the
+  (protected wallet: `MIGRATION_FIXTURE_PROTECTED_MNEMONIC`; the
+  `v1.0.0-weekly.20260908` wallet: `MIGRATION_FIXTURE_WEEKLY_MNEMONIC`), matching the
   `tests/backend-e2e/` convention of referring to environment variable *names*
   only.
 - **The protected wallet's password is a fixed literal:
@@ -93,10 +94,14 @@ Consequences that any workflow consuming this directory must handle:
 - **A hand capture reaches Actions storage through
   `.github/workflows/migration-fixture-bootstrap.yml`.** Every `gui` capture,
   the v0.9.3 baseline included, is produced outside CI. Dispatch that workflow
-  with the entry's `id` and the base64-encoded archive: it checks the bytes
-  against the entry's `sha256` and `bytes`, uploads them as `artifact_name`,
-  and prints the `workflow_run_id` and `expires_at` to record. Re-dispatching
-  the same bytes before `expires_at` is the refresh path.
+  with the entry's `id` and the archive: it checks the bytes against the
+  entry's `sha256` and `bytes`, uploads them as `artifact_name`, and prints the
+  `workflow_run_id` and `expires_at` to record. An archive up to ~48 KB travels
+  base64-encoded in the `archive_b64` input. A larger one travels through a
+  temporary **draft** release: attach the archive to a draft, dispatch with
+  `release_tag` instead, and delete the draft once the run has succeeded (the
+  workflow header has the commands). Re-dispatching the same bytes before
+  `expires_at` is the refresh path.
 - **Artifact name convention:** `migration-fixture-<git_tag>-<profile>` — e.g.
   `migration-fixture-v0.9.3-wallet-identity-dpns`. The template also lives in
   the manifest as `artifact_name_template` so tooling does not re-derive it.
@@ -150,6 +155,29 @@ manifest entry must say `gui` when either applies:
 - Any capture that has to react to a testnet reset (re-registering an identity,
   re-claiming a name).
 
+### `gui+det-cli` — current-era builds
+
+`v1.0.0-weekly.20260908` was captured this way. Its det-cli does everything
+the profile needs headless (import, address derivation, the SPV-gated balance,
+discovery), but its `network_switch` is not persisted: a fresh process starts
+on the network stored in the app settings, which defaults to mainnet. A purely
+headless capture therefore produces a testnet wallet in a profile that boots
+on mainnet, and a later build never opens the testnet store. One launch of the
+same release's GUI selects testnet the way a user does; everything else is
+headless.
+
+- Drive `det-cli serve` over stdio, so the network switch and every tool call
+  share one process. Pass the recovery phrase as a JSON-RPC argument read from
+  the environment inside the driver, never on a command line.
+- Fund the wallet from the public testnet faucet, never from the E2E framework
+  wallet.
+- Run the GUI on a private X server (`Xvfb`), not on a shared desktop. The
+  network selector is disabled while SPV runs, so disconnect first. Quit
+  through the window's close request (`WM_DELETE_WINDOW`), never with `kill`.
+- The app's clean shutdown does not checkpoint the SQLite WAL, so the archive
+  carries `-wal` sidecars. That is the state a real profile is in: do not
+  checkpoint or `VACUUM` a capture to shrink it.
+
 ## Adding a fixture for a new version
 
 1. **Pick the profile.** See [`profiles/`](profiles/). `wallet-only` is the
@@ -193,12 +221,13 @@ Per fixture entry:
 | `id` | Stable identifier, `<git_tag>-<profile>`. Used by the harness to select a case. |
 | `git_tag` | The tag whose released binary produced the data. |
 | `det_version` | The version string that build reports, without the `v` prefix. |
-| `capture_method` | `gui` or `headless` — see "Capture methods". |
+| `capture_method` | `gui`, `headless` or `gui+det-cli` — see "Capture methods". |
 | `profile` | `wallet-only` or `wallet-identity-dpns`; the matching file in `profiles/` is the acceptance checklist. |
 | `network` | Always `testnet` today; the field exists so a future non-testnet case cannot be mistaken for one. |
 | `host_platform` | Where the capture ran. Linux x86-64 only in v1; Windows/macOS are an open decision, not an omission. |
 | `binary_asset` | The exact release asset downloaded for the capture. Asset naming changed between eras, so it is recorded per fixture rather than derived. |
 | `data_dir_env` | The environment variable that isolated the capture: `XDG_CONFIG_HOME` before `DASH_EVO_DATA_DIR` existed, `DASH_EVO_DATA_DIR` afterwards. |
+| `platform_rev` | The `dashpay/platform` revision the build pinned. Recorded for a current-era profile, whose wallet store a later build may have to upgrade through the `platform_compatibility` bridge. |
 | `capture_scenario` | Repo-relative path of the procedure that produced it, or `null` for a purely scripted headless capture. |
 | `captured_at` | RFC 3339 UTC timestamp of the capture, or `null` while unpacked. |
 | `artifact` | Where the archive lives; every field is `null` until an upload exists. |
@@ -217,8 +246,21 @@ uploaded:
 | `bytes` | Size of the archive, for sanity-checking a truncated download. |
 | `retention_days` | The retention explicitly requested at upload. `null` here means "not uploaded yet", never "repository default". |
 | `expires_at` | RFC 3339 UTC expiry, so a refresh job can act before an artifact disappears rather than after. |
+| `staging_note` | Present only until the upload exists: how the archive will reach Actions storage. Drop it when recording the run. |
 
-`contents.wallets[]` — one entry per wallet in the captured `data.db`:
+`expect` — what the harness must observe after booting the fixture. Every field is optional:
+
+| Field | Meaning |
+|---|---|
+| `wallet_aliases` | Aliases `core-wallets-list` must report. Added to the aliases of every `migrated` wallet in `contents.wallets`. |
+| `identity_ids` | Lowercase hex identity ids that must survive the migration. |
+| `starting_db_version` | The `data.db` schema version at capture. The boot fails if the staged file disagrees. |
+| `finish_unwire_sentinel` | Whether the boot must record the storage-update completion sentinel. Default `true`. |
+| `derive_address` | Whether to derive a receive address for every listed wallet. Needs a synced chain. Default `true`. |
+
+`contents.wallets[]` — one entry per wallet in the captured `data.db`. A
+current-era profile keeps its wallets in `det-<network>.sqlite` instead: it
+leaves this list empty and names them in `expect.wallet_aliases`.
 
 | Field | Meaning |
 |---|---|

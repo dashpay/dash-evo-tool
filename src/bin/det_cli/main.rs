@@ -155,6 +155,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::io::stdout().lock().flush();
     let _ = std::io::stderr().lock().flush();
     // TODO(graceful-teardown): replace with normal return once WalletBackend::quiesce() joins coordinator threads.
+    // Until then no SQLite connection is closed, so the WAL is never checkpointed on exit: a data
+    // directory det-cli wrote last carries MB-sized -wal sidecars, which is what bloats migration
+    // fixture archives (tests/migration-fixtures/README.md).
     std::process::exit(exit_code);
 }
 

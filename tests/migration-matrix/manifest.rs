@@ -588,6 +588,39 @@ mod tests {
         );
     }
 
+    /// The committed weekly entry is a current-era profile. Its wallet lives
+    /// in the per-network store, not in `data.db`, so the boot asserts it by
+    /// alias through `core-wallets-list`; there is no password run.
+    #[test]
+    fn the_committed_weekly_fixture_is_asserted_by_alias_without_a_password() {
+        let manifest: Manifest =
+            serde_json::from_str(include_str!("../migration-fixtures/manifest.json"))
+                .expect("the committed manifest must parse");
+        let fixture = manifest
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.id == "v1.0.0-weekly.20260908-wallet-only")
+            .expect("the weekly entry");
+        assert_eq!(fixture.network().expect("known network"), Network::Testnet);
+        assert_eq!(fixture.expect.starting_db_version, Some(38));
+        assert!(
+            fixture.contents.wallets.is_empty(),
+            "this era's data.db has no wallet table to find a wallet in"
+        );
+        assert!(
+            fixture.expect.derive_address,
+            "the captured store carries its committed sync height, so derivation scans only \
+             the blocks since capture and stays within the SPV gate"
+        );
+
+        let scenarios = fixture.scenarios().expect("no password runs to validate");
+        let [scenario] = &scenarios[..] else {
+            panic!("expected only the boot without a password");
+        };
+        assert!(scenario.password.is_none() && !scenario.needs_desktop());
+        assert_eq!(scenario.listed_aliases, ["weekly-fixture"]);
+    }
+
     fn fixture_with_runs(wallets: &str, runs: &str) -> Fixture {
         serde_json::from_str(&format!(
             r#"{{ "id": "f", "network": "testnet",

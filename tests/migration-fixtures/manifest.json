@@ -57,6 +57,41 @@
       ],
       "notes": "Required baseline. v0.9.3 writes data.db at schema version 11 and has no det-<network>.sqlite, so it always upgrades through the legacy drain rather than the platform_compatibility bridge (structurally immune to the platform-wallet-storage DivergentVersion class of bug — see the approved plan). It predates DASH_EVO_DATA_DIR, det-cli and the SPV stack, hence XDG_CONFIG_HOME isolation and a GUI capture.",
       "known_limitations": "Profile is wallet-only, NOT wallet-identity-dpns, despite an identity being genuinely registered on testnet for this fixture wallet. A Platform identity (51iVVoMU8ANbxDv7wySh5Sk6mZGSEMpCkeqtkr24mHdE) and DPNS name (migtestfixture093.dash) were registered on testnet using the current build (commit 9cbf464f3) specifically for this capture, but v0.9.3's SDK cannot load ANY identity from the current testnet: its GroveDB proof-verification code only understands proof variant 0, while current testnet nodes return variant 1 ('Proof verification error: ... UnexpectedVariant { allowed: Range { min: 0, max: 0 }, found: 1 }'). This is a permanent client/network protocol incompatibility, not a config or timing issue, and blocks EVERY identity load attempt from v0.9.3 against today's testnet, not just this one. data.db's identity table therefore has 0 rows in this fixture. The on-chain identity+DPNS registration remains independently verifiable and reusable (e.g. to test 'does a newer build see an identity that existed before the fixture's wallet was captured', which does not require v0.9.3 itself to render it) but this fixture cannot be used to assert 'identity/DPNS data survives a v0.9.3 upgrade' end-to-end. Also note: v0.9.3's own .env.example ships a dead TESTNET_dapi_addresses list (all 18 addresses unreachable); the packed .env has that one value replaced with the current fixed address list so the app can reach DAPI at all, everything else left at v0.9.3's original format."
+    },
+    {
+      "id": "v1.0.0-weekly.20260908-wallet-only",
+      "git_tag": "v1.0.0-weekly.20260908",
+      "det_version": "1.0.0-weekly.20260908+13d8309e3",
+      "capture_method": "gui+det-cli",
+      "profile": "wallet-only",
+      "network": "testnet",
+      "host_platform": "x86_64-linux",
+      "binary_asset": "dash-evo-tool-linux-x86_64.zip",
+      "data_dir_env": "DASH_EVO_DATA_DIR",
+      "platform_rev": "67d4ef3f6340a1e983229b6870ef60cf7573602a",
+      "capture_scenario": null,
+      "captured_at": "2026-09-11",
+      "artifact": {
+        "workflow_name": "migration-fixture-bootstrap.yml",
+        "workflow_run_id": null,
+        "artifact_name": "migration-fixture-v1.0.0-weekly.20260908-wallet-only",
+        "archive_filename": "v1.0.0-weekly.20260908-wallet-only.tar.zst",
+        "sha256": "c7e21762a762c6a5892dcdff952c54583c7df8bd649fbd3c960696057ca17624",
+        "bytes": 277402,
+        "retention_days": null,
+        "expires_at": null,
+        "staging_note": "Not uploaded yet. The archive is over the ~48 KB archive_b64 limit, so it goes through the bootstrap workflow's release_tag relay (a temporary draft release). Record workflow_run_id, retention_days and expires_at from that run's step summary, then drop this note."
+      },
+      "expect": {
+        "wallet_aliases": ["weekly-fixture"],
+        "starting_db_version": 38
+      },
+      "contents": {
+        "wallets": [],
+        "identity": null
+      },
+      "notes": "First current-era fixture, and the first that runs the platform_compatibility bridge on real bytes. The released v1.0.0-weekly.20260908 build (commit 13d8309e3) pins Platform 67d4ef3f, whose wallet-storage migration history diverges from the current pin at V003 (3:unified 4:invitations). Booting it with the current build therefore upgrades det-app.sqlite and det-testnet.sqlite through the bridge, which keeps a *.platform-67d4ef3-backup-*.sqlite copy of each. The wallet lives in det-testnet.sqlite, not data.db (data.db is at version 38 with no wallet table), so the harness asserts it by alias through expect.wallet_aliases rather than contents.wallets. Wallet: alias weekly-fixture, seed hash 0a90903e8dfb8ea0bf5a89c6524df7d8daa7e0024a312c2c751b27901714e929. It is a fresh, public, testnet-only wallet whose recovery phrase is read from MIGRATION_FIXTURE_WEEKLY_MNEMONIC and never committed. It was funded with one 1 tDASH payment from the public testnet faucet (txid 5b5a40a0595f7a591e3e9f0d34a2e28d2e1f45a88aa3e8083299711bbcb53b78), which gives real core_transactions, core_utxos and core_instant_locks rows, plus 400 core_address_pool rows, 13 account_registrations and sync state. The capture ran the weekly's own det-cli serve (import, two addresses, balance, discovery), then launched the weekly GUI once on a private Xvfb display to select testnet (det-cli's network switch is not persisted) and quit cleanly. src/wallet_backend/platform_compatibility/real_fixture_tests.rs opens the same archive directly through the bridge.",
+      "known_limitations": "wallet-only: no identity and no DPNS name. The weekly det-cli cannot register an identity; the bridge's synthetic public-rows.sql covers identity and contact rows. The app's clean shutdown does not checkpoint the SQLite WAL, so the archive carries the -wal sidecars (det-testnet.sqlite-wal is 3.6 MB uncompressed). They are kept on purpose, because that is the state a real profile is in, and they are why the archive is 277 KB. The GUI's first start on mainnet also left empty det-mainnet*.sqlite files."
     }
   ]
 }

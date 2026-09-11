@@ -5,6 +5,15 @@ use thiserror::Error;
 /// Comprehensive error types for DashPay operations
 #[derive(Error, Debug)]
 pub enum DashPayError {
+    /// A profile picture must be available before publishing its URL and hashes.
+    #[error(transparent)]
+    ProfileAvatarFailed(#[from] super::avatar_processing::AvatarProcessingError),
+
+    #[error(
+        "This identity's keys cannot save profiles yet. Use a different wallet-linked identity with profile support."
+    )]
+    ProfileSigningKeyUnsupported,
+
     #[error(
         "The profile contains invalid fields. Check the name, bio, and picture URL, then retry."
     )]
@@ -177,6 +186,8 @@ impl DashPayError {
                 | DashPayError::MissingEncryptionKey
                 | DashPayError::ContactInfoValidationFailed { .. }
                 | DashPayError::CannotContactSelf
+                | DashPayError::ProfileSigningKeyUnsupported
+                | DashPayError::ProfileAvatarFailed(_)
         )
     }
 }

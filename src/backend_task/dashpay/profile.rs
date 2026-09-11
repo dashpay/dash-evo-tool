@@ -139,11 +139,11 @@ async fn mirror_profile_to_backend(
         return;
     }
 
-    if let Err(e) = backend.dashpay_set_timestamps(owner, now_ms, now_ms) {
+    if let Err(e) = backend.dashpay_set_profile_timestamps(owner, now_ms, now_ms) {
         tracing::debug!(
             owner = %owner.to_string(Encoding::Base58),
             error = ?e,
-            "DashPay profile timestamp sidecar write failed; created_at/updated_at will read 0"
+            "Fetched profile timestamps are pending persistence; the next profile read will retry"
         );
     }
 }
@@ -157,6 +157,13 @@ pub async fn update_profile(
     avatar_url: Option<String>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let mut input = profile_update_input(display_name, bio, avatar_url)?;
+    if let Some(url) = &input.avatar_url {
+        input.avatar_bytes = Some(
+            super::avatar_processing::fetch_image_bytes(url)
+                .await
+                .map_err(DashPayError::from)?,
+        );
+    }
     let backend = app_context.wallet_backend()?;
     let identity_id = identity.identity.id();
     let mut query =
@@ -175,18 +182,6 @@ pub async fn update_profile(
     let profiles = Document::fetch_many(sdk, query).await?;
     let existing = profiles.values().flatten().next();
     ensure_profile_fields_preserved(existing, &input)?;
-
-    if let Some(url) = &input.avatar_url {
-        match super::avatar_processing::fetch_image_bytes(url).await {
-            Ok(bytes) => input.avatar_bytes = Some(bytes),
-            Err(error) => {
-                tracing::debug!(
-                    ?error,
-                    "Profile avatar could not be downloaded; saving its URL only"
-                );
-            }
-        }
-    }
 
     backend
         .dashpay_write_profile(&identity, input, existing.is_none())
@@ -439,6 +434,32 @@ mod tests {
             status: Default::default(),
             network: dash_sdk::dpp::dashcore::Network::Testnet,
         }
+    }
+
+    #[tokio::test]
+    async fn profile_write_rejects_unfetchable_avatar_before_network_or_signing() {
+        let dir = tempfile::tempdir().expect("temporary app data");
+        let context = crate::context::test_support::test_app_context(dir.path());
+        let sdk = context.sdk.load_full();
+        let error = update_profile(
+            &context,
+            &sdk,
+            empty_identity(),
+            Some("Alice".into()),
+            None,
+            Some("http://example.com/avatar.png".into()),
+        )
+        .await
+        .expect_err("an unfetchable avatar must stop profile submission");
+        assert!(
+            matches!(
+                error,
+                TaskError::DashPay(DashPayError::ProfileAvatarFailed(
+                    super::super::avatar_processing::AvatarProcessingError::HttpsRequired
+                ))
+            ),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[tokio::test]

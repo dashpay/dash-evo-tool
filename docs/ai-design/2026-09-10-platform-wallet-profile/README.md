@@ -7,6 +7,17 @@ selection, document construction, signing requests, broadcast, and profile
 persistence. DET validates inputs, determines create versus update from a
 network query, fetches optional avatar bytes, and maintains display timestamps.
 
+Avatar download or decoding failures stop the task before any profile query or
+write. Typed errors preserve the cause and tell the user how to correct the URL.
+DET checks the managing wallet's identity against the pinned upstream key policy
+before invoking the profile API; incompatible keys produce an actionable error.
+
+Failed display-timestamp writes remain in a per-network, per-identity in-memory
+repair queue. Profile reads retry only the local write and return the pending
+values even if storage still fails. A newer save replaces the pending values;
+a successful repair removes them. Pending repairs do not survive an application
+restart, and do not resubmit a paid profile transition.
+
 ## Scope and limitations
 
 - HIGH and CRITICAL authentication keys are selected upstream. The pinned
@@ -27,7 +38,8 @@ network query, fetches optional avatar bytes, and maintains display timestamps.
 
 Unit coverage checks validation before network/signing, omission of blank input
 fields, rejection of unsupported field removal, and failure without a managing
-wallet. The narrow backend E2E module is enabled independently of the deferred
+wallet, avatar failures before network access, key compatibility, and timestamp
+repair after transient storage failures. The narrow backend E2E module is enabled independently of the deferred
 contact-flow suite:
 
 ```sh

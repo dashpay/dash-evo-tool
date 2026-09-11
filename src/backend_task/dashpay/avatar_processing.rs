@@ -6,6 +6,27 @@ use std::sync::Arc;
 /// Maximum allowed size for avatar images (5MB)
 const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
 
+/// Typed failures while downloading or decoding a profile picture.
+#[derive(Debug, thiserror::Error)]
+pub enum AvatarProcessingError {
+    #[error("The picture URL must use HTTPS. Enter an HTTPS URL and try again.")]
+    HttpsRequired,
+    #[error("The picture URL is too long. Use a URL with at most 2048 characters.")]
+    UrlTooLong,
+    #[error("The picture could not be downloaded. Check its URL and try again.")]
+    Download(#[from] reqwest::Error),
+    #[error("The picture server returned an invalid header. Try a different picture URL.")]
+    InvalidHeader(#[from] reqwest::header::ToStrError),
+    #[error("The picture server returned an invalid size. Try a different picture URL.")]
+    InvalidLength(#[from] std::num::ParseIntError),
+    #[error("The picture URL did not return an image. Try a different picture URL.")]
+    InvalidContentType,
+    #[error("The picture is too large. Choose an image smaller than 5 MB.")]
+    ImageTooLarge,
+    #[error("The picture could not be read. Choose a different image and try again.")]
+    InvalidImage(#[from] image::ImageError),
+}
+
 /// Resolve an avatar's image bytes for `url`, serving the DET avatar disk cache
 /// on a hit and fetching + populating it on a miss. The single avatar fetch
 /// path for every DashPay screen (contacts list, profile, contact viewer).
@@ -55,10 +76,9 @@ pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {
 /// 2. Resize to 9x8 pixels
 /// 3. Compare each pixel with its right neighbor
 /// 4. Generate 64-bit hash based on comparisons
-pub fn calculate_dhash_fingerprint(image_bytes: &[u8]) -> Result<[u8; 8], String> {
+pub fn calculate_dhash_fingerprint(image_bytes: &[u8]) -> Result<[u8; 8], AvatarProcessingError> {
     // Load the image from bytes
-    let img =
-        image::load_from_memory(image_bytes).map_err(|e| format!("Failed to load image: {}", e))?;
+    let img = image::load_from_memory(image_bytes)?;
 
     // Convert to grayscale and resize to 9x8
     let grayscale = img.grayscale();
@@ -201,90 +221,63 @@ pub fn are_images_similar(hash1: &[u8; 8], hash2: &[u8; 8], threshold: u32) -> b
 }
 
 /// Fetch image from URL and return bytes
-pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, String> {
+pub async fn fetch_image_bytes(url: &str) -> Result<Vec<u8>, AvatarProcessingError> {
     // Check URL is valid and uses HTTPS
     if !url.starts_with("https://") {
-        return Err("Avatar URL must use HTTPS".to_string());
+        return Err(AvatarProcessingError::HttpsRequired);
     }
 
     // Validate URL length per DIP-0015 (max 2048 characters)
     if url.len() > 2048 {
-        return Err("Avatar URL exceeds maximum length of 2048 characters".to_string());
+        return Err(AvatarProcessingError::UrlTooLong);
     }
 
     // Create HTTP client with timeout
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        .build()?;
 
     // Send GET request
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch image: {}", e))?;
-
-    // Check status code
-    if !response.status().is_success() {
-        return Err(format!("HTTP error: {}", response.status()));
-    }
+    let response = client.get(url).send().await?.error_for_status()?;
 
     // Check content type
     if let Some(content_type) = response.headers().get("content-type") {
-        let content_type_str = content_type
-            .to_str()
-            .map_err(|e| format!("Invalid content-type header: {}", e))?;
+        let content_type_str = content_type.to_str()?;
 
         if !content_type_str.starts_with("image/") {
-            return Err(format!(
-                "Invalid content type: expected image/*, got {}",
-                content_type_str
-            ));
+            return Err(AvatarProcessingError::InvalidContentType);
         }
     }
 
     // Check content length if provided
     if let Some(content_length) = response.headers().get("content-length") {
-        let length_str = content_length
-            .to_str()
-            .map_err(|e| format!("Invalid content-length header: {}", e))?;
+        let length_str = content_length.to_str()?;
 
-        let length: usize = length_str
-            .parse()
-            .map_err(|e| format!("Failed to parse content-length: {}", e))?;
+        let length: usize = length_str.parse()?;
 
         if length > MAX_IMAGE_SIZE {
-            return Err(format!(
-                "Image too large: {} bytes (max {} bytes)",
-                length, MAX_IMAGE_SIZE
-            ));
+            return Err(AvatarProcessingError::ImageTooLarge);
         }
     }
 
     // Download the image bytes
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to download image: {}", e))?;
+    let bytes = response.bytes().await?;
 
     // Verify actual size
     if bytes.len() > MAX_IMAGE_SIZE {
-        return Err(format!(
-            "Image too large: {} bytes (max {} bytes)",
-            bytes.len(),
-            MAX_IMAGE_SIZE
-        ));
+        return Err(AvatarProcessingError::ImageTooLarge);
     }
 
     // Try to validate it's actually an image by attempting to load it
-    image::load_from_memory(&bytes).map_err(|e| format!("Invalid image data: {}", e))?;
+    image::load_from_memory(&bytes)?;
 
     Ok(bytes.to_vec())
 }
 
 /// Process an avatar image: fetch, validate, and calculate hashes
-pub async fn process_avatar(url: &str) -> Result<(Vec<u8>, [u8; 32], [u8; 8]), String> {
+pub async fn process_avatar(
+    url: &str,
+) -> Result<(Vec<u8>, [u8; 32], [u8; 8]), AvatarProcessingError> {
     // Fetch the image
     let image_bytes = fetch_image_bytes(url).await?;
 
@@ -503,13 +496,19 @@ mod tests {
         // Test non-HTTPS URL
         let result = fetch_image_bytes("http://example.com/image.jpg").await;
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Avatar URL must use HTTPS");
+        assert!(matches!(
+            result.unwrap_err(),
+            AvatarProcessingError::HttpsRequired
+        ));
 
         // Test URL that's too long
         let long_url = format!("https://example.com/{}", "a".repeat(2100));
         let result = fetch_image_bytes(&long_url).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("exceeds maximum length"));
+        assert!(matches!(
+            result.unwrap_err(),
+            AvatarProcessingError::UrlTooLong
+        ));
     }
 
     #[tokio::test]
@@ -517,7 +516,10 @@ mod tests {
         // HTTP URLs should be rejected immediately
         let result = fetch_image_bytes("http://example.com/avatar.png").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("HTTPS"));
+        assert!(matches!(
+            result.unwrap_err(),
+            AvatarProcessingError::HttpsRequired
+        ));
     }
 
     #[tokio::test]
@@ -531,7 +533,10 @@ mod tests {
         let url_over_limit = format!("https://example.com/{}", "x".repeat(2100));
         let result = fetch_image_bytes(&url_over_limit).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("maximum length"));
+        assert!(matches!(
+            result.unwrap_err(),
+            AvatarProcessingError::UrlTooLong
+        ));
     }
 
     #[tokio::test]

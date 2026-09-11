@@ -429,6 +429,8 @@ struct Inner {
     /// DashPay screens have separate UI state, so backend serialization is the
     /// final guard against two callers paying for the same request concurrently.
     dashpay_request_action_locks: dashpay::ContactRequestActionLocks,
+    /// Failed profile timestamp writes, retried locally without another broadcast.
+    profile_timestamps: dashpay::ProfileTimestamps,
     /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
     /// registration. Lets sync code reach an upstream wallet handle without an
     /// async hop (e.g. DashPay address-pool scanning).
@@ -647,6 +649,7 @@ impl WalletBackend {
                 swallow_next_unowned_removal: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
+                profile_timestamps: dashpay::ProfileTimestamps::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -1690,6 +1693,7 @@ impl WalletBackend {
     /// off-thread — plus every delete failure. Resilient to partial failure:
     /// every wallet is attempted even after one fails.
     pub(crate) fn forget_all_wallets_local(&self) -> ClearAllOutcome {
+        self.inner.profile_timestamps.clear();
         let network = self.inner.network;
 
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a

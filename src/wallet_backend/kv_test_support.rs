@@ -86,10 +86,16 @@ pub(crate) struct FailingKv {
     inner: InMemoryKv,
     fail_reads: AtomicBool,
     fail_deletes: AtomicBool,
+    fail_puts_remaining: AtomicUsize,
     puts: AtomicUsize,
 }
 
 impl FailingKv {
+    /// Fail the next `count` writes, then resume normal persistence.
+    pub(crate) fn fail_next_puts(&self, count: usize) {
+        self.fail_puts_remaining.store(count, Ordering::Relaxed);
+    }
+
     /// Make every subsequent `get` fail with [`KvError::LockPoisoned`] (`true`),
     /// or restore normal reads (`false`). Stored values are never touched, so a
     /// read armed to fail and then restored still yields the original blob.
@@ -122,6 +128,15 @@ impl KvStore for FailingKv {
         // Counted before delegating: an attempted write is what the assertions
         // are about, whether or not the store would have accepted it.
         self.puts.fetch_add(1, Ordering::Relaxed);
+        if self
+            .fail_puts_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(KvError::LockPoisoned);
+        }
         self.inner.put(scope, key, value)
     }
 

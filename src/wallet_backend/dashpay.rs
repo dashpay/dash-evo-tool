@@ -246,6 +246,54 @@ const KV_PREFIX_REQUEST_ACTION: &str = "det:dashpay:request_action:";
 /// DET-local `(created_at, updated_at)` timestamps for an entity (contact, request).
 /// Value: `(i64, i64)` encoded by the [`DetKv`] schema. Scope: [`DetScope::Global`].
 const KV_PREFIX_TIMESTAMPS: &str = "det:dashpay:timestamps:";
+
+/// Session-local repair queue for display metadata after a successful profile write.
+/// Reads retry persistence and use pending values until storage recovers. Holding
+/// the lock through each put prevents an old repair from overwriting a newer save.
+#[derive(Default)]
+pub(super) struct ProfileTimestamps {
+    pending: std::sync::Mutex<std::collections::BTreeMap<Identifier, (i64, i64)>>,
+}
+
+impl ProfileTimestamps {
+    fn set(&self, kv: &DetKv, owner: &Identifier, value: (i64, i64)) -> Result<(), TaskError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.insert(*owner, value);
+        kv.put(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_TIMESTAMPS, owner),
+            &value,
+        )
+        .map_err(|source| TaskError::DashpaySidecarStorage { source })?;
+        pending.remove(owner);
+        Ok(())
+    }
+
+    fn get(&self, kv: &DetKv, owner: &Identifier) -> (i64, i64) {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(value) = pending.get(owner).copied() else {
+            return kv_timestamps(kv, owner);
+        };
+        if kv
+            .put(
+                DetScope::Global,
+                &sidecar_key(KV_PREFIX_TIMESTAMPS, owner),
+                &value,
+            )
+            .is_ok()
+        {
+            pending.remove(owner);
+        }
+        value
+    }
+
+    pub(super) fn clear(&self) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+}
 /// DET-local private memo for a contact (nickname / notes / hidden).
 /// Value: bincode-encoded [`ContactPrivateInfo`].
 /// Scope: [`DetScope::Identity(&owner)`]. Key shape: `det:dashpay:private:<contact_b58>`.
@@ -363,7 +411,7 @@ impl<'a> DashpayView<'a> {
     /// `f`. Returns `None` when no registered wallet manages `owner` (unknown
     /// or wrong-network identity), so each caller maps that to its own empty
     /// default. The wallet-state read guard is held for the closure's
-    /// duration, so `f` must stay synchronous (pure translation only).
+    /// duration, so `f` must stay synchronous and must not acquire wallet state.
     async fn with_managed<R>(
         &self,
         owner: &Identifier,
@@ -515,7 +563,7 @@ impl<'a> DashpayView<'a> {
     pub async fn profile(&self, owner: &Identifier) -> Option<StoredProfile> {
         self.with_managed(owner, |managed, kv| {
             let profile = managed.dashpay().profile.as_ref()?;
-            let (created_at, updated_at) = kv_timestamps(kv, owner);
+            let (created_at, updated_at) = self.backend.inner.profile_timestamps.get(kv, owner);
             Some(profile_to_det(owner, profile, created_at, updated_at))
         })
         .await
@@ -829,6 +877,23 @@ fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
 // WalletBackend integration
 // ---------------------------------------------------------------------------
 
+/// Match the pinned upstream profile API's signing-key policy before its network work.
+fn ensure_profile_signing_key(identity: &dash_sdk::platform::Identity) -> Result<(), TaskError> {
+    use crate::backend_task::dashpay::errors::DashPayError;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+
+    identity
+        .get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
+            [KeyType::ECDSA_SECP256K1].into(),
+            false,
+        )
+        .ok_or(DashPayError::ProfileSigningKeyUnsupported)?;
+    Ok(())
+}
+
 impl WalletBackend {
     /// Publish a profile through the managing wallet, signing through DET's secret-access path.
     pub(crate) async fn dashpay_write_profile(
@@ -845,6 +910,15 @@ impl WalletBackend {
             .find_wallet_for_identity(&owner)
             .await
             .ok_or(DashPayError::ProfileWalletRequired)?;
+        {
+            // Upstream selects from its managed identity, which may be newer than the UI copy.
+            let state = wallet.state().await;
+            let managed = state
+                .identity_manager
+                .managed_identity(&owner)
+                .ok_or(DashPayError::ProfileWalletRequired)?;
+            ensure_profile_signing_key(&managed.identity)?;
+        }
         let identity_wallet = wallet.identity();
         let dashpay = identity_wallet.dashpay();
         let result = if create {
@@ -868,19 +942,31 @@ impl WalletBackend {
             .map(|profile| profile.created_at)
             .filter(|created_at| *created_at > 0)
             .unwrap_or(now);
-        if let Err(error) = self.dashpay_set_timestamps(&owner, created_at, now) {
+        if let Err(error) = self.dashpay_set_profile_timestamps(&owner, created_at, now) {
             // The broadcast succeeded; a display-metadata failure must not invite a paid retry.
             tracing::warn!(
                 ?error,
-                "Profile saved but its local display timestamps could not be updated"
+                "Profile saved; pending display timestamps will be persisted on the next profile read"
             );
         }
         Ok(())
     }
 
-    /// Read-only DashPay accessor. Cheap to construct (borrow only).
+    /// DashPay accessor; profile reads also retry pending local timestamp writes.
     pub fn dashpay_view(&self) -> DashpayView<'_> {
         DashpayView::new(self)
+    }
+
+    /// Persist profile display times, retaining failed writes for repair on profile reads.
+    pub(crate) fn dashpay_set_profile_timestamps(
+        &self,
+        owner: &Identifier,
+        created_at: i64,
+        updated_at: i64,
+    ) -> Result<(), TaskError> {
+        self.inner
+            .profile_timestamps
+            .set(&self.kv(), owner, (created_at, updated_at))
     }
 
     /// Trigger an upstream DashPay refresh (contact requests + profiles)
@@ -1853,6 +1939,151 @@ mod tests {
         let det = established_to_det(&owner, &contact, status, 0, 0);
         assert_eq!(det.contact_status, ContactStatus::Blocked);
         assert_eq!(det.display_name.as_deref(), Some("Friend"));
+    }
+
+    #[test]
+    fn profile_signing_key_policy_matches_upstream() {
+        use crate::backend_task::dashpay::errors::DashPayError;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+
+        let mut identity = dash_sdk::platform::Identity::default_versioned(
+            dash_sdk::dpp::version::LATEST_PLATFORM_VERSION,
+        )
+        .unwrap();
+        assert!(matches!(
+            ensure_profile_signing_key(&identity),
+            Err(TaskError::DashPay(
+                DashPayError::ProfileSigningKeyUnsupported
+            ))
+        ));
+        for (key_type, purpose, level, disabled, supported) in [
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                false,
+                true,
+            ),
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::CRITICAL,
+                false,
+                true,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::CRITICAL,
+                false,
+                false,
+            ),
+            (
+                KeyType::BLS12_381,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::MASTER,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::MEDIUM,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::ENCRYPTION,
+                SecurityLevel::HIGH,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                true,
+                false,
+            ),
+        ] {
+            identity.set_public_keys(
+                [(
+                    0,
+                    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                        id: 0,
+                        purpose,
+                        security_level: level,
+                        contract_bounds: None,
+                        key_type,
+                        read_only: false,
+                        data: vec![0; key_type.default_size()].into(),
+                        disabled_at: disabled.then_some(1),
+                    }),
+                )]
+                .into(),
+            );
+            assert_eq!(
+                ensure_profile_signing_key(&identity).is_ok(),
+                supported,
+                "{key_type:?} {purpose:?} {level:?} disabled={disabled}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_timestamps_repair_failed_writes_on_read() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let timestamps = ProfileTimestamps::default();
+        let owner = id_from_byte(1);
+        store.fail_next_puts(2);
+        assert!(timestamps.set(&kv, &owner, (111, 222)).is_err());
+        // Even while storage is unavailable the view must see the successful write's times.
+        assert_eq!(timestamps.get(&kv, &owner), (111, 222));
+        assert_eq!(kv_timestamps(&kv, &owner), (0, 0));
+        assert_eq!(timestamps.get(&kv, &owner), (111, 222));
+        assert_eq!(kv_timestamps(&kv, &owner), (111, 222));
+        assert_eq!(store.put_count(), 3);
+        // Once repaired, reads must not issue further writes.
+        assert_eq!(timestamps.get(&kv, &owner), (111, 222));
+        assert_eq!(store.put_count(), 3);
+    }
+
+    #[test]
+    fn profile_timestamp_repair_cannot_overwrite_a_newer_save() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let timestamps = ProfileTimestamps::default();
+        let owner = id_from_byte(1);
+        let other = id_from_byte(2);
+        store.fail_next_puts(1);
+        assert!(timestamps.set(&kv, &owner, (111, 222)).is_err());
+        assert_eq!(timestamps.get(&kv, &other), (0, 0));
+        timestamps.set(&kv, &owner, (111, 333)).unwrap();
+        assert_eq!(timestamps.get(&kv, &owner), (111, 333));
+        assert_eq!(kv_timestamps(&kv, &owner), (111, 333));
+        assert_eq!(store.put_count(), 2);
     }
 
     #[test]

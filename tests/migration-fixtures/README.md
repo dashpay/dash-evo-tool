@@ -224,6 +224,16 @@ uploaded:
 |---|---|
 | `alias` | The wallet's alias in `data.db`. The harness finds the wallet by it. |
 | `uses_password` | Whether the wallet is password-protected. |
-| `expected_outcome` | What a headless det-cli boot must do with this wallet. `migrated` (the default): the wallet is registered in `det-<network>.sqlite`. `needs_desktop`: a password-protected wallet. By design (`docs/ai-design/2026-07-14-migration-password-prompt/design.md`) det-cli cannot prompt for its password, so the boot must fail with `StorageUpdateNeedsDesktop`, the wallet must stay unregistered, and the wallet-drain sentinel must stay unwritten. Any other result fails the matrix. |
+| `password` | The wallet's password: a public, testnet-only fixture password. A `password_runs` entry hands it to det-cli; the harness never prints it, and fails a run whose output contains it. |
+| `expected_outcome` | What a headless det-cli boot **without a supplied password** must do with this wallet. `migrated` (the default): the wallet is registered in `det-<network>.sqlite`. `needs_desktop`: a password-protected wallet. det-cli never prompts for a password (`docs/ai-design/2026-07-14-migration-password-prompt/design.md`), so the boot must fail with `StorageUpdateNeedsDesktop`, the wallet must stay unregistered, and the wallet-drain sentinel must stay unwritten. Any other result fails the matrix. |
+
+`password_runs[]` — optional extra boots of the same fixture with the wallet password supplied non-interactively. Each runs on a freshly staged copy, after the boot without a password:
+
+| Field | Meaning |
+|---|---|
+| `source` | How det-cli receives the password. `file`: the harness writes it to an owner-only (`0600`) file and runs `app-storage-update --password-file <file>` before the wallet boots. |
+| `expected_outcomes` | Per-alias outcomes that differ from the wallet's `expected_outcome` in this run, e.g. `{"migration-fixture-v093-protected": "migrated"}`. `needs_desktop` is rejected here: with the password supplied, the update either opens every protected wallet or fails. |
+
+Every wallet with a `password` must share it: one supplied password opens them all, or the update fails and nothing is skipped. The `app-storage-update` boot logs DET, det-cli and rmcp at `trace`, and the run fails if any command's output contains the password. The second boot gets no password: once the update has finished, a plain boot must need nothing more.
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

@@ -15,6 +15,9 @@
 //! nothing. The harness spawns the real `det-cli` binary instead; see
 //! [`cli`] for the boot path it drives.
 //!
+//! Each fixture boots once without a password and once per `password_runs`
+//! manifest entry, every time from a freshly staged copy.
+//!
 //! Environment:
 //!
 //! | Variable | Effect |
@@ -37,7 +40,7 @@ use std::time::Duration;
 
 use assertions::{APP_DB, DATA_DB};
 use dash_evo_tool::database::DEFAULT_DB_VERSION;
-use manifest::Fixture;
+use manifest::{ExpectedWallet, Fixture, Scenario};
 
 const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
 const ONLY_ENV: &str = "MIGRATION_MATRIX_ONLY";
@@ -158,8 +161,36 @@ fn select(fixtures: &[Fixture]) -> Vec<&Fixture> {
         .collect()
 }
 
-/// Stages one fixture, boots it twice, and checks what the upgrade produced.
+/// Runs every scenario of one fixture — always the boot without a password,
+/// then one per password run — each on a freshly staged copy, and reports
+/// every failing scenario rather than stopping at the first.
 fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Result<(), String> {
+    let failures: Vec<String> = fixture
+        .scenarios()?
+        .iter()
+        .filter_map(|scenario| {
+            println!("  scenario: {}", scenario.label);
+            run_scenario(fixtures_dir, fixture, scenario, options)
+                .err()
+                .map(|error| format!("scenario `{}`: {error}", scenario.label))
+        })
+        .collect();
+    match failures.is_empty() {
+        true => Ok(()),
+        false => Err(failures.join("\n\n")),
+    }
+}
+
+/// Stages one fixture, boots it twice, and checks what the upgrade produced.
+/// A scenario with a password first finishes the storage update through
+/// `app-storage-update --password-file`, as an operator automating an upgrade
+/// would.
+fn run_scenario(
+    fixtures_dir: &Path,
+    fixture: &Fixture,
+    scenario: &Scenario,
+    options: &Options,
+) -> Result<(), String> {
     let network = fixture.network()?;
     let staged = stage::stage(fixtures_dir, fixture)?;
     let scratch = staged.scratch()?;
@@ -183,16 +214,30 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
 
     let cli = cli::DetCli::new(&staged)?;
 
-    // A fixture holding a password-protected wallet cannot finish its storage
-    // update headless — det-cli has no password prompt, by design — so every
-    // wallet-gated boot must stop at exactly that error, not merely fail.
-    let needs_desktop = fixture.needs_desktop();
+    // Without its password, a fixture holding a password-protected wallet
+    // cannot finish its storage update headless — det-cli never prompts — so
+    // every wallet-gated boot must stop at exactly that error, not merely fail.
+    let needs_desktop = scenario.needs_desktop();
     let check_wallet_boot = |run: &cli::CliRun, label: &str| match needs_desktop {
         true => assertions::check_needs_desktop(run, label),
         false => assertions::check_boot(run, label),
     };
+    // Every run of a password scenario is checked for the password first, so
+    // a leak is reported even when the run also fails for another reason.
+    let check_not_echoed = |run: &cli::CliRun| match &scenario.password {
+        Some(password) => assertions::check_password_not_echoed(run, password),
+        None => Ok(()),
+    };
+
+    if let Some(password) = &scenario.password {
+        let password_file = staged.write_password_file(password)?;
+        let update = cli.storage_update(&password_file, options.boot_timeout)?;
+        check_not_echoed(&update)?;
+        assertions::check_boot(&update, "app-storage-update")?;
+    }
 
     let first = cli.wallets_list(options.boot_timeout)?;
+    check_not_echoed(&first)?;
     check_wallet_boot(&first, "the first boot")?;
 
     let after = assertions::schema_snapshot(&data_db, &scratch, "after")?;
@@ -203,6 +248,7 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
     }
 
     let info = cli.network_info(options.boot_timeout)?;
+    check_not_echoed(&info)?;
     assertions::check_boot(&info, "network-info")?;
     assertions::check_network(network, &info)?;
 
@@ -210,9 +256,9 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
         // Wallet tools stay gated until the desktop app finishes the update,
         // so nothing is listed; the per-wallet check below reads storage.
         true => Vec::new(),
-        false => assertions::check_wallets(&fixture.migrated_aliases(), &first)?,
+        false => assertions::check_wallets(&scenario.listed_aliases, &first)?,
     };
-    check_wallet_outcomes(fixture, &data_db, &network_db, &scratch, "after")?;
+    check_wallet_outcomes(&scenario.wallets, &data_db, &network_db, &scratch, "after")?;
     assertions::check_identities(
         &fixture.expect.identity_ids,
         &assertions::identity_ids(&network_db, &scratch, "after")?,
@@ -227,12 +273,21 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
     }
     let backups = assertions::backup_files(&data_dir)?;
 
+    // The second boot never gets the password: once the update finished, a
+    // plain boot must need nothing more.
     let second = cli.wallets_list(options.boot_timeout)?;
+    check_not_echoed(&second)?;
     check_wallet_boot(&second, "the second boot")?;
     if !needs_desktop {
-        assertions::check_wallets(&fixture.migrated_aliases(), &second)?;
+        assertions::check_wallets(&scenario.listed_aliases, &second)?;
     }
-    check_wallet_outcomes(fixture, &data_db, &network_db, &scratch, "idempotent")?;
+    check_wallet_outcomes(
+        &scenario.wallets,
+        &data_db,
+        &network_db,
+        &scratch,
+        "idempotent",
+    )?;
     assertions::check_idempotent(
         (&backups, &sentinels),
         (
@@ -266,19 +321,17 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
 /// possible for a v0.9.3-era fixture, where `data.db` names each wallet's
 /// account xpub; a fixture without one relies on the boot-level checks.
 fn check_wallet_outcomes(
-    fixture: &Fixture,
+    wallets: &[ExpectedWallet],
     data_db: &Path,
     network_db: &Path,
     scratch: &Path,
     label: &str,
 ) -> Result<(), String> {
-    if fixture.contents.wallets.is_empty() {
+    if wallets.is_empty() {
         return Ok(());
     }
     match assertions::legacy_wallet_registrations(data_db, network_db, scratch, label)? {
-        Some(registered) => {
-            assertions::check_wallet_outcomes(&fixture.contents.wallets, &registered)
-        }
+        Some(registered) => assertions::check_wallet_outcomes(wallets, &registered),
         None => {
             println!("    per-wallet storage check skipped (no {DATA_DB} to name the wallets)");
             Ok(())

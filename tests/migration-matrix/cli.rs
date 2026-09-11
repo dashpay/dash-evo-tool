@@ -23,6 +23,10 @@ use crate::stage::StagedFixture;
 /// Overrides the binary under test (a release build, a downloaded artifact).
 pub const BINARY_ENV: &str = "DET_CLI_BIN";
 
+/// Log filter of the password-supplied boot: everything DET, det-cli and rmcp
+/// can emit, the rest at `info` to keep the capture readable.
+const STORAGE_UPDATE_LOG_FILTER: &str = "info,dash_evo_tool=trace,det_cli=trace,rmcp=trace";
+
 /// Path Cargo hands us when `det-cli` is built alongside this test — i.e.
 /// whenever the `cli` feature is on, as it is under `--all-features`.
 const CARGO_BIN: Option<&str> = option_env!("CARGO_BIN_EXE_det-cli");
@@ -101,6 +105,16 @@ impl DetCli {
 
     /// Runs one subcommand, killing the child if it outlives `timeout`.
     pub fn run(&self, args: &[&str], timeout: Duration) -> Result<CliRun, String> {
+        self.run_with_log(args, timeout, &log_filter())
+    }
+
+    /// [`Self::run`] under an explicit `RUST_LOG` filter.
+    pub fn run_with_log(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+        log_filter: &str,
+    ) -> Result<CliRun, String> {
         let command = format!("det-cli --standalone {}", args.join(" "));
         let mut child = Command::new(&self.binary)
             .arg("--standalone")
@@ -118,7 +132,7 @@ impl DetCli {
             // whatever DET instance happens to be running on this machine.
             .env_remove("MCP_API_KEY")
             .env_remove("MCP_LISTEN")
-            .env("RUST_LOG", log_filter())
+            .env("RUST_LOG", log_filter)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -164,6 +178,29 @@ impl DetCli {
     /// the migration to reach a terminal state, then lists the wallets.
     pub fn wallets_list(&self, timeout: Duration) -> Result<CliRun, String> {
         self.run(&["core-wallets-list"], timeout)
+    }
+
+    /// Finishes the storage update with the wallet password read from an
+    /// owner-only file, as an operator automating an upgrade would.
+    ///
+    /// Logs at `trace` for DET and rmcp, so the harness's leak check covers
+    /// every line det-cli can print — rmcp's raw request logging included.
+    pub fn storage_update(
+        &self,
+        password_file: &Path,
+        timeout: Duration,
+    ) -> Result<CliRun, String> {
+        let path = password_file.to_str().ok_or_else(|| {
+            format!(
+                "password file path {} is not UTF-8",
+                password_file.display()
+            )
+        })?;
+        self.run_with_log(
+            &["app-storage-update", "--password-file", path],
+            timeout,
+            STORAGE_UPDATE_LOG_FILTER,
+        )
     }
 
     /// Active network and configured networks. Network-exempt — no SPV gate.

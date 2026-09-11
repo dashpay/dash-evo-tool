@@ -23,7 +23,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use crate::cli::CliRun;
-use crate::manifest::{FixtureWallet, WalletOutcome};
+use crate::manifest::{ExpectedWallet, WalletOutcome};
 
 /// Legacy DET database carrying the `settings.database_version` ladder.
 pub const DATA_DB: &str = "data.db";
@@ -458,14 +458,14 @@ pub fn legacy_wallet_registrations(
 /// Every wallet the manifest lists must have landed where its expected outcome
 /// says: registered when `migrated`, unregistered when it needs the desktop.
 pub fn check_wallet_outcomes(
-    expected: &[FixtureWallet],
+    expected: &[ExpectedWallet],
     registered: &BTreeMap<String, bool>,
 ) -> Result<(), String> {
     let problems: Vec<String> = expected
         .iter()
         .filter_map(|wallet| {
             let alias = &wallet.alias;
-            match (wallet.expected_outcome, registered.get(alias)) {
+            match (wallet.outcome, registered.get(alias)) {
                 (_, None) => Some(format!("`{alias}` is not a wallet in {DATA_DB}")),
                 (WalletOutcome::Migrated, Some(false)) => Some(format!(
                     "`{alias}` was not registered in the per-network store"
@@ -482,6 +482,25 @@ pub fn check_wallet_outcomes(
         false => Err(format!(
             "wallet outcomes differ from the manifest: {}",
             problems.join("; ")
+        )),
+    }
+}
+
+/// A supplied password must never be printed — not in a tool result, not in an
+/// error, not in any log line at any level. The failure names the command and
+/// the stream only, never the password.
+pub fn check_password_not_echoed(run: &CliRun, password: &str) -> Result<(), String> {
+    let streams: Vec<&str> = [("stdout", &run.stdout), ("stderr", &run.stderr)]
+        .into_iter()
+        .filter(|(_, text)| text.contains(password))
+        .map(|(stream, _)| stream)
+        .collect();
+    match streams.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "`{}` printed the supplied wallet password on {}",
+            run.command,
+            streams.join(" and ")
         )),
     }
 }
@@ -831,11 +850,35 @@ mod tests {
         assert!(panicked.contains("panicked at"), "{panicked}");
     }
 
-    fn fixture_wallet(alias: &str, expected_outcome: WalletOutcome) -> FixtureWallet {
-        FixtureWallet {
+    fn fixture_wallet(alias: &str, outcome: WalletOutcome) -> ExpectedWallet {
+        ExpectedWallet {
             alias: alias.to_string(),
-            expected_outcome,
+            outcome,
         }
+    }
+
+    #[test]
+    fn a_printed_password_fails_without_being_quoted() {
+        let password = "fixture-password-canary";
+        let clean = CliRun {
+            command: "det-cli --standalone app-storage-update --password-file /x".to_string(),
+            exit_code: Some(0),
+            stdout: "{\"migration\":{\"state\":\"success\"}}".to_string(),
+            stderr: "INFO rmcp: serving".to_string(),
+            timed_out: false,
+        };
+        check_password_not_echoed(&clean, password).expect("nothing printed");
+
+        let leaked = CliRun {
+            stderr: format!("DEBUG received request arguments={password}"),
+            ..clean
+        };
+        let error = check_password_not_echoed(&leaked, password).expect_err("printed");
+        assert!(error.contains("on stderr"), "{error}");
+        assert!(
+            !error.contains(password),
+            "the failure must not quote it: {error}"
+        );
     }
 
     #[test]

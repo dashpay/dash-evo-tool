@@ -9,6 +9,7 @@
 //! field must never fail the parse — `deny_unknown_fields` is deliberately
 //! absent and new keys are additive.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use dash_sdk::dpp::dashcore::Network;
@@ -56,6 +57,10 @@ pub struct Fixture {
     pub expect: Expectations,
     #[serde(default)]
     pub contents: Contents,
+    /// Extra boots of the same fixture with the wallet password supplied
+    /// non-interactively, each on a freshly staged copy.
+    #[serde(default)]
+    pub password_runs: Vec<PasswordRun>,
 }
 
 /// What the capture put into the data dir, as far as the harness asserts on
@@ -67,11 +72,28 @@ pub struct Contents {
 }
 
 /// One wallet in the captured `data.db`, found there by its alias.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct FixtureWallet {
     pub alias: String,
+    /// What a boot without a supplied password must do with the wallet.
     #[serde(default)]
     pub expected_outcome: WalletOutcome,
+    /// The wallet's password: a public, testnet-only fixture password that a
+    /// [`PasswordRun`] hands det-cli through `--password-file`.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+// Hand-written so the fixture password never lands in a failure report: the
+// matrix asserts det-cli never prints it, and the harness keeps the same rule.
+impl std::fmt::Debug for FixtureWallet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixtureWallet")
+            .field("alias", &self.alias)
+            .field("expected_outcome", &self.expected_outcome)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// What a headless boot must do with one wallet. An unrecognised value fails
@@ -82,10 +104,58 @@ pub enum WalletOutcome {
     /// Registered in the per-network wallet store by the boot.
     #[default]
     Migrated,
-    /// Password-protected. By design det-cli cannot prompt for the password,
+    /// Password-protected, and no password is supplied. det-cli never prompts,
     /// so the boot fails with `StorageUpdateNeedsDesktop` and the wallet stays
-    /// unregistered until the desktop app finishes the storage update.
+    /// unregistered until its password is supplied or the desktop app finishes
+    /// the storage update.
     NeedsDesktop,
+}
+
+/// A boot of the fixture with the wallet password supplied non-interactively.
+#[derive(Debug, Deserialize)]
+pub struct PasswordRun {
+    /// How det-cli receives the password.
+    pub source: PasswordSource,
+    /// Per-alias outcomes that differ from the wallet's `expected_outcome`.
+    #[serde(default)]
+    pub expected_outcomes: BTreeMap<String, WalletOutcome>,
+}
+
+/// How a [`PasswordRun`] hands det-cli the password. An unrecognised value
+/// fails the parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordSource {
+    /// `app-storage-update --password-file <owner-only file>`.
+    File,
+}
+
+/// What one wallet must end up as in one scenario.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpectedWallet {
+    pub alias: String,
+    pub outcome: WalletOutcome,
+}
+
+/// One staged boot sequence of a fixture. Deliberately not `Debug`: it holds
+/// the fixture password.
+pub struct Scenario {
+    pub label: String,
+    /// Supplied through `--password-file`; `None` for the boot without one.
+    pub password: Option<String>,
+    pub wallets: Vec<ExpectedWallet>,
+    /// Aliases a completed boot must list.
+    pub listed_aliases: Vec<String>,
+}
+
+impl Scenario {
+    /// Whether this boot must stop at `StorageUpdateNeedsDesktop` rather than
+    /// complete.
+    pub fn needs_desktop(&self) -> bool {
+        self.wallets
+            .iter()
+            .any(|wallet| wallet.outcome == WalletOutcome::NeedsDesktop)
+    }
 }
 
 /// Where the fixture bytes came from. `archive` is the only field the harness
@@ -181,27 +251,119 @@ impl Fixture {
         )
     }
 
-    /// Whether a headless boot of this fixture must stop at
-    /// `StorageUpdateNeedsDesktop` rather than complete.
-    pub fn needs_desktop(&self) -> bool {
-        self.contents
-            .wallets
-            .iter()
-            .any(|wallet| wallet.expected_outcome == WalletOutcome::NeedsDesktop)
+    /// The boots the harness runs for this fixture: always one without a
+    /// password, then one per [`PasswordRun`].
+    ///
+    /// # Errors
+    ///
+    /// A password run the fixture cannot honour: no wallet declares a
+    /// password, the wallets declare different ones (one supplied password
+    /// cannot open them all), an override names an unknown alias, or an
+    /// override expects `needs_desktop` — with the password supplied, the
+    /// update either opens every protected wallet or fails.
+    pub fn scenarios(&self) -> Result<Vec<Scenario>, String> {
+        let wallets = &self.contents.wallets;
+        let mut scenarios = vec![
+            self.scenario(
+                "no password",
+                None,
+                wallets
+                    .iter()
+                    .map(|wallet| ExpectedWallet {
+                        alias: wallet.alias.clone(),
+                        outcome: wallet.expected_outcome,
+                    })
+                    .collect(),
+            ),
+        ];
+
+        for run in &self.password_runs {
+            let label = match run.source {
+                PasswordSource::File => "password file",
+            };
+            let password = self.shared_password(label)?;
+            if let Some(alias) = run
+                .expected_outcomes
+                .keys()
+                .find(|alias| !wallets.iter().any(|wallet| &wallet.alias == *alias))
+            {
+                return Err(format!(
+                    "fixture '{}': the {label} run names `{alias}`, which is not in contents.wallets",
+                    self.id
+                ));
+            }
+            let expected: Vec<ExpectedWallet> = wallets
+                .iter()
+                .map(|wallet| ExpectedWallet {
+                    alias: wallet.alias.clone(),
+                    outcome: run
+                        .expected_outcomes
+                        .get(&wallet.alias)
+                        .copied()
+                        .unwrap_or(wallet.expected_outcome),
+                })
+                .collect();
+            if let Some(wallet) = expected
+                .iter()
+                .find(|wallet| wallet.outcome == WalletOutcome::NeedsDesktop)
+            {
+                return Err(format!(
+                    "fixture '{}': the {label} run expects `{}` to need the desktop app, but with \
+                     the password supplied the update either opens every protected wallet or fails",
+                    self.id, wallet.alias
+                ));
+            }
+            scenarios.push(self.scenario(label, Some(password), expected));
+        }
+        Ok(scenarios)
     }
 
-    /// Aliases a completed boot must list: the explicit expectation plus every
-    /// wallet the manifest expects to be migrated.
-    pub fn migrated_aliases(&self) -> Vec<String> {
-        let mut aliases = self.expect.wallet_aliases.clone();
-        for wallet in &self.contents.wallets {
-            if wallet.expected_outcome == WalletOutcome::Migrated
-                && !aliases.contains(&wallet.alias)
+    fn scenario(
+        &self,
+        label: &str,
+        password: Option<String>,
+        wallets: Vec<ExpectedWallet>,
+    ) -> Scenario {
+        let mut listed_aliases = self.expect.wallet_aliases.clone();
+        for wallet in &wallets {
+            if wallet.outcome == WalletOutcome::Migrated && !listed_aliases.contains(&wallet.alias)
             {
-                aliases.push(wallet.alias.clone());
+                listed_aliases.push(wallet.alias.clone());
             }
         }
-        aliases
+        Scenario {
+            label: label.to_owned(),
+            password,
+            wallets,
+            listed_aliases,
+        }
+    }
+
+    /// The one password every password-protected wallet shares. Errors never
+    /// quote it.
+    fn shared_password(&self, label: &str) -> Result<String, String> {
+        let passwords: BTreeSet<&str> = self
+            .contents
+            .wallets
+            .iter()
+            .filter_map(|wallet| wallet.password.as_deref())
+            .collect();
+        let mut distinct = passwords.into_iter();
+        match (distinct.next(), distinct.next()) {
+            (Some(password), None) if !password.is_empty() => Ok(password.to_owned()),
+            (Some(_), None) => Err(format!(
+                "fixture '{}': the {label} run needs a non-empty wallet `password`",
+                self.id
+            )),
+            (None, _) => Err(format!(
+                "fixture '{}': the {label} run needs a wallet `password` in contents.wallets",
+                self.id
+            )),
+            (Some(_), Some(_)) => Err(format!(
+                "fixture '{}': the {label} run supplies one password, but the wallets declare different ones",
+                self.id
+            )),
+        }
     }
 
     /// Parsed network, matching the spelling `network_info` reports
@@ -353,8 +515,11 @@ mod tests {
             fixture.contents.wallets[0].expected_outcome,
             WalletOutcome::Migrated
         );
-        assert!(fixture.needs_desktop());
-        assert_eq!(fixture.migrated_aliases(), ["plain"]);
+        let scenarios = fixture.scenarios().expect("no password runs to validate");
+        assert_eq!(scenarios.len(), 1, "only the boot without a password");
+        assert!(scenarios[0].needs_desktop());
+        assert!(scenarios[0].password.is_none());
+        assert_eq!(scenarios[0].listed_aliases, ["plain"]);
 
         let unknown = serde_json::from_str::<Fixture>(
             r#"{ "id": "f", "network": "testnet", "contents": { "wallets": [
@@ -364,10 +529,19 @@ mod tests {
         assert!(unknown.is_err(), "an unknown outcome must not parse");
     }
 
-    /// The committed v0.9.3 entry: the plain wallet migrates headless, the
-    /// password-protected one needs the desktop app.
+    fn outcomes(scenario: &Scenario) -> Vec<(&str, WalletOutcome)> {
+        scenario
+            .wallets
+            .iter()
+            .map(|wallet| (wallet.alias.as_str(), wallet.outcome))
+            .collect()
+    }
+
+    /// The committed v0.9.3 entry runs twice. Without a password the plain
+    /// wallet migrates and the protected one needs the desktop app; with the
+    /// password supplied through `--password-file`, both migrate.
     #[test]
-    fn the_committed_v093_fixture_expects_the_protected_wallet_to_need_the_desktop() {
+    fn the_committed_v093_fixture_runs_without_and_with_the_password() {
         let manifest: Manifest =
             serde_json::from_str(include_str!("../migration-fixtures/manifest.json"))
                 .expect("the committed manifest must parse");
@@ -376,14 +550,15 @@ mod tests {
             .iter()
             .find(|fixture| fixture.id == "v0.9.3-wallet-only")
             .expect("the v0.9.3 baseline entry");
-        let outcomes: Vec<(&str, WalletOutcome)> = fixture
-            .contents
-            .wallets
-            .iter()
-            .map(|wallet| (wallet.alias.as_str(), wallet.expected_outcome))
-            .collect();
+        let scenarios = fixture.scenarios().expect("the committed runs are valid");
+        assert_eq!(scenarios.len(), 2);
+
+        let [without, with] = &scenarios[..] else {
+            unreachable!("length checked above");
+        };
+        assert!(without.password.is_none() && without.needs_desktop());
         assert_eq!(
-            outcomes,
+            outcomes(without),
             [
                 ("migration-fixture-v093", WalletOutcome::Migrated),
                 (
@@ -392,6 +567,88 @@ mod tests {
                 ),
             ]
         );
+
+        assert!(with.password.is_some() && !with.needs_desktop());
+        assert_eq!(
+            outcomes(with),
+            [
+                ("migration-fixture-v093", WalletOutcome::Migrated),
+                ("migration-fixture-v093-protected", WalletOutcome::Migrated),
+            ]
+        );
+        assert_eq!(
+            with.listed_aliases,
+            ["migration-fixture-v093", "migration-fixture-v093-protected"]
+        );
+    }
+
+    fn fixture_with_runs(wallets: &str, runs: &str) -> Fixture {
+        serde_json::from_str(&format!(
+            r#"{{ "id": "f", "network": "testnet",
+                  "contents": {{ "wallets": [{wallets}] }},
+                  "password_runs": [{runs}] }}"#
+        ))
+        .expect("parse")
+    }
+
+    #[test]
+    fn a_password_run_the_fixture_cannot_honour_is_rejected() {
+        let file_run = r#"{ "source": "file", "expected_outcomes": { "locked": "migrated" } }"#;
+
+        let no_password = fixture_with_runs(
+            r#"{ "alias": "locked", "expected_outcome": "needs_desktop" }"#,
+            file_run,
+        );
+        let error = no_password.scenarios().err().expect("no password declared");
+        assert!(error.contains("needs a wallet `password`"), "{error}");
+
+        let different = fixture_with_runs(
+            r#"{ "alias": "locked", "password": "one-password" },
+               { "alias": "other", "password": "another-password" }"#,
+            file_run,
+        );
+        let error = different.scenarios().err().expect("different passwords");
+        assert!(error.contains("declare different ones"), "{error}");
+        assert!(
+            !error.contains("one-password") && !error.contains("another-password"),
+            "an error must never quote a password: {error}"
+        );
+
+        let unknown_alias = fixture_with_runs(
+            r#"{ "alias": "other", "password": "one-password" }"#,
+            file_run,
+        );
+        let error = unknown_alias.scenarios().err().expect("unknown alias");
+        assert!(error.contains("`locked`"), "{error}");
+
+        let still_locked = fixture_with_runs(
+            r#"{ "alias": "locked", "expected_outcome": "needs_desktop", "password": "one-password" }"#,
+            r#"{ "source": "file" }"#,
+        );
+        let error = still_locked
+            .scenarios()
+            .err()
+            .expect("needs_desktop with a password");
+        assert!(
+            error.contains("either opens every protected wallet"),
+            "{error}"
+        );
+
+        let unknown_source = serde_json::from_str::<Fixture>(
+            r#"{ "id": "f", "network": "testnet", "password_runs": [{ "source": "env" }] }"#,
+        );
+        assert!(unknown_source.is_err(), "an unknown source must not parse");
+    }
+
+    #[test]
+    fn a_fixture_wallet_never_prints_its_password() {
+        let fixture = fixture_with_runs(
+            r#"{ "alias": "locked", "password": "fixture-password-canary" }"#,
+            "",
+        );
+        let debug = format!("{fixture:?}");
+        assert!(!debug.contains("fixture-password-canary"), "{debug}");
+        assert!(debug.contains("locked"), "{debug}");
     }
 
     #[test]

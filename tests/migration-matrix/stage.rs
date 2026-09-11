@@ -46,6 +46,27 @@ impl StagedFixture {
         self.sandbox.path()
     }
 
+    /// Writes `password` as a one-line, owner-only (`0600`) file in the
+    /// sandbox — the only kind of file det-cli's `--password-file` accepts.
+    pub fn write_password_file(&self, password: &str) -> Result<PathBuf, String> {
+        use std::io::Write as _;
+
+        let path = self.sandbox.path().join("wallet-password");
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&path)
+            .map_err(|e| format!("could not create {}: {e}", path.display()))?;
+        writeln!(file, "{password}")
+            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        Ok(path)
+    }
+
     /// A scratch directory for harness-side copies (SQLite snapshots), kept
     /// outside the data dir so reading never perturbs what is under test.
     pub fn scratch(&self) -> Result<PathBuf, String> {
@@ -358,6 +379,24 @@ mod tests {
     /// The wallet store refuses a data dir under a group- or other-writable
     /// ancestor (`insecure_parent_dir`), so every directory the stager creates
     /// above the data dir must be owner-only too, whatever the umask.
+    #[test]
+    fn the_password_file_is_owner_only_and_holds_one_line() {
+        let staged = StagedFixture {
+            sandbox: tempfile::tempdir().expect("sandbox"),
+            data_dir: PathBuf::new(),
+        };
+        let path = staged
+            .write_password_file("one line")
+            .expect("password file");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "one line\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(&path).expect("metadata").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "det-cli refuses anything wider");
+        }
+    }
+
     #[test]
     fn every_directory_above_the_data_dir_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;

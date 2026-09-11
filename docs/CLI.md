@@ -65,10 +65,44 @@ return `SecretPromptUnavailable` when a protected wallet needs to authorize a
 shielded operation. There is currently no environment-variable or
 CLI-passphrase workaround, so unattended shielded operations from a protected
 wallet are not supported. Use an unprotected wallet for that automation.
+The storage update is the one exception; see the next section.
 
 This limitation does not apply in the same way when `det-cli` connects to MCP
 embedded in a running GUI. The embedded server can use the GUI's existing
 interactive prompt and authorized secret session.
+
+## Finishing the storage update of password-protected wallets
+
+After an upgrade from an older version, an installation with password-protected
+wallets stops every wallet command with *"Open the Dash Evo Tool desktop app
+once to finish the storage update, then try again."* To finish the update
+without the desktop app, supply the wallet password to `app-storage-update`:
+
+```bash
+# From a file only you can read (refused if the group or others have any access)
+chmod 600 ~/det-wallet-password
+det-cli app-storage-update --password-file ~/det-wallet-password
+
+# From a pipe, e.g. a password manager (refused when stdin is a terminal)
+pass show dash/det-wallets | det-cli app-storage-update --password-stdin
+```
+
+- The password is tried on every protected wallet, so they must all share it.
+  If it does not open one of them, the command fails, no wallet is skipped, and
+  you can run it again with the right password. Wallets with different
+  passwords need the desktop app.
+- The input must be exactly one line. One trailing line ending is removed;
+  every other character, spaces included, is part of the password.
+- `--password-file` refuses a file with any group or other permission (like SSH
+  does for private keys), a directory, and — on platforms other than Linux and
+  macOS — every file, because the permissions cannot be checked there. Use
+  `--password-stdin` instead.
+- A password given as `password=...` is refused: command-line arguments are
+  visible to other users and saved in shell history. There is no environment
+  variable for it either.
+- The command is refused while the desktop app is running (`--addr` / HTTP
+  mode against the GUI): the app asks for the password in its own window.
+- Once the update has finished, other commands need no password.
 
 ## Usage
 
@@ -138,6 +172,9 @@ det-cli network-info
 
 # Report schema versions, migration state and upgrade markers on disk
 det-cli app-storage-status
+
+# Finish the storage update of password-protected wallets without the desktop app
+det-cli app-storage-update --password-file ~/det-wallet-password
 
 # Check wallet balance
 det-cli core-balances-get wallet-id=savings

@@ -314,7 +314,8 @@ As a user opening an older wallet installation, I want the app to update its sto
 - The desktop app asks for each password-protected wallet separately and never carries a typed password into another wallet's prompt.
 - The user can skip a wallet; skipped wallets stay locked, and the rest of the storage update can finish.
 - The previous database is read-only throughout the update, including unlock and skip paths.
-- Standalone command-line and MCP use never wait for a window that is not present. They ask the user to open the desktop app once, then try again.
+- Standalone command-line and MCP use never wait for a window that is not present. Without a password they ask the user to open the desktop app once, then try again.
+- An operator without the desktop app can supply the wallet password non-interactively (`app_storage_update`; det-cli `--password-stdin` or `--password-file`, never as a command-line argument or environment variable). The update then finishes for every wallet sharing that password, or fails at once without skipping any wallet.
 
 ### WAL-033: Wallets, addresses and identities survive an app upgrade [Gap]
 **Persona:** Alex, Priya, Jordan

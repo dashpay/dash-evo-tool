@@ -214,6 +214,74 @@ fn error_codes_are_distinct() {
     );
 }
 
+/// A standalone det-cli boot must restore the network an upgrading v0.9.3 user
+/// saved in `data.db`, exactly as the GUI boot does. Falling back to mainnet
+/// points the legacy wallet drain at a network holding none of their wallets.
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_boot_restores_the_legacy_network() {
+    use dash_sdk::dpp::dashcore::Network;
+
+    /// Holds the process-global data-dir override for the test's lifetime and
+    /// restores the prior value on drop, panics included.
+    struct DataDirOverride {
+        prior: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl Drop for DataDirOverride {
+        fn drop(&mut self) {
+            // Safety: `_lock` is still held while the prior value is restored.
+            unsafe {
+                match &self.prior {
+                    Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
+                    None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+                }
+            }
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("data.db")).expect("create data.db");
+        // The `settings` table exactly as v0.9.3 (schema version 11) left it.
+        conn.execute_batch(
+            "CREATE TABLE settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                password_check BLOB,
+                main_password_salt BLOB,
+                main_password_nonce BLOB,
+                network TEXT NOT NULL,
+                start_root_screen INTEGER NOT NULL,
+                custom_dash_qt_path TEXT,
+                overwrite_dash_conf INTEGER,
+                theme_preference TEXT DEFAULT 'System',
+                database_version INTEGER NOT NULL
+            );
+            INSERT INTO settings (id, network, start_root_screen, database_version)
+            VALUES (1, 'testnet', 5, 11);",
+        )
+        .expect("write the v0.9.3 settings row");
+    }
+    let _override = DataDirOverride {
+        prior: std::env::var("DASH_EVO_DATA_DIR").ok(),
+        _lock: crate::test_support::DASH_EVO_DATA_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()),
+    };
+    // Safety: DASH_EVO_DATA_DIR_LOCK, held by `_override`, serializes this override.
+    unsafe { std::env::set_var("DASH_EVO_DATA_DIR", dir.path()) };
+
+    let ctx = crate::mcp::server::init_app_context()
+        .await
+        .expect("standalone boot over a v0.9.3 data dir");
+
+    assert_eq!(
+        ctx.network(),
+        Network::Testnet,
+        "an upgrading testnet user must not boot on mainnet"
+    );
+}
+
 #[test]
 fn storage_not_ready_display_is_actionable() {
     let err = McpToolError::StorageNotReady;

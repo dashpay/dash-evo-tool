@@ -130,8 +130,14 @@ det-cli core-wallets-list
 # Generate a receive address
 det-cli core-address-create wallet-id=savings
 
+# List locally saved identities with their DPNS names (no network calls)
+det-cli identity-list
+
 # Show active network and available networks
 det-cli network-info
+
+# Report schema versions, migration state and upgrade markers on disk
+det-cli app-storage-status
 
 # Check wallet balance
 det-cli core-balances-get wallet-id=savings

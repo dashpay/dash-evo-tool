@@ -279,7 +279,9 @@ impl DashMcpService {
             .with_async_tool::<tools::wallet::SendCoreFunds>()
             .with_async_tool::<tools::platform::QueryWithdrawals>()
             .with_async_tool::<tools::meta::DescribeTool>()
+            .with_async_tool::<tools::meta::AppStorageStatus>()
             // Identity tools
+            .with_async_tool::<tools::identity::ListIdentitiesTool>()
             .with_async_tool::<tools::identity::IdentityCreditsTopup>()
             .with_async_tool::<tools::identity::IdentityCreditsTopupFromPlatform>()
             .with_async_tool::<tools::identity::IdentityCreditsTransfer>()

@@ -73,14 +73,13 @@
       "captured_at": "2026-09-11",
       "artifact": {
         "workflow_name": "migration-fixture-bootstrap.yml",
-        "workflow_run_id": null,
+        "workflow_run_id": 34597906288,
         "artifact_name": "migration-fixture-v1.0.0-weekly.20260908-wallet-only",
         "archive_filename": "v1.0.0-weekly.20260908-wallet-only.tar.zst",
         "sha256": "c7e21762a762c6a5892dcdff952c54583c7df8bd649fbd3c960696057ca17624",
         "bytes": 277402,
-        "retention_days": null,
-        "expires_at": null,
-        "staging_note": "Not uploaded yet. The archive is over the ~48 KB archive_b64 limit, so it goes through the bootstrap workflow's release_tag relay (a temporary draft release). Record workflow_run_id, retention_days and expires_at from that run's step summary, then drop this note."
+        "retention_days": 90,
+        "expires_at": "2026-12-10T12:14:31Z"
       },
       "expect": {
         "wallet_aliases": ["weekly-fixture"],

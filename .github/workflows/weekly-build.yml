@@ -75,7 +75,7 @@ jobs:
           # as falsely green. A workflow that has never run is treated as
           # absent, not red.
           red=false
-          for wf in tests.yml clippy.yml; do
+          for wf in tests.yml clippy.yml migration-matrix.yml; do
             concl=$(gh run list --workflow "$wf" --branch "$REF_NAME" --status completed \
                       --limit 1 --json conclusion --jq '.[0].conclusion // ""')
             case "$concl" in

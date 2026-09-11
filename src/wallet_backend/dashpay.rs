@@ -924,7 +924,10 @@ impl WalletBackend {
         managed
             .record_dashpay_payment(tx_id, entry, &persister)
             .map_err(|e| TaskError::WalletBackend {
-                source: Arc::new(e.into()),
+                source: Arc::new(platform_wallet::PlatformWalletError::from_store_failure(
+                    self.inner.wallet_persister.as_ref(),
+                    e,
+                )),
             })?;
         Ok(())
     }

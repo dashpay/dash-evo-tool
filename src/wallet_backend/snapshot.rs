@@ -718,6 +718,18 @@ impl SnapshotStore {
         }
     }
 
+    /// Remove transactions superseded by a final competing spend.
+    pub(super) fn remove_transactions(&self, wallet_id: &WalletId, txids: &[Txid]) {
+        let Ok(mut log) = self.tx_log.lock() else {
+            return;
+        };
+        if let Some(records) = log.get_mut(wallet_id) {
+            for txid in txids {
+                records.remove(txid);
+            }
+        }
+    }
+
     /// Seed persisted history without overwriting a record already observed
     /// live during registration. Later live accumulation replaces by txid.
     pub(super) fn hydrate_transactions<'a, I>(&self, wallet_id: &WalletId, records: I)

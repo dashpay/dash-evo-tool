@@ -518,15 +518,15 @@ impl WalletBackend {
     /// its removal from DET. A no-op for an identity that is not registered
     /// there — including every wallet-owned one.
     ///
-    /// Upstream records this as a tombstone rather than a row delete, so it
-    /// cannot reach the identity's `meta_identity` rows.
+    /// Upstream deletes the parent and its identity-scoped metadata. Callers
+    /// must preserve this row while a listed DET identity still depends on it.
     ///
     /// Retried like registration is: the caller
     /// ([`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity))
     /// only logs a failure, but the boot reconcile
     /// (`AppContext::reconcile_unowned_identities`) works both directions and
     /// re-issues this call for every registration whose sidecar record is
-    /// gone. A tombstone lost to a crash or storage error between the sidecar
+    /// gone. A removal lost to a crash or storage error between the sidecar
     /// delete and this call therefore costs one boot, not the record.
     ///
     /// An `Ok` is a *verified* one: the row is read back as gone before the
@@ -535,7 +535,7 @@ impl WalletBackend {
     /// # Errors
     /// [`TaskError::UnownedIdentityMirrorRemains`] when the row is still in
     /// the unowned scope right after being withdrawn from it. Upstream's
-    /// `remove_identity` persists the tombstone through `persist_removal`,
+    /// `remove_identity` persists the deletion through `persist_removal`,
     /// which swallows a persister failure into `tracing::error!` and returns
     /// `()`, so the removal reports success either way (`manager/lifecycle.rs`
     /// at pin `4784de03`) — the readback is the only evidence available. Paid
@@ -608,6 +608,7 @@ impl WalletBackend {
         Ok(platform_wallet::changeset::IdentityManagerStartState {
             out_of_wallet_identities: self.load_unowned_identities()?,
             wallet_identities: Default::default(),
+            scan_states: Default::default(),
         }
         .into())
     }

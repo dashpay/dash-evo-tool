@@ -404,6 +404,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `63cf57f`): existing
+  databases from the previously pinned PR are upgraded automatically with a
+  retained backup and verified data transfer. Both app preferences and network
+  wallet data are covered. Identity ownership changes preserve saved metadata,
+  and swept transactions leave the displayed history. The single-UTXO Max-send
+  regression test now passes and is enabled. See the
+  [upgrade review](docs/ai-design/2026-09-10-platform-pin/upgrade-notes.md) for
+  compatibility details and functionality still pending upstream.
+
 - **A funding transaction found again on the network is now labelled honestly**:
   when the app rediscovers a saved funding transaction from the chain rather
   than tracking it from the start, it can tell that the network confirmed it but

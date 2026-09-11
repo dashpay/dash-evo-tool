@@ -686,7 +686,20 @@ fn remove_flow_deletes_only_target_node() {
             .last()
             .expect("confirm button present");
         confirm.click();
-        harness.run_steps(3);
+        // Removal runs on the backend. Wait for its result to navigate back
+        // to the list before checking the cards, not merely for the DB write.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            harness.step();
+            if harness.query_by_label("Open mn-keep-me").is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "removal must return to the masternode list"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
         // Only the target node was deleted; the other remains (isolation).
         let remaining = app_context

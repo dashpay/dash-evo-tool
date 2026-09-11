@@ -9,9 +9,6 @@
 //!   and toggles (unchecked maps to `RememberPolicy::None`, checked to
 //!   `UntilAppClose` — the mapping itself is unit-tested in
 //!   `secret_prompt_host`).
-//!
-//! NOTE: the kittest suite has pre-existing `DivergentVersion` failures
-//! unrelated to this module.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -32,8 +29,6 @@ use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::Wallet;
 #[cfg(feature = "testing")]
 use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
-#[cfg(feature = "testing")]
-use dash_sdk::dpp::dashcore::Network;
 
 /// The modal renders the scope body, the hint, the retry error, and the
 /// remember checkbox.
@@ -416,34 +411,31 @@ fn appstate_migration_prompt_activation_drops_transition_frame_click() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let seed_hash = Rc::new(Cell::new([0; 32]));
-        let seed_hash_for_app = Rc::clone(&seed_hash);
         let mut harness = Harness::builder()
             .with_max_steps(100)
             .build_eframe(move |ctx| {
-                let app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
                     .expect("Failed to create AppState")
-                    .with_animations(false);
-
-                let password = Secret::new("correct password");
-                let seed = [0xA7; 64];
-                let wallet = Wallet::new_from_seed(
-                    seed,
-                    Network::Testnet,
-                    Some("Savings".to_string()),
-                    Some(&password),
-                )
-                .expect("build protected wallet");
-                let (seed_hash, wallet) = app
-                    .current_app_context()
-                    .register_wallet(wallet, &seed, WalletOrigin::Imported)
-                    .expect("register protected wallet fixture");
-                wallet.write().expect("wallet lock").wallet_seed.close();
-                seed_hash_for_app.set(seed_hash);
-                app
+                    .with_animations(false)
             });
         harness.set_size(egui::vec2(1024.0, 768.0));
         let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+
+        // This test activates the prompt explicitly. Seed its wallet only after
+        // boot so background wiring cannot also request the fixture's password.
+        let password = Secret::new("correct password");
+        let seed = [0xA7; 64];
+        let wallet = Wallet::new_from_seed(
+            seed,
+            app_context.network(),
+            Some("Savings".to_string()),
+            Some(&password),
+        )
+        .expect("build protected wallet");
+        let (seed_hash, wallet) = app_context
+            .register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("register protected wallet fixture");
+        wallet.write().expect("wallet lock").wallet_seed.close();
         harness.run_steps(5);
 
         let card_center = harness.get_by_label("Just Explore").rect().center();
@@ -459,7 +451,7 @@ fn appstate_migration_prompt_activation_drops_transition_frame_click() {
         app_context
             .migration_status()
             .set_state(MigrationState::AwaitingWalletPasswords {
-                wallets: vec![seed_hash.get()],
+                wallets: vec![seed_hash],
             });
         harness.event(egui::Event::PointerButton {
             pos: card_center,

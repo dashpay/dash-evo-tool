@@ -1265,11 +1265,13 @@ impl AppContext {
                 };
 
                 let cancellation_token = self.subtasks.cancellation_token.clone();
-                let spv_started = if start_spv
+                let mut spv_started = if start_spv
                     && backend_wired
                     && !cancellation_token.is_cancelled()
                 {
                     tokio::select! {
+                        biased;
+                        _ = cancellation_token.cancelled() => false,
                         result = new_ctx.ensure_wallet_backend_and_start_spv(sender.clone()) => {
                             match result {
                                 Ok(()) => {
@@ -1286,7 +1288,6 @@ impl AppContext {
                                 }
                             }
                         }
-                        _ = cancellation_token.cancelled() => false,
                     }
                 } else {
                     false
@@ -1296,6 +1297,7 @@ impl AppContext {
                 {
                     backend.forget_all_secrets();
                     backend.shutdown().await;
+                    spv_started = false;
                 }
                 Ok(BackendTaskSuccessResult::NetworkContextCreated {
                     network,

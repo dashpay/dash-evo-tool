@@ -101,6 +101,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Cancelling a network switch takes priority over simultaneous startup and
+  reports chain sync as stopped after shutting down the new backend.
+
+- Profile saves stop when their picture cannot be downloaded, explain unsupported
+  signing keys, and retry failed display-timestamp storage on profile reads
+  without submitting another paid write.
+
+- DashPay profile writes use `platform-wallet`, enabling HIGH authentication
+  keys of type ECDSA_SECP256K1. HASH160 support remains an upstream limitation.
+  Writes require a wallet-linked identity; clearing existing profile fields
+  reports an explicit error because the upstream API preserves omitted fields.
+
 - Identity creation and top-up accounts are saved before payment and restored
   after restarting the app. Temporary save failures are retried a few times;
   if saving still fails, the payment stops and the app asks you to try again.

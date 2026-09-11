@@ -1,4 +1,4 @@
-//! Identity-related MCP tools: top-up, transfer, withdraw.
+//! Identity-related MCP tools: listing, top-up, transfer, withdraw.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -15,6 +15,94 @@ use crate::mcp::dispatch::dispatch_task;
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
+use crate::mcp::tools::NetworkParams;
+
+// ---------------------------------------------------------------------------
+// ListIdentitiesTool
+// ---------------------------------------------------------------------------
+
+/// List the identities persisted locally for the active network.
+pub struct ListIdentitiesTool;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct IdentityEntry {
+    /// Base58-encoded identity ID.
+    id: String,
+    alias: Option<String>,
+    /// `User`, `Masternode` or `Evonode`.
+    identity_type: String,
+    /// Last known Platform status, e.g. `Active` or `Unknown`.
+    status: String,
+    balance_credits: u64,
+    /// DPNS names as last persisted locally; empty until a name refresh ran.
+    dpns_names: Vec<String>,
+    /// HD index this identity was registered at, when it belongs to a wallet.
+    wallet_index: Option<u32>,
+    /// Hex seed hashes of the wallets this identity is bound to.
+    wallet_seed_hashes: Vec<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ListIdentitiesOutput {
+    identities: Vec<IdentityEntry>,
+}
+
+impl ToolBase for ListIdentitiesTool {
+    type Parameter = NetworkParams;
+    type Output = ListIdentitiesOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "identity_list".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "List the identities saved for the active network, with their DPNS names, \
+             balances and wallet bindings. Reads persisted state only — it makes no \
+             network calls and never refreshes from Platform."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(ToolAnnotations::default().read_only(true).open_world(false))
+    }
+}
+
+impl AsyncTool<DashMcpService> for ListIdentitiesTool {
+    async fn invoke(
+        service: &DashMcpService,
+        param: NetworkParams,
+    ) -> Result<ListIdentitiesOutput, McpToolError> {
+        let ctx = service.tool_ctx().await?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        // Opens this network's storage so the identity read has a store to read
+        // from. No SPV gate: every field below comes from persisted state, so
+        // this reports what is on disk rather than what the chain currently says.
+        resolve::ensure_wallets_hydrated(&ctx).await?;
+
+        let identities =
+            ctx.load_local_qualified_identities()
+                .map_err(McpToolError::TaskFailed)?
+                .into_iter()
+                .map(|qi| IdentityEntry {
+                    id: qi.identity.id().to_string(
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                    ),
+                    identity_type: qi.identity_type.to_string(),
+                    status: qi.status.to_string(),
+                    balance_credits: qi.identity.balance(),
+                    alias: qi.alias,
+                    dpns_names: qi.dpns_names.into_iter().map(|name| name.name).collect(),
+                    wallet_index: qi.wallet_index,
+                    wallet_seed_hashes: qi.associated_wallets.keys().map(hex::encode).collect(),
+                })
+                .collect();
+
+        Ok(ListIdentitiesOutput { identities })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // IdentityCreditsTopup (Core -> Identity via asset lock)

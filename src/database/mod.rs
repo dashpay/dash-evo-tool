@@ -1,5 +1,7 @@
 mod initialization;
-#[cfg(test)]
+// Also read by the `app_storage_status` MCP tool, which reports the stored
+// `data.db` version against the version this build's ladder targets.
+#[cfg(any(test, feature = "mcp", feature = "cli"))]
 pub(crate) use initialization::DEFAULT_DB_VERSION;
 pub(crate) mod legacy_import;
 mod settings;

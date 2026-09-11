@@ -114,13 +114,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Logging is off by default -- set RUST_LOG to enable (e.g. RUST_LOG=debug).
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
-        )
-        .with_writer(std::io::stderr)
-        .try_init();
+    // The cap keeps rmcp's raw request logging (tool arguments, secrets
+    // included) out of the output whatever RUST_LOG says.
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+            )
+            .with_writer(std::io::stderr)
+            .finish()
+            .with(dash_evo_tool::logging::sensitive_target_cap())
+            .try_init();
+    }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

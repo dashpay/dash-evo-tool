@@ -550,6 +550,12 @@ mod tests {
             .iter()
             .find(|fixture| fixture.id == "v0.9.3-wallet-only")
             .expect("the v0.9.3 baseline entry");
+        // The legacy drain registers both wallets at birth height 0, so the
+        // SPV-gated address derivation would need a compact-filter scan from
+        // genesis, longer than the 10-minute SPV gate on a CI runner. Key
+        // integrity is still asserted offline: each wallet's registration is
+        // matched by its account xpub.
+        assert!(!fixture.expect.derive_address);
         let scenarios = fixture.scenarios().expect("the committed runs are valid");
         assert_eq!(scenarios.len(), 2);
 

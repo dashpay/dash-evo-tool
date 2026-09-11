@@ -298,6 +298,15 @@ fn run_scenario(
 
     // Last, because it is the only step that needs a reachable chain: a
     // failure here should not mask the offline evidence collected above.
+    //
+    // TODO(doctor-module): a wallet the legacy drain registers gets birth
+    // height 0 (`WalletOrigin::Imported`) and no committed sync height, so its
+    // first SPV-gated call waits for a compact-filter scan from genesis. On a
+    // GitHub runner that outlasts the product's 10-minute SPV gate (CI run
+    // 34592733217: ~590k of 1.55M testnet filters). Such fixtures opt out with
+    // `expect.derive_address: false` until the doctor module can bound or
+    // resume that scan; a captured current-era profile carries its committed
+    // height and scans only the blocks since capture.
     if needs_desktop {
         println!(
             "    address derivation skipped (wallet tools wait for the desktop app to finish the storage update)"

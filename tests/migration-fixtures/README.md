@@ -218,4 +218,12 @@ uploaded:
 | `retention_days` | The retention explicitly requested at upload. `null` here means "not uploaded yet", never "repository default". |
 | `expires_at` | RFC 3339 UTC expiry, so a refresh job can act before an artifact disappears rather than after. |
 
+`contents.wallets[]` — one entry per wallet in the captured `data.db`:
+
+| Field | Meaning |
+|---|---|
+| `alias` | The wallet's alias in `data.db`. The harness finds the wallet by it. |
+| `uses_password` | Whether the wallet is password-protected. |
+| `expected_outcome` | What a headless det-cli boot must do with this wallet. `migrated` (the default): the wallet is registered in `det-<network>.sqlite`. `needs_desktop`: a password-protected wallet. By design (`docs/ai-design/2026-07-14-migration-password-prompt/design.md`) det-cli cannot prompt for its password, so the boot must fail with `StorageUpdateNeedsDesktop`, the wallet must stay unregistered, and the wallet-drain sentinel must stay unwritten. Any other result fails the matrix. |
+
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

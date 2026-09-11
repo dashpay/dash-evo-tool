@@ -1,10 +1,10 @@
 //! The checks a migrated profile has to satisfy.
 //!
 //! Every check is conditional on what the fixture actually started from: a
-//! profile already at [`DEFAULT_DB_VERSION`] must come out with its schema
-//! untouched, while an older one must come out at the current version. An
-//! unconditional "version equals current" assertion would pass for the wrong
-//! reason on the already-current case.
+//! `data.db` it carried must come out byte-identical (every boot path opens it
+//! read-only), a missing one must be created at [`DEFAULT_DB_VERSION`], and a
+//! fixture holding a password-protected wallet must stop at the documented
+//! `StorageUpdateNeedsDesktop` instead of completing.
 //!
 //! SQLite files are never opened in place. Each read copies the database (and
 //! its `-wal` / `-shm` siblings) into a scratch directory first, so a read can
@@ -18,11 +18,12 @@ use dash_evo_tool::backend_task::migration::finish_unwire::{
     dapi_refresh_sentinel_key_for, sentinel_key_for,
 };
 use dash_evo_tool::database::DEFAULT_DB_VERSION;
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{Network, base58};
 use rusqlite::Connection;
 use serde_json::Value;
 
 use crate::cli::CliRun;
+use crate::manifest::{FixtureWallet, WalletOutcome};
 
 /// Legacy DET database carrying the `settings.database_version` ladder.
 pub const DATA_DB: &str = "data.db";
@@ -83,6 +84,42 @@ pub fn check_boot(run: &CliRun, label: &str) -> Result<(), String> {
         if run.stdout.contains(marker) || run.stderr.contains(marker) {
             return Err(format!("{label} reported `{marker}`\n{}", run.report()));
         }
+    }
+    Ok(())
+}
+
+/// How a wallet-gated boot ends when the fixture holds a wallet only the
+/// desktop app can migrate: the typed error the MCP layer carries in the
+/// error `data`, which rmcp logs to stderr at `warn` (inside the harness's
+/// default `info` filter). Matching the variant rather than the user-facing
+/// message keeps a copy edit from breaking the check; a log filter that hides
+/// the line fails the check instead of passing it.
+const NEEDS_DESKTOP_MARKER: &str =
+    "StorageUpdateNeedsDesktop { source: InteractivePromptUnavailable }";
+
+/// A wallet-gated boot over a fixture holding a password-protected wallet.
+/// det-cli cannot prompt for the password by design
+/// (`docs/ai-design/2026-07-14-migration-password-prompt/design.md`), so the
+/// boot must fail with exactly [`NEEDS_DESKTOP_MARKER`]. Completing, or
+/// failing in any other way, is a regression.
+pub fn check_needs_desktop(run: &CliRun, label: &str) -> Result<(), String> {
+    for marker in FAILURE_MARKERS {
+        if run.stdout.contains(marker) || run.stderr.contains(marker) {
+            return Err(format!("{label} reported `{marker}`\n{}", run.report()));
+        }
+    }
+    if run.succeeded() {
+        return Err(format!(
+            "{label} completed, but the fixture holds a password-protected wallet that a headless \
+             boot cannot migrate; it must stop at StorageUpdateNeedsDesktop\n{}",
+            run.report()
+        ));
+    }
+    if run.timed_out || !run.stderr.contains(NEEDS_DESKTOP_MARKER) {
+        return Err(format!(
+            "{label} failed, but not with `{NEEDS_DESKTOP_MARKER}`\n{}",
+            run.report()
+        ));
     }
     Ok(())
 }
@@ -339,6 +376,114 @@ pub fn check_sentinel_recorded(
         "the boot recorded no `{key}` completion sentinel in {APP_DB}; present migration keys: {:?}",
         sentinels.keys().collect::<Vec<_>>()
     ))
+}
+
+/// The completion sentinel must not exist while the storage update is
+/// unfinished: a wallet still waiting for its password is not migrated.
+pub fn check_sentinel_absent(
+    sentinels: &BTreeMap<String, Vec<u8>>,
+    network: Network,
+) -> Result<(), String> {
+    let key = sentinel_key_for(network);
+    if sentinels.contains_key(&key) {
+        return Err(format!(
+            "the boot recorded the `{key}` completion sentinel although the storage update could \
+             not finish"
+        ));
+    }
+    Ok(())
+}
+
+/// Whether each aliased wallet of a v0.9.3-era `data.db` is registered in the
+/// per-network store, keyed by alias. `None` when the fixture has no
+/// `data.db`.
+///
+/// The two stores share no wallet id: `data.db` keys wallets by seed hash, the
+/// upstream store by its own id. Both do keep the BIP44 account-0 xpub —
+/// `data.db` as the 78-byte serialization, `account_registrations` as its
+/// base58check text — so the match is a byte search for that text, with no
+/// key derivation in the harness.
+pub fn legacy_wallet_registrations(
+    data_db: &Path,
+    network_db: &Path,
+    scratch: &Path,
+    label: &str,
+) -> Result<Option<BTreeMap<String, bool>>, String> {
+    let Some(legacy) = open_copy(data_db, scratch, label)? else {
+        return Ok(None);
+    };
+    let read_error = |e: rusqlite::Error| {
+        format!(
+            "could not read legacy wallets from {}: {e}",
+            data_db.display()
+        )
+    };
+    let mut statement = legacy
+        .prepare("SELECT alias, master_ecdsa_bip44_account_0_epk FROM wallet")
+        .map_err(read_error)?;
+    let wallets = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .map_err(read_error)?;
+
+    let store = open_copy(network_db, scratch, label)?;
+    let mut registered = BTreeMap::new();
+    for (alias, account_xpub) in wallets {
+        // The manifest names wallets by alias; an unnamed one cannot be asked about.
+        let Some(alias) = alias else { continue };
+        let found = match &store {
+            None => false,
+            Some(conn) => conn
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM account_registrations \
+                     WHERE account_type = 'standard_bip44' AND account_index = 0 \
+                     AND instr(account_xpub_bytes, CAST(?1 AS BLOB)) > 0)",
+                    [base58::encode_check(&account_xpub)],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|e| {
+                    format!(
+                        "could not read wallet registrations from {}: {e}",
+                        network_db.display()
+                    )
+                })?,
+        };
+        registered.insert(alias, found);
+    }
+    Ok(Some(registered))
+}
+
+/// Every wallet the manifest lists must have landed where its expected outcome
+/// says: registered when `migrated`, unregistered when it needs the desktop.
+pub fn check_wallet_outcomes(
+    expected: &[FixtureWallet],
+    registered: &BTreeMap<String, bool>,
+) -> Result<(), String> {
+    let problems: Vec<String> = expected
+        .iter()
+        .filter_map(|wallet| {
+            let alias = &wallet.alias;
+            match (wallet.expected_outcome, registered.get(alias)) {
+                (_, None) => Some(format!("`{alias}` is not a wallet in {DATA_DB}")),
+                (WalletOutcome::Migrated, Some(false)) => Some(format!(
+                    "`{alias}` was not registered in the per-network store"
+                )),
+                (WalletOutcome::NeedsDesktop, Some(true)) => Some(format!(
+                    "`{alias}` is password-protected, yet was registered without its password"
+                )),
+                _ => None,
+            }
+        })
+        .collect();
+    match problems.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "wallet outcomes differ from the manifest: {}",
+            problems.join("; ")
+        )),
+    }
 }
 
 /// Backup files a boot created, by path relative to the data dir. Covers the
@@ -653,6 +798,149 @@ mod tests {
             error.contains("mainnet") && error.contains("testnet"),
             "{error}"
         );
+    }
+
+    fn run(exit_code: Option<i32>, stderr: &str) -> CliRun {
+        CliRun {
+            command: "det-cli --standalone core-wallets-list".to_string(),
+            exit_code,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
+            timed_out: false,
+        }
+    }
+
+    #[test]
+    fn a_needs_desktop_boot_must_stop_at_exactly_that_error() {
+        let expected = format!("WARN rmcp::service: response error data: {NEEDS_DESKTOP_MARKER}");
+        check_needs_desktop(&run(Some(1), &expected), "boot").expect("the documented outcome");
+
+        let completed = check_needs_desktop(&run(Some(0), ""), "boot")
+            .expect_err("completing must fail: the protected wallet cannot migrate headless");
+        assert!(completed.contains("completed"), "{completed}");
+
+        let other = check_needs_desktop(&run(Some(1), "StorageUpdateNeedsDesktop"), "boot")
+            .expect_err("a different failure must not pass for the documented one");
+        assert!(other.contains("not with"), "{other}");
+
+        let panicked = check_needs_desktop(
+            &run(Some(101), &format!("panicked at x\n{NEEDS_DESKTOP_MARKER}")),
+            "boot",
+        )
+        .expect_err("a panic is never the expected outcome");
+        assert!(panicked.contains("panicked at"), "{panicked}");
+    }
+
+    fn fixture_wallet(alias: &str, expected_outcome: WalletOutcome) -> FixtureWallet {
+        FixtureWallet {
+            alias: alias.to_string(),
+            expected_outcome,
+        }
+    }
+
+    #[test]
+    fn wallet_outcomes_are_checked_per_wallet() {
+        let expected = [
+            fixture_wallet("plain", WalletOutcome::Migrated),
+            fixture_wallet("locked", WalletOutcome::NeedsDesktop),
+        ];
+        let as_expected =
+            BTreeMap::from([("plain".to_string(), true), ("locked".to_string(), false)]);
+        check_wallet_outcomes(&expected, &as_expected).expect("both as the manifest says");
+
+        let both = BTreeMap::from([("plain".to_string(), true), ("locked".to_string(), true)]);
+        let error =
+            check_wallet_outcomes(&expected, &both).expect_err("a protected wallet registered");
+        assert!(error.contains("`locked` is password-protected"), "{error}");
+
+        let neither = BTreeMap::from([("plain".to_string(), false), ("locked".to_string(), false)]);
+        let error =
+            check_wallet_outcomes(&expected, &neither).expect_err("the plain wallet missing");
+        assert!(error.contains("`plain` was not registered"), "{error}");
+
+        let error =
+            check_wallet_outcomes(&expected, &BTreeMap::new()).expect_err("unknown aliases");
+        assert!(error.contains("is not a wallet in"), "{error}");
+    }
+
+    #[test]
+    fn an_unfinished_update_must_not_record_the_completion_sentinel() {
+        check_sentinel_absent(&BTreeMap::new(), Network::Testnet).expect("absent is correct");
+        let recorded = BTreeMap::from([(sentinel_key_for(Network::Testnet), vec![1])]);
+        check_sentinel_absent(&recorded, Network::Testnet).expect_err("recorded is a regression");
+    }
+
+    /// BIP32 test vector 1, master key: the 78-byte serialization `data.db`
+    /// stores must encode to the exact text the upstream store keeps.
+    #[test]
+    fn a_legacy_account_xpub_encodes_to_its_base58check_text() {
+        let serialized = hex::decode(
+            "0488b21e000000000000000000873dff81c02f525623fd1fe5167eac3a55a049de3d314bb42ee227ffed37d508\
+             0339a36013301597daef41fbe593a02cc513d0b55527ec2df1050e2e8ff49c85c2",
+        )
+        .expect("test vector hex");
+        assert_eq!(
+            base58::encode_check(&serialized),
+            "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"
+        );
+    }
+
+    /// The wallet the upstream store registered is found by its account xpub,
+    /// under the length-prefixed text encoding the store actually uses.
+    #[test]
+    fn legacy_wallets_are_matched_to_registrations_by_account_xpub() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let scratch = dir.path().join("scratch");
+        let data_db = dir.path().join(DATA_DB);
+        let network_db = dir.path().join(network_db_name(Network::Testnet));
+        let plain_xpub = vec![0x04, 0x35, 0x87, 0xcf, 1, 2, 3];
+        let locked_xpub = vec![0x04, 0x35, 0x87, 0xcf, 9, 9, 9];
+
+        let legacy = Connection::open(&data_db).expect("create data.db");
+        legacy
+            .execute_batch(
+                "CREATE TABLE wallet (alias TEXT, master_ecdsa_bip44_account_0_epk BLOB NOT NULL);",
+            )
+            .expect("create wallet table");
+        for (alias, xpub) in [("plain", &plain_xpub), ("locked", &locked_xpub)] {
+            legacy
+                .execute(
+                    "INSERT INTO wallet (alias, master_ecdsa_bip44_account_0_epk) VALUES (?1, ?2)",
+                    rusqlite::params![alias, xpub],
+                )
+                .expect("insert legacy wallet");
+        }
+
+        let store = Connection::open(&network_db).expect("create network db");
+        store
+            .execute_batch(
+                "CREATE TABLE account_registrations (account_type TEXT, account_index INTEGER, \
+                 account_xpub_bytes BLOB NOT NULL);",
+            )
+            .expect("create registrations");
+        let text = base58::encode_check(&plain_xpub);
+        let mut stored = (text.len() as u32).to_be_bytes().to_vec();
+        stored.extend_from_slice(text.as_bytes());
+        store
+            .execute(
+                "INSERT INTO account_registrations VALUES ('standard_bip44', 0, ?1)",
+                [stored],
+            )
+            .expect("register the plain wallet");
+        drop((legacy, store));
+
+        let registered = legacy_wallet_registrations(&data_db, &network_db, &scratch, "t")
+            .expect("read registrations")
+            .expect("data.db exists");
+        assert_eq!(
+            registered,
+            BTreeMap::from([("locked".to_string(), false), ("plain".to_string(), true)])
+        );
+
+        let absent =
+            legacy_wallet_registrations(&dir.path().join("missing.db"), &network_db, &scratch, "t")
+                .expect("no data.db is not an error");
+        assert!(absent.is_none());
     }
 
     #[test]

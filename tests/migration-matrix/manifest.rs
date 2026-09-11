@@ -54,6 +54,38 @@ pub struct Fixture {
     pub artifact: Artifact,
     #[serde(default, alias = "expectations")]
     pub expect: Expectations,
+    #[serde(default)]
+    pub contents: Contents,
+}
+
+/// What the capture put into the data dir, as far as the harness asserts on
+/// it.
+#[derive(Debug, Default, Deserialize)]
+pub struct Contents {
+    #[serde(default)]
+    pub wallets: Vec<FixtureWallet>,
+}
+
+/// One wallet in the captured `data.db`, found there by its alias.
+#[derive(Debug, Deserialize)]
+pub struct FixtureWallet {
+    pub alias: String,
+    #[serde(default)]
+    pub expected_outcome: WalletOutcome,
+}
+
+/// What a headless boot must do with one wallet. An unrecognised value fails
+/// the parse: guessing an outcome would make the matrix assert the wrong thing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WalletOutcome {
+    /// Registered in the per-network wallet store by the boot.
+    #[default]
+    Migrated,
+    /// Password-protected. By design det-cli cannot prompt for the password,
+    /// so the boot fails with `StorageUpdateNeedsDesktop` and the wallet stays
+    /// unregistered until the desktop app finishes the storage update.
+    NeedsDesktop,
 }
 
 /// Where the fixture bytes came from. `archive` is the only field the harness
@@ -147,6 +179,29 @@ impl Fixture {
             field("captured", &self.captured_at),
             self.artifact.describe(),
         )
+    }
+
+    /// Whether a headless boot of this fixture must stop at
+    /// `StorageUpdateNeedsDesktop` rather than complete.
+    pub fn needs_desktop(&self) -> bool {
+        self.contents
+            .wallets
+            .iter()
+            .any(|wallet| wallet.expected_outcome == WalletOutcome::NeedsDesktop)
+    }
+
+    /// Aliases a completed boot must list: the explicit expectation plus every
+    /// wallet the manifest expects to be migrated.
+    pub fn migrated_aliases(&self) -> Vec<String> {
+        let mut aliases = self.expect.wallet_aliases.clone();
+        for wallet in &self.contents.wallets {
+            if wallet.expected_outcome == WalletOutcome::Migrated
+                && !aliases.contains(&wallet.alias)
+            {
+                aliases.push(wallet.alias.clone());
+            }
+        }
+        aliases
     }
 
     /// Parsed network, matching the spelling `network_info` reports
@@ -283,6 +338,60 @@ mod tests {
                 fixture.id
             );
         }
+    }
+
+    #[test]
+    fn wallet_outcomes_default_to_migrated_and_reject_unknown_values() {
+        let fixture: Fixture = serde_json::from_str(
+            r#"{ "id": "f", "network": "testnet", "contents": { "wallets": [
+                { "alias": "plain" },
+                { "alias": "locked", "expected_outcome": "needs_desktop" }
+            ] } }"#,
+        )
+        .expect("parse");
+        assert_eq!(
+            fixture.contents.wallets[0].expected_outcome,
+            WalletOutcome::Migrated
+        );
+        assert!(fixture.needs_desktop());
+        assert_eq!(fixture.migrated_aliases(), ["plain"]);
+
+        let unknown = serde_json::from_str::<Fixture>(
+            r#"{ "id": "f", "network": "testnet", "contents": { "wallets": [
+                { "alias": "x", "expected_outcome": "maybe" }
+            ] } }"#,
+        );
+        assert!(unknown.is_err(), "an unknown outcome must not parse");
+    }
+
+    /// The committed v0.9.3 entry: the plain wallet migrates headless, the
+    /// password-protected one needs the desktop app.
+    #[test]
+    fn the_committed_v093_fixture_expects_the_protected_wallet_to_need_the_desktop() {
+        let manifest: Manifest =
+            serde_json::from_str(include_str!("../migration-fixtures/manifest.json"))
+                .expect("the committed manifest must parse");
+        let fixture = manifest
+            .fixtures
+            .iter()
+            .find(|fixture| fixture.id == "v0.9.3-wallet-only")
+            .expect("the v0.9.3 baseline entry");
+        let outcomes: Vec<(&str, WalletOutcome)> = fixture
+            .contents
+            .wallets
+            .iter()
+            .map(|wallet| (wallet.alias.as_str(), wallet.expected_outcome))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("migration-fixture-v093", WalletOutcome::Migrated),
+                (
+                    "migration-fixture-v093-protected",
+                    WalletOutcome::NeedsDesktop
+                ),
+            ]
+        );
     }
 
     #[test]

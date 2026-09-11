@@ -29,12 +29,14 @@
           {
             "alias": "migration-fixture-v093",
             "uses_password": false,
+            "expected_outcome": "migrated",
             "mnemonic_env_convention": "MIGRATION_FIXTURE_MNEMONIC",
             "note": "Public, testnet-only, dust-only fixture wallet. Funded with 0.03 tDASH from the E2E framework wallet; ~0.0276 DASH went into a Platform asset lock, ~0.0024 DASH was Core network fee."
           },
           {
             "alias": "migration-fixture-v093-protected",
             "uses_password": true,
+            "expected_outcome": "needs_desktop",
             "password": "correct horse battery staple",
             "mnemonic_env_convention": "MIGRATION_FIXTURE_PROTECTED_MNEMONIC",
             "note": "Empty/unfunded. Exists only to exercise the protected-wallet code path. Password matches the PROTECTED_PASSWORD convention already used in src/backend_task/migration/v093_upgrade.rs."

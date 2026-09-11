@@ -183,8 +183,17 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
 
     let cli = cli::DetCli::new(&staged)?;
 
+    // A fixture holding a password-protected wallet cannot finish its storage
+    // update headless — det-cli has no password prompt, by design — so every
+    // wallet-gated boot must stop at exactly that error, not merely fail.
+    let needs_desktop = fixture.needs_desktop();
+    let check_wallet_boot = |run: &cli::CliRun, label: &str| match needs_desktop {
+        true => assertions::check_needs_desktop(run, label),
+        false => assertions::check_boot(run, label),
+    };
+
     let first = cli.wallets_list(options.boot_timeout)?;
-    assertions::check_boot(&first, "the first boot")?;
+    check_wallet_boot(&first, "the first boot")?;
 
     let after = assertions::schema_snapshot(&data_db, &scratch, "after")?;
     assertions::check_schema_outcome(before.as_ref(), after.as_ref())?;
@@ -197,21 +206,33 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
     assertions::check_boot(&info, "network-info")?;
     assertions::check_network(network, &info)?;
 
-    let wallet_ids = assertions::check_wallets(&fixture.expect.wallet_aliases, &first)?;
+    let wallet_ids = match needs_desktop {
+        // Wallet tools stay gated until the desktop app finishes the update,
+        // so nothing is listed; the per-wallet check below reads storage.
+        true => Vec::new(),
+        false => assertions::check_wallets(&fixture.migrated_aliases(), &first)?,
+    };
+    check_wallet_outcomes(fixture, &data_db, &network_db, &scratch, "after")?;
     assertions::check_identities(
         &fixture.expect.identity_ids,
         &assertions::identity_ids(&network_db, &scratch, "after")?,
     )?;
 
     let sentinels = assertions::migration_sentinels(&app_db, &scratch, "after")?;
-    if fixture.expect.finish_unwire_sentinel {
+    if needs_desktop {
+        // An unfinished storage update must not claim completion.
+        assertions::check_sentinel_absent(&sentinels, network)?;
+    } else if fixture.expect.finish_unwire_sentinel {
         assertions::check_sentinel_recorded(&sentinels, network)?;
     }
     let backups = assertions::backup_files(&data_dir)?;
 
     let second = cli.wallets_list(options.boot_timeout)?;
-    assertions::check_boot(&second, "the second boot")?;
-    assertions::check_wallets(&fixture.expect.wallet_aliases, &second)?;
+    check_wallet_boot(&second, "the second boot")?;
+    if !needs_desktop {
+        assertions::check_wallets(&fixture.migrated_aliases(), &second)?;
+    }
+    check_wallet_outcomes(fixture, &data_db, &network_db, &scratch, "idempotent")?;
     assertions::check_idempotent(
         (&backups, &sentinels),
         (
@@ -222,7 +243,11 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
 
     // Last, because it is the only step that needs a reachable chain: a
     // failure here should not mask the offline evidence collected above.
-    if fixture.expect.derive_address && !options.skip_network {
+    if needs_desktop {
+        println!(
+            "    address derivation skipped (wallet tools wait for the desktop app to finish the storage update)"
+        );
+    } else if fixture.expect.derive_address && !options.skip_network {
         for wallet_id in &wallet_ids {
             let label = format!("core-address-create for `{wallet_id}`");
             let run = cli.address_create(wallet_id, options.network_timeout)?;
@@ -235,6 +260,30 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
     }
 
     Ok(())
+}
+
+/// Checks every wallet the manifest lists against the per-network store. Only
+/// possible for a v0.9.3-era fixture, where `data.db` names each wallet's
+/// account xpub; a fixture without one relies on the boot-level checks.
+fn check_wallet_outcomes(
+    fixture: &Fixture,
+    data_db: &Path,
+    network_db: &Path,
+    scratch: &Path,
+    label: &str,
+) -> Result<(), String> {
+    if fixture.contents.wallets.is_empty() {
+        return Ok(());
+    }
+    match assertions::legacy_wallet_registrations(data_db, network_db, scratch, label)? {
+        Some(registered) => {
+            assertions::check_wallet_outcomes(&fixture.contents.wallets, &registered)
+        }
+        None => {
+            println!("    per-wallet storage check skipped (no {DATA_DB} to name the wallets)");
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]

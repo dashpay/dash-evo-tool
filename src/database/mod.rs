@@ -1,8 +1,11 @@
 mod initialization;
-// Also read by the `app_storage_status` MCP tool, which reports the stored
-// `data.db` version against the version this build's ladder targets.
-#[cfg(any(test, feature = "mcp", feature = "cli"))]
-pub(crate) use initialization::DEFAULT_DB_VERSION;
+/// Schema version a boot migrates `data.db` up to. Re-exported (plain `pub`,
+/// unconditional) so external consumers can read the authoritative value
+/// instead of hardcoding or re-parsing a copy that silently goes stale: the
+/// `app_storage_status` MCP tool reports the stored `data.db` version against
+/// it, and the cross-version migration matrix (`tests/migration-matrix/`, a
+/// separate integration-test crate) asserts against it directly.
+pub use initialization::DEFAULT_DB_VERSION;
 pub(crate) mod legacy_import;
 mod settings;
 mod single_key_wallet;

@@ -6,22 +6,43 @@ name: Migration Fixture Bootstrap
 # Actions build artifact without them ever entering the git tree: git history
 # is permanent, while an artifact can be deleted or left to expire.
 #
-# The archive travels base64-encoded in a workflow_dispatch input. The inputs
-# payload limit is 65,535 characters, so archives up to ~48 KB fit; the v0.9.3
-# baseline is 6 KB. Everything else — artifact name, file name, size, sha256 —
-# comes from the COMMITTED manifest entry named by `fixture_id`, so a dispatch
-# can only publish bytes a reviewed manifest already describes.
+# The archive reaches the runner in one of two ways. Everything else — artifact
+# name, file name, size, sha256 — comes from the COMMITTED manifest entry named
+# by `fixture_id`, so a dispatch can only publish bytes a reviewed manifest
+# already describes.
+#
+# - `archive_b64`: the archive base64-encoded in a workflow_dispatch input. The
+#   inputs payload limit is 65,535 characters, so archives up to ~48 KB fit;
+#   the v0.9.3 baseline is 6 KB.
+# - `release_tag`: the archive attached to a temporary DRAFT release under that
+#   tag, for anything larger (a current-era profile carries its SQLite WAL).
+#   Draft releases are listed only to tokens with push access, so the one job
+#   that fetches the archive holds `contents: write` and nothing else. It runs
+#   nothing but jq and the GitHub API, and hands the bytes to the verifying job
+#   as a same-run artifact. Delete the draft once the run has succeeded.
 #
 # This is not capture automation: it captures nothing, runs on no schedule and
 # opens no PR. A human dispatches it and records the run id in the manifest.
 #
-# USAGE:
+# USAGE, small archive:
 #   gh workflow run migration-fixture-bootstrap.yml \
 #     --repo dashpay/dash-evo-tool --ref <branch-carrying-the-manifest-entry> \
 #     -f fixture_id=v0.9.3-wallet-only \
 #     -f archive_b64="$(base64 -w0 dash-evo-tool-v093-fixture.tar.zst)"
-# then copy the values from the run's step summary into the entry's `artifact`
-# block in tests/migration-fixtures/manifest.json.
+#
+# USAGE, large archive (draft-release relay):
+#   gh release create fixture-relay-<fixture_id> <archive_filename> \
+#     --repo dashpay/dash-evo-tool --draft --title "Fixture relay (temporary)" \
+#     --notes "Temporary: deleted once migration-fixture-bootstrap.yml has uploaded it."
+#   gh workflow run migration-fixture-bootstrap.yml \
+#     --repo dashpay/dash-evo-tool --ref <branch-carrying-the-manifest-entry> \
+#     -f fixture_id=<fixture_id> -f release_tag=fixture-relay-<fixture_id>
+#   # once the run has succeeded:
+#   gh release delete fixture-relay-<fixture_id> --repo dashpay/dash-evo-tool \
+#     --cleanup-tag --yes
+#
+# Either way, copy the values from the run's step summary into the entry's
+# `artifact` block in tests/migration-fixtures/manifest.json.
 #
 # RETENTION HAZARD: artifacts expire, and 90 days is the ceiling for a public
 # repository. Before the manifest's `expires_at`, re-dispatch with the same
@@ -40,14 +61,18 @@ on:
         required: true
         type: string
       archive_b64:
-        description: "The fixture archive, base64-encoded without line wraps (base64 -w0)"
-        required: true
+        description: "The fixture archive, base64-encoded without line wraps (base64 -w0). Leave empty when using release_tag."
+        required: false
+        type: string
+      release_tag:
+        description: "Tag of a temporary draft release carrying the archive, for archives over ~48 KB. Leave empty when using archive_b64."
+        required: false
         type: string
   # Registration only. GitHub dispatches a workflow only once it exists on the
   # default branch or has already run; this trigger makes the pull request that
   # adds or edits this file register it, so it can be dispatched with `--ref`
-  # against that PR's branch before it reaches the default branch. The job
-  # below never runs for it.
+  # against that PR's branch before it reaches the default branch. The jobs
+  # below never run for it.
   pull_request:
     paths:
       - ".github/workflows/migration-fixture-bootstrap.yml"
@@ -59,9 +84,74 @@ concurrency:
 permissions: {}
 
 jobs:
+  fetch-draft-release:
+    name: Fetch archive from draft release
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      # Draft releases are listed only to tokens with push access. This job
+      # holds nothing else, and it only reads the manifest and the API.
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # The write-scoped token must not linger in .git/config.
+          persist-credentials: false
+
+      - name: Download the draft release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIXTURE_ID: ${{ inputs.fixture_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          manifest=tests/migration-fixtures/manifest.json
+          archive_filename="$(jq -r --arg id "$FIXTURE_ID" \
+            '[.fixtures[] | select(.id == $id)] | if length == 1 then (.[0].artifact.archive_filename // empty) else empty end' "$manifest")"
+          if ! [[ "$archive_filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.(zst|gz)$ ]]; then
+            echo "::error::$manifest has no single entry '$FIXTURE_ID' with a well-formed artifact.archive_filename."
+            exit 1
+          fi
+          # A draft has no published tag, so it is found by listing. Only a
+          # draft qualifies: a published release is not this relay.
+          releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -c --arg tag "$RELEASE_TAG" '.[] | select(.draft and .tag_name == $tag)')"
+          if [ "$(jq -s 'length' <<<"$releases")" != "1" ]; then
+            echo "::error::Expected exactly one draft release tagged '$RELEASE_TAG'."
+            exit 1
+          fi
+          asset_id="$(jq -r --arg name "$archive_filename" \
+            '[.assets[] | select(.name == $name)] | if length == 1 then .[0].id else empty end' <<<"$releases")"
+          if [ -z "$asset_id" ]; then
+            echo "::error::The draft release '$RELEASE_TAG' has no single asset named $archive_filename."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/relay"
+          mkdir -p "$dir"
+          gh api -H 'Accept: application/octet-stream' \
+            "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" >"$dir/$archive_filename"
+          echo "Fetched $archive_filename ($(stat -c %s "$dir/$archive_filename") bytes); the upload job verifies it against the manifest."
+
+      - name: Hand the archive to the upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-relay
+          path: ${{ runner.temp }}/relay
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
   upload:
     name: Upload fixture artifact
-    if: github.event_name == 'workflow_dispatch'
+    needs: fetch-draft-release
+    # `always()` lets the archive_b64 path run although the relay job was
+    # skipped. The relay path needs that job to have succeeded; the input check
+    # below rejects a dispatch that gives neither or both inputs.
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' &&
+      needs.fetch-draft-release.result != 'failure' &&
+      needs.fetch-draft-release.result != 'cancelled'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -78,8 +168,14 @@ jobs:
         id: entry
         env:
           FIXTURE_ID: ${{ inputs.fixture_id }}
+          HAS_ARCHIVE_B64: ${{ inputs.archive_b64 != '' }}
+          HAS_RELEASE_TAG: ${{ inputs.release_tag != '' }}
         run: |
           set -euo pipefail
+          if [ "$HAS_ARCHIVE_B64" = "$HAS_RELEASE_TAG" ]; then
+            echo "::error::Give exactly one of archive_b64 (archives up to ~48 KB) or release_tag (a draft release carrying the archive)."
+            exit 1
+          fi
           manifest=tests/migration-fixtures/manifest.json
           entry="$(jq -c --arg id "$FIXTURE_ID" \
             '[.fixtures[] | select(.id == $id)] | if length == 1 then .[0] else empty end' "$manifest")"
@@ -103,12 +199,20 @@ jobs:
           check sha256 '^[0-9a-f]{64}$'
           check bytes '^[1-9][0-9]*$'
 
+      - name: Download relayed archive
+        if: inputs.release_tag != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: fixture-relay
+          path: ${{ runner.temp }}/relay
+
       - name: Decode and verify archive
         id: archive
         env:
           # Passed through the environment, never interpolated into the
           # script, and never echoed: it is dispatch input.
           ARCHIVE_B64: ${{ inputs.archive_b64 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           ARCHIVE_FILENAME: ${{ steps.entry.outputs.archive_filename }}
           EXPECTED_SHA256: ${{ steps.entry.outputs.sha256 }}
           EXPECTED_BYTES: ${{ steps.entry.outputs.bytes }}
@@ -117,7 +221,15 @@ jobs:
           dir="$RUNNER_TEMP/fixture"
           mkdir -p "$dir"
           archive="$dir/$ARCHIVE_FILENAME"
-          if ! printf '%s' "$ARCHIVE_B64" | base64 --decode >"$archive"; then
+          if [ -n "$RELEASE_TAG" ]; then
+            # Fetched from the draft release by the job above.
+            relayed="$RUNNER_TEMP/relay/$ARCHIVE_FILENAME"
+            if [ ! -f "$relayed" ]; then
+              echo "::error::The relay job handed over no $ARCHIVE_FILENAME."
+              exit 1
+            fi
+            mv "$relayed" "$archive"
+          elif ! printf '%s' "$ARCHIVE_B64" | base64 --decode >"$archive"; then
             echo "::error::archive_b64 is not valid base64."
             exit 1
           fi
@@ -154,6 +266,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           FIXTURE_ID: ${{ inputs.fixture_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           # The expiry actually granted: a repository-level retention setting
@@ -171,4 +284,12 @@ jobs:
               --argjson days "$RETENTION_DAYS" --arg expires "$expires_at" \
               '{workflow_name: $workflow, workflow_run_id: $run, retention_days: $days, expires_at: $expires}'
             echo '```'
+            if [ -n "$RELEASE_TAG" ]; then
+              echo
+              echo "The archive came through the draft release \`$RELEASE_TAG\`. Delete it now:"
+              echo
+              echo '```sh'
+              echo "gh release delete '$RELEASE_TAG' --repo $GITHUB_REPOSITORY --cleanup-tag --yes"
+              echo '```'
+            fi
           } >>"$GITHUB_STEP_SUMMARY"

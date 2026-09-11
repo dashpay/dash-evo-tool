@@ -252,6 +252,24 @@ jobs:
           DET_CLI_BIN: ${{ runner.temp }}/bin/det-cli
         run: cargo test --locked --test migration-matrix --features testing
 
+      # The weekly profile once more, opened directly through the
+      # platform_compatibility bridge instead of through a det-cli boot: the
+      # bridge's own contract (typed load, row counts, retained backup,
+      # idempotent re-open) on bytes a released build wrote. The test is
+      # env-gated, so tests.yml's plain `cargo test` only skips it; this step
+      # therefore checks that it really ran against the downloaded fixture.
+      - name: Run platform_compatibility real-data test
+        env:
+          MIGRATION_FIXTURES_DIR: ${{ steps.fixtures.outputs.dir }}
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/platform-compatibility-real-data.log"
+          cargo test --locked --features testing --lib platform_compatibility_upgrades_the_real -- --nocapture 2>&1 | tee "$log"
+          if ! grep -q 'test result: ok. 1 passed' "$log" || grep -q '^skipped:' "$log"; then
+            echo "::error::The platform_compatibility real-data test did not run against the downloaded fixture."
+            exit 1
+          fi
+
   coverage:
     name: Fixture coverage
     # Schedule only: a coverage gap is created by cutting a release, never by

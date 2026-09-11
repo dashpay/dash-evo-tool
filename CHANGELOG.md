@@ -101,6 +101,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Cancelling a network switch takes priority over simultaneous startup and
+  reports chain sync as stopped after shutting down the new backend.
+
 - Profile saves stop when their picture cannot be downloaded, explain unsupported
   signing keys, and retry failed display-timestamp storage on profile reads
   without submitting another paid write.

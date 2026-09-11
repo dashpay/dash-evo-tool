@@ -1,6 +1,8 @@
 mod initialization;
-#[cfg(test)]
-pub(crate) use initialization::DEFAULT_DB_VERSION;
+/// Schema version a boot migrates `data.db` up to. Re-exported so the
+/// cross-version migration matrix (`tests/migration-matrix/`) can assert the
+/// target version instead of hardcoding a copy that silently goes stale.
+pub use initialization::DEFAULT_DB_VERSION;
 pub(crate) mod legacy_import;
 mod settings;
 mod single_key_wallet;

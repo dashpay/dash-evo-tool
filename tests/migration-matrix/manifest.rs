@@ -93,10 +93,6 @@ pub struct Expectations {
     /// Whether to derive a receive address. Needs a synced SPV chain, so a
     /// fixture captured for an offline-only check can opt out.
     pub derive_address: bool,
-    /// Demand that an already-current `data.db` is byte-identical after the
-    /// boot. Off by default: a normal boot legitimately writes rows, so the
-    /// default no-migration assertion is "schema unchanged" instead.
-    pub data_db_byte_identical: bool,
 }
 
 impl Default for Expectations {
@@ -107,7 +103,6 @@ impl Default for Expectations {
             starting_db_version: None,
             finish_unwire_sentinel: true,
             derive_address: true,
-            data_db_byte_identical: false,
         }
     }
 }
@@ -214,10 +209,6 @@ mod tests {
         assert!(
             fixture.expect.finish_unwire_sentinel && fixture.expect.derive_address,
             "the sentinel and address checks default to on"
-        );
-        assert!(
-            !fixture.expect.data_db_byte_identical,
-            "strict byte identity is opt-in"
         );
         assert!(fixture.artifact.archive.is_none());
     }

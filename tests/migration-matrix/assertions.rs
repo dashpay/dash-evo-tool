@@ -130,12 +130,17 @@ pub fn schema_snapshot(
     Ok(Some(SchemaSnapshot { version, objects }))
 }
 
-/// The version ladder's verdict, conditional on where the fixture started.
+/// The legacy `data.db` verdict, conditional on where the fixture started.
 ///
-/// - already at [`DEFAULT_DB_VERSION`] → nothing may change;
-/// - below it → the boot must lift the file to [`DEFAULT_DB_VERSION`];
-/// - above it → the fixture was captured by a newer build than the one under
-///   test, which the matrix reports rather than silently passing;
+/// Every boot path (GUI and det-cli) opens an existing `data.db` with SQLite
+/// writes disabled: it is the recovery artifact the storage update reads
+/// from, never a file it upgrades. The version ladder in
+/// `Database::initialize` runs only when no `data.db` exists yet. So:
+///
+/// - present → version and schema exactly as captured;
+/// - above [`DEFAULT_DB_VERSION`] → the fixture was captured by a newer build
+///   than the one under test, which the matrix reports rather than silently
+///   passing;
 /// - absent → a fresh file must be created at [`DEFAULT_DB_VERSION`].
 pub fn check_schema_outcome(
     before: Option<&SchemaSnapshot>,
@@ -154,31 +159,23 @@ pub fn check_schema_outcome(
         };
     };
 
-    match before.version {
-        Some(version) if version > DEFAULT_DB_VERSION => Err(format!(
+    if let Some(version) = before.version
+        && version > DEFAULT_DB_VERSION
+    {
+        return Err(format!(
             "fixture {DATA_DB} is at version {version}, newer than this build's {DEFAULT_DB_VERSION} — \
              the fixture was captured by a newer DET than the binary under test"
-        )),
-        Some(DEFAULT_DB_VERSION) => {
-            if before == after {
-                return Ok(());
-            }
-            Err(format!(
-                "{DATA_DB} was already at version {DEFAULT_DB_VERSION}, so the boot must not have \
-                 migrated it, but its schema changed (version {} -> {})",
-                before.describe_version(),
-                after.describe_version()
-            ))
-        }
-        _ => match after.version {
-            Some(DEFAULT_DB_VERSION) => Ok(()),
-            _ => Err(format!(
-                "{DATA_DB} started at version {} and must reach {DEFAULT_DB_VERSION}, but ended at {}",
-                before.describe_version(),
-                after.describe_version()
-            )),
-        },
+        ));
     }
+    if before == after {
+        return Ok(());
+    }
+    Err(format!(
+        "the boot changed the pre-update {DATA_DB} (version {} -> {}), which every boot path must \
+         open read-only",
+        before.describe_version(),
+        after.describe_version()
+    ))
 }
 
 /// Reads a file whole, or `None` when it does not exist.
@@ -190,10 +187,9 @@ pub fn file_bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-/// Strict byte identity, opted into per fixture. The default no-migration
-/// check is [`check_schema_outcome`] — a boot legitimately writes rows to an
-/// already-current `data.db`, so demanding identical bytes is only meaningful
-/// for a fixture captured to be inert.
+/// Byte identity of a pre-update `data.db` across a boot. Stronger than
+/// [`check_schema_outcome`]: a read-only open cannot write a single page, so
+/// any difference means something opened the file for writing.
 pub fn check_bytes_unchanged(
     before: Option<&Vec<u8>>,
     after: Option<&Vec<u8>>,
@@ -201,9 +197,12 @@ pub fn check_bytes_unchanged(
 ) -> Result<(), String> {
     match (before, after) {
         (Some(before), Some(after)) if before == after => Ok(()),
+        (Some(before), Some(after)) if before.len() == after.len() => Err(format!(
+            "{label} must be byte-identical across a boot, but its content changed ({} bytes)",
+            after.len()
+        )),
         (Some(before), Some(after)) => Err(format!(
-            "{label} must be byte-identical across a boot that needs no migration, but its size \
-             went from {} to {} bytes",
+            "{label} must be byte-identical across a boot, but its size went from {} to {} bytes",
             before.len(),
             after.len()
         )),
@@ -511,33 +510,20 @@ mod tests {
         SchemaSnapshot { version, objects }
     }
 
+    /// Every boot path opens an existing `data.db` read-only, so the legacy
+    /// ladder never runs on it — whatever version it was left at.
     #[test]
-    fn an_outdated_fixture_must_reach_the_current_version() {
-        let before = snapshot(Some(11), false);
-        let after = snapshot(Some(DEFAULT_DB_VERSION), true);
-        check_schema_outcome(Some(&before), Some(&after)).expect("a completed migration passes");
+    fn a_pre_update_data_db_must_be_left_untouched() {
+        for version in [11, DEFAULT_DB_VERSION] {
+            let before = snapshot(Some(version), false);
+            check_schema_outcome(Some(&before), Some(&snapshot(Some(version), false)))
+                .unwrap_or_else(|e| panic!("an untouched v{version} file must pass: {e}"));
 
-        let stalled = snapshot(Some(12), true);
-        let error = check_schema_outcome(Some(&before), Some(&stalled))
-            .expect_err("a half-finished ladder must fail");
-        assert!(error.contains(&DEFAULT_DB_VERSION.to_string()), "{error}");
-    }
-
-    #[test]
-    fn an_already_current_fixture_must_not_be_migrated() {
-        let before = snapshot(Some(DEFAULT_DB_VERSION), false);
-        check_schema_outcome(
-            Some(&before),
-            Some(&snapshot(Some(DEFAULT_DB_VERSION), false)),
-        )
-        .expect("an untouched schema passes");
-
-        let error = check_schema_outcome(
-            Some(&before),
-            Some(&snapshot(Some(DEFAULT_DB_VERSION), true)),
-        )
-        .expect_err("a schema change on an already-current file must fail");
-        assert!(error.contains("must not have"), "{error}");
+            let migrated = snapshot(Some(DEFAULT_DB_VERSION), true);
+            let error = check_schema_outcome(Some(&before), Some(&migrated))
+                .expect_err("any schema change to a pre-update data.db must fail");
+            assert!(error.contains("read-only"), "{error}");
+        }
     }
 
     #[test]
@@ -675,6 +661,9 @@ mod tests {
         let error = check_bytes_unchanged(Some(&vec![1, 2]), Some(&vec![1, 2, 3]), DATA_DB)
             .expect_err("changed bytes must fail");
         assert!(error.contains("2 to 3 bytes"), "{error}");
+        let error = check_bytes_unchanged(Some(&vec![1, 2]), Some(&vec![1, 3]), DATA_DB)
+            .expect_err("a same-size rewrite must fail too");
+        assert!(error.contains("content changed"), "{error}");
     }
 
     #[test]

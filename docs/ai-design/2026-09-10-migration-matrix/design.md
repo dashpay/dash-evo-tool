@@ -38,7 +38,7 @@ around. A harness assertion therefore fails; it never falls back.
 
 | # | System | Where | Notes |
 |---|---|---|---|
-| 1 | `data.db` schema ladder | `src/database/initialization.rs` | Legacy DET SQLite; `DEFAULT_DB_VERSION` is 11 at v0.9.3 |
+| 1 | `data.db` schema ladder | `src/database/initialization.rs` | Legacy DET SQLite; `DEFAULT_DB_VERSION` is 11 at v0.9.3. Since the platform-wallet rewrite (#860) it only builds a fresh file: every boot path opens an existing `data.db` read-only |
 | 2 | The "unwire" drain | `src/backend_task/migration/`, gated by `MIN_DIRECT_MIGRATION_VERSION` (11) / `MAX_DIRECT_MIGRATION_VERSION` (40) in `src/model/data_migration.rs` | One-shot move of legacy `data.db` rows into the `platform-wallet-storage` k/v store; idempotent through sentinels |
 | 3 | `refinery` migrations inside `platform-wallet-storage` | upstream, applied to both `det-app.sqlite` and `det-<network>.sqlite` | The layer the lineage divergence hit |
 
@@ -120,7 +120,7 @@ tell them apart contradicts existing coverage:
 | Property | Assertion |
 |---|---|
 | Boot | No panic, no `WalletDataIncompatible`. A migration that cannot complete is a failure, never a fallback |
-| `data.db` | Reaches the target version **if** migration was needed; otherwise the file is unchanged byte for byte |
+| `data.db` | Never written: every boot path opens an existing file read-only (#860), so it stays byte-identical whatever its version. A fixture without one gets a fresh file at `DEFAULT_DB_VERSION` |
 | Sentinels | An already-completed import keeps its original marker |
 | Wallets | Aliases, addresses and wallet count preserved |
 | Protected wallet | Right password opens it, wrong password is rejected, at-rest protection survived |

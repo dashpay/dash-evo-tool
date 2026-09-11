@@ -177,20 +177,9 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
             "manifest records a starting {DATA_DB} version of {declared}, the staged file is at {found}"
         ));
     }
-    let migration_needed = starting_version != Some(DEFAULT_DB_VERSION);
-    let before_bytes = match fixture.expect.data_db_byte_identical {
-        true if migration_needed => {
-            return Err(format!(
-                "fixture asks for a byte-identical {DATA_DB} but starts at version {} and must be \
-                 migrated to {DEFAULT_DB_VERSION}",
-                starting_version
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            ));
-        }
-        true => assertions::file_bytes(&data_db)?,
-        false => None,
-    };
+    // Every boot path opens a pre-update data.db read-only, so its bytes are
+    // part of the contract for every fixture that has one, not an opt-in.
+    let before_bytes = assertions::file_bytes(&data_db)?;
 
     let cli = cli::DetCli::new(&staged)?;
 
@@ -199,7 +188,7 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
 
     let after = assertions::schema_snapshot(&data_db, &scratch, "after")?;
     assertions::check_schema_outcome(before.as_ref(), after.as_ref())?;
-    if fixture.expect.data_db_byte_identical {
+    if before_bytes.is_some() {
         let after_bytes = assertions::file_bytes(&data_db)?;
         assertions::check_bytes_unchanged(before_bytes.as_ref(), after_bytes.as_ref(), DATA_DB)?;
     }

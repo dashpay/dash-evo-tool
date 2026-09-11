@@ -77,8 +77,35 @@ pub fn stage(fixtures_dir: &Path, fixture: &Fixture) -> Result<StagedFixture, St
 
     let data_dir = locate_data_dir(&unpacked, &fixture.id)?;
     harden(&data_dir)?;
+    restrict_ancestors(sandbox.path(), &data_dir)?;
 
     Ok(StagedFixture { sandbox, data_dir })
+}
+
+/// Makes every directory from the sandbox root down to (excluding) the data
+/// dir owner-only. [`harden`] owns the data dir and below; the directories
+/// above it were created with the process umask or an archive's modes, and
+/// the wallet store refuses a data dir under a group- or other-writable
+/// ancestor (`insecure_parent_dir`).
+fn restrict_ancestors(sandbox: &Path, data_dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        for dir in data_dir
+            .ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(sandbox))
+        {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("could not restrict {}: {e}", dir.display()))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (sandbox, data_dir);
+    }
+    Ok(())
 }
 
 enum Source {
@@ -326,6 +353,45 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(file_mode & 0o077, 0, "staged files must be owner-only");
+    }
+
+    /// The wallet store refuses a data dir under a group- or other-writable
+    /// ancestor (`insecure_parent_dir`), so every directory the stager creates
+    /// above the data dir must be owner-only too, whatever the umask.
+    #[test]
+    fn every_directory_above_the_data_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixtures = tempfile::tempdir().expect("fixtures dir");
+        let nested = fixtures.path().join("wrapped").join("Dash-Evo-Tool");
+        fs::create_dir_all(&nested).expect("create fixture");
+        fs::write(nested.join("det-app.sqlite"), b"x").expect("write marker");
+
+        let staged = stage(fixtures.path(), &fixture("wrapped", None)).expect("stage");
+
+        let ancestors: Vec<&Path> = staged
+            .data_dir()
+            .ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(staged.sandbox()))
+            .collect();
+        assert!(
+            ancestors.len() >= 2,
+            "expected the sandbox root and at least one staging dir above the data dir, got {ancestors:?}"
+        );
+        for dir in ancestors {
+            let mode = fs::metadata(dir)
+                .expect("stat ancestor")
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o077,
+                0,
+                "{} is mode {:o}; the data dir's ancestors must be owner-only",
+                dir.display(),
+                mode & 0o777
+            );
+        }
     }
 
     #[test]

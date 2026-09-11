@@ -18,7 +18,10 @@ only durable, version-controlled pointer to them.
 DET has three independent migration mechanisms, and a fixture exercises all
 three in the order a real user hits them:
 
-1. The `data.db` schema ladder (`src/database/initialization.rs`).
+1. The `data.db` read-only contract. Since the platform-wallet rewrite (#860)
+   every boot opens an existing `data.db` read-only, and the schema ladder
+   (`src/database/initialization.rs`) only builds a fresh file, so a fixture's
+   `data.db` must come out byte-identical.
 2. The one-shot "unwire" drain of legacy `data.db` rows into the
    `platform-wallet-storage` k/v store, gated by
    `MIN_DIRECT_MIGRATION_VERSION` / `MAX_DIRECT_MIGRATION_VERSION`
@@ -105,7 +108,7 @@ exclusions:
 
 | Path | Packed? | Why |
 |---|---|---|
-| `data.db` (≤ v0.9.3 era) | Yes | The legacy schema ladder and the unwire drain both key off it |
+| `data.db` (≤ v0.9.3 era) | Yes | The unwire drain and the legacy settings import (network, theme) both read it |
 | `det-app.sqlite`, `det-<network>.sqlite` (current era) | Yes | The `platform-wallet-storage` layer under test |
 | `secrets/det-secrets.pwsvault` (current era) | Yes | Password-protected wallet assertions need the real vault |
 | `.env` | Yes | Era-correct config keys are part of what migrates |

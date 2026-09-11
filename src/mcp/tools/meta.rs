@@ -367,6 +367,11 @@ impl AsyncTool<DashMcpService> for AppStorageUpdate {
         // A desktop session collects wallet passwords in its own window, and its
         // storage update may be parked on that prompt while holding the
         // preparation gate. Never add a remote channel for the same password.
+        // TODO(SEC-001): this sees only a desktop app in this process. A
+        // standalone det-cli sharing the data directory with a running desktop
+        // app in another process is not refused; that needs a cross-process
+        // lock on the data directory. Accepted limitation, see
+        // docs/ai-design/2026-07-14-migration-password-prompt/design.md.
         if ctx.has_interactive_secret_prompt() {
             return Err(McpToolError::DesktopOwnsPasswordPrompt);
         }
@@ -378,6 +383,11 @@ impl AsyncTool<DashMcpService> for AppStorageUpdate {
             });
         }
 
+        // TODO(SEC-003): wrong passwords are not rate-limited. Every call costs
+        // one Argon2id derivation per locked wallet and nothing more, so a
+        // bearer-token holder can guess repeatedly. Needs attempt throttling
+        // with backoff. Accepted limitation, see
+        // docs/ai-design/2026-07-14-migration-password-prompt/design.md.
         resolve::ensure_wallets_hydrated_with_password(&ctx, &param.password).await?;
 
         Ok(AppStorageUpdateOutput {

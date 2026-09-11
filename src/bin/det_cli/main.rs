@@ -168,9 +168,15 @@ enum Action {
 /// including reading the password when a password flag names a source — so
 /// bad input or an unsafe password file fails without booting the app.
 ///
+/// `http_addr` is the server address in HTTP mode and `None` in-process; a
+/// password is only sent over HTTP to a destination that keeps it private.
+///
 /// Returns `None` when the invocation only asked for the tool's help, which is
 /// printed here.
-fn prepare_tool_call(args: &[String]) -> Result<Option<CallToolRequestParams>, String> {
+fn prepare_tool_call(
+    args: &[String],
+    http_addr: Option<&str>,
+) -> Result<Option<CallToolRequestParams>, String> {
     let tool_name = args.first().ok_or("tool name required".to_string())?;
     let mcp_name = tool_name.replace('-', "_");
 
@@ -196,6 +202,9 @@ fn prepare_tool_call(args: &[String]) -> Result<Option<CallToolRequestParams>, S
             };
             return Err(password::describe(&error));
         }
+        if let Some(addr) = http_addr {
+            password::ensure_safe_destination(addr).map_err(|e| password::describe(&e))?;
+        }
         let secret = password::read_password(&source).map_err(|e| password::describe(&e))?;
         password::insert_password(&mut arguments, &secret);
     }
@@ -215,17 +224,6 @@ async fn run(cli: Cli) -> Result<(), String> {
         command,
     } = cli;
 
-    let action = match command.unwrap_or(Commands::Tools) {
-        Commands::Tools => Action::ListTools,
-        Commands::Tool(args) => match prepare_tool_call(&args)? {
-            Some(request) => Action::CallTool(Box::new(request)),
-            None => return Ok(()),
-        },
-        Commands::Serve | Commands::Completion { .. } => unreachable!(),
-        #[cfg(feature = "headless")]
-        Commands::Headless => unreachable!(),
-    };
-
     // An empty/whitespace bearer means "no key": the default .env ships
     // `MCP_API_KEY=` (empty), which dotenvy sets as an empty string, so clap's
     // env binding yields `Some("")`. Treat that exactly like an unset key —
@@ -234,16 +232,26 @@ async fn run(cli: Cli) -> Result<(), String> {
 
     // Mode selection: --standalone or no bearer -> stdio; bearer present -> HTTP.
     let use_stdio = standalone || bearer.is_none();
+    let http_addr = (!use_stdio).then(|| resolve_addr(addr));
 
-    let client: McpClient = if use_stdio {
-        connect::connect_in_process()
+    let action = match command.unwrap_or(Commands::Tools) {
+        Commands::Tools => Action::ListTools,
+        Commands::Tool(args) => match prepare_tool_call(&args, http_addr.as_deref())? {
+            Some(request) => Action::CallTool(Box::new(request)),
+            None => return Ok(()),
+        },
+        Commands::Serve | Commands::Completion { .. } => unreachable!(),
+        #[cfg(feature = "headless")]
+        Commands::Headless => unreachable!(),
+    };
+
+    let client: McpClient = match http_addr.as_deref() {
+        None => connect::connect_in_process()
             .await
-            .map_err(|e| e.to_string())?
-    } else {
-        let addr = resolve_addr(addr);
-        connect::connect_http(&addr, bearer)
+            .map_err(|e| e.to_string())?,
+        Some(addr) => connect::connect_http(addr, bearer)
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?,
     };
 
     match action {

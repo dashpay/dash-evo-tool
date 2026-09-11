@@ -102,6 +102,10 @@ pass show dash/det-wallets | det-cli app-storage-update --password-stdin
   variable for it either.
 - The command is refused while the desktop app is running (`--addr` / HTTP
   mode against the GUI): the app asks for the password in its own window.
+- In HTTP mode, a password is sent only to this computer (`127.0.0.1`, `::1`
+  or `localhost`) or to an `https` address. Any other `--addr` or `MCP_LISTEN`
+  is refused before the password is read, `0.0.0.0` included. Use
+  `--addr http://127.0.0.1:<port>/mcp` instead.
 - Once the update has finished, other commands need no password.
 
 ## Usage

@@ -77,8 +77,16 @@ rmcp logs every inbound request, raw tool arguments included, at DEBUG, and ever
 
 ### Residuals
 
-- The JSON-RPC request that carries the password is an ordinary buffer in the transport, which `SecretString` cannot wipe. That buffer is the in-process pipe for standalone det-cli, or the bearer-authenticated HTTP body. Every secret tool parameter shares this residual. Send the password only to a loopback MCP HTTP endpoint.
+- The JSON-RPC request that carries the password is an ordinary buffer in the transport, which `SecretString` cannot wipe. That buffer is the in-process pipe for standalone det-cli, or the bearer-authenticated HTTP body. Every secret tool parameter shares this residual. det-cli refuses to send a password over HTTP unless the address is loopback (`127.0.0.0/8`, `::1`, `localhost`) or `https` (SEC-004). Other MCP clients must hold themselves to the same rule.
+- det-cli reads `--password-stdin` through a duplicated, unbuffered descriptor rather than `std::io::stdin()`, whose process-wide 8 KiB buffer is never wiped (SEC-002). The zeroizing read buffer is the only user-space copy until the transport one above.
 - `--password-file` is unavailable on non-Unix platforms until the file's ACL can be checked (TODO in `src/bin/det_cli/password.rs`).
+
+### Known, accepted limitations
+
+Security review 2026-09-11 left two findings open. Both need architectural work beyond this change. `TODO(SEC-00n)` in `src/mcp/tools/meta.rs` marks each one.
+
+- **SEC-001: the desktop check covers only the current process.** `has_interactive_secret_prompt()` recognizes a desktop app embedded in the same process, which is how MCP-over-HTTP reaches a running GUI. A standalone det-cli or `det-cli headless` that shares the data directory with a desktop app in another process is not refused. Both processes can then drive the storage update at the same time. The update's idempotent, sentinel-gated drain bounds the damage, but a proper fix needs a cross-process lock on the data directory.
+- **SEC-003: password attempts are not throttled.** Every `app_storage_update` call costs one Argon2id derivation per locked wallet and nothing more. A caller can therefore guess repeatedly, limited only by Argon2id's cost. Reaching the tool already requires the stdio pipe or the HTTP bearer token, so the attacker is local or trusted. Attempt throttling with backoff is the fix.
 
 ### Verification
 

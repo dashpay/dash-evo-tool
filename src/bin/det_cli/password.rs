@@ -54,6 +54,10 @@ pub(super) enum PasswordArgError {
         "The command {tool} does not take a password, so --password-stdin and --password-file do not apply to it."
     )]
     ToolTakesNoPassword { tool: String },
+    #[error(
+        "The password would travel unencrypted to {addr}. Send it only to this computer (127.0.0.1, ::1 or localhost) or to an https address."
+    )]
+    InsecureDestination { addr: String },
 }
 
 /// The password could not be read, or was refused. No variant carries any
@@ -178,15 +182,81 @@ pub(super) fn reject_inline_password(
 pub(super) fn read_password(source: &PasswordSource) -> Result<SecretString, PasswordReadError> {
     match source {
         PasswordSource::Stdin => {
-            let stdin = std::io::stdin();
-            if stdin.is_terminal() {
+            if std::io::stdin().is_terminal() {
                 return Err(PasswordReadError::StdinIsTerminal);
             }
-            let raw = read_bounded(stdin.lock())
+            let raw = raw_stdin()
+                .and_then(read_bounded)
                 .map_err(|source| PasswordReadError::ReadStdin { source })?;
             parse_password(&raw)
         }
         PasswordSource::File(path) => read_password_file(path),
+    }
+}
+
+/// Standard input as an unbuffered `File` over a duplicate of its descriptor.
+///
+/// `std::io::stdin()` reads through a process-wide 8 KiB buffer that is never
+/// wiped, so a password read through it would outlive the zeroizing buffer of
+/// [`read_bounded`]. Reading the duplicated descriptor directly leaves that
+/// buffer untouched: the only user-space copy is the zeroizing one.
+#[cfg(unix)]
+fn raw_stdin() -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsFd as _;
+    Ok(std::fs::File::from(
+        std::io::stdin().as_fd().try_clone_to_owned()?,
+    ))
+}
+
+/// See the Unix variant: the same bypass of std's stdin buffer, over a
+/// duplicated handle.
+#[cfg(windows)]
+fn raw_stdin() -> std::io::Result<std::fs::File> {
+    use std::os::windows::io::AsHandle as _;
+    Ok(std::fs::File::from(
+        std::io::stdin().as_handle().try_clone_to_owned()?,
+    ))
+}
+
+/// Refuses to send a password over plain HTTP anywhere but this computer.
+///
+/// Over the HTTP transport the password travels in the request body. `https`
+/// protects it on any network; plain `http` only on loopback, where it never
+/// leaves the machine.
+///
+/// # Errors
+///
+/// [`PasswordArgError::InsecureDestination`] for plain HTTP to a non-loopback
+/// host, and for an address that does not parse — an unknown destination is
+/// not a safe one.
+pub(super) fn ensure_safe_destination(addr: &str) -> Result<(), PasswordArgError> {
+    let safe = match reqwest::Url::parse(addr) {
+        Ok(url) if url.scheme() == "https" => true,
+        Ok(url) if url.scheme() == "http" => url.host_str().is_some_and(is_loopback_host),
+        _ => false,
+    };
+    if safe {
+        Ok(())
+    } else {
+        Err(PasswordArgError::InsecureDestination {
+            addr: addr.to_owned(),
+        })
+    }
+}
+
+/// Whether a parsed URL host names this computer.
+///
+/// The URL parser has already normalized the host: IPv4 forms such as
+/// `0x7f.1` read as dotted quads, domains are lowercase, and IPv6 literals
+/// keep their brackets.
+fn is_loopback_host(host: &str) -> bool {
+    let ip_literal = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    match ip_literal.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host == "localhost",
     }
 }
 
@@ -523,5 +593,55 @@ mod tests {
             matches!(error, PasswordReadError::NotAFile { .. }),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn a_password_goes_over_http_only_to_this_computer() {
+        for addr in [
+            "http://127.0.0.1:9527/mcp",
+            "http://127.8.0.1:9527/mcp",
+            "http://localhost:9527/mcp",
+            "http://LocalHost:9527/mcp",
+            "http://[::1]:9527/mcp",
+            "http://0x7f.1:9527/mcp",
+        ] {
+            assert!(
+                ensure_safe_destination(addr).is_ok(),
+                "{addr} is this computer"
+            );
+        }
+    }
+
+    #[test]
+    fn a_password_goes_anywhere_over_https() {
+        for addr in [
+            "https://det.example.com/mcp",
+            "https://192.168.1.5:9527/mcp",
+        ] {
+            assert!(ensure_safe_destination(addr).is_ok(), "{addr} is encrypted");
+        }
+    }
+
+    #[test]
+    fn a_password_never_goes_unencrypted_off_this_computer() {
+        for addr in [
+            "http://192.168.1.5:9527/mcp",
+            "http://det.example.com/mcp",
+            "http://localhost.example.com/mcp",
+            "http://127.0.0.1.nip.io/mcp",
+            "http://0.0.0.0:9527/mcp",
+            "http://[::]:9527/mcp",
+            "http://[::ffff:127.0.0.1]:9527/mcp",
+            "ws://127.0.0.1:9527/mcp",
+            "127.0.0.1:9527/mcp",
+            "not a url",
+        ] {
+            match ensure_safe_destination(addr) {
+                Err(PasswordArgError::InsecureDestination { addr: reported }) => {
+                    assert_eq!(reported, addr);
+                }
+                other => panic!("{addr}: expected InsecureDestination, got {other:?}"),
+            }
+        }
     }
 }

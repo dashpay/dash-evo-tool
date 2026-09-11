@@ -101,9 +101,10 @@ returns that error until the update finishes.
 The password is typed as `SecretString`: it deserializes straight into guarded,
 zeroizing memory, its `Debug` is redacted, the schema carries no default or
 example, and it is never stored or echoed in results or errors. Over the HTTP
-transport it travels in the request body, so send it only to a loopback
-endpoint. From det-cli, supply it with `--password-stdin` or `--password-file`
-(see `docs/CLI.md`), never as `password=...`.
+transport it travels in the request body, so send it only to a loopback or
+`https` endpoint; det-cli refuses any other address. From det-cli, supply it
+with `--password-stdin` or `--password-file` (see `docs/CLI.md`), never as
+`password=...`.
 
 ## Environment variables
 

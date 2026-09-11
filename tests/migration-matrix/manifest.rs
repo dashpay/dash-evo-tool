@@ -62,7 +62,9 @@ pub struct Fixture {
 #[derive(Debug, Default, Deserialize)]
 pub struct Artifact {
     /// Archive (or directory) name inside the fixtures directory.
-    #[serde(default, alias = "file", alias = "path")]
+    /// `archive_filename` is the key tests/migration-fixtures/README.md
+    /// documents and the capture tooling writes.
+    #[serde(default, alias = "archive_filename", alias = "file", alias = "path")]
     pub archive: Option<String>,
     #[serde(default)]
     pub sha256: Option<String>,
@@ -256,6 +258,40 @@ mod tests {
             fixture.expect.finish_unwire_sentinel,
             "an unlisted expectation keeps its default"
         );
+    }
+
+    /// Reads the committed manifest rather than a hand-written sample, so the
+    /// key names the capture tooling writes and the ones this reader expects
+    /// cannot drift apart unnoticed. A pointer that fails to deserialize is
+    /// silently `None` (every field is defaulted), which would send the
+    /// stager hunting for `<id>.tar.zst` instead of the archive CI downloaded.
+    #[test]
+    fn the_committed_manifest_resolves_every_artifact_pointer() {
+        let manifest: Manifest =
+            serde_json::from_str(include_str!("../migration-fixtures/manifest.json"))
+                .expect("the committed manifest must parse");
+        assert!(
+            !manifest.fixtures.is_empty(),
+            "the committed manifest lists no fixtures"
+        );
+        for fixture in &manifest.fixtures {
+            let artifact = &fixture.artifact;
+            assert!(
+                artifact.archive.is_some(),
+                "fixture '{}' has no archive file name the stager can resolve",
+                fixture.id
+            );
+            assert!(
+                artifact.sha256.is_some(),
+                "fixture '{}' has no sha256 to verify the download against",
+                fixture.id
+            );
+            assert!(
+                artifact.artifact_name.is_some(),
+                "fixture '{}' has no artifact name",
+                fixture.id
+            );
+        }
     }
 
     #[test]

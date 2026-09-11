@@ -23,7 +23,7 @@
         "bytes": 6032,
         "retention_days": null,
         "expires_at": null,
-        "staging_note": "Captured for real, not yet uploaded as a GitHub Actions build artifact (that upload path doesn't exist until the migration-matrix.yml/capture automation lands). Durable copy held at /data/artifacts/dash-evo-tool/2026-09-11/migration-fixtures/dash-evo-tool-v093-fixture.tar.zst pending wiring into CI. workflow_name/workflow_run_id stay null until then."
+        "staging_note": "Captured for real; upload pending. The upload path is .github/workflows/migration-fixture-bootstrap.yml (manual workflow_dispatch, see its header): it verifies the dispatched bytes against sha256/bytes above and uploads them as artifact_name. Until a maintainer dispatches it and records workflow_name, workflow_run_id, retention_days and expires_at here from that run's step summary, the migration matrix fails at download-fixtures.sh --strict by design. Local source copy: /data/artifacts/dash-evo-tool/2026-09-11/migration-fixtures/dash-evo-tool-v093-fixture.tar.zst."
       },
       "contents": {
         "wallets": [

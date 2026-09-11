@@ -87,6 +87,13 @@ Consequences that any workflow consuming this directory must handle:
 - **A missing or expired artifact must fail loudly.** A matrix job that cannot
   download its input fails; it never silently skips, and it never falls back to
   regenerating the fixture with a current build (which would test nothing).
+- **A hand capture reaches Actions storage through
+  `.github/workflows/migration-fixture-bootstrap.yml`.** Every `gui` capture,
+  the v0.9.3 baseline included, is produced outside CI. Dispatch that workflow
+  with the entry's `id` and the base64-encoded archive: it checks the bytes
+  against the entry's `sha256` and `bytes`, uploads them as `artifact_name`,
+  and prints the `workflow_run_id` and `expires_at` to record. Re-dispatching
+  the same bytes before `expires_at` is the refresh path.
 - **Artifact name convention:** `migration-fixture-<git_tag>-<profile>` — e.g.
   `migration-fixture-v0.9.3-wallet-identity-dpns`. The template also lives in
   the manifest as `artifact_name_template` so tooling does not re-derive it.
@@ -159,7 +166,8 @@ manifest entry must say `gui` when either applies:
    fixture that silently proves nothing.
 6. **Quit cleanly** and confirm the process exited before packing — a live
    SQLite WAL sidecar is not a valid fixture.
-7. **Pack, upload, and add the manifest entry** with the real `workflow_run_id`,
+7. **Pack, upload (`migration-fixture-bootstrap.yml` for a hand capture), and
+   add the manifest entry** with the real `workflow_run_id`,
    `artifact_name`, `sha256`, `bytes`, `captured_at` and `retention_days`.
 8. **Commit the manifest change.** The archive stays out of git.
 

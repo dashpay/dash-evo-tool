@@ -280,6 +280,7 @@ impl DashMcpService {
             .with_async_tool::<tools::platform::QueryWithdrawals>()
             .with_async_tool::<tools::meta::DescribeTool>()
             .with_async_tool::<tools::meta::AppStorageStatus>()
+            .with_async_tool::<tools::meta::AppStorageUpdate>()
             // Identity tools
             .with_async_tool::<tools::identity::ListIdentitiesTool>()
             .with_async_tool::<tools::identity::IdentityCreditsTopup>()

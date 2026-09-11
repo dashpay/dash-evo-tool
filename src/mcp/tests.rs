@@ -194,6 +194,7 @@ fn error_codes_are_distinct() {
         McpToolError::SpvSyncFailed,
         McpToolError::StorageNotReady,
         McpToolError::Internal("x".into()),
+        McpToolError::DesktopOwnsPasswordPrompt,
     ];
 
     let codes: Vec<i32> = variants
@@ -204,8 +205,9 @@ fn error_codes_are_distinct() {
         })
         .collect();
 
-    // WalletNotFound, NetworkMismatch, SpvSyncFailed, StorageNotReady should have unique custom codes
-    let custom_codes: Vec<i32> = vec![codes[0], codes[2], codes[3], codes[4]];
+    // WalletNotFound, NetworkMismatch, SpvSyncFailed, StorageNotReady and
+    // DesktopOwnsPasswordPrompt should have unique custom codes
+    let custom_codes: Vec<i32> = vec![codes[0], codes[2], codes[3], codes[4], codes[6]];
     let unique: std::collections::HashSet<i32> = custom_codes.iter().copied().collect();
     assert_eq!(
         unique.len(),
@@ -306,5 +308,92 @@ fn storage_not_ready_has_dedicated_error_code() {
     assert!(
         storage.code.0 < -32000 || storage.code.0 == -32005,
         "StorageNotReady code should be in the custom range"
+    );
+}
+
+// ── app_storage_update ─────────────────────────────────────────
+
+/// Drives `app_storage_update` through its real `invoke` against `ctx`, over
+/// the shared (GUI-embedded) service shape.
+#[cfg(feature = "mcp")]
+async fn invoke_storage_update(
+    ctx: &std::sync::Arc<crate::context::AppContext>,
+    password: &str,
+) -> Result<crate::mcp::tools::meta::AppStorageUpdateOutput, McpToolError> {
+    use rmcp::handler::server::router::tool::AsyncTool;
+
+    let service = crate::mcp::server::DashMcpService::new_shared(std::sync::Arc::new(
+        arc_swap::ArcSwap::new(std::sync::Arc::clone(ctx)),
+    ));
+    let params: crate::mcp::tools::meta::AppStorageUpdateParams =
+        serde_json::from_value(serde_json::json!({ "password": password }))
+            .expect("parameters deserialize");
+    crate::mcp::tools::meta::AppStorageUpdate::invoke(&service, params).await
+}
+
+/// A desktop session asks for wallet passwords in its own window, so the tool
+/// refuses before touching storage rather than open a remote channel into it.
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_update_is_refused_while_the_desktop_owns_the_password_prompt() {
+    use crate::context::migration_status::MigrationState;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+    ctx.install_secret_prompt(std::sync::Arc::new(
+        crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+    ));
+
+    let result = invoke_storage_update(&ctx, "any-wallet-password").await;
+
+    assert!(
+        matches!(result, Err(McpToolError::DesktopOwnsPasswordPrompt)),
+        "a desktop session must refuse the tool"
+    );
+    assert_eq!(
+        *ctx.migration_status().state(),
+        MigrationState::Idle,
+        "a refused call must not start the storage update"
+    );
+}
+
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_update_refuses_an_empty_password() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+
+    let result = invoke_storage_update(&ctx, "").await;
+
+    assert!(
+        matches!(result, Err(McpToolError::InvalidParam { .. })),
+        "an empty password must be refused"
+    );
+}
+
+/// A headless call prepares storage end to end and reports the terminal state.
+/// With no protected wallet on disk the password is simply unused.
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_update_runs_the_update_headless_and_reports_its_state() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+
+    let output = invoke_storage_update(&ctx, "unused-wallet-password")
+        .await
+        .expect("a headless storage update with nothing to unlock succeeds");
+    let json = serde_json::to_value(&output).expect("output serializes");
+    if let Ok(backend) = ctx.wallet_backend() {
+        backend.shutdown().await;
+    }
+
+    let state = json["migration"]["state"].as_str();
+    assert!(
+        matches!(state, Some("ready") | Some("success")),
+        "expected a terminal success state, got {json}"
+    );
+    assert!(
+        !json.to_string().contains("unused-wallet-password"),
+        "the output must never echo the password"
     );
 }

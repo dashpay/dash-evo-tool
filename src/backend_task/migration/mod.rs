@@ -88,6 +88,9 @@ pub(crate) fn migration_task_error(source: Arc<MigrationError>) -> TaskError {
         MigrationError::InteractivePromptUnavailable => {
             TaskError::StorageUpdateNeedsDesktop { source }
         }
+        MigrationError::WalletPasswordRejected { .. } => {
+            TaskError::StorageUpdatePasswordRejected { source }
+        }
         MigrationError::LegacyDataTooOld { .. } => TaskError::SavedDataTooOld { source },
         MigrationError::LegacyDataTooNew { .. } => TaskError::SavedDataTooNew { source },
         _ => TaskError::MigrationFailed { source },

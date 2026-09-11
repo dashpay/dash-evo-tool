@@ -214,7 +214,10 @@ pub trait SecretPrompt: Send + Sync {
 /// [`TaskError::SecretPromptUnavailable`](crate::backend_task::error::TaskError::SecretPromptUnavailable)
 /// for the caller. Per the Q-HEADLESS security ruling there is **no**
 /// environment-variable or CLI-flag passphrase fallback: a passphrase-
-/// protected secret simply cannot be unlocked headless. Unprotected scopes
+/// protected secret cannot be unlocked through this host. The storage update's
+/// explicit, non-interactive password (`app_storage_update`, see
+/// `docs/ai-design/2026-07-14-migration-password-prompt/design.md`) is the one
+/// headless password path, and it never goes through a prompt. Unprotected scopes
 /// never reach the prompt (the chokepoint's fast-path decrypts them with no
 /// passphrase), so this host does not block read-only or no-password flows.
 #[derive(Debug, Default, Clone, Copy)]

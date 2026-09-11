@@ -1,15 +1,17 @@
-//! Meta MCP tools: `tool_describe` and `app_storage_status`.
+//! Meta MCP tools: `tool_describe`, `app_storage_status` and
+//! `app_storage_update`.
 
 use std::borrow::Cow;
 use std::path::Path;
 use std::time::Duration;
 
 use dash_sdk::dpp::dashcore::Network;
+use platform_wallet_storage::secrets::SecretString;
 use rmcp::handler::server::router::tool::{AsyncTool, ToolBase};
 use rmcp::model::ToolAnnotations;
 use rmcp::schemars;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::backend_task::migration::MigrationError;
 use crate::backend_task::migration::finish_unwire::{
@@ -290,6 +292,100 @@ fn read_wallet_storage_lineage(data_dir: &Path) -> rusqlite::Result<Option<Walle
     .optional()
 }
 
+/// Finish the storage update for password-protected wallets without the
+/// desktop app's password prompt.
+pub struct AppStorageUpdate;
+
+/// Parameters for `app_storage_update`.
+///
+/// `password` deserializes straight into guarded memory and its `Debug` is
+/// redacted, so the derived `Debug` cannot leak it into a log line or into an
+/// MCP error's `data` payload. It carries no `serde(default)`, so the schema
+/// holds no default value either.
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct AppStorageUpdateParams {
+    /// Password of the wallets that were password-protected in the previous
+    /// version. It is tried on every such wallet, so they must all share it.
+    /// Never stored and never echoed. From det-cli, pass it with
+    /// --password-stdin or --password-file.
+    #[schemars(with = "String")]
+    pub password: SecretString,
+    /// Expected network (e.g. "mainnet", "testnet"). If provided, the request
+    /// fails when it doesn't match the server's active network.
+    #[serde(default)]
+    pub network: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct AppStorageUpdateOutput {
+    /// Migration state once the update has run, as `app_storage_status`
+    /// reports it.
+    migration: MigrationSummary,
+}
+
+impl ToolBase for AppStorageUpdate {
+    type Parameter = AppStorageUpdateParams;
+    type Output = AppStorageUpdateOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "app_storage_update".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Finish the storage update of an upgraded installation whose wallets were \
+             password-protected, without the desktop app. The password is tried on every \
+             wallet that is still locked, so they must all share it; a wallet it does not \
+             open fails the update and nothing is skipped. The password is never stored \
+             or echoed. A no-op once the storage update has finished. Refused while the \
+             desktop app is running, which asks for the password itself. From det-cli, \
+             supply the password with --password-stdin or --password-file, never as \
+             password=...."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for AppStorageUpdate {
+    async fn invoke(
+        service: &DashMcpService,
+        param: AppStorageUpdateParams,
+    ) -> Result<AppStorageUpdateOutput, McpToolError> {
+        let ctx = service.tool_ctx().await?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        // A desktop session collects wallet passwords in its own window, and its
+        // storage update may be parked on that prompt while holding the
+        // preparation gate. Never add a remote channel for the same password.
+        if ctx.has_interactive_secret_prompt() {
+            return Err(McpToolError::DesktopOwnsPasswordPrompt);
+        }
+        if param.password.is_empty() {
+            return Err(McpToolError::InvalidParam {
+                message:
+                    "The password is empty. Supply the password of your password-protected wallets."
+                        .to_owned(),
+            });
+        }
+
+        resolve::ensure_wallets_hydrated_with_password(&ctx, &param.password).await?;
+
+        Ok(AppStorageUpdateOutput {
+            migration: summarize_migration(&ctx.migration_status().state()),
+        })
+    }
+}
+
 /// Flatten the migration state machine. Matched exhaustively so a new state or
 /// step fails the build here instead of silently reporting the wrong thing.
 fn summarize_migration(state: &MigrationState) -> MigrationSummary {
@@ -359,6 +455,66 @@ mod tests {
 
     fn failure() -> Arc<MigrationError> {
         Arc::new(MigrationError::WalletBackendUnavailable)
+    }
+
+    const PASSWORD: &str = "correct-horse-canary";
+
+    /// The password lands in guarded memory intact, and neither the derived
+    /// `Debug` of the parameters nor anything built from it reveals it.
+    #[test]
+    fn storage_update_params_never_reveal_the_password() {
+        let params: AppStorageUpdateParams = serde_json::from_value(serde_json::json!({
+            "password": PASSWORD,
+            "network": "testnet",
+        }))
+        .expect("parameters deserialize");
+
+        assert_eq!(params.password.expose_secret(), PASSWORD);
+        let debug = format!("{params:?}");
+        assert!(
+            !debug.contains(PASSWORD),
+            "Debug must redact the password: {debug}"
+        );
+        assert!(
+            debug.contains("testnet"),
+            "Debug still shows the rest: {debug}"
+        );
+    }
+
+    /// The advertised schema is a plain required string: no `$ref` an MCP client
+    /// may not resolve, and no default, example or length policy to leak.
+    #[test]
+    fn storage_update_schema_advertises_the_password_as_a_plain_required_string() {
+        let schema = AppStorageUpdate::input_schema().expect("the tool takes parameters");
+        let password = schema
+            .get("properties")
+            .and_then(|properties| properties.get("password"))
+            .and_then(|password| password.as_object())
+            .expect("a password property");
+
+        assert_eq!(
+            password.get("type").and_then(|t| t.as_str()),
+            Some("string")
+        );
+        for leaked in [
+            "$ref",
+            "default",
+            "examples",
+            "minLength",
+            "maxLength",
+            "pattern",
+        ] {
+            assert!(
+                !password.contains_key(leaked),
+                "the password schema must not carry `{leaked}`: {password:?}"
+            );
+        }
+        let required: Vec<&str> = schema
+            .get("required")
+            .and_then(|required| required.as_array())
+            .map(|required| required.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(required, ["password"]);
     }
 
     /// Every step needs its own name, or a caller reading `step` cannot tell two

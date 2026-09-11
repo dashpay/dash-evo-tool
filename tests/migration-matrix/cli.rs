@@ -225,11 +225,28 @@ mod tests {
 
     #[test]
     fn a_bogus_binary_override_is_reported() {
-        // Safety: single-threaded scope; the var is restored before returning
-        // and no other test in this binary reads it.
+        // cargo test runs every #[test] in this binary in the same process,
+        // on a shared thread pool, and `migration_matrix` (main.rs) also
+        // reads BINARY_ENV via locate_binary(). An unconditional
+        // `remove_var` here previously deleted a real CI-provided
+        // DET_CLI_BIN out from under it: this test finishes almost
+        // instantly, `migration_matrix` reaches its own locate_binary()
+        // call much later (after loading the manifest and staging the
+        // fixture), so the var was reliably gone by then, not just
+        // occasionally — the migration-matrix workflow's "Run migration
+        // matrix" step failed on this every time once a real fixture made
+        // it that far. Save and restore the original value instead of
+        // deleting it, so this test's mutation cannot leak into another
+        // test's read of the same process-global state.
+        let original = std::env::var(BINARY_ENV).ok();
         unsafe { std::env::set_var(BINARY_ENV, "/nonexistent/det-cli") };
         let error = locate_binary().expect_err("a missing override must fail");
-        unsafe { std::env::remove_var(BINARY_ENV) };
+        unsafe {
+            match &original {
+                Some(value) => std::env::set_var(BINARY_ENV, value),
+                None => std::env::remove_var(BINARY_ENV),
+            }
+        }
 
         assert!(error.contains("/nonexistent/det-cli"), "{error}");
     }

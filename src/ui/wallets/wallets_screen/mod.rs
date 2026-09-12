@@ -16,9 +16,8 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
 use crate::model::user_role::UserRole;
-use crate::model::wallet::{
-    TransactionStatus, Wallet, WalletSeedHash, WalletTransaction, validate_wallet_alias,
-};
+use crate::model::wallet::alias::{MAX_CHARS as WALLET_ALIAS_MAX_CHARS, validate_required_alias};
+use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -2646,16 +2645,15 @@ impl ScreenLike for WalletsBalancesScreen {
                             };
                             let text_edit = egui::TextEdit::singleline(alias)
                                 .hint_text("Enter wallet name")
+                                .char_limit(WALLET_ALIAS_MAX_CHARS)
                                 .desired_width(250.0);
                             ui.add(text_edit);
 
                             ui.add_space(10.0);
 
                             ui.horizontal(|ui| {
-                                if ComponentStyles::add_secondary_button(
-                                    ui, "Cancel", dark_mode,
-                                )
-                                .clicked()
+                                if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
+                                    .clicked()
                                 {
                                     cancel = true;
                                 }
@@ -2663,15 +2661,19 @@ impl ScreenLike for WalletsBalancesScreen {
                                 ui.add_space(8.0);
 
                                 if ComponentStyles::add_primary_button(ui, "Save").clicked() {
-                                    if let Err(error) = validate_wallet_alias(alias) {
-                                        MessageBanner::set_global(
-                                            ctx,
-                                            "The wallet name is too long. Use 64 characters or fewer and try again.",
-                                            MessageType::Error,
-                                        )
-                                        .with_details(error);
-                                    } else {
-                                        save = true;
+                                    match validate_required_alias(alias) {
+                                        Ok(trimmed) => {
+                                            *alias = trimmed.to_string();
+                                            save = true;
+                                        }
+                                        Err(error) => {
+                                            MessageBanner::set_global(
+                                                ctx,
+                                                error.to_string(),
+                                                MessageType::Error,
+                                            )
+                                            .with_details(error);
+                                        }
                                     }
                                 }
                             });

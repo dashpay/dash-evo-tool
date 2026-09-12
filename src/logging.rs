@@ -10,8 +10,29 @@ use std::sync::atomic::AtomicI32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::{LevelFilter, Targets};
+use tracing_subscriber::layer::SubscriberExt;
 
 static INIT_LOGGER: Once = Once::new();
+
+/// Log target of the MCP protocol library.
+const RMCP_TARGET: &str = "rmcp";
+
+/// Hard ceiling on log targets that write raw MCP traffic.
+///
+/// rmcp logs every inbound request with its raw tool arguments at DEBUG
+/// (`received request`) and every HTTP response message at TRACE. Tool
+/// arguments carry secrets — recovery phrases, private keys, wallet
+/// passwords — so those lines must never be written, whatever `RUST_LOG`
+/// says. Layered as a separate global filter, it is ANDed with the
+/// `EnvFilter`: no directive, however specific, can lift it.
+///
+/// Every tracing subscriber a DET entry point installs must layer this.
+pub fn sensitive_target_cap() -> Targets {
+    Targets::new()
+        .with_default(LevelFilter::TRACE)
+        .with_target(RMCP_TARGET, LevelFilter::INFO)
+}
 
 /// Duplicate of the real terminal stderr (fd 2), saved before it is redirected
 /// to the crash sidecar. Lets [`report_startup_failure_to_terminal`] surface a
@@ -65,7 +86,8 @@ fn initialize_logger_internal() {
                 .with_env_filter(filter)
                 .with_writer(log_file)
                 .with_ansi(false)
-                .finish();
+                .finish()
+                .with(sensitive_target_cap());
             let set = tracing::subscriber::set_global_default(subscriber).is_ok();
             if set {
                 LOGGER_USES_FILE.store(true, Ordering::SeqCst);
@@ -78,7 +100,8 @@ fn initialize_logger_internal() {
                 .with_env_filter(filter)
                 .with_writer(std::io::stderr)
                 .with_ansi(true)
-                .finish();
+                .finish()
+                .with(sensitive_target_cap());
             let set = tracing::subscriber::set_global_default(subscriber).is_ok();
             if set {
                 tracing::warn!(
@@ -530,6 +553,83 @@ fn parse_rotated_ts(name: &str, stem: &str) -> Option<i64> {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// Captures everything a subscriber writes, for asserting on log output.
+    #[derive(Clone, Default)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Capture {
+        fn text(&self) -> String {
+            let bytes = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            String::from_utf8(bytes).expect("log output is UTF-8")
+        }
+    }
+
+    /// Emits what rmcp logs for an inbound tool call (raw arguments at DEBUG
+    /// and TRACE) under `filter`, with the cap layered exactly as the entry
+    /// points layer it, and returns the written log text.
+    fn log_mcp_traffic_under(filter: &str) -> String {
+        let capture = Capture::default();
+        let sink = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new(filter))
+            .with_writer(move || sink.clone())
+            .with_ansi(false)
+            .finish()
+            .with(sensitive_target_cap());
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "rmcp::service", request = "raw-secret-at-debug", "received request");
+            tracing::trace!(
+                target: "rmcp::transport::streamable_http_server::tower",
+                message = "raw-secret-at-trace"
+            );
+            tracing::info!(target: "rmcp::service", "rmcp info is kept");
+            tracing::trace!(target: "dash_evo_tool::mcp", "det trace is kept");
+        });
+        capture.text()
+    }
+
+    #[test]
+    fn raw_mcp_traffic_never_reaches_the_log_under_a_global_trace_filter() {
+        let text = log_mcp_traffic_under("trace");
+        assert!(
+            !text.contains("raw-secret"),
+            "rmcp's raw request/response logging must stay capped, got:\n{text}"
+        );
+        assert!(
+            text.contains("rmcp info is kept") && text.contains("det trace is kept"),
+            "the cap must not silence anything else, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn raw_mcp_traffic_stays_capped_even_when_rust_log_names_rmcp() {
+        let text = log_mcp_traffic_under("rmcp=trace,rmcp::service=trace");
+        assert!(
+            !text.contains("raw-secret"),
+            "an explicit RUST_LOG directive for rmcp must not lift the cap, got:\n{text}"
+        );
+        assert!(text.contains("rmcp info is kept"), "got:\n{text}");
+    }
 
     #[test]
     fn rotated_name_is_zero_padded() {

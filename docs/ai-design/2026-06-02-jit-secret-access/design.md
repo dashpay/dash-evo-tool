@@ -774,6 +774,9 @@ Smythe review: T1, T2, T3, T4, T5, T6, T7, T8, T9 (all touch secret handling).
    must fail with a typed "secret required, no interactive prompt available" error rather than hang.
    Recommend: a `NullSecretPrompt` that immediately cancels, surfacing `SecretPromptCancelled` (or a
    dedicated `SecretPromptUnavailable`) to the MCP error envelope. **User confirm** the headless UX.
+   *2026-09-11:* the storage update gained an explicit, non-interactive password path
+   (`app_storage_update`, det-cli `--password-stdin` / `--password-file`). Signing operations keep
+   this ruling. See `docs/ai-design/2026-07-14-migration-password-prompt/design.md`.
 6. **Q-RETRYCAP — Wrong-passphrase soft cap?** Default: none (local AES-GCM, no remote attacker).
    Smythe may want a soft cap. **Security decision.**
 7. **Q-MIDSTREAM — Any operation that must prompt mid-stream after partial broadcast?** None today

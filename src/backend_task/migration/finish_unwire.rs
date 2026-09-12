@@ -13,15 +13,17 @@ use std::sync::Arc;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
+use platform_wallet_storage::secrets::SecretString;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::dapi_discovery::persist_dapi_addresses;
 use crate::backend_task::error::TaskError;
-use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::secret_access::is_wrong_passphrase;
 use crate::wallet_backend::{DetScope, KvAdapterError, network_prefix};
 
 /// Sentinel key format string. The migration body filters every
@@ -277,6 +279,27 @@ pub enum MigrationError {
     )]
     InteractivePromptUnavailable,
 
+    /// The password supplied for a non-interactive storage update does not
+    /// open one of the password-protected wallets. Nothing is skipped on the
+    /// user's behalf: the completion sentinel is withheld, and the update can
+    /// be retried with the right password or finished in the desktop app.
+    #[error(
+        "The password does not open every password-protected wallet. Check the password and try again, or open the Dash Evo Tool desktop app to finish the storage update."
+    )]
+    WalletPasswordRejected {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A supplied password could not open a wallet for a reason other than the
+    /// password itself: the vault read or the re-seal under that password
+    /// failed. The completion sentinel is withheld so a re-run retries.
+    #[error("could not open a password-protected wallet with the supplied password")]
+    WalletUnlockFailed {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A pass reported an error that is not a [`MigrationError`]. Every pass is
     /// meant to report through one of the typed variants above; this catch-all
     /// exists so a stray error still reaches a terminal banner. Leaving one
@@ -347,7 +370,8 @@ pub(crate) fn migration_error_chain(error: TaskError) -> Arc<MigrationError> {
         TaskError::MigrationFailed { source }
         | TaskError::SavedDataTooOld { source }
         | TaskError::SavedDataTooNew { source }
-        | TaskError::StorageUpdateNeedsDesktop { source } => source,
+        | TaskError::StorageUpdateNeedsDesktop { source }
+        | TaskError::StorageUpdatePasswordRejected { source } => source,
         other => Arc::new(MigrationError::Unexpected {
             source: Box::new(other),
         }),
@@ -617,7 +641,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
-    run_gated(app_context, &_run_guard).await
+    run_gated(app_context, &_run_guard, None).await
 }
 
 /// The drain body, for a caller that already owns
@@ -630,14 +654,19 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
 /// guard parameter is proof, not decoration: without it this function is a
 /// silently unguarded copy of [`run`] that any future caller could reach.
 ///
+/// `wallet_password` is the non-interactive storage update's password for the
+/// password-protected wallets; see [`register_migrated_wallets`].
+///
 /// # Errors
 ///
-/// Same as [`run`].
+/// Same as [`run`], plus [`TaskError::StorageUpdatePasswordRejected`] when
+/// `wallet_password` does not open every locked wallet.
 pub(crate) async fn run_gated(
     app_context: &Arc<AppContext>,
     _gate: &crate::context::PrepareGateGuard<'_>,
+    wallet_password: Option<&SecretString>,
 ) -> Result<bool, TaskError> {
-    match run_under_guard(app_context).await {
+    match run_under_guard(app_context, wallet_password).await {
         Ok(did_work) => Ok(did_work),
         Err(task_error) => {
             if !app_context.migration_status().state().is_in_progress() {
@@ -668,17 +697,21 @@ where
 }
 
 /// Queues refresh before migration so its waiter acquires the guard at completion.
-async fn run_under_guard(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+async fn run_under_guard(
+    app_context: &Arc<AppContext>,
+    wallet_password: Option<&SecretString>,
+) -> Result<bool, TaskError> {
     let ctx = Arc::clone(app_context);
     std::mem::drop(spawn_dapi_refresh(app_context, async move {
         refresh_dapi_nodes_once(&ctx).await;
     }));
-    run_under_guard_with_dapi_refresh(app_context, std::future::ready(())).await
+    run_under_guard_with_dapi_refresh(app_context, std::future::ready(()), wallet_password).await
 }
 
 async fn run_under_guard_with_dapi_refresh<F>(
     app_context: &Arc<AppContext>,
     dapi_refresh: F,
+    wallet_password: Option<&SecretString>,
 ) -> Result<bool, TaskError>
 where
     F: Future<Output = ()>,
@@ -703,7 +736,7 @@ where
     // is what restores access to funds, so nothing about DET's own rows may gate
     // it. Propagating here would let one bad vote row wedge the drain on every
     // launch, with no user-reachable way out.
-    let wallet_moved = match drain_wallets(app_context).await {
+    let wallet_moved = match drain_wallets(app_context, wallet_password).await {
         Ok(moved) => moved,
         Err(drain_error) => {
             if let Err(app_data_error) = &app_data {
@@ -921,7 +954,10 @@ where
 /// no-op paths (sentinel already present, or no legacy rows at all). This is
 /// the funds path: [`run`] keeps it free of every DET-owned concern so nothing
 /// but a genuine wallet-migration failure can withhold access to a seed.
-async fn drain_wallets(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+async fn drain_wallets(
+    app_context: &Arc<AppContext>,
+    wallet_password: Option<&SecretString>,
+) -> Result<bool, TaskError> {
     let status = app_context.migration_status();
     let app_kv = app_context.app_kv();
     let network = app_context.network;
@@ -996,7 +1032,7 @@ async fn drain_wallets(app_context: &Arc<AppContext>) -> Result<bool, TaskError>
     // wallet is still absent from `det-<net>.sqlite`. On failure
     // this returns `Err` (the sentinel is skipped) so the next cold start — or
     // the "Retry now" banner — re-runs the idempotent migration.
-    register_migrated_wallets(app_context).await?;
+    register_migrated_wallets(app_context, wallet_password).await?;
 
     write_sentinel(&app_kv, network, 1)?;
 
@@ -1044,7 +1080,17 @@ impl Drop for RunSeedLeases<'_> {
 /// and neither ordering is guaranteed. The run therefore holds its own lease on
 /// every seed it prompted for (`WalletUnlockRetention::UntilStorageUpdateComplete`)
 /// rather than depending on the unlock subtask still being alive.
-async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), MigrationError> {
+///
+/// `wallet_password` is supplied by the non-interactive storage update: it is
+/// tried on every locked wallet (see [`unlock_with_supplied_password`]) before
+/// any prompt is considered, so a correct one finishes the update headless and
+/// a wrong one fails it immediately. Without it, a headless caller still gets
+/// [`MigrationError::InteractivePromptUnavailable`] at once — nothing here
+/// ever waits for a person who is not there.
+async fn register_migrated_wallets(
+    app_context: &Arc<AppContext>,
+    wallet_password: Option<&SecretString>,
+) -> Result<(), MigrationError> {
     let _seed_leases = RunSeedLeases(app_context);
 
     let backend = app_context
@@ -1070,6 +1116,11 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
     app_context
         .migration_status()
         .begin_wallet_password_collection();
+    if let Some(password) = wallet_password {
+        unlock_with_supplied_password(app_context, password)?;
+        // Same re-drive the prompt loop below runs after each unlock.
+        app_context.bootstrap_loaded_wallets().await;
+    }
     loop {
         let wallets = app_context
             .migration_status()
@@ -1093,6 +1144,47 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
     let unregistered = app_context.unregistered_open_wallet_count();
     if unregistered > 0 {
         return Err(MigrationError::RegistrationIncomplete { unregistered });
+    }
+    Ok(())
+}
+
+/// Opens every migrated wallet still locked with `password`, through
+/// [`AppContext::handle_wallet_unlocked`] — the verification boundary the
+/// desktop password prompt submits to — and holds each seed until the update
+/// ends, exactly as a prompt unlock does
+/// ([`WalletUnlockRetention::UntilStorageUpdateComplete`]).
+///
+/// One password serves every locked wallet. A wallet it does not open fails
+/// the update with [`MigrationError::WalletPasswordRejected`] instead of being
+/// skipped: skipping is the user's decision, and a mistyped password must not
+/// make it for them. Wallets opened before the rejection stay registered and
+/// protected; the completion sentinel is withheld, so a re-run revisits them.
+fn unlock_with_supplied_password(
+    app_context: &Arc<AppContext>,
+    password: &SecretString,
+) -> Result<(), MigrationError> {
+    let locked = app_context
+        .migration_status()
+        .pending_wallet_passwords(app_context.locked_wallet_hashes());
+    for seed_hash in locked {
+        // A wallet removed since the listing has nothing left to unlock.
+        let Ok(wallet) = app_context.wallet_arc(&seed_hash) else {
+            continue;
+        };
+        app_context
+            .handle_wallet_unlocked(
+                &wallet,
+                password.expose_secret(),
+                WalletUnlockRetention::UntilStorageUpdateComplete,
+            )
+            .map_err(|source| {
+                let source = Box::new(source);
+                if is_wrong_passphrase(&source) {
+                    MigrationError::WalletPasswordRejected { source }
+                } else {
+                    MigrationError::WalletUnlockFailed { source }
+                }
+            })?;
     }
     Ok(())
 }
@@ -3120,7 +3212,7 @@ mod tests {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(crate::backend_task::dapi_discovery::DapiDiscoveryError::Timeout)
         });
-        let did_work = run_under_guard_with_dapi_refresh(&ctx, refresh)
+        let did_work = run_under_guard_with_dapi_refresh(&ctx, refresh, None)
             .await
             .expect("DAPI discovery must not fail the migration");
 
@@ -5966,6 +6058,153 @@ mod tests {
                 MigrationState::AwaitingWalletPasswords { .. }
             ),
             "a headless context must never publish a prompt nobody can render",
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
+    }
+
+    /// Runs the non-interactive storage update exactly as the
+    /// `app_storage_update` MCP tool does, bounded so a regression that waits
+    /// for a person fails instead of hanging.
+    async fn prepare_with_password(ctx: &Arc<AppContext>, password: &str) -> Result<(), TaskError> {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let supplied = SecretString::new(password);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            ctx.prepare_storage_with_wallet_password(sender, Some(&supplied)),
+        )
+        .await
+        .expect("a non-interactive storage update must never wait for a person")
+    }
+
+    /// A headless caller that supplies the right password finishes the update
+    /// for every protected wallet sharing it: each is registered, keeps its
+    /// password protection, and its seed is forgotten once the update ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn supplied_password_finishes_a_headless_storage_update() {
+        use crate::wallet_backend::SecretScope;
+        use crate::wallet_backend::secret_seam::SecretScheme;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let password = "shared-headless-password";
+        let wallets = [
+            seed_legacy_protected_wallet(&ctx, &[0xD5; 64], password, "Savings", Network::Testnet),
+            seed_legacy_protected_wallet(&ctx, &[0xD6; 64], password, "Spending", Network::Testnet),
+        ];
+        let legacy_path = tmp.path().join("data.db");
+        let before = std::fs::read(&legacy_path).expect("snapshot legacy database before run");
+        wire_backend(&ctx).await;
+        assert!(
+            !ctx.has_interactive_secret_prompt(),
+            "precondition: a headless context with no password prompt"
+        );
+
+        prepare_with_password(&ctx, password)
+            .await
+            .expect("the right password must finish the storage update headless");
+
+        assert!(
+            read_sentinel(&ctx.app_kv(), Network::Testnet)
+                .expect("read the completion sentinel")
+                .is_some(),
+            "a finished update must record its completion"
+        );
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let store = ctx.secret_store();
+        let view = crate::wallet_backend::WalletSeedView::new(&store);
+        for seed_hash in wallets {
+            assert!(
+                backend.is_wallet_registered(&seed_hash),
+                "every wallet the password opens must be registered"
+            );
+            assert_eq!(
+                view.scheme(&seed_hash).expect("scheme after the update"),
+                SecretScheme::Protected,
+                "a password-protected wallet must stay password-protected"
+            );
+        }
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while wallets.iter().any(|seed_hash| {
+            backend
+                .secret_access()
+                .is_session_cached(&SecretScope::HdSeed {
+                    seed_hash: *seed_hash,
+                })
+        }) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a seed unlocked for the storage update must not outlive it"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            std::fs::read(&legacy_path).expect("snapshot legacy database after run"),
+            before,
+            "the legacy database bytes must never change"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// One password serves every protected wallet. A wallet it does not open
+    /// fails the whole update at once — nothing is skipped, no completion is
+    /// recorded, no prompt is published — and the rejection never echoes the
+    /// password.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_password_that_does_not_open_every_wallet_fails_closed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let supplied = "opens-only-the-first-wallet";
+        seed_legacy_protected_wallet(&ctx, &[0xD7; 64], supplied, "Opens", Network::Testnet);
+        let refused = seed_legacy_protected_wallet(
+            &ctx,
+            &[0xD8; 64],
+            "a-different-password",
+            "Refuses",
+            Network::Testnet,
+        );
+        wire_backend(&ctx).await;
+
+        let error = prepare_with_password(&ctx, supplied)
+            .await
+            .expect_err("a password that does not open every wallet must fail");
+
+        match &error {
+            TaskError::StorageUpdatePasswordRejected { source } => assert!(
+                matches!(
+                    source.as_ref(),
+                    MigrationError::WalletPasswordRejected { .. }
+                ),
+                "unexpected source: {source:?}"
+            ),
+            other => panic!("expected the dedicated rejected-password error, got {other:?}"),
+        }
+        assert!(
+            !error.to_string().contains(supplied) && !format!("{error:?}").contains(supplied),
+            "the error must never carry the password"
+        );
+        assert!(
+            read_sentinel(&ctx.app_kv(), Network::Testnet)
+                .expect("read the completion sentinel")
+                .is_none(),
+            "an unfinished update must not record completion"
+        );
+        assert!(
+            ctx.locked_wallet_hashes().contains(&refused),
+            "the wallet the password does not open stays locked"
+        );
+        assert!(
+            !matches!(
+                ctx.migration_status().state().as_ref(),
+                MigrationState::AwaitingWalletPasswords { .. }
+            ),
+            "a headless context must never publish a prompt nobody can render"
         );
 
         ctx.wallet_backend()

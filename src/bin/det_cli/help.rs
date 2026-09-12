@@ -51,6 +51,13 @@ pub(super) fn print_tool_help(mcp_name: &str) -> bool {
                     };
                     println!("  {:<28} {}{}", cli_param, pdesc, req);
                 }
+                if obj.contains_key(super::password::PASSWORD_PARAM) {
+                    println!();
+                    println!(
+                        "Supply the password with --password-stdin or --password-file <path>. \
+                         A password given as password=... is refused."
+                    );
+                }
             } else {
                 println!();
                 println!("This command takes no parameters.");
@@ -64,6 +71,21 @@ pub(super) fn print_tool_help(mcp_name: &str) -> bool {
             false
         }
     }
+}
+
+/// Whether the cached schema of `mcp_name` declares the parameter `param`.
+///
+/// `None` when the cache is missing or stale, or does not list the tool — the
+/// caller cannot tell, and must not guess.
+pub(super) fn cached_tool_takes_param(mcp_name: &str, param: &str) -> Option<bool> {
+    let cache = load_cache().filter(|c| c.version == PKG_VERSION)?;
+    let tool = cache.tools.iter().find(|t| *t.name == *mcp_name)?;
+    Some(
+        tool.input_schema
+            .get("properties")
+            .and_then(|props| props.as_object())
+            .is_some_and(|props| props.contains_key(param)),
+    )
 }
 
 /// Print help output with integrated tool list.

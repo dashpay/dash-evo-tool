@@ -148,6 +148,11 @@ path = "tests/backend-e2e/main.rs"
 required-features = ["testing"]
 
 [[test]]
+name = "migration-matrix"
+path = "tests/migration-matrix/main.rs"
+required-features = ["testing"]
+
+[[test]]
 name = "mcp_http_auth"
 path = "tests/mcp_http_auth.rs"
 required-features = ["mcp"]

@@ -1,0 +1,289 @@
+name: Migration Matrix
+
+# Boots real, previously-captured DET data directories against the current build
+# and asserts they migrate cleanly. Complements the unit-level migration tests:
+# those use synthetic SQL fixtures, this one uses profiles captured from actual
+# released binaries.
+#
+# Path filters cover every layer a data directory passes through on the way up:
+# the platform pin (whose migrations run inside the wallet storage), DET's own
+# schema ladder and unwire step, the wallet-backend seam, app boot, and the
+# fixture tooling itself.
+#
+# MERGE ORDER: the `matrix` job runs `cargo test --test migration-matrix`, which
+# needs both tests/migration-matrix/main.rs and its [[test]] entry in Cargo.toml.
+# Landing this workflow before those exist makes the job fail on a missing test
+# target, which looks like a migration regression and is not one.
+on:
+  push:
+    branches:
+      - "v*-dev"
+    paths: &migration_paths
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/database/**"
+      - "src/backend_task/migration/**"
+      - "src/model/data_migration.rs"
+      - "src/wallet_backend/**"
+      - "src/context/**"
+      - "src/app/**"
+      # src/app.rs is listed alongside src/app/** deliberately: both exist, and
+      # app.rs owns the startup and task-polling loop the migration runs under.
+      - "src/app.rs"
+      - "src/app_dir.rs"
+      - "src/boot.rs"
+      - "tests/migration-matrix/**"
+      - "tests/migration-fixtures/**"
+      - "scripts/migration-fixtures/**"
+      - ".github/workflows/migration-matrix.yml"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: *migration_paths
+  # Weekly, independent of any code change: the pin guard compares against a
+  # MOVING upstream branch and the coverage check against releases cut since the
+  # last run, so both can start failing with nothing in this repo having changed.
+  schedule:
+    - cron: "0 4 * * 1" # Every Monday at 04:00 UTC
+  # Draft PRs are suppressed by the `draft != true` guards below and otherwise
+  # have no way to run CI at all; a manual run covers them.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pin-ancestry:
+    name: Platform pin guard
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Fetches only the upstream commit graph plus the pinned rev's migration
+      # sources — seconds, not a full platform clone. See the script header for
+      # why ancestry alone is not sufficient.
+      - name: Check platform pin ancestry and migration fingerprint
+        run: scripts/migration-fixtures/check-pin-ancestry.sh
+
+  build:
+    name: Build det-cli
+    needs: pin-ancestry
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      # No `toolchain` input: the action installs what rust-toolchain.toml pins,
+      # so this job runs the same compiler the project builds with.
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # Matches tests.yml: Clippy owns the warnings gate, not this workflow.
+          rustflags: ""
+          # Cargo caching is handled by the actions/cache step above.
+          cache: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev
+
+      - name: Install protoc
+        run: |
+          curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*'
+          rm -f protoc-25.2-linux-x86_64.zip
+        env:
+          PROTOC: /usr/local/bin/protoc
+
+      # The harness drives a real compiled binary rather than booting in-process,
+      # because an in-process boot does not reproduce the production startup path
+      # that migrations actually run on.
+      - name: Build det-cli
+        run: cargo build --locked --bin det-cli --features cli
+
+      - name: Locate det-cli
+        id: locate
+        run: |
+          set -euo pipefail
+          # Never assume ./target: CARGO_TARGET_DIR or build.target-dir in
+          # .cargo/config.toml can redirect it. Ask cargo.
+          target_dir="$(cargo metadata --format-version 1 --no-deps | jq -r .target_directory)"
+          echo "path=$target_dir/debug/det-cli" >>"$GITHUB_OUTPUT"
+
+      - name: Upload det-cli
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-matrix-det-cli
+          path: ${{ steps.locate.outputs.path }}
+          retention-days: 7
+          if-no-files-found: error
+
+  matrix:
+    name: Migration matrix
+    needs: build
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Fixture archives are Actions build artifacts, usually from an EARLIER
+      # run of this or the capture workflow, so the job needs to read runs and
+      # artifacts across the repository — not just its own.
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          cache: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev zstd
+
+      - name: Install protoc
+        run: |
+          curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*'
+          rm -f protoc-25.2-linux-x86_64.zip
+        env:
+          PROTOC: /usr/local/bin/protoc
+
+      - name: Download det-cli
+        uses: actions/download-artifact@v4
+        with:
+          name: migration-matrix-det-cli
+          path: ${{ runner.temp }}/bin
+
+      - name: Make det-cli executable
+        run: chmod +x "$RUNNER_TEMP/bin/det-cli"
+
+      # THE AWKWARD PART, in full: the fixture this run needs was almost never
+      # produced by this run. The v0.9.3 baseline is captured once and consumed
+      # by every run afterwards; each later release's fixture comes from the
+      # capture run that followed that release. `actions/download-artifact`
+      # (used above for det-cli, which IS same-run) only sees the current run's
+      # artifacts unless given an explicit `run-id`, and the run id here is not
+      # known when this file is written — it lives in the committed manifest,
+      # which is the durable pointer from "fixture" to "artifact".
+      #
+      # download-fixtures.sh resolves each manifest entry through `gh`: by exact
+      # run id when the entry records one, otherwise by searching the newest
+      # successful run of the named workflow for the named artifact. See its
+      # header for why this is preferred over dawidd6/action-download-artifact,
+      # which is the drop-in third-party alternative for the fallback branch.
+      #
+      # --strict: an empty manifest, an entry that cannot be resolved (no run
+      # pointer, a deleted or EXPIRED artifact) or a checksum mismatch fails the
+      # job. A matrix run over an empty fixture set proves nothing, so it must
+      # never pass. Hand-captured fixtures (the v0.9.3 baseline) are uploaded by
+      # migration-fixture-bootstrap.yml with a finite retention; an expiry
+      # failure here means: re-dispatch that workflow with the same archive and
+      # record the new run id in tests/migration-fixtures/manifest.json.
+      - name: Download migration fixtures
+        id: fixtures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/migration-fixtures"
+          mkdir -p "$dest"
+          scripts/migration-fixtures/download-fixtures.sh --strict --dest "$dest"
+          count="$(find "$dest" -maxdepth 1 \( -name '*.tar.zst' -o -name '*.tar.gz' \) | wc -l)"
+          # --strict already fails on any unresolved entry. This covers what it
+          # cannot see: a run that reported success yet left no archive here.
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No migration fixture archives were resolved into $dest. The matrix refuses to run over an empty fixture set."
+            exit 1
+          fi
+          echo "Resolved $count fixture archive(s)."
+          echo "count=$count" >>"$GITHUB_OUTPUT"
+          echo "dir=$dest" >>"$GITHUB_OUTPUT"
+
+      - name: Run migration matrix
+        env:
+          # Directory of fixture archives (.tar.zst / .tar.gz plus .sha256),
+          # exactly as pack.sh produced them.
+          MIGRATION_FIXTURES_DIR: ${{ steps.fixtures.outputs.dir }}
+          # download-fixtures.sh places only archives in the fixtures directory;
+          # the harness reads manifest.json from there unless pointed at it.
+          MIGRATION_FIXTURES_MANIFEST: ${{ github.workspace }}/tests/migration-fixtures/manifest.json
+          # The binary under test, from the build job. Required, not optional:
+          # det-cli needs the `cli` feature, which `--features testing` below
+          # does not enable, so Cargo builds no det-cli for the harness to find.
+          DET_CLI_BIN: ${{ runner.temp }}/bin/det-cli
+        run: cargo test --locked --test migration-matrix --features testing
+
+      # The weekly profile once more, opened directly through the
+      # platform_compatibility bridge instead of through a det-cli boot: the
+      # bridge's own contract (typed load, row counts, retained backup,
+      # idempotent re-open) on bytes a released build wrote. The test is
+      # env-gated, so tests.yml's plain `cargo test` only skips it; this step
+      # therefore checks that it really ran against the downloaded fixture.
+      - name: Run platform_compatibility real-data test
+        env:
+          MIGRATION_FIXTURES_DIR: ${{ steps.fixtures.outputs.dir }}
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/platform-compatibility-real-data.log"
+          cargo test --locked --features testing --lib platform_compatibility_upgrades_the_real -- --nocapture 2>&1 | tee "$log"
+          if ! grep -q 'test result: ok. 1 passed' "$log" || grep -q '^skipped:' "$log"; then
+            echo "::error::The platform_compatibility real-data test did not run against the downloaded fixture."
+            exit 1
+          fi
+
+  coverage:
+    name: Fixture coverage
+    # Schedule only: a coverage gap is created by cutting a release, never by
+    # editing code, so running this per-PR would fail pull requests for
+    # something no contributor did or can fix.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check fixture coverage against published releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/migration-fixtures/check-coverage.sh

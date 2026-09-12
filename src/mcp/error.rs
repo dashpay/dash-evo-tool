@@ -20,6 +20,12 @@ pub enum McpToolError {
     /// the migration that runs after the wallet backend is first wired.
     #[error("Wallet storage is still starting up. Please wait a moment and retry.")]
     StorageNotReady,
+    /// The desktop app owns the wallet password prompt of this session, so a
+    /// tool must not open a second, remote channel for the same password.
+    #[error(
+        "The Dash Evo Tool desktop app is running and asks for wallet passwords in its own window. Enter the password there to finish the storage update."
+    )]
+    DesktopOwnsPasswordPrompt,
     #[error("Backend task failed: {0}")]
     TaskFailed(#[source] TaskError),
     #[error("{0}")]
@@ -41,6 +47,7 @@ const CODE_NETWORK_MISMATCH: i32 = -32002;
 const CODE_SPV_SYNC_FAILED: i32 = -32003;
 const CODE_TASK_FAILED: i32 = -32004;
 const CODE_STORAGE_NOT_READY: i32 = -32005;
+const CODE_DESKTOP_OWNS_PASSWORD_PROMPT: i32 = -32006;
 const CODE_INTERNAL: i32 = -32603; // standard JSON-RPC internal error
 
 impl From<McpToolError> for McpError {
@@ -51,6 +58,9 @@ impl From<McpToolError> for McpError {
             McpToolError::NetworkMismatch { .. } => (CODE_NETWORK_MISMATCH, e.to_string(), None),
             McpToolError::SpvSyncFailed => (CODE_SPV_SYNC_FAILED, e.to_string(), None),
             McpToolError::StorageNotReady => (CODE_STORAGE_NOT_READY, e.to_string(), None),
+            McpToolError::DesktopOwnsPasswordPrompt => {
+                (CODE_DESKTOP_OWNS_PASSWORD_PROMPT, e.to_string(), None)
+            }
             McpToolError::TaskFailed(task_err) => {
                 // Include the full Debug error chain so MCP clients can see
                 // the underlying cause (e.g. SDK/DAPI errors) instead of just

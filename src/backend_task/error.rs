@@ -2519,6 +2519,18 @@ pub enum TaskError {
         source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
 
+    /// A non-interactive storage update was given a wallet password that does
+    /// not open every password-protected wallet. No wallet is skipped on the
+    /// user's behalf, so the update stays unfinished until it is retried with
+    /// the right password or finished in the desktop app.
+    #[error(
+        "The password does not open every password-protected wallet. Check the password and try again, or open the Dash Evo Tool desktop app to finish the storage update."
+    )]
+    StorageUpdatePasswordRejected {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
     /// An HD wallet seed envelope decoded cleanly but its plaintext
     /// length is not the expected 64 bytes. Surfaced when the cold-boot
     /// hydration path would otherwise have silently degraded the
@@ -2641,8 +2653,10 @@ pub enum TaskError {
     /// A secret was needed but no interactive prompt is available in this
     /// context — the operation ran headless (MCP / CLI), where there is no
     /// window to ask for a passphrase. Per the Q-HEADLESS security ruling
-    /// there is no environment-variable or flag fallback for the
-    /// passphrase, so the operation cannot proceed here. Fieldless: this
+    /// there is no environment-variable or flag fallback for a signing
+    /// passphrase, so the operation cannot proceed here. Only the storage
+    /// update accepts a password non-interactively (`app_storage_update`),
+    /// and it does not go through this path. Fieldless: this
     /// carries no upstream diagnostic and, by design, never any secret.
     #[error(
         "This wallet is protected by a passphrase, which can only be entered in the app window. Open Dash Evo Tool and run this action there."

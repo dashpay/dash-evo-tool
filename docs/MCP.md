@@ -67,10 +67,44 @@ they have no authorized GUI session. These transports return
 shielded operation. There is currently no environment-variable or
 CLI-passphrase workaround, so unattended shielded operations from a protected
 wallet are not supported. Use an unprotected wallet for that automation.
+The storage update is the one operation that accepts a password
+non-interactively; see the next section.
 
 MCP embedded in a running GUI is not affected in the same way: it can use the
 GUI's existing interactive prompt and authorized secret session. This caveat
 applies only to standalone and headless transports.
+
+## Protected wallets and the storage update
+
+When an older installation holds password-protected wallets, standalone and
+headless transports stop the storage update with `StorageUpdateNeedsDesktop`
+(code `-32004`): there is no window to ask for the password. Every wallet tool
+returns that error until the update finishes.
+
+`app_storage_update` finishes the update without the desktop app:
+
+- The `password` is tried on every wallet still locked after the copy, through
+  the same verification the desktop prompt uses. All protected wallets must
+  share it.
+- When it opens every wallet, each one is registered, keeps its password
+  protection, and the update completes. Later tool calls need no password.
+- When it does not open a wallet, the call fails with
+  `StorageUpdatePasswordRejected` (code `-32004`). No wallet is skipped and
+  the update stays unfinished, so it can be retried with the right password.
+- An installation whose wallets have different passwords must finish the update
+  in the desktop app.
+- It is refused with code `-32006` while the desktop app is running (MCP
+  embedded in the GUI): the app asks for the password in its own window.
+- It is a no-op once the update has finished. An empty password is refused with
+  code `-32602`.
+
+The password is typed as `SecretString`: it deserializes straight into guarded,
+zeroizing memory, its `Debug` is redacted, the schema carries no default or
+example, and it is never stored or echoed in results or errors. Over the HTTP
+transport it travels in the request body, so send it only to a loopback or
+`https` endpoint; det-cli refuses any other address. From det-cli, supply it
+with `--password-stdin` or `--password-file` (see `docs/CLI.md`), never as
+`password=...`.
 
 ## Environment variables
 
@@ -95,6 +129,7 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `platform_addresses_list` | `wallet_id`, `network`? | `det-cli platform-addresses-list` | Fetch platform address balances (credits and nonces) |
 | `core_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network` | `det-cli core-funds-send` | Send DASH from a wallet to an address (amount in duffs) |
 | `platform_withdrawals_get` | `status`?, `limit`?, `start_after`?, `network`? | `det-cli platform-withdrawals-get` | Query Platform withdrawal documents (`"queued"` or `"completed"`); returns structured entries with a `next_cursor` for pagination |
+| `identity_list` | `network`? | `det-cli identity-list` | List identities saved for the active network (id, alias, type, status, balance, DPNS names, wallet binding). Reads persisted state only — no network calls |
 | `identity_credits_topup` | `wallet_id`, `identity_id`, `amount_duffs`, `network` | `det-cli identity-credits-topup` | Top up an identity with DASH from wallet (via asset lock) |
 | `identity_credits_topup_from_platform` | `wallet_id`, `identity_id`, `amount_credits`, `network` | `det-cli identity-credits-topup-from-platform` | Top up an identity from Platform address balances |
 | `identity_credits_transfer` | `wallet_id`, `from_identity_id`, `to_identity_id`, `amount_credits`, `network` | `det-cli identity-credits-transfer` | Transfer credits between identities |
@@ -112,6 +147,8 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `shielded_balance_get` | `wallet_id`, `network`? | `det-cli shielded-balance-get` | Read the shielded balance from the last synced snapshot (credits + duffs); no sync |
 | `shielded_address_get` | `wallet_id`, `network`? | `det-cli shielded-address-get` | Return the wallet's default shielded (Orchard) receive address (bech32m) |
 | `tool_describe` | `name` | `det-cli tool-describe` | Return the full MCP tool definition for a given tool name |
+| `app_storage_status` | `network`? | `det-cli app-storage-status` | Report local storage state: `data.db` schema version vs the version this build expects, upstream wallet-storage schema lineage, live migration state, and each network's upgrade completion markers. Observes without starting or advancing an upgrade |
+| `app_storage_update` | `password`, `network`? | `det-cli app-storage-update --password-file <path>` | Finish the storage update of an upgraded installation whose wallets were password-protected, without the desktop app. One password for every protected wallet; a wallet it does not open fails the update and nothing is skipped. Refused while the desktop app is running. See [Protected wallets and the storage update](#protected-wallets-and-the-storage-update) |
 
 Parameters marked `?` are optional. The `det-cli` column shows the equivalent CLI command (underscores become hyphens).
 
@@ -119,7 +156,7 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 
 Wallet-facing tools that need chain or proof state wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and proof-verifying platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). These Platform operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
 
-Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), the local wallet import (`core_wallet_import`), and the shielded snapshot read `shielded_balance_get` (a pure in-memory read of the last synced balance). Wallet-reading tools hydrate saved wallets from local storage without starting SPV. `shielded_address_get` also skips the SPV gate and wires the wallet backend automatically, but `shielded_init` is still required before it can return an address for a wallet whose shielded keys have not been bound. `shielded_init` and `shielded_sync` still wait for SPV and drive a coordinator sync.
+Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `identity_list`, `network_info`, `tool_describe`, `app_storage_status`), the storage update (`app_storage_update`), the local wallet import (`core_wallet_import`), and the shielded snapshot read `shielded_balance_get` (a pure in-memory read of the last synced balance). Wallet-reading tools hydrate saved wallets from local storage without starting SPV. `shielded_address_get` also skips the SPV gate and wires the wallet backend automatically, but `shielded_init` is still required before it can return an address for a wallet whose shielded keys have not been bound. `shielded_init` and `shielded_sync` still wait for SPV and drive a coordinator sync.
 
 `masternode_credits_withdraw` waits for SPV before dispatching: a withdrawal does proof-verified Platform reads, so it gates like every other proof-verifying tool. (`identity_credits_withdraw` historically skipped this gate; the masternode tool deliberately adds it.)
 
@@ -165,7 +202,7 @@ Tools accept a `network` parameter (e.g. `"mainnet"`, `"testnet"`, `"devnet"`, `
 
 For **destructive tools** (those that spend funds or modify state — the fund-moving identity tools `identity_credits_topup`, `identity_credits_topup_from_platform`, `identity_credits_transfer`, `identity_credits_withdraw`, `identity_credits_to_address`, `masternode_credits_withdraw`, plus `core_funds_send`, `core_wallet_import`, and the fund-moving shielded tools `shielded_shield_from_core`, `shielded_shield_from_platform`, `shielded_transfer`, `shielded_unshield`, `shielded_withdraw`), `network` is **required**. The tool will reject the request if `network` is omitted or does not match the active network. This is a safety measure to prevent accidentally spending funds on the wrong network. Note: `masternode_identity_load` is non-destructive (it does not move funds) but also requires `network`, because the private keys it binds are chain-scoped.
 
-For **read-only tools** (e.g. `core_wallets_list`, `core_balances_get`) and the shielded control/read tools (`shielded_init`, `shielded_sync`, `shielded_balance_get`, `shielded_address_get`), `network` is optional. When omitted, the tool operates on whatever network is currently active.
+For **read-only tools** (e.g. `core_wallets_list`, `identity_list`, `core_balances_get`, `app_storage_status`) and the shielded control/read tools (`shielded_init`, `shielded_sync`, `shielded_balance_get`, `shielded_address_get`), `network` is optional. When omitted, the tool operates on whatever network is currently active.
 
 The `network_info` and `tool_describe` tools do not perform this check.
 
@@ -266,3 +303,4 @@ The HTTP MCP server uses bearer token authentication via the `MCP_API_KEY` envir
 - The HTTP server is disabled when `MCP_API_KEY` is empty or unset.
 - Stdio mode has no authentication — the caller controls which process connects.
 - Headless mode requires `MCP_API_KEY`; it will refuse to start without it.
+- rmcp logs raw requests (tool arguments, secrets included) at `debug` and `trace`. Every log subscriber DET installs caps the `rmcp` target at `info`, whatever `RUST_LOG` says, so those lines are never written.

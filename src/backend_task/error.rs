@@ -645,6 +645,10 @@ pub enum TaskError {
     #[error("That password is not correct. Try again.")]
     IdentityKeyPassphraseIncorrect,
 
+    /// Import would replace different private material already saved at the same placement.
+    #[error("A different private key is already saved for this identity. Check the keys you are importing and try again.")]
+    IdentityImportKeyConflict,
+
     /// A keyless (unprotected) write was refused over a password-protected
     /// identity key, which would have silently stripped its protection. Raised
     /// by the protection-aware store guard so adding or changing a key on a

@@ -832,6 +832,18 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.insert_local_qualified_identity_under_lock(
+            qualified_identity,
+            wallet_and_identity_id_info,
+        )
+    }
+
+    /// Deliberate import while the caller holds this identity's record lock.
+    pub(crate) fn insert_local_qualified_identity_under_lock(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+    ) -> std::result::Result<(), TaskError> {
         // Deliberate: asking for an identity is the one act that means the user
         // changed their mind about unloading it, so this is the only place the
         // unload marker is retired. Under the same guard as the write, so a
@@ -1342,6 +1354,18 @@ impl AppContext {
         &self,
         id: &Identifier,
     ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
+        let Some(mut qi) = self.get_local_qualified_identity_unmigrated(id)? else {
+            return Ok(None);
+        };
+        self.migrate_identity_keys_to_vault(&self.det_kv()?, &id.to_buffer(), &mut qi);
+        Ok(Some(qi))
+    }
+
+    /// Read import preflight metadata without migrating any resident secrets.
+    pub(crate) fn get_local_qualified_identity_unmigrated(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
         let kv = self.det_kv()?;
         let id_buf = id.to_buffer();
         let Some(stored) = kv
@@ -1358,7 +1382,6 @@ impl AppContext {
         qi.associated_wallets = wallets.clone();
         qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
         qi.top_ups = BTreeMap::new();
-        self.migrate_identity_keys_to_vault(&kv, &id_buf, &mut qi);
         Ok(Some(qi))
     }
 

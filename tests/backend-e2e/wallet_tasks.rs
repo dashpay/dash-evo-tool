@@ -9,6 +9,8 @@ use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+use dash_sdk::dpp::version::PlatformVersion;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -452,20 +454,60 @@ async fn step_transfer_credits(
     }
 }
 
-/// Fund a fresh platform address and withdraw its balance back to Core.
+fn withdrawal_amount(balance: u64, version: &PlatformVersion) -> Option<u64> {
+    // DeductFromInput charges the remaining balance; keep 10% fee headroom.
+    let fee = AddressCreditWithdrawalTransition::estimate_min_fee(1, false, version);
+    let reserve = fee.checked_add(fee / 10)?;
+    balance
+        .checked_sub(reserve)
+        .filter(|amount| *amount >= version.system_limits.min_withdrawal_amount)
+}
+
+#[test]
+fn tc_014_withdrawal_amount_covers_fees() {
+    use dash_sdk::dpp::address_funds::fee_strategy::deduct_fee_from_inputs_and_outputs::deduct_fee_from_outputs_or_remaining_balance_of_inputs;
+    use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
+
+    let version = PlatformVersion::latest();
+    let balance = 484_895_820;
+    let amount = withdrawal_amount(balance, version).expect("funded withdrawal");
+    let address = PlatformAddress::P2pkh([1; 20]);
+    let deduction = deduct_fee_from_outputs_or_remaining_balance_of_inputs(
+        BTreeMap::from([(address, (1, balance - amount))]),
+        BTreeMap::new(),
+        &vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+        AddressCreditWithdrawalTransition::estimate_min_fee(1, false, version),
+        version,
+    )
+    .expect("valid fee strategy");
+
+    assert!(
+        deduction.fee_fully_covered,
+        "withdrawal must leave funds for fees"
+    );
+    assert!(amount >= version.system_limits.min_withdrawal_amount);
+}
+
+#[test]
+fn tc_014_withdrawal_amount_rejects_insufficient_balance() {
+    let version = PlatformVersion::latest();
+    let fee = AddressCreditWithdrawalTransition::estimate_min_fee(1, false, version);
+    let minimum_funding = fee + fee / 10 + version.system_limits.min_withdrawal_amount;
+    for balance in [0, fee, minimum_funding - 1] {
+        assert_eq!(withdrawal_amount(balance, version), None);
+    }
+    assert_eq!(
+        withdrawal_amount(minimum_funding, version),
+        Some(version.system_limits.min_withdrawal_amount)
+    );
+}
+
+/// Fund a fresh platform address and withdraw to Core, reserving the fee.
 async fn step_withdraw(
     ctx: &crate::framework::harness::BackendTestContext,
     seed_hash: WalletSeedHash,
 ) {
     tracing::info!("=== Step 4: Withdraw from platform address back to Core ===");
-
-    // TODO: This step fails because sync_address_balances returns a balance
-    // (~485M credits) that doesn't match what Platform's state transition
-    // processor sees (1 credit). The full tree scan proof says 485M but the
-    // withdrawal is rejected with AddressesNotEnoughFundsError. This is a
-    // Platform/SDK bug — the sync proof and the state transition processor
-    // disagree on the balance, possibly due to node height differences or
-    // proof verification issues. Needs investigation upstream.
 
     // Fund a fresh platform address so we have credits to withdraw,
     // regardless of what step 3 did to the original address.
@@ -537,9 +579,11 @@ async fn step_withdraw(
         tokio::time::sleep(poll_interval).await;
     };
 
+    let amount = withdrawal_amount(withdrawal_balance, ctx.app_context.platform_version())
+        .expect("step_withdraw: balance must cover the minimum withdrawal and fee reserve");
     tracing::info!(
         "step_withdraw: withdrawing {} credits from {:?}",
-        withdrawal_balance,
+        amount,
         withdrawal_addr
     );
 
@@ -568,7 +612,7 @@ async fn step_withdraw(
     let output_script = CoreScript::new(core_address.script_pubkey());
 
     let mut inputs = BTreeMap::new();
-    inputs.insert(withdrawal_addr, withdrawal_balance);
+    inputs.insert(withdrawal_addr, amount);
 
     let task = BackendTask::WalletTask(WalletTask::WithdrawFromPlatformAddress {
         seed_hash,

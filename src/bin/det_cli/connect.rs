@@ -120,7 +120,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = [0; 1024];
-            stream.read(&mut request).await.unwrap();
+            let bytes_read = stream.read(&mut request).await.unwrap();
+            assert!(bytes_read > 0, "client closed before sending a request");
             stream
                 .write_all(b"HTTP/1.1 302 Found\r\nLocation: /other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 .await

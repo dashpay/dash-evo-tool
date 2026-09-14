@@ -100,9 +100,9 @@ summary:
   `manifest.json` in the repo is the only durable index, and a missing or
   expired artifact fails the job loudly.
 - **The fixture wallet is public by design**: dedicated, testnet-only,
-  dust-only, never the backend-E2E framework wallet, with a fixed literal
-  password for the protected wallet. The recovery phrase still never enters the
-  repository.
+  dust-only, never the backend-E2E framework wallet. The protected wallet's
+  password is supplied through `MIGRATION_V093_WALLET_PASSWORD` at runtime.
+  Neither the password nor the recovery phrase enters the repository.
 
 ## 5. Verification harness
 

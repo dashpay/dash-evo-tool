@@ -21,8 +21,8 @@ are true at the moment the app is quit.
 - [ ] **Wallet U** (unprotected) is imported from `MIGRATION_FIXTURE_MNEMONIC`,
       has a non-default alias, and is the main/selected wallet.
 - [ ] **Wallet P** (protected) is imported from
-      `MIGRATION_FIXTURE_PROTECTED_MNEMONIC` with the password
-      `correct horse battery staple`, and has its own distinct non-default
+      `MIGRATION_FIXTURE_PROTECTED_MNEMONIC` with the password supplied through
+      `MIGRATION_V093_WALLET_PASSWORD`, and has its own distinct non-default
       alias. A password *hint* is set only where the era's import screen offers
       the field — v0.9.3's does not, and always stores `password_hint` as
       `NULL`, so a fixture from that tag must not be failed for its absence.
@@ -78,7 +78,7 @@ support one is recognised as incomplete before it is packed.
 
 - Both wallets are present after the upgrade, with their aliases unchanged.
 - Wallet U opens with no password prompt.
-- Wallet P still requires a password: the fixed literal opens it, and a wrong
+- Wallet P still requires a password: the runtime password opens it, and a wrong
   password is rejected. At-rest protection survived — it was not downgraded to
   an unprotected seed in passing.
 - Every recorded address comes back identical.

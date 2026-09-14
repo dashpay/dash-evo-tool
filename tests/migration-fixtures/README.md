@@ -60,15 +60,10 @@ Treat every byte in it as **published**.
   `v1.0.0-weekly.20260908` wallet: `MIGRATION_FIXTURE_WEEKLY_MNEMONIC`), matching the
   `tests/backend-e2e/` convention of referring to environment variable *names*
   only.
-- **The protected wallet's password is a fixed literal:
-  `correct horse battery staple`.** It is written down here on purpose, the
-  same way `PROTECTED_PASSWORD` in
-  `src/backend_task/migration/v093_upgrade.rs` and the synthetic rows in
-  `src/wallet_backend/platform_compatibility/fixtures/` are: it guards a
-  published seed with no value behind it, and a harness that must assert
-  "wrong password is rejected, right password still opens the wallet" needs a
-  password it can supply deterministically. Its secrecy is not a security
-  property of anything.
+- **The protected wallet's password is supplied at runtime** through
+  `MIGRATION_V093_WALLET_PASSWORD`, from the operator's secure store or the
+  matching CI secret. The manifest records only this environment variable's
+  name. Do not commit the value, even for public testnet fixtures.
 - **If a fixture wallet is ever funded beyond dust, or is ever used on
   mainnet, it is burned.** Abandon it, mint a fresh one, and recapture. Do not
   try to reclaim it.
@@ -127,6 +122,10 @@ preserving mode bits — the secret store refuses to open a data directory whose
 ancestor chain is group- or other-writable.
 
 Record `sha256` and `bytes` of the finished archive in the manifest entry.
+Before packing, blank `MCP_API_KEY`, every network's `core_rpc_user` and
+`core_rpc_password`, and `wallet_private_key` in the capture copy's `.env`.
+This includes template placeholders. `pack.sh` refuses nonempty credential
+settings and reports only their names.
 
 ## Capture methods
 
@@ -266,7 +265,7 @@ leaves this list empty and names them in `expect.wallet_aliases`.
 |---|---|
 | `alias` | The wallet's alias in `data.db`. The harness finds the wallet by it. |
 | `uses_password` | Whether the wallet is password-protected. |
-| `password` | The wallet's password: a public, testnet-only fixture password. A `password_runs` entry hands it to det-cli; the harness never prints it, and fails a run whose output contains it. |
+| `password_env` | Name of the runtime environment variable holding the wallet password. A `password_runs` entry hands the resolved value to det-cli; the harness never prints it, and fails a run whose output contains it. |
 | `expected_outcome` | What a headless det-cli boot **without a supplied password** must do with this wallet. `migrated` (the default): the wallet is registered in `det-<network>.sqlite`. `needs_desktop`: a password-protected wallet. det-cli never prompts for a password (`docs/ai-design/2026-07-14-migration-password-prompt/design.md`), so the boot must fail with `StorageUpdateNeedsDesktop`, the wallet must stay unregistered, and the wallet-drain sentinel must stay unwritten. Any other result fails the matrix. |
 
 `password_runs[]` — optional extra boots of the same fixture with the wallet password supplied non-interactively. Each runs on a freshly staged copy, after the boot without a password:
@@ -276,6 +275,6 @@ leaves this list empty and names them in `expect.wallet_aliases`.
 | `source` | How det-cli receives the password. `file`: the harness writes it to an owner-only (`0600`) file and runs `app-storage-update --password-file <file>` before the wallet boots. |
 | `expected_outcomes` | Per-alias outcomes that differ from the wallet's `expected_outcome` in this run, e.g. `{"migration-fixture-v093-protected": "migrated"}`. `needs_desktop` is rejected here: with the password supplied, the update either opens every protected wallet or fails. |
 
-Every wallet with a `password` must share it: one supplied password opens them all, or the update fails and nothing is skipped. The `app-storage-update` boot logs DET, det-cli and rmcp at `trace`, and the run fails if any command's output contains the password. The second boot gets no password: once the update has finished, a plain boot must need nothing more.
+Every wallet with a `password_env` must resolve to the same password: one supplied password opens them all, or the update fails and nothing is skipped. Supply the named variable from your secure store before running the matrix. A missing value fails the password scenario. The `app-storage-update` boot logs DET, det-cli and rmcp at `trace`, and the run fails if any command's output contains the password. The second boot gets no password: once the update has finished, a plain boot must need nothing more.
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

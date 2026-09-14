@@ -51,11 +51,25 @@ DATA_DIR="$(cd -- "$DATA_DIR" && pwd)"
 # so shipping a live one inside a fixture is a credential leak. The fixture
 # wallet's own seed is a different matter: it is a deliberately public
 # testnet-only wallet, and the vault is the thing under test.
-api_key="$(sed -nE 's/^[[:space:]]*MCP_API_KEY[[:space:]]*=[[:space:]]*(.*)$/\1/p' "$DATA_DIR/.env" | tail -n1 | tr -d '"'"'"' \t\r')"
-if [ -n "$api_key" ]; then
-    die "Refusing to pack: $DATA_DIR/.env sets a non-empty MCP_API_KEY.
-Fixture archives are published as build artifacts and anyone who can read the repo can download them, so a live key inside one is a credential leak.
-Blank the key (MCP_API_KEY=) and re-run. Standalone det-cli, which is what the capture script uses, needs it empty anyway."
+credential_keys="$(awk '
+    /^[[:space:]]*(#|$)/ { next }
+    /=/ {
+        key = substr($0, 1, index($0, "=") - 1)
+        sub(/^[[:space:]]*(export[[:space:]]+)?/, "", key)
+        sub(/[[:space:]]+$/, "", key)
+        name = tolower(key)
+        if (name != "mcp_api_key" && name !~ /_(core_rpc_(user|password)|wallet_private_key)$/) next
+        value = substr($0, index($0, "=") + 1)
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+#.*$/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        if (value != "" && value != "\"\"" && value != "\047\047") print key
+    }
+' "$DATA_DIR/.env")"
+if [ -n "$credential_keys" ]; then
+    die "Refusing to pack: $DATA_DIR/.env contains credential settings:
+$credential_keys
+Blank these settings in the capture copy before publishing, then re-run."
 fi
 
 # --------------------------------------------------------------------------

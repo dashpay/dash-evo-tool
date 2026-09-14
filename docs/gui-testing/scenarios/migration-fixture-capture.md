@@ -31,10 +31,8 @@ fund-movement caps, read the logs — applies unchanged.
     backend-E2E framework wallet and must never be published in an artifact.
   - `MIGRATION_FIXTURE_PROTECTED_MNEMONIC` — a second, distinct phrase for the
     password-protected wallet.
-- The protected wallet's password is the fixed literal
-  `correct horse battery staple`, matching `PROTECTED_PASSWORD` in
-  `src/backend_task/migration/v093_upgrade.rs`. It is deliberately not a
-  secret.
+- `MIGRATION_V093_WALLET_PASSWORD` holds the protected wallet's password,
+  supplied from the operator's secure store. Never commit its value.
 - **A testnet identity registered ahead of time with the CURRENT build**, from
   `MIGRATION_FIXTURE_MNEMONIC`, holding a resolved, uncontested DPNS name.
   v0.9.3 does ship registration screens, but it has no SPV stack: it sees funds
@@ -121,7 +119,7 @@ app resolved a *different* directory — stop, do not continue, and check
 
 8. Repeat the import flow with `MIGRATION_FIXTURE_PROTECTED_MNEMONIC` and a
    distinct alias (e.g. `Fixture protected`).
-9. This time fill **Optional Password** with `correct horse battery staple`.
+9. This time fill **Optional Password** from `MIGRATION_V093_WALLET_PASSWORD`.
    v0.9.3's import screen has no password-hint field; do not go looking for
    one.
 10. Save, then confirm the wallet list shows two distinct wallets. If it shows
@@ -173,7 +171,9 @@ app resolved a *different* directory — stop, do not continue, and check
     Expect `user_version` = 11, two wallet rows (one with `uses_password` = 1,
     one with 0), and exactly one identity row. Always `-readonly`: a plain open
     can checkpoint the WAL and mutate the very state being preserved.
-21. Pack per [`tests/migration-fixtures/README.md`](../../../tests/migration-fixtures/README.md)
+21. Blank `MCP_API_KEY`, network `core_rpc_user`, `core_rpc_password`, and
+    `wallet_private_key` settings in the capture copy's `.env`, including
+    template placeholders. Pack per [`tests/migration-fixtures/README.md`](../../../tests/migration-fixtures/README.md)
     — include `data.db` and `.env`, exclude `backups/` and `*.log` — then
     upload the archive and fill in the manifest entry's `artifact` fields,
     `captured_at` and `sha256`.
@@ -187,8 +187,7 @@ app resolved a *different* directory — stop, do not continue, and check
   happens from the v0.9.3 binary. Any step that appears to offer one is a
   deviation — stop and record it.
 - **Never capture with a wallet that holds meaningful funds.** The archive
-  publishes the encrypted seed, and the password guarding it is written down in
-  this repository. Dust only, dedicated wallet only, and never
+  publishes the encrypted seed. Dust only, dedicated wallet only, and never
   `E2E_WALLET_MNEMONIC`.
 - **Never let v0.9.3 see the default data directory.** It has no
   `DASH_EVO_DATA_DIR` override and no confirmation prompt; launching it without

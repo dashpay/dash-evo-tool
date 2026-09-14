@@ -114,6 +114,7 @@ done
     usage >&2
     die "--data-dir is required"
 }
+[ "$NETWORK" = testnet ] || die "Migration fixtures must be captured on testnet."
 command -v jq >/dev/null 2>&1 || die "jq is required but not installed."
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -164,14 +165,12 @@ note "Data dir: $DATA_DIR"
 note "Network:  $NETWORK"
 note "Alias:    $ALIAS"
 
-# MCP_API_KEY is unset rather than merely empty so a key inherited from the
-# operator's shell cannot silently redirect these calls into a running GUI —
-# that would capture nothing and mutate the operator's real profile instead.
+# Standalone mode keeps shell or .env credentials from selecting a running GUI.
 det() {
     env -u MCP_API_KEY \
         DASH_EVO_DATA_DIR="$DATA_DIR" \
         RUST_LOG="${RUST_LOG:-off}" \
-        "$DET_CLI" "$@"
+        "$DET_CLI" --standalone "$@"
 }
 
 # --------------------------------------------------------------------------

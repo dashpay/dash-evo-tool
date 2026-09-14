@@ -116,16 +116,10 @@ if [ -z "$FIXTURE_TAGS" ]; then
     exit 0
 fi
 
-# sort -V gets the case that matters today right — within one core version the
-# weeklies differ only by date, so v1.0.0-weekly.20260901 < v1.0.0-weekly.20260908.
-#
-# It is NOT semver: it sorts v1.0.0 BEFORE v1.0.0-weekly.20260908, where semver
-# sorts a prerelease before its release. Concretely, once a final v1.0.0 ships
-# after the weeklies, this comparison reads it as OLDER than the last weekly and
-# a weekly baseline would exempt it from ever needing a fixture.
-# TODO: swap in a real semver comparator before the first non-prerelease release
-# lands on a line whose weeklies already have fixtures.
-NEWEST_FIXTURE="$(printf '%s\n' "$FIXTURE_TAGS" | sort -V | tail -n1)"
+newest_tag() {
+    jq -L "$SCRIPT_DIR" -Rsr 'include "semver"; split("\n") | map(select(length > 0)) | max_by(semver_key)'
+}
+NEWEST_FIXTURE="$(printf '%s\n' "$FIXTURE_TAGS" | newest_tag)"
 note "Newest fixture tag: $NEWEST_FIXTURE"
 
 # --------------------------------------------------------------------------
@@ -157,7 +151,7 @@ fi
 # Taking the greater of the two keeps the two rules from cancelling each other:
 # the exemption must not silence a genuine gap above it, and a newer fixture
 # must not resurrect the releases the exemption wrote off.
-BASELINE="$(printf '%s\n%s\n' "$NEWEST_FIXTURE" "$ENFORCE_AFTER" | sort -V | tail -n1)"
+BASELINE="$(printf '%s\n%s\n' "$NEWEST_FIXTURE" "$ENFORCE_AFTER" | newest_tag)"
 if [ "$BASELINE" != "$NEWEST_FIXTURE" ]; then
     note "Enforcement baseline: $BASELINE (exempt by configuration, newer than the newest fixture)"
 else
@@ -167,11 +161,9 @@ fi
 missing=()
 while IFS= read -r tag; do
     [ -n "$tag" ] || continue
-    # Strictly newer than the baseline: sorting the pair and taking the tail
-    # identifies the greater one, and equality means it IS the baseline.
-    [ "$tag" != "$BASELINE" ] || continue
-    newer="$(printf '%s\n%s\n' "$tag" "$BASELINE" | sort -V | tail -n1)"
-    [ "$newer" = "$tag" ] || continue
+    newer="$(jq -L "$SCRIPT_DIR" -nr --arg tag "$tag" --arg baseline "$BASELINE" \
+        'include "semver"; ($tag | semver_key) > ($baseline | semver_key)')"
+    [ "$newer" = true ] || continue
     # Already covered?
     if printf '%s\n' "$FIXTURE_TAGS" | grep -Fxq "$tag"; then
         continue

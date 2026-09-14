@@ -157,6 +157,13 @@ while IFS= read -r entry; do
 
     note "Fixture '$id'"
 
+    if [ "$STRICT" -eq 1 ] && [[ ! "$expected_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        warn "Fixture '$id' needs a valid sha256 in strict mode — skipping."
+        failed=$((failed + 1))
+        continue
+    fi
+    expected_sha="${expected_sha,,}"
+
     if [ -z "$artifact_name" ]; then
         warn "Fixture '$id' has no artifact name in the manifest — skipping."
         failed=$((failed + 1))

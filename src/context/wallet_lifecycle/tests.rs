@@ -4987,18 +4987,18 @@ async fn reconcile_does_not_withdraw_an_identity_inserted_between_its_two_snapsh
     backend.shutdown().await;
 }
 
-/// A wallet-OWNED sidecar record must not shield a stale unowned
-/// registration: only a wallet-LESS record means "upstream should still
-/// advertise this identity". Guarding on mere existence would strand the
-/// registration of an identity that has since gained a wallet.
+/// Ownership changes preserve identity metadata until the wallet's ordinary
+/// reconciliation durably promotes the unowned parent row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reconcile_withdraws_a_stale_registration_whose_sidecar_is_wallet_owned() {
-    let (ctx, sender, _tmp) = offline_testnet_context();
+async fn reconcile_preserves_wallet_owned_identity_until_durable_promotion() {
+    use crate::wallet_backend::DetScope;
+
+    let (ctx, sender, tmp) = offline_testnet_context();
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    let (seed_hash, _) = register_backend_only_test_wallet(&backend, [0x58u8; 64]).await;
+    let (seed_hash, wallet_id) = register_backend_only_test_wallet(&backend, [0x58u8; 64]).await;
 
     // Registered unowned by an earlier boot, then stored as wallet-owned: the
     // registration is stale from that moment on.
@@ -5009,7 +5009,33 @@ async fn reconcile_withdraws_a_stale_registration_whose_sidecar_is_wallet_owned(
         .expect("register unowned");
     ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
         .expect("insert wallet-owned identity");
+    let id_bytes = owned_id.to_buffer();
+    backend
+        .kv()
+        .put(
+            DetScope::Identity(&id_bytes),
+            "test:identity-note",
+            &"keep this note",
+        )
+        .expect("store identity metadata");
 
+    ctx.reconcile_unowned_identities(&backend);
+
+    assert_eq!(
+        ctx.stored_identity_wallet_link(&owned_id)
+            .expect("read identity ownership after reconciliation"),
+        Some((seed_hash, 0)),
+        "reconciling the unowned mirror must preserve the live identity sidecar"
+    );
+    assert!(
+        backend
+            .unowned_identity_ids()
+            .expect("read unowned identities before promotion")
+            .contains(&owned_id),
+        "the parent row must remain until wallet reconciliation promotes it"
+    );
+
+    ctx.reconcile_managed_identities(&backend, &seed_hash).await;
     ctx.reconcile_unowned_identities(&backend);
 
     assert!(
@@ -5017,8 +5043,70 @@ async fn reconcile_withdraws_a_stale_registration_whose_sidecar_is_wallet_owned(
             .unowned_identity_ids()
             .expect("read unowned identities")
             .contains(&owned_id),
-        "a registration whose sidecar is wallet-owned must still be withdrawn"
+        "durable promotion must remove the identity from the unowned scope"
     );
+    let conn = rusqlite::Connection::open_with_flags(
+        wallet_database_path(tmp.path(), Network::Testnet),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open persisted identity store");
+    let persisted_owner: (Vec<u8>, u32) = conn
+        .query_row(
+            "SELECT wallet_id, identity_index FROM identities WHERE identity_id = ?1",
+            [&id_bytes[..]],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read promoted identity ownership");
+    assert_eq!(persisted_owner, (wallet_id.to_vec(), 0));
+    assert_eq!(
+        ctx.stored_identity_wallet_link(&owned_id)
+            .expect("read identity ownership after promotion"),
+        Some((seed_hash, 0))
+    );
+    assert_eq!(
+        backend
+            .kv()
+            .get::<String>(DetScope::Identity(&id_bytes), "test:identity-note")
+            .expect("read identity metadata after promotion"),
+        Some("keep this note".to_owned())
+    );
+
+    backend.shutdown().await;
+}
+
+/// An unavailable owning wallet defers promotion without deleting the identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_preserves_wallet_owned_identity_when_promotion_is_unavailable() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure wallet backend");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let seed_hash = [0x59; 32];
+    let owned = wallet_owned_qualified_identity(Some(0));
+    let owned_id = identity_id_of(&owned);
+    backend
+        .ensure_identity_unowned(&owned.identity)
+        .expect("register unowned");
+    ctx.insert_local_qualified_identity(&owned, &Some((seed_hash, 0)))
+        .expect("store identity whose wallet is unavailable");
+    assert!(backend.registered_wallet_id(&seed_hash).is_none());
+
+    for _ in 0..2 {
+        ctx.reconcile_unowned_identities(&backend);
+        ctx.reconcile_managed_identities(&backend, &seed_hash).await;
+        assert_eq!(
+            ctx.stored_identity_wallet_link(&owned_id)
+                .expect("read retained identity ownership"),
+            Some((seed_hash, 0))
+        );
+        assert!(
+            backend
+                .unowned_identity_ids()
+                .expect("read retained parent row")
+                .contains(&owned_id)
+        );
+    }
 
     backend.shutdown().await;
 }

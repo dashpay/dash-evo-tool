@@ -401,7 +401,7 @@ pub enum TaskError {
     },
 
     /// An identity is still in the wallet store's unowned scope immediately
-    /// after being withdrawn from it — upstream's tombstone write logs a
+    /// after being withdrawn from it — upstream's deletion write logs a
     /// persist failure and reports the removal as done regardless, so the
     /// readback is the only evidence it landed. The next boot's reconcile
     /// re-issues the withdrawal, which is what the message offers. Carries the
@@ -421,6 +421,13 @@ pub enum TaskError {
     WalletStorage {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// A pinned-PR wallet database could not be upgraded without losing data.
+    #[error(transparent)]
+    PlatformDatabaseUpgrade {
+        #[from]
+        source: crate::wallet_backend::platform_compatibility::UpgradeError,
     },
 
     /// Persisted Core transaction rows could not be read through the upstream

@@ -102,6 +102,7 @@ impl AppContext {
         document_id: Identifier,
     ) -> Result<Document, TaskError> {
         let document_query = DocumentQuery {
+            sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract,
             document_type_name: document_type.name().to_string(),

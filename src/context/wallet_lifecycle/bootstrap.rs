@@ -281,7 +281,7 @@ impl AppContext {
     /// identity upstream doesn't have yet (backfilling nodes stored before
     /// that registration existed, and retrying any whose write-through
     /// failed), and withdraws every upstream registration whose sidecar
-    /// record is gone — a tombstone lost to a crash or storage error between
+    /// record is gone — a removal lost to a crash or storage error between
     /// [`AppContext::delete_local_qualified_identity`](crate::context::AppContext::delete_local_qualified_identity)'s
     /// synchronous attempt and its upstream write. Masternode/evonode nodes
     /// are the expected case, but any wallet-less identity DET stores takes
@@ -304,8 +304,9 @@ impl AppContext {
     /// Neither snapshot is taken atomically with the other, so an identity
     /// written between them reads as the opposite of what it is — a stale
     /// registration, or a wallet-less identity that has since gained a wallet.
-    /// Both loops therefore re-check every candidate against the sidecar under
-    /// that identity's record guard instead of trusting the snapshot.
+    /// Both loops re-check candidates under their identity record guard.
+    /// Listed identities retain their parent row until per-wallet reconciliation
+    /// promotes it; deleting the unowned row would cascade through DET metadata.
     pub(super) fn reconcile_unowned_identities(&self, backend: &WalletBackend) {
         self.reconcile_unowned_identities_seamed(backend, || {});
     }
@@ -398,16 +399,13 @@ impl AppContext {
 
         let mut removed = 0usize;
         for id in registered.difference(&wallet_less) {
-            // Re-read under the guard `insert_local_qualified_identity` holds
-            // across both of its writes: a record stored since the id scan
-            // keeps its registration, while one that has since gained a wallet
-            // still loses it. A read failure keeps the registration — a stale
-            // row costs one more boot, a wrongly withdrawn one costs the node.
+            // A listed identity still needs its parent row, including while
+            // its wallet ownership awaits durable promotion.
             let lock = self.identity_record_lock(*id);
             let _record_guard = lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match self.stored_identity_is_wallet_less(id) {
+            match self.is_identity_listed(id) {
                 Ok(true) => continue,
                 Ok(false) => {}
                 Err(error) => {

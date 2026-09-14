@@ -22,6 +22,7 @@ impl AppContext {
             let identity_id = qualified_identity.identity.id();
 
             let dpns_names_document_query = DocumentQuery {
+                sub_queries: Vec::new(),
                 select: SelectProjection::documents(),
                 data_contract: self.dpns_contract.clone(),
                 document_type_name: "domain".to_string(),

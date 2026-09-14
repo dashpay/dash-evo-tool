@@ -9,9 +9,7 @@ pub(super) struct ScheduledVoteEditor {
     node_label: String,
     choices: Vec<(ResourceVoteChoice, String)>,
     choice: ResourceVoteChoice,
-    date: String,
-    hour: u32,
-    minute: u32,
+    schedule: UtcScheduleInput,
     time_changed: bool,
 }
 
@@ -36,9 +34,7 @@ impl ScheduledVoteEditor {
             key,
             node_label,
             choices,
-            date: time.format("%Y-%m-%d").to_string(),
-            hour: time.hour(),
-            minute: time.minute(),
+            schedule: UtcScheduleInput::new().with_time(time),
             time_changed: false,
         })
     }
@@ -57,11 +53,7 @@ impl ScheduledVoteEditor {
         }
         // A choice-only edit must preserve seconds/milliseconds in an imported schedule.
         let timestamp = if self.time_changed {
-            crate::model::dpns_vote_schedule::parse_utc_schedule(
-                &self.date,
-                self.hour,
-                self.minute,
-            )?
+            self.schedule.current_value()?
         } else {
             self.original.vote.unix_timestamp
         };
@@ -98,8 +90,9 @@ impl ScheduledVoteEditor {
             },
             |ui| {
                 ui.label(format!(
-                    "{} — {}.dash",
-                    self.node_label, self.original.vote.contested_name
+                    "{node} — {name}.dash",
+                    node = self.node_label,
+                    name = self.original.vote.contested_name,
                 ));
                 egui::ComboBox::from_id_salt("edited_vote_choice")
                     .selected_text(
@@ -114,31 +107,8 @@ impl ScheduledVoteEditor {
                             ui.selectable_value(&mut self.choice, *choice, label);
                         }
                     });
-                ui.horizontal(|ui| {
-                    ui.label("Cast on (UTC):");
-                    self.time_changed |= ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.date)
-                                .hint_text("YYYY-MM-DD")
-                                .desired_width(100.0),
-                        )
-                        .changed();
-                    self.time_changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut self.hour)
-                                .prefix("Hour: ")
-                                .range(0..=23),
-                        )
-                        .changed();
-                    self.time_changed |= ui
-                        .add(
-                            egui::DragValue::new(&mut self.minute)
-                                .prefix("Minute: ")
-                                .range(0..=59),
-                        )
-                        .changed();
-                });
-                ui.label("Keep Dash Evo Tool running and connected until the scheduled time.");
+                self.time_changed |= self.schedule.show(ui).inner.has_changed();
+                ui.label(KEEP_RUNNING_MESSAGE);
                 let task = self.task(Utc::now().timestamp_millis() as u64);
                 if task.is_none() {
                     ui.colored_label(DashColors::warning_color(ui.visuals().dark_mode),
@@ -225,9 +195,12 @@ mod tests {
         assert!(editor.task(1).is_none());
         editor.original.status = DpnsVoteTargetStatus::Scheduled;
         editor.time_changed = true;
-        editor.date = "2031-02-03".into();
-        editor.hour = 4;
-        editor.minute = 5;
+        editor.schedule = UtcScheduleInput::new().with_time(
+            chrono::NaiveDate::from_ymd_opt(2031, 2, 3)
+                .and_then(|date| date.and_hms_opt(4, 5, 0))
+                .expect("valid test instant")
+                .and_utc(),
+        );
         let ContestedResourceTask::EditScheduledDpnsVote { unix_timestamp, .. } =
             editor.task(1).unwrap()
         else {

@@ -815,6 +815,7 @@ As a masternode operator, I want to apply voting choices across multiple contest
 - When no loaded node has a voting key, Active contests shows an actionable Load a masternode state instead of vote controls. A masternode loaded without its voting key is not a voting node, so it reaches that state instead of the composer.
 - Per-node timing overrides and multi-contest selections create exact node × contest targets.
 - Review and cast lists each of those targets with its node, contest, requested choice, current choice, and timing, and reports how many targets it skipped because the node already holds the requested choice.
+- A vote for a candidate always identifies that candidate on the review line — by name when one is cached, otherwise by the candidate's identifier. Submission is never gated on a resolvable name, so the sheet never approves a vote whose recipient it did not show.
 - Immediate and scheduled targets submitted together belong to one operation.
 - A successful mixed batch reports both cast and scheduled counts as success, without a warning about remaining work.
 

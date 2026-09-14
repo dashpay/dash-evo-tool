@@ -39,13 +39,6 @@ impl ActiveDpnsContestSnapshot {
             .collect()
     }
 
-    pub(crate) fn contest(&self, contested_name: &str) -> Option<&ContestedName> {
-        self.contests
-            .iter()
-            .find(|view| view.contest.normalized_contested_name == contested_name)
-            .map(|view| view.contest.as_ref())
-    }
-
     fn build(
         contests: Vec<ContestedName>,
         mut poll_id: impl FnMut(&str) -> Option<Identifier>,

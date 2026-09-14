@@ -363,8 +363,11 @@ impl AppContext {
 
     /// Summarise a masternode/evonode node's DPNS voting position for its card.
     ///
-    /// `voter_id` is the node's voter-identity id (`associated_voter_identity`);
-    /// pass `None` for a node with no voting key loaded — it can vote on
+    /// `voter_id` is the node's **own** identity id — its ProTxHash, the id
+    /// Platform records masternode votes under and the key both the proved-vote
+    /// cache and the vote journal use. It is never the separate
+    /// `associated_voter_identity` record, which only supplies the signing key.
+    /// Pass `None` for a node with no voting key loaded — it can vote on
     /// nothing, so the summary is empty. The open count reads the ongoing
     /// contest cache and the scheduled-vote flag reuses the existing DPNS
     /// Scheduled Votes state (no new backend concept — §10.1).

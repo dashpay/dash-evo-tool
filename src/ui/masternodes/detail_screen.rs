@@ -20,6 +20,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::legacy_recovery::RecoveryItem;
 use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
@@ -108,6 +109,16 @@ pub struct MasternodeDetailView {
     key_presence: MasternodeKeyPresence,
     remove_dialog: Option<ConfirmationDialog>,
     voter_key_prompt: Option<PasswordInput>,
+    /// The `Add voting key` merge this view dispatched and has not yet seen
+    /// finish. Gates Save so a re-click cannot discard the key typed into a
+    /// prompt the first Save already cleared, and so the wait is visible
+    /// instead of arriving as an `IdentityLoadInProgress` banner.
+    ///
+    /// The token names that one load: a later load of this node, dispatched
+    /// from anywhere, can never be mistaken for it. `None` when there is
+    /// nothing to gate — including a node another caller is already loading,
+    /// whose load owns the record and whose rejection the banner explains.
+    pending_voter_key_load: Option<IdentityLoadToken>,
     /// The offer to restore keys this node left behind in the previous
     /// version's saved data (issue #889).
     recovery: LegacyRecoveryState,
@@ -174,7 +185,36 @@ impl MasternodeDetailView {
             key_presence,
             remove_dialog: None,
             voter_key_prompt: None,
+            pending_voter_key_load: None,
             recovery,
+        }
+    }
+
+    /// The outstanding `Add voting key` merge, so a rebuilt view can keep
+    /// gating it. Every backend result rebuilds this view; without carrying the
+    /// gate across, a load still in flight would silently re-offer Save.
+    pub(crate) fn pending_voter_key_load(&self) -> Option<IdentityLoadToken> {
+        self.pending_voter_key_load
+    }
+
+    /// Adopt the gate of the view this one replaces, for the same node.
+    pub(crate) fn adopt_pending_voter_key_load(&mut self, token: Option<IdentityLoadToken>) {
+        self.pending_voter_key_load = token;
+    }
+
+    /// Release the gate once the merge's own task reports it finished. Only the
+    /// phase decides: the load is outstanding from the moment it is dispatched,
+    /// before its task claims the identity, so neither a result arriving nor the
+    /// store having changed is a sound proxy.
+    fn reconcile_voter_key_load(&mut self) {
+        let Some(token) = self.pending_voter_key_load else {
+            return;
+        };
+        let phase = self
+            .app_context
+            .identity_load_phase(&self.identity.identity.id(), token);
+        if !phase.is_some_and(IdentityLoadPhase::is_outstanding) {
+            self.pending_voter_key_load = None;
         }
     }
 
@@ -576,6 +616,17 @@ impl MasternodeDetailView {
             .color(DashColors::warning_color(dark_mode)),
         );
 
+        self.reconcile_voter_key_load();
+        if self.pending_voter_key_load.is_some() {
+            // Show the wait rather than re-offering Save: the key that went out
+            // with the first Save is still being applied.
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.add_enabled(false, egui::Button::new("Adding voting key…"));
+            });
+            return None;
+        }
+
         match self.voter_key_prompt.as_mut() {
             None => {
                 if ui.button("Add voting key").clicked() {
@@ -619,6 +670,11 @@ impl MasternodeDetailView {
     fn submit_voter_key(&mut self) -> Option<AppAction> {
         let voting_key = self.voter_key_prompt.as_mut()?.take_secret();
         self.voter_key_prompt = None;
+        // Mark the dispatch before the task runs: the merge is outstanding from
+        // here, and until its task claims the identity nothing else records that.
+        self.pending_voter_key_load = self
+            .app_context
+            .mark_identity_load_submitted(self.identity.identity.id());
         let input = IdentityInputToLoad {
             identity_id_input: self.node_id_hex_full.clone(),
             identity_type: self.identity.identity_type,
@@ -632,8 +688,9 @@ impl MasternodeDetailView {
             encryption_password: None,
             // The backend preserves existing keys and their protection tier.
             load_mode: IdentityLoadMode::MergeIntoExisting,
-            // The backend creates and owns this load's registry record.
-            load_token: None,
+            // Send the token with the load, so the task claims the record this
+            // view is waiting on — and so no other load can claim it.
+            load_token: self.pending_voter_key_load,
         };
         Some(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::LoadIdentity(input),
@@ -767,16 +824,19 @@ mod tests {
     use super::*;
     use crate::model::secret::Secret;
 
-    #[test]
-    fn voting_ui_scoped_key_update_merges_into_the_current_node() {
+    /// A masternode with no voting key loaded — the state that puts the
+    /// `Add voting key` section on screen. Alias is fixed so the merge input's
+    /// carried alias is assertable.
+    fn voteless_masternode(ctx: &Arc<AppContext>, byte: u8) -> QualifiedIdentity {
         use crate::model::qualified_identity::{IdentityStatus, encrypted_key_storage::KeyStorage};
         use dash_sdk::dpp::identity::Identity;
         use dash_sdk::dpp::version::PlatformVersion;
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = crate::context::test_support::test_app_context(dir.path());
-        let id = Identifier::from([0x47; 32]);
-        let identity = QualifiedIdentity {
-            identity: Identity::create_basic_identity(id, PlatformVersion::latest()).unwrap(),
+        QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::from([byte; 32]),
+                PlatformVersion::latest(),
+            )
+            .unwrap(),
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
@@ -790,8 +850,15 @@ mod tests {
             top_ups: BTreeMap::new(),
             status: IdentityStatus::PendingCreation,
             network: ctx.network(),
-        };
-        let mut detail = MasternodeDetailView::new(&ctx, identity);
+        }
+    }
+
+    #[test]
+    fn voting_ui_scoped_key_update_merges_into_the_current_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let id = Identifier::from([0x47; 32]);
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x47));
         detail.set_voter_key_prompt_for_test("test-only-input");
         let Some(AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
             input,
@@ -807,13 +874,29 @@ mod tests {
         assert!(input.payout_address_private_key_input.is_blank());
         assert!(input.encryption_password.is_none());
         assert!(!detail.has_voter_key_prompt_for_test());
+        assert_eq!(
+            input.load_token,
+            detail.pending_voter_key_load(),
+            "the merge must travel under the token this view gates on",
+        );
         assert!(
             detail.submit_voter_key().is_none(),
             "a repeated Save cannot dispatch another load"
         );
+    }
 
+    /// A second Save, while the first merge is still running, must be refused by
+    /// a disabled control rather than by discarding the key and reporting
+    /// `IdentityLoadInProgress`. Save clears the prompt as it dispatches, so an
+    /// offer to press it again is an offer to lose whatever was typed next.
+    #[test]
+    fn a_voting_key_merge_in_flight_gates_a_second_save() {
         use egui_kittest::kittest::Queryable;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x48));
+
         let dispatched = Arc::new(AtomicUsize::new(0));
         let observed = dispatched.clone();
         detail.set_voter_key_prompt_for_test("test-only-input");
@@ -830,8 +913,24 @@ mod tests {
         harness.run();
         let position = harness.get_by_label("Save").rect().center();
         harness.get_by_label("Save").click();
-        harness.run();
-        assert!(harness.query_by_label("Save").is_none());
+        // Stepped, not `run`: the gate's spinner repaints forever by design, so
+        // `run` would never see the UI settle. One step applies the click and
+        // dispatches, the next renders the gated section.
+        harness.step();
+        harness.step();
+
+        assert!(
+            harness.query_by_label("Save").is_none(),
+            "the dispatched merge must take Save off screen"
+        );
+        assert!(
+            harness.query_by_label("Add voting key").is_none(),
+            "re-offering the prompt invites a submit the backend would reject"
+        );
+        assert!(
+            harness.query_by_label("Adding voting key…").is_some(),
+            "the wait must be visible while the merge runs"
+        );
         for pressed in [true, false] {
             harness.event(egui::Event::PointerButton {
                 pos: position,
@@ -840,11 +939,53 @@ mod tests {
                 modifiers: egui::Modifiers::NONE,
             });
         }
-        harness.run();
+        harness.step();
         assert_eq!(
             dispatched.load(Ordering::Relaxed),
             1,
             "repeated clicks at Save must dispatch only one load"
+        );
+    }
+
+    /// The gate is held by the merge's reported phase, and released by it —
+    /// never by a guess. A failed merge returns the node to an offer the user
+    /// can act on, rather than stranding it behind a spinner for the session.
+    #[test]
+    fn a_finished_voting_key_merge_releases_the_gate() {
+        use egui_kittest::kittest::Queryable;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(dir.path());
+        let node_id = Identifier::from([0x49; 32]);
+        let mut detail = MasternodeDetailView::new(&ctx, voteless_masternode(&ctx, 0x49));
+        detail.set_voter_key_prompt_for_test("test-only-input");
+        detail.submit_voter_key().expect("the merge dispatches");
+
+        let token = detail
+            .pending_voter_key_load()
+            .expect("the merge is gated while outstanding");
+        let guard = ctx
+            .begin_identity_load(node_id, Some(token))
+            .expect("the task claims the load it was dispatched under");
+        detail.reconcile_voter_key_load();
+        assert!(
+            detail.pending_voter_key_load().is_some(),
+            "a claimed, still-running merge keeps the gate"
+        );
+
+        // Dropping the guard without `loaded()` is how a failed load reports.
+        drop(guard);
+        detail.reconcile_voter_key_load();
+        assert!(
+            detail.pending_voter_key_load().is_none(),
+            "a finished merge must release the gate"
+        );
+
+        let mut harness = egui_kittest::Harness::builder()
+            .build_ui(move |ui| _ = detail.render_missing_voter(ui, false));
+        harness.run();
+        assert!(
+            harness.query_by_label("Add voting key").is_some(),
+            "a released gate must let the user try again"
         );
     }
 

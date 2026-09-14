@@ -490,6 +490,7 @@ mod tests {
 /// written by `bincode 2.0.1` before the switch and must never be regenerated.
 #[cfg(test)]
 mod bincode_pre_bump_fixture_tests {
+    // Guards the derive shape only: contests persist via serde `StoredContestedName`, not this codec.
     use super::*;
 
     const FIXTURE: &[u8] = include_bytes!(concat!(

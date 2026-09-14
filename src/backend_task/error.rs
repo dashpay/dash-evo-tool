@@ -2475,6 +2475,11 @@ pub enum TaskError {
     /// be identified or reconstructed safely. The upstream `reason` stays in
     /// the source chain (details/logs) and never reaches the message.
     ///
+    /// The advised recourse is real: removing the wallet runs upstream
+    /// `remove_wallet` → `unregister_wallet` → `purge_wallet`, which deletes
+    /// the wallet's `shielded_pending_spends` rows (damaged guards included);
+    /// re-importing then re-binds and re-syncs from chain.
+    ///
     /// Populated by `map_shielded_op_error` from
     /// `PlatformWalletError::ShieldedRecoveryCorrupted`.
     #[error("{message}", message = shielded_recovery_corrupted_message(*.account_index))]
@@ -2908,9 +2913,9 @@ pub(crate) fn vault_error(
 fn shielded_recovery_corrupted_message(account_index: Option<u32>) -> String {
     match account_index {
         Some(account_index) => format!(
-            "Saved recovery data for shielded account #{account_index} is damaged, so a pending payment cannot be checked safely. Restore your wallet data from a recent backup, then try again."
+            "Saved recovery data for shielded account #{account_index} is damaged, so a pending payment cannot be checked safely. Make sure you have this wallet's recovery phrase, remove the wallet, then import it again with that phrase."
         ),
-        None => "Saved recovery data for your shielded funds is damaged, so a pending payment cannot be checked safely. Restore your wallet data from a recent backup, then try again.".to_string(),
+        None => "Saved recovery data for your shielded funds is damaged, so a pending payment cannot be checked safely. Make sure you have this wallet's recovery phrase, remove the wallet, then import it again with that phrase.".to_string(),
     }
 }
 
@@ -4743,6 +4748,17 @@ mod tests {
 
         for msg in [&with_account, &without_account, &keys, &pending] {
             assert!(!msg.contains(REASON), "upstream reason leaked: {msg}");
+        }
+        // Each action names a flow DET actually has (Remove + import with the
+        // recovery phrase; unlock/restore; wait) — never an absent backup flow.
+        for msg in [&with_account, &without_account] {
+            assert!(
+                msg.contains("recovery phrase") && msg.contains("import it again"),
+                "no remove-and-import action in: {msg}"
+            );
+            assert!(!msg.contains("backup"), "no backup flow exists: {msg}");
+        }
+        for msg in [&keys, &pending] {
             assert!(msg.contains("then try again"), "no action in: {msg}");
         }
     }

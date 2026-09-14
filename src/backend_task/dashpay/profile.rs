@@ -119,8 +119,7 @@ async fn mirror_profile_to_backend(
         return;
     };
 
-    let now_ms = chrono::Utc::now().timestamp_millis().max(0);
-
+    let has_profile = fields.is_some();
     let profile = fields.map(|f| DashPayProfile {
         display_name: f.display_name,
         public_message: f.bio.clone(),
@@ -139,11 +138,12 @@ async fn mirror_profile_to_backend(
         return;
     }
 
-    if let Err(e) = backend.dashpay_set_profile_timestamps(owner, now_ms, now_ms) {
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0);
+    if has_profile && let Err(e) = backend.dashpay_initialize_profile_timestamps(owner, now_ms) {
         tracing::debug!(
             owner = %owner.to_string(Encoding::Base58),
             error = ?e,
-            "Fetched profile timestamps are pending persistence; the next profile read will retry"
+            "Fetched profile timestamps could not be initialized; refresh the profile to retry"
         );
     }
 }
@@ -165,6 +165,14 @@ pub async fn update_profile(
         );
     }
     let backend = app_context.wallet_backend()?;
+    if let (Some(url), Some(bytes)) = (&input.avatar_url, &input.avatar_bytes)
+        && let Err(error) = backend.avatar_cache().put(url, bytes.clone())
+    {
+        tracing::debug!(
+            ?error,
+            "Failed to cache the avatar fetched for a profile update"
+        );
+    }
     let identity_id = identity.identity.id();
     let mut query =
         DocumentQuery::new(app_context.dashpay_contract.clone(), "profile").map_err(|e| {

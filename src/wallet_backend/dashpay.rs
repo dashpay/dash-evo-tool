@@ -256,6 +256,25 @@ pub(super) struct ProfileTimestamps {
 }
 
 impl ProfileTimestamps {
+    fn initialize(&self, kv: &DetKv, owner: &Identifier, now: i64) -> Result<(), TaskError> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        if pending.contains_key(owner) {
+            return Ok(());
+        }
+        let key = sidecar_key(KV_PREFIX_TIMESTAMPS, owner);
+        let stored = kv
+            .get::<(i64, i64)>(DetScope::Global, &key)
+            .map_err(|source| TaskError::DashpaySidecarStorage { source })?;
+        if stored.is_some_and(|value| value != (0, 0)) {
+            return Ok(());
+        }
+        kv.put(DetScope::Global, &key, &(now, now))
+            .map_err(|source| {
+                pending.insert(*owner, (now, now));
+                TaskError::DashpaySidecarStorage { source }
+            })
+    }
+
     fn set(&self, kv: &DetKv, owner: &Identifier, value: (i64, i64)) -> Result<(), TaskError> {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.insert(*owner, value);
@@ -955,6 +974,17 @@ impl WalletBackend {
     /// DashPay accessor; profile reads also retry pending local timestamp writes.
     pub fn dashpay_view(&self) -> DashpayView<'_> {
         DashpayView::new(self)
+    }
+
+    /// Initialize fetched-profile times without replacing saved or pending values.
+    pub(crate) fn dashpay_initialize_profile_timestamps(
+        &self,
+        owner: &Identifier,
+        now: i64,
+    ) -> Result<(), TaskError> {
+        self.inner
+            .profile_timestamps
+            .initialize(&self.kv(), owner, now)
     }
 
     /// Persist profile display times, retaining failed writes for repair on profile reads.
@@ -2069,6 +2099,79 @@ mod tests {
         // Once repaired, reads must not issue further writes.
         assert_eq!(timestamps.get(&kv, &owner), (111, 222));
         assert_eq!(store.put_count(), 3);
+    }
+
+    #[test]
+    fn profile_refresh_preserves_existing_timestamps() {
+        let kv = empty_kv();
+        let timestamps = ProfileTimestamps::default();
+        let owner = id_from_byte(1);
+        for value in [(111, 222), (111, 0), (0, 222)] {
+            timestamps.set(&kv, &owner, value).unwrap();
+            timestamps.initialize(&kv, &owner, 999).unwrap();
+            assert_eq!(timestamps.get(&kv, &owner), value);
+        }
+    }
+
+    #[test]
+    fn profile_refresh_preserves_pending_timestamp_repair() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let timestamps = ProfileTimestamps::default();
+        let owner = id_from_byte(1);
+        timestamps.set(&kv, &owner, (111, 222)).unwrap();
+        store.fail_next_puts(1);
+        assert!(timestamps.set(&kv, &owner, (111, 333)).is_err());
+        timestamps.initialize(&kv, &owner, 999).unwrap();
+        assert_eq!(timestamps.get(&kv, &owner), (111, 333));
+        assert_eq!(kv_timestamps(&kv, &owner), (111, 333));
+    }
+
+    #[test]
+    fn profile_refresh_initializes_missing_timestamps_once() {
+        let kv = empty_kv();
+        let timestamps = ProfileTimestamps::default();
+        for owner in [id_from_byte(1), id_from_byte(2)] {
+            if owner == id_from_byte(2) {
+                timestamps.set(&kv, &owner, (0, 0)).unwrap();
+            }
+            timestamps.initialize(&kv, &owner, 111).unwrap();
+            timestamps.initialize(&kv, &owner, 222).unwrap();
+            assert_eq!(timestamps.get(&kv, &owner), (111, 111));
+        }
+    }
+
+    #[test]
+    fn profile_refresh_does_not_overwrite_unreadable_timestamps() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let timestamps = ProfileTimestamps::default();
+        let owner = id_from_byte(1);
+        timestamps.set(&kv, &owner, (111, 222)).unwrap();
+        store.fail_reads(true);
+        assert!(timestamps.initialize(&kv, &owner, 999).is_err());
+        store.fail_reads(false);
+        assert_eq!(timestamps.get(&kv, &owner), (111, 222));
+        assert_eq!(store.put_count(), 1);
+    }
+
+    #[test]
+    fn profile_refresh_retries_failed_initialization_without_changing_dates() {
+        use crate::wallet_backend::kv_test_support::FailingKv;
+
+        let store = Arc::new(FailingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let timestamps = ProfileTimestamps::default();
+        let owner = id_from_byte(1);
+        store.fail_next_puts(1);
+        assert!(timestamps.initialize(&kv, &owner, 111).is_err());
+        timestamps.initialize(&kv, &owner, 222).unwrap();
+        assert_eq!(timestamps.get(&kv, &owner), (111, 111));
+        assert_eq!(kv_timestamps(&kv, &owner), (111, 111));
     }
 
     #[test]

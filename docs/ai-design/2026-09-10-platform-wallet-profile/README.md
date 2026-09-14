@@ -17,6 +17,9 @@ repair queue. Profile reads retry only the local write and return the pending
 values even if storage still fails. A newer save replaces the pending values;
 a successful repair removes them. Pending repairs do not survive an application
 restart, and do not resubmit a paid profile transition.
+Fetched profiles initialize missing timestamps under the same lock as profile
+saves, preserving stored dates and pending repairs. Failed timestamp reads do
+not permit initialization. Downloaded avatar bytes also populate the view cache.
 
 ## Scope and limitations
 

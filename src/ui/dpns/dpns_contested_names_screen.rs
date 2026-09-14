@@ -4150,7 +4150,7 @@ mod tests {
             Arc::new(kv.clone()),
         );
         context.set_det_kv_override_for_test(kv);
-        store.fail_reads(true);
+        store.fail_all_reads(true);
         assert!(loaded_voting_identities(&context).is_err());
         for reviewing in [false, true] {
             let mut screen = DPNSScreen::new(&context, DPNSSubscreen::Active);

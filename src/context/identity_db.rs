@@ -5164,7 +5164,7 @@ mod tests {
         )
         .expect("stage the manifest the delete is meant to clear");
 
-        failing.fail_deletes(true);
+        failing.fail_all_deletes(true);
         view.delete_all([(MAIN, 1)]).expect("delete keys");
         clear_vault_cleanup_manifest(&kv, &id_buf);
 
@@ -5172,7 +5172,7 @@ mod tests {
             view.get(&MAIN, 1).unwrap().is_none(),
             "the vault delete must have landed before the manifest clear was even attempted"
         );
-        failing.fail_deletes(false);
+        failing.fail_all_deletes(false);
         assert!(
             kv.get::<Vec<(StoredPrivateKeyTarget, KeyID)>>(DetScope::Global, &manifest_key)
                 .expect("read the manifest slot")

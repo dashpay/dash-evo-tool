@@ -193,6 +193,18 @@ pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Op
     })
 }
 
+/// How complete the node's proved current-vote state is across its contests.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MasternodeVoteStateSummary {
+    /// Every active contest has a proved current-vote state.
+    #[default]
+    Ready,
+    /// At least one contest is still being proved, and none has given up.
+    Checking,
+    /// At least one contest's proved state could not be obtained.
+    Unavailable,
+}
+
 /// Per-node DPNS voting summary shown on the Masternodes card grid.
 ///
 /// Composed by a display-layer read of existing contest + scheduled-vote state
@@ -200,20 +212,13 @@ pub fn approximate_time_until(decided_at_ms: TimestampMillis, now_ms: u64) -> Op
 /// take precedence, then failed or pending scheduled votes, then no open
 /// contests (requirements §10.1).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum MasternodeVoteStateSummary {
-    #[default]
-    Ready,
-    Checking,
-    Unavailable,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct MasternodeContestSummary {
     /// Number of active contests, including contests with an existing vote.
     pub open_contest_count: usize,
     /// Number of active contests whose proved state is `Not voted`.
     pub needs_vote_count: usize,
-    /// Whether every active contest has a proved current-vote state.
+    /// Whether the node's proved current-vote state is complete, still being
+    /// checked, or unavailable.
     pub vote_state: MasternodeVoteStateSummary,
     /// Whether the node has at least one pending (not-yet-executed) scheduled
     /// vote in the authoritative operation journal.

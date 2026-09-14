@@ -6,11 +6,22 @@ use dash_evo_tool::backend_task::identity::{IdentityKeyEntry, IdentityKeySpecs, 
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
 #[ignore = "requires a funded E2E_WALLET_MNEMONIC and live testnet"]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn profile_create_and_replace_with_high_derived_key() {
+    profile_create_and_replace(KeyType::ECDSA_SECP256K1).await;
+}
+
+#[ignore = "requires Platform #4653, a funded E2E_WALLET_MNEMONIC, and live testnet"]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn profile_create_and_replace_with_high_hash160_derived_key() {
+    profile_create_and_replace(KeyType::ECDSA_HASH160).await;
+}
+
+async fn profile_create_and_replace(key_type: KeyType) {
     let ctx = harness::ctx().await;
     let (seed_hash, wallet) = ctx.create_funded_test_wallet(30_000_000).await;
     let mut registration =
@@ -34,7 +45,7 @@ async fn profile_create_and_replace_with_high_derived_key() {
             network,
             0,
             index,
-            KeyType::ECDSA_SECP256K1,
+            key_type,
             Purpose::AUTHENTICATION,
             security_level,
             None,
@@ -55,6 +66,16 @@ async fn profile_create_and_replace_with_high_derived_key() {
         panic!("expected a registered identity, got {result:?}");
     };
     let owner = identity.identity.id();
+    let signing_key = identity
+        .identity
+        .get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            [SecurityLevel::HIGH].into(),
+            [key_type].into(),
+            false,
+        )
+        .expect("registered identity must retain its requested signing-key type");
+    assert_eq!(signing_key.data().len(), key_type.default_size());
 
     for (name, bio) in [
         ("Profile creation", "First bio"),

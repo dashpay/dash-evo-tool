@@ -896,7 +896,7 @@ fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
 // WalletBackend integration
 // ---------------------------------------------------------------------------
 
-/// Match the pinned upstream profile API's signing-key policy before its network work.
+/// Require an active HIGH or CRITICAL ECDSA authentication key for profile writes.
 fn ensure_profile_signing_key(identity: &dash_sdk::platform::Identity) -> Result<(), TaskError> {
     use crate::backend_task::dashpay::errors::DashPayError;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -906,7 +906,7 @@ fn ensure_profile_signing_key(identity: &dash_sdk::platform::Identity) -> Result
         .get_first_public_key_matching(
             Purpose::AUTHENTICATION,
             [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
-            [KeyType::ECDSA_SECP256K1].into(),
+            [KeyType::ECDSA_SECP256K1, KeyType::ECDSA_HASH160].into(),
             false,
         )
         .ok_or(DashPayError::ProfileSigningKeyUnsupported)?;
@@ -1975,7 +1975,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_signing_key_policy_matches_upstream() {
+    fn profile_signing_key_policy_accepts_supported_authentication_keys() {
         use crate::backend_task::dashpay::errors::DashPayError;
         use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
         use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -2011,13 +2011,48 @@ mod tests {
                 Purpose::AUTHENTICATION,
                 SecurityLevel::HIGH,
                 false,
-                false,
+                true,
             ),
             (
                 KeyType::ECDSA_HASH160,
                 Purpose::AUTHENTICATION,
                 SecurityLevel::CRITICAL,
                 false,
+                true,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::MASTER,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::MEDIUM,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::TRANSFER,
+                SecurityLevel::CRITICAL,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::ENCRYPTION,
+                SecurityLevel::MEDIUM,
+                false,
+                false,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                true,
                 false,
             ),
             (

@@ -1448,11 +1448,18 @@ pub enum TaskError {
         source: crate::model::validation::TextLengthError,
     },
 
-    /// A wallet alias exceeded the shared character limit.
+    /// A wallet alias exceeded the shared character limit after cleaning.
     #[error("The wallet name is too long. Use 64 characters or fewer and try again.")]
     InvalidWalletAliasLength {
         #[source]
-        source: crate::model::validation::TextLengthError,
+        source: crate::model::wallet::alias::AliasError,
+    },
+
+    /// Another wallet of the same kind already uses the requested alias.
+    #[error("Another wallet already uses this name. Choose a different name and try again.")]
+    WalletAliasAlreadyUsed {
+        #[source]
+        source: crate::model::wallet::alias::AliasError,
     },
 
     /// A document's unique values conflict with an existing entry.
@@ -3068,6 +3075,16 @@ impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
             PassphraseError::TooShort { min } => TaskError::SingleKeyPassphraseTooShort { min },
             PassphraseError::TooLong { max } => TaskError::SingleKeyPassphraseTooLong { max },
             PassphraseError::Mismatch => TaskError::SingleKeyPassphraseMismatch,
+        }
+    }
+}
+
+impl From<crate::model::wallet::alias::AliasError> for TaskError {
+    fn from(source: crate::model::wallet::alias::AliasError) -> Self {
+        use crate::model::wallet::alias::AliasError;
+        match source {
+            AliasError::TooLong { .. } => TaskError::InvalidWalletAliasLength { source },
+            AliasError::AlreadyUsed => TaskError::WalletAliasAlreadyUsed { source },
         }
     }
 }

@@ -408,7 +408,11 @@ fn single_key_rename_dispatches_exact_task_and_applies_success() {
     with_isolated_data_dir(|| {
         let (runtime, app_context) = fresh_app_context();
         let (_imported, wallet) = app_context
-            .import_single_key_wif(&random_wif(app_context.network()), None, Default::default())
+            .import_single_key_wif(
+                &random_wif(app_context.network()),
+                dash_evo_tool::model::wallet::alias::AliasSource::Preserved(None),
+                Default::default(),
+            )
             .expect("import key");
         let (key_hash, address) = {
             let wallet = wallet.read().expect("wallet");
@@ -539,14 +543,18 @@ fn single_key_rename_success_updates_original_wallet_after_selection_change() {
         let (_target_imported, target) = app_context
             .import_single_key_wif(
                 &random_wif(app_context.network()),
-                Some("Target key".into()),
+                dash_evo_tool::model::wallet::alias::AliasSource::Preserved(Some(
+                    "Target key".into(),
+                )),
                 Default::default(),
             )
             .expect("target key");
         let (_other_imported, other) = app_context
             .import_single_key_wif(
                 &random_wif(app_context.network()),
-                Some("Other key".into()),
+                dash_evo_tool::model::wallet::alias::AliasSource::Preserved(Some(
+                    "Other key".into(),
+                )),
                 Default::default(),
             )
             .expect("other key");
@@ -944,5 +952,186 @@ fn test_rapid_frame_stepping() {
         for _ in 0..20 {
             harness.run_steps(1);
         }
+    });
+}
+
+/// Delete the `current` text from the rename field: focus it, move the cursor
+/// to the end, and press Backspace once per character.
+#[cfg(feature = "testing")]
+fn clear_rename_alias(harness: &mut Harness<'_, WalletsBalancesScreen>, current: &str) {
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .expect("rename input")
+        .focus();
+    harness.step();
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    };
+    let events = std::iter::once(key(egui::Key::End))
+        .chain(current.chars().map(|_| key(egui::Key::Backspace)))
+        .collect::<Vec<_>>();
+    harness.input_mut().events.extend(events);
+    harness.step();
+}
+
+/// Clearing a name through the rename dialog is supported: the blank name is
+/// dispatched as-is (never rejected by the UI) and the backend's default name
+/// is applied when the rename completes.
+#[test]
+#[cfg(feature = "testing")]
+fn hd_rename_to_blank_dispatches_and_applies_default_name() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let mut seed: [u8; 64] = rand::random();
+        let wallet = Wallet::new_from_seed(
+            seed,
+            app_context.network(),
+            Some("Old name".to_string()),
+            None,
+        )
+        .expect("wallet");
+        seed.zeroize();
+        let seed_hash = wallet.seed_hash();
+        let wallet = Arc::new(RwLock::new(wallet));
+        app_context
+            .wallets()
+            .write()
+            .expect("wallet map")
+            .insert(seed_hash, wallet.clone());
+        app_context.set_selected_hd_wallet(Some(seed_hash));
+
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        click_in_one_frame(&mut harness, "Rename");
+        assert!(
+            harness.query_all_by_value("Old name").next().is_some(),
+            "the dialog must be prefilled with the current name"
+        );
+        clear_rename_alias(&mut harness, "Old name");
+        assert!(
+            harness.query_by_label("0 of 64 characters used.").is_some(),
+            "the counter must reflect the cleared name"
+        );
+        harness.get_by_label("Save").click();
+        harness.run();
+
+        let dispatch = take_rename_dispatch(&dispatched);
+        assert_eq!(
+            dispatch.task,
+            WalletTask::RenameHdWallet {
+                seed_hash,
+                alias: String::new(),
+            }
+        );
+
+        harness.state_mut().display_backend_task_result(
+            &dispatch.context,
+            BackendTaskSuccessResult::WalletAliasRenamed {
+                seed_hash,
+                alias: "Wallet 1".into(),
+            },
+        );
+        harness.run();
+
+        assert_eq!(
+            wallet.read().expect("wallet").alias.as_deref(),
+            Some("Wallet 1")
+        );
+        assert!(
+            harness.query_by_label("Enter new wallet name:").is_none(),
+            "a completed blank rename must close the dialog"
+        );
+    });
+}
+
+#[test]
+#[cfg(feature = "testing")]
+fn single_key_rename_to_blank_dispatches_and_applies_default_name() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let (_imported, wallet) = app_context
+            .import_single_key_wif(
+                &random_wif(app_context.network()),
+                dash_evo_tool::model::wallet::alias::AliasSource::UserEntered(
+                    "Old key".to_string(),
+                ),
+                Default::default(),
+            )
+            .expect("import key");
+        let (key_hash, address) = {
+            let wallet = wallet.read().expect("wallet");
+            (wallet.key_hash, wallet.address.to_string())
+        };
+        app_context.set_selected_single_key_wallet(Some(key_hash));
+
+        let (mut harness, dispatched) = build_rename_harness(runtime, app_context);
+        click_in_one_frame(&mut harness, "Rename");
+        assert!(
+            harness.query_all_by_value("Old key").next().is_some(),
+            "the dialog must be prefilled with the current name"
+        );
+        clear_rename_alias(&mut harness, "Old key");
+        harness.get_by_label("Save").click();
+        harness.run();
+
+        let dispatch = take_rename_dispatch(&dispatched);
+        assert_eq!(
+            dispatch.task,
+            WalletTask::RenameSingleKeyWallet {
+                address: address.clone(),
+                alias: String::new(),
+            }
+        );
+
+        harness.state_mut().display_backend_task_result(
+            &dispatch.context,
+            BackendTaskSuccessResult::SingleKeyAliasRenamed {
+                address,
+                alias: "Key 1".into(),
+            },
+        );
+        harness.run();
+
+        assert_eq!(
+            wallet.read().expect("wallet").alias.as_deref(),
+            Some("Key 1")
+        );
+        assert!(
+            harness.query_by_label("Enter new wallet name:").is_none(),
+            "a completed blank rename must close the dialog"
+        );
+    });
+}
+
+/// The rename counter counts what will be saved: surrounding whitespace and
+/// invisible characters are not counted.
+#[test]
+#[cfg(feature = "testing")]
+fn rename_dialog_counter_counts_cleaned_characters() {
+    with_isolated_data_dir(|| {
+        let (runtime, app_context) = fresh_app_context();
+        let mut seed: [u8; 64] = rand::random();
+        let wallet =
+            Wallet::new_from_seed(seed, app_context.network(), None, None).expect("wallet");
+        seed.zeroize();
+        let seed_hash = wallet.seed_hash();
+        app_context
+            .wallets()
+            .write()
+            .expect("wallet map")
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        app_context.set_selected_hd_wallet(Some(seed_hash));
+
+        let (mut harness, _dispatched) = build_rename_harness(runtime, app_context);
+        enter_rename_alias(&mut harness, "  abc\u{200B}  ");
+
+        assert!(
+            harness.query_by_label("3 of 64 characters used.").is_some(),
+            "the counter must count the cleaned name"
+        );
     });
 }

@@ -2000,7 +2000,13 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
     let view = backend.single_key();
     let outcome = migrate_single_key_rows_from_conn(
         &conn,
-        |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+        |wif, alias| {
+            view.import_wif(
+                wif,
+                crate::model::wallet::alias::AliasSource::Preserved(alias),
+            )
+            .map(|_| ())
+        },
         app_context.network,
     )?;
     tracing::info!(
@@ -4082,7 +4088,13 @@ mod tests {
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("migrate");
@@ -4155,13 +4167,25 @@ mod tests {
 
         let first = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("first pass");
         let second = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("second pass");
@@ -4246,7 +4270,13 @@ mod tests {
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("partial failure must not abort the loop");

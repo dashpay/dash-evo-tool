@@ -140,8 +140,13 @@ fn seed_single_key_wallets(view: &SingleKeyView<'_>, count: usize) {
         let priv_key =
             PrivateKey::from_byte_array(&bytes, BENCH_NETWORK).expect("valid secp256k1 secret");
         let wif = priv_key.to_wif();
-        view.import_wif(&wif, Some(format!("bench-sk-{i}")))
-            .expect("import wif");
+        view.import_wif(
+            &wif,
+            dash_evo_tool::model::wallet::alias::AliasSource::Preserved(Some(format!(
+                "bench-sk-{i}"
+            ))),
+        )
+        .expect("import wif");
     }
 }
 

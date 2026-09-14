@@ -15,16 +15,25 @@ impl AppContext {
     /// row seeds a fresh entry, carrying the wallet's xpub so the cold-boot
     /// picker can still render the wallet without unlocking the seed.
     ///
+    /// `alias` is the raw user input. It is resolved through
+    /// [`AppContext::resolve_hd_wallet_alias`]: a blank alias resets the wallet
+    /// to the smallest unused "Wallet N", and a name another HD wallet already
+    /// uses is rejected. The returned result carries the alias actually saved.
+    ///
     /// # Errors
     ///
     /// - [`TaskError::WalletNotFound`] when `seed_hash` matches no loaded wallet.
     /// - [`TaskError::KvSidecarStorage`] when the sidecar cannot be read or written.
-    /// - [`TaskError::InvalidWalletAliasLength`] when `alias` exceeds the limit.
+    /// - [`TaskError::InvalidWalletAliasLength`] when the cleaned alias exceeds the limit.
+    /// - [`TaskError::WalletAliasAlreadyUsed`] when another HD wallet uses the alias.
     pub(crate) fn rename_hd_wallet(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
         alias: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // Lock order: alias writers → per-wallet rename lock → `wallets` map →
+        // inner wallet (see `AppContext::lock_hd_wallet_aliases`).
+        let _alias_guard = self.lock_hd_wallet_aliases();
         let rename_lock = self.hd_wallet_rename_lock(seed_hash);
         let _rename_guard = rename_lock
             .lock()
@@ -34,6 +43,7 @@ impl AppContext {
         // relative to wallet removal. The inner wallet guard is disk-I/O-free.
         let wallets = self.wallets.read()?;
         let wallet = wallets.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
+        let alias = Self::resolve_hd_wallet_alias(&wallets, &alias, &seed_hash)?;
         let xpub_encoded = wallet
             .read()?
             .master_bip44_ecdsa_extended_public_key
@@ -53,6 +63,10 @@ impl AppContext {
             meta.xpub_encoded = xpub_encoded;
         }
         meta_view.set(self.network, &seed_hash, &meta)?;
+        // Mirror the saved name in memory while the alias lock is still held,
+        // so the next alias writer checks uniqueness against it rather than a
+        // stale name. The screen's result handler applies the same value.
+        wallet.write()?.alias = Some(alias.clone());
 
         Ok(BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias })
     }
@@ -60,22 +74,23 @@ impl AppContext {
     /// Persist a new alias for an imported single-key wallet to the single-key
     /// sidecar, delegating to the typed
     /// [`SingleKeyView::set_alias`](crate::wallet_backend::single_key::SingleKeyView::set_alias)
-    /// chokepoint (which validates the alias and refreshes the in-memory index).
+    /// chokepoint (which resolves the alias and refreshes the in-memory index).
+    /// A blank alias resets the key to the smallest unused "Key N"; the result
+    /// carries the alias actually saved.
     ///
     /// # Errors
     ///
     /// - [`TaskError::ImportedKeyNotFound`] when `address` was never imported.
     /// - [`TaskError::SingleKeyMetaStorage`] when the sidecar cannot be written.
-    /// - [`TaskError::InvalidWalletAliasLength`] when `alias` exceeds the limit.
+    /// - [`TaskError::InvalidWalletAliasLength`] when the cleaned alias exceeds the limit.
+    /// - [`TaskError::WalletAliasAlreadyUsed`] when another imported key uses the alias.
     pub(crate) fn rename_single_key_wallet(
         self: &Arc<Self>,
         address: String,
         alias: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let backend = self.wallet_backend()?;
-        backend
-            .single_key()
-            .set_alias(&address, Some(alias.clone()))?;
+        let alias = backend.single_key().set_alias(&address, &alias)?;
         Ok(BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias })
     }
 }
@@ -389,6 +404,119 @@ mod tests {
         assert!(matches!(err, TaskError::WalletNotFound), "got {err:?}");
     }
 
+    /// Register a second HD wallet named `alias` in the fixture context.
+    fn register_other_wallet(f: &Fixture, alias: &str) -> WalletSeedHash {
+        let seed = [0x6Bu8; 64];
+        let wallet = Wallet::new_from_seed(seed, Network::Testnet, Some(alias.into()), None)
+            .expect("build other wallet");
+        f.ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register other wallet")
+            .0
+    }
+
+    fn in_memory_alias(f: &Fixture) -> Option<String> {
+        f.ctx
+            .wallet_arc(&f.seed_hash)
+            .expect("wallet")
+            .read()
+            .expect("read")
+            .alias
+            .clone()
+    }
+
+    fn persisted_alias(f: &Fixture) -> String {
+        f.ctx
+            .wallet_backend()
+            .expect("backend")
+            .wallet_meta()
+            .get(f.ctx.network, &f.seed_hash)
+            .expect("meta present")
+            .alias
+    }
+
+    /// Renaming to a blank name is supported: it resets the wallet to the
+    /// smallest unused default name, in memory and on disk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_blank_alias_resets_to_default_name() {
+        let f = fixture().await;
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Custom".into())
+            .expect("rename to a custom name");
+        register_other_wallet(&f, "Wallet 1");
+
+        let result = f
+            .ctx
+            .rename_hd_wallet(f.seed_hash, " \u{200B} ".into())
+            .expect("a blank rename resets to the default name");
+
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::WalletAliasRenamed { alias, .. } if alias == "Wallet 2"
+            ),
+            "got {result:?}"
+        );
+        assert_eq!(persisted_alias(&f), "Wallet 2");
+        assert_eq!(in_memory_alias(&f).as_deref(), Some("Wallet 2"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_cleans_alias_and_updates_memory() {
+        let f = fixture().await;
+
+        let result = f
+            .ctx
+            .rename_hd_wallet(f.seed_hash, "  \u{202E}Spending ".into())
+            .expect("rename");
+
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::WalletAliasRenamed { alias, .. } if alias == "Spending"
+            ),
+            "got {result:?}"
+        );
+        assert_eq!(persisted_alias(&f), "Spending");
+        assert_eq!(in_memory_alias(&f).as_deref(), Some("Spending"));
+    }
+
+    /// A wallet never collides with itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_to_its_own_alias_succeeds() {
+        let f = fixture().await;
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Savings".into())
+            .expect("first rename");
+
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Savings".into())
+            .expect("renaming to the current name succeeds");
+
+        assert_eq!(persisted_alias(&f), "Savings");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_to_another_wallets_alias_is_rejected_without_writing() {
+        let f = fixture().await;
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Spending".into())
+            .expect("first rename");
+        register_other_wallet(&f, "Savings");
+
+        let err = f
+            .ctx
+            .rename_hd_wallet(f.seed_hash, "Savings".into())
+            .expect_err("the name belongs to another wallet");
+
+        assert!(
+            matches!(err, TaskError::WalletAliasAlreadyUsed { .. }),
+            "got {err:?}"
+        );
+        assert_eq!(persisted_alias(&f), "Spending");
+        assert_eq!(in_memory_alias(&f).as_deref(), Some("Spending"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn overlapping_hd_renames_serialize_so_later_invocation_wins() {
         let store = Arc::new(FirstWalletMetaReadGate::default());
@@ -499,7 +627,10 @@ mod tests {
         let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
         let imported = backend
             .single_key()
-            .import_wif(&wif, Some("old name".into()))
+            .import_wif(
+                &wif,
+                crate::model::wallet::alias::AliasSource::UserEntered("old name".into()),
+            )
             .expect("import");
         let address = imported.address.clone();
 
@@ -534,5 +665,42 @@ mod tests {
             .rename_single_key_wallet("yNeverImported".into(), "x".into())
             .expect_err("an unknown address must fail");
         assert!(matches!(err, TaskError::ImportedKeyNotFound), "got {err:?}");
+    }
+
+    /// Renaming a key to a blank name resets it to the smallest unused
+    /// "Key N" and the result carries that name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_single_key_blank_alias_resets_to_default_name() {
+        let f = fixture().await;
+        let backend = f.ctx.wallet_backend().expect("backend");
+        let sk = SecretKey::from_byte_array(&[0x22u8; 32]).expect("valid scalar");
+        let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
+        let address = backend
+            .single_key()
+            .import_wif(
+                &wif,
+                crate::model::wallet::alias::AliasSource::UserEntered("Custom".into()),
+            )
+            .expect("import")
+            .address;
+
+        let result = f
+            .ctx
+            .rename_single_key_wallet(address.clone(), String::new())
+            .expect("a blank rename resets to the default name");
+
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::SingleKeyAliasRenamed { alias, .. } if alias == "Key 1"
+            ),
+            "got {result:?}"
+        );
+        let listed = backend.single_key().list();
+        let entry = listed
+            .iter()
+            .find(|e| e.address == address)
+            .expect("imported key present");
+        assert_eq!(entry.alias.as_deref(), Some("Key 1"));
     }
 }

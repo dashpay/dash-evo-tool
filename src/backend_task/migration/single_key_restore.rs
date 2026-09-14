@@ -216,7 +216,11 @@ pub fn restore_protected_single_key(
     // S4 — `import_wif_with_passphrase` re-encrypts under a FRESH random
     // nonce + salt (via `encrypt_message`). Re-import the recovered key,
     // preserving the legacy alias unless the row carried none.
-    let imported = app_context.import_single_key_wif(&wif, blob.alias.clone(), new_passphrase)?;
+    let imported = app_context.import_single_key_wif(
+        &wif,
+        crate::model::wallet::alias::AliasSource::Preserved(blob.alias.clone()),
+        new_passphrase,
+    )?;
     debug_assert_eq!(imported.0.address, blob.address);
 
     tracing::info!(
@@ -539,7 +543,7 @@ mod tests {
         let imported = view
             .import_wif_with_passphrase(
                 &wif,
-                blob.alias.clone(),
+                crate::model::wallet::alias::AliasSource::Preserved(blob.alias.clone()),
                 ImportPassphrase {
                     passphrase: Some(Zeroizing::new("new-strong-passphrase".into())),
                     hint: None,

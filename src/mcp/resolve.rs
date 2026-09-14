@@ -6,6 +6,7 @@ use crate::mcp::server::network_display_name;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::alias::clean_alias;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use std::sync::{Arc, RwLock};
@@ -67,6 +68,12 @@ pub(crate) fn require_network(
 }
 
 /// Resolve a wallet identifier (alias or 64-char hex seed hash) to a `WalletSeedHash`.
+///
+/// Aliases are compared after [`clean_alias`], so invisible or bidirectional
+/// characters cannot make visually identical names resolve differently. An
+/// alias shared by more than one loaded wallet — possible for wallets named
+/// before aliases had to be unique — is rejected instead of resolving to
+/// whichever wallet iterates first: fund-moving tools must never guess.
 pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash, McpToolError> {
     let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
 
@@ -78,18 +85,38 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
     {
         return Ok(hash);
     }
+    let wanted = clean_alias(wallet_id);
+    let mut matches: Vec<WalletSeedHash> = Vec::new();
     let mut available: Vec<String> = Vec::new();
 
     for (seed_hash, wallet_arc) in wallets.iter() {
         let w = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
         let hex_prefix = hex::encode(&seed_hash[..4]);
         if let Some(alias) = &w.alias {
-            if alias == wallet_id {
-                return Ok(*seed_hash);
+            if !wanted.is_empty() && clean_alias(alias) == wanted {
+                matches.push(*seed_hash);
             }
             available.push(format!("  - \"{alias}\" ({hex_prefix}...)"));
         } else {
             available.push(format!("  - ({hex_prefix}...)"));
+        }
+    }
+
+    match matches.as_slice() {
+        [] => {}
+        [only] => return Ok(*only),
+        several => {
+            let prefixes = several
+                .iter()
+                .map(|seed_hash| format!("{}...", hex::encode(&seed_hash[..4])))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(McpToolError::InvalidParam {
+                message: format!(
+                    "The wallet alias \"{wallet_id}\" matches {count} wallets ({prefixes}). Pass the 64-character hex seed hash instead.",
+                    count = several.len()
+                ),
+            });
         }
     }
 
@@ -473,6 +500,77 @@ mod tests {
             .expect("SPV readiness retries Platform metadata");
 
         assert_eq!(ctx.platform_protocol_version(), LATEST_VERSION);
+    }
+
+    /// Insert a wallet straight into the in-memory map, bypassing registration
+    /// — the shape legacy data takes when two wallets already share an alias.
+    fn insert_wallet_with_alias(ctx: &AppContext, seed_byte: u8, alias: &str) -> WalletSeedHash {
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            [seed_byte; 64],
+            ctx.network(),
+            Some(alias.to_owned()),
+            None,
+        )
+        .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.wallets
+            .write()
+            .expect("wallet map")
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        seed_hash
+    }
+
+    #[tokio::test]
+    async fn wallet_alias_shared_by_two_wallets_is_rejected() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        insert_wallet_with_alias(&ctx, 0x31, "Wallet 2");
+        insert_wallet_with_alias(&ctx, 0x32, "Wallet 2 ");
+
+        let error = wallet(&ctx, "Wallet 2").expect_err("an ambiguous alias must not resolve");
+
+        assert!(
+            matches!(error, McpToolError::InvalidParam { .. }),
+            "got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_hex_seed_hash_resolves_despite_ambiguous_alias() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        let first = insert_wallet_with_alias(&ctx, 0x31, "Shared");
+        insert_wallet_with_alias(&ctx, 0x32, "Shared");
+
+        assert_eq!(wallet(&ctx, &hex::encode(first)).expect("hex id"), first);
+    }
+
+    #[tokio::test]
+    async fn wallet_unique_alias_resolves_after_cleaning() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        let savings = insert_wallet_with_alias(&ctx, 0x31, "Savings");
+        insert_wallet_with_alias(&ctx, 0x32, "Spending");
+
+        assert_eq!(wallet(&ctx, "Savings").expect("exact alias"), savings);
+        assert_eq!(
+            wallet(&ctx, "\u{200B}Savings ").expect("cleaned alias"),
+            savings
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_blank_alias_never_matches() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        insert_wallet_with_alias(&ctx, 0x31, "");
+
+        let error = wallet(&ctx, "\u{200B}").expect_err("a blank id names no wallet");
+
+        assert!(
+            matches!(error, McpToolError::WalletNotFound { .. }),
+            "got {error:?}"
+        );
     }
 
     #[tokio::test]

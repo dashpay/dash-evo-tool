@@ -437,7 +437,7 @@ mod tests {
         let imported = view
             .import_wif_with_passphrase(
                 &wif,
-                None,
+                crate::model::wallet::alias::AliasSource::Preserved(None),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(zeroize::Zeroizing::new(SENTINEL_PASSPHRASE.to_string())),
                     hint: None,

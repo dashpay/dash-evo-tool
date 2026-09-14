@@ -298,6 +298,28 @@ struct DpnsVoteFeedbackCounts {
     in_progress: usize,
 }
 
+/// Feedback for a submit whose single requested vote was already in place.
+const DPNS_ONE_VOTE_ALREADY_CAST: &str =
+    "The selected node already has the requested vote. Nothing was submitted.";
+
+/// Feedback for a submit in which every requested vote was already in place.
+/// Also used where the skipped count is unavailable, so it has to read true for
+/// a single selected node too.
+const DPNS_ALL_VOTES_ALREADY_CAST: &str =
+    "Every selected node already has the requested vote. Nothing was submitted.";
+
+/// Guidance for votes that reached Platform without a confirmed outcome. Shared
+/// by the all-unconfirmed and mixed branches so the "do not resubmit" warning
+/// never differs between them.
+fn dpns_unconfirmed_guidance(unconfirmed: usize) -> String {
+    match unconfirmed {
+        1 => "The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again.".to_owned(),
+        count => format!(
+            "{count} votes were submitted, but their results could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit them again."
+        ),
+    }
+}
+
 fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bool) {
     let mut counts = DpnsVoteFeedbackCounts::default();
     for outcome in &operation.targets {
@@ -317,11 +339,11 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
         }
     }
     if operation.targets.is_empty() {
-        return (
-            "This node already has that vote. Nothing was submitted.".to_owned(),
-            MessageType::Info,
-            false,
-        );
+        let message = match operation.no_op_count {
+            1 => DPNS_ONE_VOTE_ALREADY_CAST,
+            _ => DPNS_ALL_VOTES_ALREADY_CAST,
+        };
+        return (message.to_owned(), MessageType::Info, false);
     }
     let target_count = operation.targets.len();
     if counts.confirmed == target_count {
@@ -352,7 +374,7 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
     }
     if counts.unconfirmed == target_count {
         return (
-            "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.".to_owned(),
+            dpns_unconfirmed_guidance(counts.unconfirmed),
             MessageType::Warning,
             true,
         );
@@ -394,16 +416,20 @@ fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bo
     }
 
     let remaining = target_count.saturating_sub(counts.confirmed);
-    let confirmed = counts.confirmed;
-    let message = if counts.unconfirmed > 0 {
-        format!(
-            "{confirmed} of {target_count} votes were confirmed. Review the remaining {remaining}. The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.",
-        )
-    } else {
-        format!(
-            "{confirmed} of {target_count} votes were confirmed. Review the remaining {remaining}.",
-        )
+    let confirmed_sentence = match counts.confirmed {
+        0 => format!("None of the {target_count} votes were confirmed."),
+        1 => format!("1 of the {target_count} votes was confirmed."),
+        confirmed => format!("{confirmed} of the {target_count} votes were confirmed."),
     };
+    let review_sentence = match remaining {
+        1 => "Review the remaining vote.".to_owned(),
+        remaining => format!("Review the remaining {remaining} votes."),
+    };
+    let mut message = format!("{confirmed_sentence} {review_sentence}");
+    if counts.unconfirmed > 0 {
+        message.push(' ');
+        message.push_str(&dpns_unconfirmed_guidance(counts.unconfirmed));
+    }
     (message, MessageType::Warning, counts.unconfirmed > 0)
 }
 
@@ -428,15 +454,14 @@ fn scheduled_vote_clear_feedback(
         };
         return (cleared_message, message_type);
     }
-    let retained_message = if in_flight == 1 {
-        "1 vote already in progress remains listed. Wait for it to finish before trying again."
-    } else {
-        return (
-            format!(
-                "{cleared_message} {in_flight} votes already in progress remain listed. Wait for them to finish before trying again."
-            ),
-            MessageType::Info,
-        );
+    let retained_message = match in_flight {
+        1 => {
+            "1 vote already in progress remains listed. Wait for it to finish before trying again."
+                .to_owned()
+        }
+        count => format!(
+            "{count} votes already in progress remain listed. Wait for them to finish before trying again."
+        ),
     };
     (
         format!("{cleared_message} {retained_message}"),
@@ -486,14 +511,32 @@ fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool
     selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
 }
 
+/// Every result `DPNSScreen::display_task_result` acts on, so that a DPNS root
+/// screen receives it even while hidden. Dropping a variant here without
+/// dropping its handler arm strands the screen in the state that result would
+/// have cleared. `dpns_result_routing_tests` reads the handler's source and
+/// fails if the two sets drift apart.
 fn is_dpns_vote_result(result: &BackendTaskSuccessResult) -> bool {
     matches!(
         result,
         BackendTaskSuccessResult::DpnsVoteOperationUpdated { .. }
             | BackendTaskSuccessResult::RefreshedDpnsContests
+            | BackendTaskSuccessResult::RefreshedOwnedDpnsNames
             | BackendTaskSuccessResult::ScheduledVoteSweepCompleted { .. }
             | BackendTaskSuccessResult::ScheduledVotesCleared(_)
+            | BackendTaskSuccessResult::ScheduledVotesInProgress(_)
     )
+}
+
+/// Whether a DPNS root screen is currently out of view, either because another
+/// root screen is selected or because a modal covers it. Shared by success and
+/// error routing so both agree on what "hidden" means.
+fn dpns_screen_is_hidden(
+    target: RootScreenType,
+    selected: RootScreenType,
+    screen_stack_is_empty: bool,
+) -> bool {
+    selected != target || !screen_stack_is_empty
 }
 
 fn dpns_result_needs_hidden_route(
@@ -502,7 +545,7 @@ fn dpns_result_needs_hidden_route(
     screen_stack_is_empty: bool,
     result: &BackendTaskSuccessResult,
 ) -> bool {
-    is_dpns_vote_result(result) && (selected != target || !screen_stack_is_empty)
+    is_dpns_vote_result(result) && dpns_screen_is_hidden(target, selected, screen_stack_is_empty)
 }
 
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
@@ -2703,8 +2746,11 @@ impl AppState {
             RootScreenType::RootScreenDPNSActiveContests,
             RootScreenType::RootScreenDPNSScheduledVotes,
         ] {
-            if (self.selected_main_screen != root || !self.screen_stack.is_empty())
-                && let Some(screen) = self.main_screens.get_mut(&root)
+            if dpns_screen_is_hidden(
+                root,
+                self.selected_main_screen,
+                self.screen_stack.is_empty(),
+            ) && let Some(screen) = self.main_screens.get_mut(&root)
             {
                 screen.display_backend_task_error(context, error);
                 screen.display_task_error(error);
@@ -3240,10 +3286,13 @@ impl App for AppState {
                                         handle.disable_auto_dismiss();
                                     }
                                 }
+                                // A submit whose targets were all no-ops never
+                                // persists an operation, so the skipped count is
+                                // not recoverable here: use the plural copy.
                                 Some(Ok(None)) => {
                                     MessageBanner::set_global(
                                         ctx,
-                                        "This node already has that vote. Nothing was submitted.",
+                                        DPNS_ALL_VOTES_ALREADY_CAST,
                                         MessageType::Info,
                                     );
                                 }
@@ -3894,7 +3943,17 @@ mod migration_banner_tests {
             (
                 vec![DpnsVoteTargetStatus::Unconfirmed],
                 0,
-                "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.",
+                "The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again.",
+                MessageType::Warning,
+                true,
+            ),
+            (
+                vec![
+                    DpnsVoteTargetStatus::Unconfirmed,
+                    DpnsVoteTargetStatus::Unconfirmed,
+                ],
+                0,
+                "2 votes were submitted, but their results could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit them again.",
                 MessageType::Warning,
                 true,
             ),
@@ -3915,7 +3974,14 @@ mod migration_banner_tests {
             (
                 Vec::new(),
                 1,
-                "This node already has that vote. Nothing was submitted.",
+                "The selected node already has the requested vote. Nothing was submitted.",
+                MessageType::Info,
+                false,
+            ),
+            (
+                Vec::new(),
+                4,
+                "Every selected node already has the requested vote. Nothing was submitted.",
                 MessageType::Info,
                 false,
             ),
@@ -3954,7 +4020,42 @@ mod migration_banner_tests {
         assert!(keep_visible);
         assert_eq!(
             message,
-            "1 of 7 votes were confirmed. Review the remaining 6. The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again."
+            "1 of the 7 votes was confirmed. Review the remaining 6 votes. The vote was submitted, but the result could not be confirmed yet. Dash Evo Tool will keep checking. Do not submit it again."
+        );
+    }
+
+    /// Counts drive which sentence is built, so no single template has to carry
+    /// a verb that is only correct for one of them.
+    #[test]
+    fn mixed_vote_feedback_matches_its_verbs_to_the_counts() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Rejected,
+        ]);
+
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(!keep_visible);
+        assert_eq!(
+            message,
+            "2 of the 3 votes were confirmed. Review the remaining vote."
+        );
+    }
+
+    #[test]
+    fn vote_feedback_reports_no_confirmations_without_a_leading_zero() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::NotApplied,
+        ]);
+
+        let (message, _, _) = dpns_vote_feedback(&operation);
+
+        assert_eq!(
+            message,
+            "None of the 2 votes were confirmed. Review the remaining 2 votes."
         );
     }
 
@@ -4410,6 +4511,113 @@ mod dpns_result_routing_tests {
             RootScreenType::RootScreenDPNSScheduledVotes,
             true,
             &BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+        ));
+    }
+
+    /// The DPNS screen's own source, read at compile time so the guard below
+    /// tracks the handler instead of a hand-copied list of variant names.
+    const DPNS_SCREEN_SOURCE: &str = include_str!("ui/dpns/dpns_contested_names_screen.rs");
+
+    /// Result variant names `DPNSScreen::display_task_result` matches on.
+    fn variants_the_dpns_screen_handles() -> Vec<String> {
+        const MARKER: &str = "BackendTaskSuccessResult::";
+        let start = DPNS_SCREEN_SOURCE
+            .find("fn display_task_result(")
+            .expect("DPNSScreen::display_task_result was renamed; update this guard");
+        let handler = &DPNS_SCREEN_SOURCE[start..];
+        let end = handler[1..]
+            .find("\n    fn ")
+            .map_or(handler.len(), |offset| offset + 1);
+        let handler = &handler[..end];
+
+        let mut variants: Vec<String> = Vec::new();
+        for (index, _) in handler.match_indices(MARKER) {
+            let name: String = handler[index + MARKER.len()..]
+                .chars()
+                .take_while(|character| character.is_alphanumeric() || *character == '_')
+                .collect();
+            if !name.is_empty() && !variants.contains(&name) {
+                variants.push(name);
+            }
+        }
+        assert!(
+            !variants.is_empty(),
+            "no handled variants found; the guard no longer locates DPNSScreen::display_task_result"
+        );
+        variants
+    }
+
+    fn sample_result(variant: &str) -> BackendTaskSuccessResult {
+        match variant {
+            "DpnsVoteOperationUpdated" => BackendTaskSuccessResult::DpnsVoteOperationUpdated {
+                network: Network::Testnet,
+                operation_id: DpnsVoteOperationId::from_bytes([5; 16]),
+            },
+            "ScheduledVoteSweepCompleted" => {
+                BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
+                    network: Network::Testnet,
+                    preserve_eligibility_since_ms: None,
+                }
+            }
+            "ScheduledVotesInProgress" => {
+                BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new())
+            }
+            "ScheduledVotesCleared" => BackendTaskSuccessResult::ScheduledVotesCleared(Vec::new()),
+            "RefreshedDpnsContests" => BackendTaskSuccessResult::RefreshedDpnsContests,
+            "RefreshedOwnedDpnsNames" => BackendTaskSuccessResult::RefreshedOwnedDpnsNames,
+            unknown => panic!(
+                "DPNSScreen::display_task_result now handles {unknown}; add a sample here and route it in is_dpns_vote_result"
+            ),
+        }
+    }
+
+    /// A result the DPNS screen acts on but `is_dpns_vote_result` rejects is
+    /// dropped whenever that screen is hidden, so the two sets must agree.
+    #[test]
+    fn every_result_the_dpns_screen_handles_is_routed_to_hidden_screens() {
+        for variant in variants_the_dpns_screen_handles() {
+            assert!(
+                is_dpns_vote_result(&sample_result(&variant)),
+                "DPNSScreen::display_task_result handles {variant} but is_dpns_vote_result drops it while the screen is hidden"
+            );
+        }
+    }
+
+    /// Refresh on My usernames, navigate away, come back: without routing, the
+    /// screen never clears `RefreshingStatus::Refreshing` and its Refresh
+    /// button stays inert.
+    #[test]
+    fn refreshed_owned_names_route_when_the_dpns_screen_is_hidden() {
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSActiveContests,
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &BackendTaskSuccessResult::RefreshedOwnedDpnsNames,
+        ));
+    }
+
+    #[test]
+    fn scheduled_votes_in_progress_route_when_the_dpns_screen_is_hidden() {
+        assert!(dpns_result_needs_hidden_route(
+            RootScreenType::RootScreenDPNSScheduledVotes,
+            RootScreenType::RootScreenWalletsBalances,
+            true,
+            &BackendTaskSuccessResult::ScheduledVotesInProgress(Vec::new()),
+        ));
+    }
+
+    /// The visibility rule both `route_dpns_vote_result_to_hidden_screens` and
+    /// `route_dpns_vote_error_to_hidden_screens` route on.
+    #[test]
+    fn a_dpns_screen_is_hidden_behind_another_root_screen_or_a_modal() {
+        let target = RootScreenType::RootScreenDPNSActiveContests;
+
+        assert!(!dpns_screen_is_hidden(target, target, true));
+        assert!(dpns_screen_is_hidden(target, target, false));
+        assert!(dpns_screen_is_hidden(
+            target,
+            RootScreenType::RootScreenWalletsBalances,
+            true
         ));
     }
 

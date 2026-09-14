@@ -152,21 +152,36 @@ impl MasternodesScreen {
             .load_local_masternode_identities()
             .unwrap_or_default();
 
+        // Votes are published and cached under the node's own ProTxHash; the
+        // voter identity only supplies the key that signs them. Resolve every
+        // node's voter_id up front and fetch all their summaries in one call:
+        // the contest cache, derived vote-poll ids, operation journal and
+        // schedule dismissals depend on the contest set, not the node, so an
+        // operator with a large fleet must not pay for them once per card.
+        let voter_ids: Vec<Identifier> = identities
+            .iter()
+            .filter(|qi| qi.associated_voter_identity.is_some())
+            .map(|qi| qi.identity.id())
+            .collect();
+        let summaries = self
+            .app_context
+            .masternode_contest_summaries(&voter_ids)
+            .unwrap_or_default();
+
         self.nodes = identities
             .into_iter()
             .map(|qi| {
                 let node_id = qi.identity.id();
                 let node_id_short = shorten_id(&node_id.to_string(Encoding::Hex));
-                // Votes are published and cached under the node's own ProTxHash;
-                // the voter identity only supplies the key that signs them.
-                let voter_id = qi
-                    .associated_voter_identity
-                    .is_some()
-                    .then(|| qi.identity.id());
-                let contest_summary = self
-                    .app_context
-                    .masternode_contest_summary(voter_id)
-                    .unwrap_or_else(|_| MasternodeContestSummary::unavailable());
+                let has_voter_id = qi.associated_voter_identity.is_some();
+                let contest_summary = if has_voter_id {
+                    summaries
+                        .get(&node_id)
+                        .copied()
+                        .unwrap_or_else(MasternodeContestSummary::unavailable)
+                } else {
+                    MasternodeContestSummary::default()
+                };
                 NodeCardData {
                     node_id,
                     node_id_short,

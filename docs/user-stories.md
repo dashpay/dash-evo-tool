@@ -818,7 +818,7 @@ As a masternode operator, I want to apply voting choices across multiple contest
 - Immediate and scheduled targets submitted together belong to one operation.
 - A successful mixed batch reports both cast and scheduled counts as success, without a warning about remaining work.
 
-### DPN-010: Recover an ambiguous vote result [Implemented]
+### DPN-011: Recover an ambiguous vote result [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want DET to keep checking a submitted vote whose

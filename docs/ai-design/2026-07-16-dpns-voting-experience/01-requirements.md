@@ -2,7 +2,12 @@
 
 ## Status
 
-Planning specification. No implementation is authorized by this document.
+Implemented in PR [#901](https://github.com/dashpay/dash-evo-tool/pull/901)
+(`feat(dpns): unify safe masternode voting operations`); see
+`docs/user-stories.md` (DPN series) and `CHANGELOG.md` for the shipped,
+user-visible behavior. The requirements below are kept as the original
+planning record — later-landed behavior may extend them without this
+document being updated in lockstep.
 
 ## Problem statement
 
@@ -114,7 +119,8 @@ Everyday User workflow.
 - **VOTE-FR-032** — Target statuses are `Scheduled`, `Queued`, `Submitting`,
   `Confirming`, `Confirmed`, `Unconfirmed`, `Rejected`, and
   `Failed before submission`, plus `Not applied` after definitive
-  post-broadcast reconciliation.
+  post-broadcast reconciliation and `Cancelled` when the user cancels a
+  scheduled target before it is submitted (see VOTE-FR-055).
 - **VOTE-FR-033** — Same-node targets execute sequentially to preserve nonce
   order. Different nodes may execute concurrently with a fixed bound.
 - **VOTE-FR-034** — A target lock prevents a second operation for the same
@@ -140,6 +146,10 @@ Everyday User workflow.
   ambiguous. It offers `Check again`.
 - **VOTE-FR-045** — A retry becomes available only after authoritative
   reconciliation proves the requested change was not applied.
+- **VOTE-FR-046** — If saved voting-operation progress cannot be read, DET
+  shows a persistent notice that the displayed history may be incomplete,
+  offers `Retry loading`, and keeps cached progress and existing target
+  locks intact until a refresh succeeds.
 
 ### Scheduled votes
 
@@ -155,6 +165,9 @@ Everyday User workflow.
   contest, choice, time, or executed state.
 - **VOTE-FR-055** — A scheduled target can be edited or cancelled until
   execution begins. Once submitting, it follows normal operation locking.
+- **VOTE-FR-056** — A target still `Scheduled` more than 120 seconds past its
+  due time is explained in Scheduled Votes as a missed automatic vote, with
+  `Cast now`, `Edit`, and `Remove` actions.
 
 ### Feedback
 
@@ -165,6 +178,9 @@ Everyday User workflow.
 - **VOTE-FR-063** — Technical errors stay in banner details.
 - **VOTE-FR-064** — Unconfirmed copy explicitly says DET will keep checking and
   warns against resubmission.
+- **VOTE-FR-065** — Loading a voting private key that does not match the
+  selected node's voter identity is rejected with a key-specific error,
+  without merging or altering the node's existing stored keys.
 
 ## Non-functional requirements
 

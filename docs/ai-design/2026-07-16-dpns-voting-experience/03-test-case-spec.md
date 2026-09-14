@@ -21,6 +21,7 @@
 | VOTE-TC-011 | Multi-contest vote | Active contests, three draft choices | Review | Review shows the exact node × contest targets | FR-020, FR-031 |
 | VOTE-TC-012 | Schedule one choice | Active contests, one draft | Choose Schedule in review | Targets appear in Scheduled with the chosen time | FR-023, FR-050 |
 | VOTE-TC-013 | Missing voting key | No loaded node has a voting key | Open Active contests | An actionable state explains that a voting key is missing, offers `Load a masternode`, and leaves submit unavailable | FR-003 |
+| VOTE-TC-014 | Voting key does not match node | Load a masternode with a voting private key belonging to a different node's voter identity | Submit the load | Load is rejected with `This voting key could not be matched to the selected node. Check that node's voting private key and try again.`; the node's existing keys and associated voter identity are unchanged | FR-065 |
 
 ## Bulk voting
 
@@ -64,6 +65,7 @@
 | VOTE-TC-054 | Reconcile to safe retry | Unconfirmed target; definitive reconciliation proves absence | Check again | Status allows reviewed resubmission | FR-045 |
 | VOTE-TC-055 | Reconciliation unavailable | DAPI remains unavailable | Check again | Target stays Unconfirmed and locked; no false failure/success | FR-044 |
 | VOTE-TC-056 | Partial batch | Two confirmed, one unconfirmed, one rejected | Complete batch | Warning shows counts and details map every target | FR-061, FR-062 |
+| VOTE-TC-057 | Journal read failure stays visible until retried | Saved vote-operation progress cannot be read | Open Scheduled Votes, then click `Retry loading` once the read succeeds | Persistent notice and `Retry loading` remain visible across renders until a successful refresh, then clear | FR-046 |
 
 ## Scheduling and migration
 
@@ -75,6 +77,7 @@
 | VOTE-TC-063 | Scheduled target can be edited | Target is Scheduled, not due | Change time or choice | Updated target persists and keeps one lock | FR-055 |
 | VOTE-TC-064 | Scheduled target can be cancelled | Target is Scheduled, not due | Cancel and confirm | Target is removed and its lock is released | FR-055 |
 | VOTE-TC-065 | Submitting schedule cannot be edited | Target is Submitting | Inspect actions | Edit and Cancel are disabled with an explanation | FR-055 |
+| VOTE-TC-066 | Missed automatic vote is explained | Scheduled target's due time is more than 120 seconds in the past and it has not executed | Reopen Scheduled Votes | Row shows `Missed automatic vote` with `Cast now`, `Edit`, and `Remove` actions | FR-056 |
 
 ## UX, accessibility, and isolation
 

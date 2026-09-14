@@ -48,7 +48,9 @@ Contests render as cards, grouped in this order:
 
 1. `Needs your vote`
 2. `Voted`
-3. `Not votable by your nodes`
+3. `Vote state unavailable` — contests whose proved current vote state could
+   not be read; hidden when empty, with a `Refresh voting` action above it
+4. `Not votable by your nodes`
 
 Each group is collapsible. The first group opens by default; the last group is
 dimmed and its vote controls are disabled. A filter remains available.
@@ -66,6 +68,7 @@ dimmed and its vote controls are disabled. A filter remains available.
 │ │ [Vote for Alyce]  (18 votes)  7Yk2aP…d1Rt              │ │
 │ └──────────────────────────────────────────────────────┘ │
 │ ▸ Voted (4)                                             │
+│ ▸ Vote state unavailable (1)          [Refresh voting]  │
 │ ▸ Not votable by your nodes (1)                         │
 ├──────────────────────────────────────────────────────────────┤
 │ Votes ready to cast: 1                  [Review and cast]   │

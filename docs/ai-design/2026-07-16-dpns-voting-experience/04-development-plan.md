@@ -66,6 +66,8 @@ enum DpnsVoteTargetStatus {
     Rejected,
     FailedBeforeSubmission,
     NotApplied,
+    // The user cancelled a scheduled target before it was submitted.
+    Cancelled,
 }
 
 struct DpnsVoteOutcome {
@@ -122,7 +124,7 @@ Replace tuple-heavy vote tasks/results with structured variants:
 ```rust
 ContestedResourceTask::SubmitDpnsVoteOperation(DpnsVoteOperation)
 ContestedResourceTask::ReconcileDpnsVoteOperation(DpnsVoteOperationId)
-ContestedResourceTask::DispatchDueDpnsVotes
+ContestedResourceTask::CastDueScheduledVotes { preserve_eligibility_since_ms: Option<u64> }
 
 BackendTaskContext::DpnsVoteOperation(DpnsVoteOperationId)
 BackendTaskSuccessResult::DpnsVoteOperationUpdated(DpnsVoteOperationId)
@@ -132,6 +134,13 @@ The backend persists each target update in the shared coordinator. Task results
 carry only the operation ID needed for AppState to request repaint and show a
 summary. AppState never delivers raw vote outcomes to whichever screen happens
 to be visible.
+
+As built, due-schedule dispatch is its own sweep rather than a side effect of
+contest querying: `AppState::update()` in `app.rs` dispatches
+`CastDueScheduledVotes` on a ~60s timer (tightened to a recovery backoff after
+a deferred sweep), and `cast_due_scheduled_votes()` in
+`src/backend_task/contested_names/mod.rs` loads due targets, casts them, and
+persists results off the UI thread.
 
 ## Execution algorithm
 

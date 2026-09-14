@@ -232,7 +232,14 @@ fn log_filter() -> String {
 
 /// Resolves the binary under test, preferring an explicit override.
 pub fn locate_binary() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var(BINARY_ENV)
+    resolve_binary(std::env::var(BINARY_ENV).ok().as_deref(), CARGO_BIN)
+}
+
+fn resolve_binary(
+    override_path: Option<&str>,
+    cargo_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = override_path
         && !path.trim().is_empty()
     {
         let path = PathBuf::from(path);
@@ -245,7 +252,7 @@ pub fn locate_binary() -> Result<PathBuf, String> {
         };
     }
 
-    let cargo_bin = CARGO_BIN.map(Path::new).filter(|path| path.is_file());
+    let cargo_bin = cargo_path.map(Path::new).filter(|path| path.is_file());
     match cargo_bin {
         Some(path) => Ok(path.to_path_buf()),
         None => Err(format!(
@@ -262,30 +269,25 @@ mod tests {
 
     #[test]
     fn a_bogus_binary_override_is_reported() {
-        // cargo test runs every #[test] in this binary in the same process,
-        // on a shared thread pool, and `migration_matrix` (main.rs) also
-        // reads BINARY_ENV via locate_binary(). An unconditional
-        // `remove_var` here previously deleted a real CI-provided
-        // DET_CLI_BIN out from under it: this test finishes almost
-        // instantly, `migration_matrix` reaches its own locate_binary()
-        // call much later (after loading the manifest and staging the
-        // fixture), so the var was reliably gone by then, not just
-        // occasionally — the migration-matrix workflow's "Run migration
-        // matrix" step failed on this every time once a real fixture made
-        // it that far. Save and restore the original value instead of
-        // deleting it, so this test's mutation cannot leak into another
-        // test's read of the same process-global state.
-        let original = std::env::var(BINARY_ENV).ok();
-        unsafe { std::env::set_var(BINARY_ENV, "/nonexistent/det-cli") };
-        let error = locate_binary().expect_err("a missing override must fail");
-        unsafe {
-            match &original {
-                Some(value) => std::env::set_var(BINARY_ENV, value),
-                None => std::env::remove_var(BINARY_ENV),
-            }
-        }
+        let error = resolve_binary(Some("/nonexistent/det-cli"), None)
+            .expect_err("a missing override must fail");
 
         assert!(error.contains("/nonexistent/det-cli"), "{error}");
+    }
+
+    #[test]
+    fn binary_override_takes_precedence_over_cargo_binary() {
+        let override_file = tempfile::NamedTempFile::new().expect("override binary");
+        let cargo_file = tempfile::NamedTempFile::new().expect("cargo binary");
+        let cargo = cargo_file.path().to_str();
+        assert_eq!(
+            resolve_binary(override_file.path().to_str(), cargo).expect("override exists"),
+            override_file.path()
+        );
+        assert_eq!(
+            resolve_binary(Some(" "), cargo).expect("blank override falls back"),
+            cargo_file.path()
+        );
     }
 
     #[test]

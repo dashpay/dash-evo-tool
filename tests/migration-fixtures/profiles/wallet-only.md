@@ -61,7 +61,7 @@ are true at the moment the app is quit.
 ```sql
 -- read-only, always; a plain open can checkpoint the WAL and mutate the fixture
 -- sqlite3 -readonly data.db
-PRAGMA user_version;                                   -- expect 11 at v0.9.3
+SELECT database_version FROM settings WHERE id = 1;    -- expect 11 at v0.9.3
 SELECT alias, is_main, uses_password, network FROM wallet;
 SELECT COUNT(*) FROM wallet_addresses GROUP BY seed_hash;
 ```

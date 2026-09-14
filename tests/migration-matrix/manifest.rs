@@ -72,28 +72,15 @@ pub struct Contents {
 }
 
 /// One wallet in the captured `data.db`, found there by its alias.
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct FixtureWallet {
     pub alias: String,
     /// What a boot without a supplied password must do with the wallet.
     #[serde(default)]
     pub expected_outcome: WalletOutcome,
-    /// The wallet's password: a public, testnet-only fixture password that a
-    /// [`PasswordRun`] hands det-cli through `--password-file`.
+    /// Environment variable supplying the wallet password at scenario execution.
     #[serde(default)]
-    pub password: Option<String>,
-}
-
-// Hand-written so the fixture password never lands in a failure report: the
-// matrix asserts det-cli never prints it, and the harness keeps the same rule.
-impl std::fmt::Debug for FixtureWallet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FixtureWallet")
-            .field("alias", &self.alias)
-            .field("expected_outcome", &self.expected_outcome)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
+    pub password_env: Option<String>,
 }
 
 /// What a headless boot must do with one wallet. An unrecognised value fails
@@ -137,18 +124,32 @@ pub struct ExpectedWallet {
     pub outcome: WalletOutcome,
 }
 
-/// One staged boot sequence of a fixture. Deliberately not `Debug`: it holds
-/// the fixture password.
+/// One staged boot sequence of a fixture; passwords are resolved at execution.
 pub struct Scenario {
     pub label: String,
-    /// Supplied through `--password-file`; `None` for the boot without one.
-    pub password: Option<String>,
+    /// Environment variable resolved for `--password-file`; absent on a plain boot.
+    pub password_env: Option<String>,
     pub wallets: Vec<ExpectedWallet>,
     /// Aliases a completed boot must list.
     pub listed_aliases: Vec<String>,
 }
 
 impl Scenario {
+    /// Resolves the password only when executing this scenario.
+    pub fn resolve_password_with(
+        &self,
+        lookup: impl FnOnce(&str) -> Option<String>,
+    ) -> Result<Option<String>, String> {
+        self.password_env
+            .as_deref()
+            .map(|name| {
+                lookup(name)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("the {} scenario requires non-empty {name}", self.label))
+            })
+            .transpose()
+    }
+
     /// Whether this boot must stop at `StorageUpdateNeedsDesktop` rather than
     /// complete.
     pub fn needs_desktop(&self) -> bool {
@@ -281,7 +282,7 @@ impl Fixture {
             let label = match run.source {
                 PasswordSource::File => "password file",
             };
-            let password = self.shared_password(label)?;
+            let password_env = self.shared_password_env(label)?;
             if let Some(alias) = run
                 .expected_outcomes
                 .keys()
@@ -313,7 +314,7 @@ impl Fixture {
                     self.id, wallet.alias
                 ));
             }
-            scenarios.push(self.scenario(label, Some(password), expected));
+            scenarios.push(self.scenario(label, Some(password_env), expected));
         }
         Ok(scenarios)
     }
@@ -321,7 +322,7 @@ impl Fixture {
     fn scenario(
         &self,
         label: &str,
-        password: Option<String>,
+        password_env: Option<String>,
         wallets: Vec<ExpectedWallet>,
     ) -> Scenario {
         let mut listed_aliases = self.expect.wallet_aliases.clone();
@@ -333,34 +334,33 @@ impl Fixture {
         }
         Scenario {
             label: label.to_owned(),
-            password,
+            password_env,
             wallets,
             listed_aliases,
         }
     }
 
-    /// The one password every password-protected wallet shares. Errors never
-    /// quote it.
-    fn shared_password(&self, label: &str) -> Result<String, String> {
-        let passwords: BTreeSet<&str> = self
+    /// The environment variable shared by the protected wallets.
+    fn shared_password_env(&self, label: &str) -> Result<String, String> {
+        let variables: BTreeSet<&str> = self
             .contents
             .wallets
             .iter()
-            .filter_map(|wallet| wallet.password.as_deref())
+            .filter_map(|wallet| wallet.password_env.as_deref())
             .collect();
-        let mut distinct = passwords.into_iter();
+        let mut distinct = variables.into_iter();
         match (distinct.next(), distinct.next()) {
-            (Some(password), None) if !password.is_empty() => Ok(password.to_owned()),
+            (Some(name), None) if !name.trim().is_empty() => Ok(name.to_owned()),
             (Some(_), None) => Err(format!(
-                "fixture '{}': the {label} run needs a non-empty wallet `password`",
+                "fixture '{}': the {label} run needs a non-empty wallet `password_env`",
                 self.id
             )),
             (None, _) => Err(format!(
-                "fixture '{}': the {label} run needs a wallet `password` in contents.wallets",
+                "fixture '{}': the {label} run needs a wallet `password_env` in contents.wallets",
                 self.id
             )),
             (Some(_), Some(_)) => Err(format!(
-                "fixture '{}': the {label} run supplies one password, but the wallets declare different ones",
+                "fixture '{}': the {label} run supplies one password, but the wallets declare different environment variables",
                 self.id
             )),
         }
@@ -518,7 +518,7 @@ mod tests {
         let scenarios = fixture.scenarios().expect("no password runs to validate");
         assert_eq!(scenarios.len(), 1, "only the boot without a password");
         assert!(scenarios[0].needs_desktop());
-        assert!(scenarios[0].password.is_none());
+        assert!(scenarios[0].password_env.is_none());
         assert_eq!(scenarios[0].listed_aliases, ["plain"]);
 
         let unknown = serde_json::from_str::<Fixture>(
@@ -562,7 +562,7 @@ mod tests {
         let [without, with] = &scenarios[..] else {
             unreachable!("length checked above");
         };
-        assert!(without.password.is_none() && without.needs_desktop());
+        assert!(without.password_env.is_none() && without.needs_desktop());
         assert_eq!(
             outcomes(without),
             [
@@ -574,7 +574,7 @@ mod tests {
             ]
         );
 
-        assert!(with.password.is_some() && !with.needs_desktop());
+        assert!(with.password_env.is_some() && !with.needs_desktop());
         assert_eq!(
             outcomes(with),
             [
@@ -617,7 +617,7 @@ mod tests {
         let [scenario] = &scenarios[..] else {
             panic!("expected only the boot without a password");
         };
-        assert!(scenario.password.is_none() && !scenario.needs_desktop());
+        assert!(scenario.password_env.is_none() && !scenario.needs_desktop());
         assert_eq!(scenario.listed_aliases, ["weekly-fixture"]);
     }
 
@@ -639,29 +639,32 @@ mod tests {
             file_run,
         );
         let error = no_password.scenarios().err().expect("no password declared");
-        assert!(error.contains("needs a wallet `password`"), "{error}");
+        assert!(error.contains("needs a wallet `password_env`"), "{error}");
 
         let different = fixture_with_runs(
-            r#"{ "alias": "locked", "password": "one-password" },
-               { "alias": "other", "password": "another-password" }"#,
+            r#"{ "alias": "locked", "password_env": "TEST_PASSWORD" },
+               { "alias": "other", "password_env": "OTHER_PASSWORD" }"#,
             file_run,
         );
         let error = different.scenarios().err().expect("different passwords");
-        assert!(error.contains("declare different ones"), "{error}");
         assert!(
-            !error.contains("one-password") && !error.contains("another-password"),
+            error.contains("declare different environment variables"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("TEST_PASSWORD") && !error.contains("OTHER_PASSWORD"),
             "an error must never quote a password: {error}"
         );
 
         let unknown_alias = fixture_with_runs(
-            r#"{ "alias": "other", "password": "one-password" }"#,
+            r#"{ "alias": "other", "password_env": "TEST_PASSWORD" }"#,
             file_run,
         );
         let error = unknown_alias.scenarios().err().expect("unknown alias");
         assert!(error.contains("`locked`"), "{error}");
 
         let still_locked = fixture_with_runs(
-            r#"{ "alias": "locked", "expected_outcome": "needs_desktop", "password": "one-password" }"#,
+            r#"{ "alias": "locked", "expected_outcome": "needs_desktop", "password_env": "TEST_PASSWORD" }"#,
             r#"{ "source": "file" }"#,
         );
         let error = still_locked
@@ -680,14 +683,32 @@ mod tests {
     }
 
     #[test]
-    fn a_fixture_wallet_never_prints_its_password() {
+    fn a_scenario_resolves_its_password_only_at_execution() {
         let fixture = fixture_with_runs(
-            r#"{ "alias": "locked", "password": "fixture-password-canary" }"#,
+            r#"{ "alias": "locked", "password_env": "TEST_PASSWORD" }"#,
             "",
         );
-        let debug = format!("{fixture:?}");
-        assert!(!debug.contains("fixture-password-canary"), "{debug}");
-        assert!(debug.contains("locked"), "{debug}");
+        let scenario = fixture.scenario("password file", Some("TEST_PASSWORD".into()), vec![]);
+        assert!(scenario.resolve_password_with(|_| None).is_err());
+        assert!(
+            scenario
+                .resolve_password_with(|_| Some(String::new()))
+                .is_err()
+        );
+        let password = scenario
+            .resolve_password_with(|name| {
+                assert_eq!(name, "TEST_PASSWORD");
+                Some("runtime-canary".into())
+            })
+            .expect("runtime value");
+        assert_eq!(password.as_deref(), Some("runtime-canary"));
+        let plain = fixture.scenario("no password", None, vec![]);
+        assert!(
+            plain
+                .resolve_password_with(|_| panic!("plain boot must not read secrets"))
+                .expect("no password needed")
+                .is_none()
+        );
     }
 
     #[test]

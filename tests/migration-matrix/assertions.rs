@@ -115,7 +115,7 @@ pub fn check_needs_desktop(run: &CliRun, label: &str) -> Result<(), String> {
             run.report()
         ));
     }
-    if run.timed_out || !run.stderr.contains(NEEDS_DESKTOP_MARKER) {
+    if run.timed_out || run.exit_code.is_none() || !run.stderr.contains(NEEDS_DESKTOP_MARKER) {
         return Err(format!(
             "{label} failed, but not with `{NEEDS_DESKTOP_MARKER}`\n{}",
             run.report()
@@ -455,12 +455,20 @@ pub fn legacy_wallet_registrations(
     Ok(Some(registered))
 }
 
-/// Every wallet the manifest lists must have landed where its expected outcome
-/// says: registered when `migrated`, unregistered when it needs the desktop.
+/// Every captured wallet must have an explicit outcome and match it.
 pub fn check_wallet_outcomes(
     expected: &[ExpectedWallet],
     registered: &BTreeMap<String, bool>,
 ) -> Result<(), String> {
+    let undeclared: Vec<_> = registered
+        .keys()
+        .filter(|alias| !expected.iter().any(|wallet| &wallet.alias == *alias))
+        .collect();
+    if !undeclared.is_empty() {
+        return Err(format!(
+            "captured wallets missing from contents.wallets: {undeclared:?}"
+        ));
+    }
     let problems: Vec<String> = expected
         .iter()
         .filter_map(|wallet| {
@@ -833,6 +841,8 @@ mod tests {
     fn a_needs_desktop_boot_must_stop_at_exactly_that_error() {
         let expected = format!("WARN rmcp::service: response error data: {NEEDS_DESKTOP_MARKER}");
         check_needs_desktop(&run(Some(1), &expected), "boot").expect("the documented outcome");
+        check_needs_desktop(&run(None, &expected), "boot")
+            .expect_err("a signal after the expected diagnostic must fail");
 
         let completed = check_needs_desktop(&run(Some(0), ""), "boot")
             .expect_err("completing must fail: the protected wallet cannot migrate headless");
@@ -890,6 +900,10 @@ mod tests {
         let as_expected =
             BTreeMap::from([("plain".to_string(), true), ("locked".to_string(), false)]);
         check_wallet_outcomes(&expected, &as_expected).expect("both as the manifest says");
+        check_wallet_outcomes(&expected[..1], &as_expected)
+            .expect_err("every captured wallet needs an explicit outcome");
+        check_wallet_outcomes(&[], &as_expected)
+            .expect_err("an empty manifest must not hide captured wallets");
 
         let both = BTreeMap::from([("plain".to_string(), true), ("locked".to_string(), true)]);
         let error =

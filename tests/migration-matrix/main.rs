@@ -191,6 +191,7 @@ fn run_scenario(
     scenario: &Scenario,
     options: &Options,
 ) -> Result<(), String> {
+    let password = scenario.resolve_password_with(|name| std::env::var(name).ok())?;
     let network = fixture.network()?;
     let staged = stage::stage(fixtures_dir, fixture)?;
     let scratch = staged.scratch()?;
@@ -224,12 +225,12 @@ fn run_scenario(
     };
     // Every run of a password scenario is checked for the password first, so
     // a leak is reported even when the run also fails for another reason.
-    let check_not_echoed = |run: &cli::CliRun| match &scenario.password {
+    let check_not_echoed = |run: &cli::CliRun| match &password {
         Some(password) => assertions::check_password_not_echoed(run, password),
         None => Ok(()),
     };
 
-    if let Some(password) = &scenario.password {
+    if let Some(password) = &password {
         let password_file = staged.write_password_file(password)?;
         let update = cli.storage_update(&password_file, options.boot_timeout)?;
         check_not_echoed(&update)?;
@@ -287,6 +288,19 @@ fn run_scenario(
         &network_db,
         &scratch,
         "idempotent",
+    )?;
+    let second_schema = assertions::schema_snapshot(&data_db, &scratch, "idempotent")?;
+    assertions::check_schema_outcome(before.as_ref(), second_schema.as_ref())?;
+    if before_bytes.is_some() {
+        assertions::check_bytes_unchanged(
+            before_bytes.as_ref(),
+            assertions::file_bytes(&data_db)?.as_ref(),
+            DATA_DB,
+        )?;
+    }
+    assertions::check_identities(
+        &fixture.expect.identity_ids,
+        &assertions::identity_ids(&network_db, &scratch, "idempotent")?,
     )?;
     assertions::check_idempotent(
         (&backups, &sentinels),

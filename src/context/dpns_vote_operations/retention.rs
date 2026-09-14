@@ -11,13 +11,20 @@ use crate::model::dpns_voting::{
     DpnsScheduledVoteKey, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
     DpnsVoteTargetStatus, VoteTiming,
 };
-use crate::wallet_backend::{DetKv, DetScope};
+use crate::wallet_backend::{DetKv, DetScope, network_prefix};
 use dash_sdk::dpp::dashcore::Network;
 use std::collections::BTreeSet;
 
 /// Completed immediate batches retained per network; unresolved work is never capped.
 pub(super) const DPNS_IMMEDIATE_HISTORY_LIMIT: usize = 256;
 pub(super) const DPNS_SCHEDULED_HISTORY_LIMIT: usize = 256;
+/// Completed records tolerated above a retention limit before pruning runs.
+///
+/// Every completing write would otherwise rescan the whole journal, so a bulk
+/// vote across a large node fleet serialised one full scan per node against the
+/// UI's own journal reads. Eviction is amortised over this many completions
+/// instead; the cost is retaining up to that many extra completed records.
+pub(super) const DPNS_HISTORY_PRUNE_SLACK: usize = 64;
 
 pub(super) fn dismiss_scheduled_target(
     kv: &DetKv,
@@ -121,7 +128,27 @@ pub(super) fn prune_completed_history(
     kind: HistoryKind,
 ) -> Result<usize, TaskError> {
     let (prefix, limit) = kind.key_prefix_and_limit();
-    let history_key = format!("{prefix}{}", network_tag(network));
+    let history_key = format!("{prefix}{}", network_prefix(network));
+    let previous: Vec<DpnsVoteOperationId> = kv
+        .get(DetScope::Global, &history_key)
+        .map_err(unreadable_operation_err)?
+        .unwrap_or_default();
+    // Reconciling the completion order against the journal costs a full scan, so
+    // a write that merely completes an operation records its order and stops
+    // while the slack lasts. Recovery (`newly_completed` is `None`) always
+    // reconciles.
+    if let Some(id) = newly_completed
+        && previous.len() < limit + DPNS_HISTORY_PRUNE_SLACK
+    {
+        let mut ordered = previous.clone();
+        ordered.retain(|existing| *existing != id);
+        ordered.push(id);
+        if ordered != previous {
+            kv.put(DetScope::Global, &history_key, &ordered)
+                .map_err(operation_err)?;
+        }
+        return Ok(0);
+    }
     let operations = load_operations(kv, network)?;
     let mut terminal = operations
         .iter()
@@ -132,10 +159,6 @@ pub(super) fn prune_completed_history(
         .iter()
         .map(|operation| operation.id)
         .collect::<BTreeSet<_>>();
-    let previous: Vec<DpnsVoteOperationId> = kv
-        .get(DetScope::Global, &history_key)
-        .map_err(unreadable_operation_err)?
-        .unwrap_or_default();
     let mut ordered = terminal
         .iter()
         .map(|operation| operation.id)
@@ -210,7 +233,10 @@ pub(super) fn prune_orphaned_schedule_dismissals(
     network: Network,
 ) -> Result<(), TaskError> {
     let operation_prefix = operation_key_prefix(network);
-    let dismissal_prefix = format!("{SCHEDULE_DISMISSAL_KEY_PREFIX}{}:", network_tag(network));
+    let dismissal_prefix = format!(
+        "{SCHEDULE_DISMISSAL_KEY_PREFIX}{}:",
+        network_prefix(network)
+    );
     let live_suffixes = kv
         .list(DetScope::Global, Some(&operation_prefix))
         .map_err(unreadable_operation_err)?

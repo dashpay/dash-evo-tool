@@ -1,12 +1,10 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::dpns_voting::{DpnsVoteOperationId, DpnsVoteTargetKey};
+use crate::model::dpns_voting::{DpnsVoteOperationId, DpnsVoteTargetKey, dpns_vote_poll};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::BasicError;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
@@ -37,17 +35,6 @@ pub(super) enum DpnsVoteAttempt {
     Unconfirmed(TaskError),
     Rejected(TaskError),
     FailedBeforeSubmission(TaskError),
-}
-
-/// Build `[Value::from("dash"), Value::Text(normalized_label.to_owned())]` for a DPNS vote poll.
-///
-/// Caller must pre-normalize the label via `convert_to_homograph_safe_chars`
-/// (`alice` → `a11ce`); Platform indexes polls under the normalized form.
-fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
-    vec![
-        Value::from("dash"),
-        Value::Text(normalized_label.to_owned()),
-    ]
 }
 
 fn ensure_valid_vote_transition_structure(
@@ -133,33 +120,15 @@ impl AppContext {
         name: &str,
         sdk: &Sdk,
     ) -> Result<ContestedDocumentResourceVotePoll, TaskError> {
-        let data_contract = self.dpns_contract.as_ref();
-        let document_type = data_contract
-            .document_type_for_name("domain")
-            .map_err(|_| TaskError::DataContractNotFound)?;
-
-        let Some(contested_index) = document_type.find_contested_index() else {
-            return Err(TaskError::ContractSchemaMismatch {
-                detail: "DPNS domain document type has no contested index",
-            });
-        };
-
+        let vote_poll = dpns_vote_poll(&self.dpns_contract, name)?;
         let normalized_label = convert_to_homograph_safe_chars(name);
-        let index_values = dpns_vote_poll_index_values(&normalized_label);
-
-        let vote_poll = ContestedDocumentResourceVotePoll {
-            index_name: contested_index.name.clone(),
-            index_values,
-            document_type_name: document_type.name().to_string(),
-            contract_id: data_contract.id(),
-        };
 
         // Pre-flight: confirm Platform has an open poll for this label before
         // broadcasting — fails fast with VotePollNotFound if it doesn't.
         let existence_query = VotePollsByDocumentTypeQuery {
-            contract_id: data_contract.id(),
-            document_type_name: document_type.name().to_string(),
-            index_name: contested_index.name.clone(),
+            contract_id: vote_poll.contract_id,
+            document_type_name: vote_poll.document_type_name.clone(),
+            index_name: vote_poll.index_name.clone(),
             start_index_values: vec![Value::from("dash")],
             end_index_values: vec![],
             // Start exactly at our normalized label (inclusive) — a single
@@ -249,33 +218,6 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn index_values_uses_the_given_normalized_label() {
-        // Given: a pre-normalized DPNS label (homographs already substituted).
-        let normalized = "a11ce";
-
-        // When: constructing the vote poll index values.
-        let values = dpns_vote_poll_index_values(normalized);
-
-        // Then: first element is the `"dash"` parent, second is the label as-given.
-        assert_eq!(values.len(), 2);
-        assert_eq!(values[0], Value::from("dash"));
-        assert_eq!(values[1], Value::Text("a11ce".to_owned()));
-    }
-
-    #[test]
-    fn index_values_do_not_renormalize_the_label() {
-        // Given: a label that still contains homograph characters.
-        let not_yet_normalized = "alice";
-
-        // When: passing it directly to the helper (violating the contract).
-        let values = dpns_vote_poll_index_values(not_yet_normalized);
-
-        // Then: the helper does NOT renormalize — the raw label is returned as-is.
-        // (Caller is responsible for normalizing before calling.)
-        assert_eq!(values[1], Value::Text("alice".to_owned()));
-    }
 
     #[test]
     fn convert_to_homograph_safe_chars_maps_alice_to_a11ce() {

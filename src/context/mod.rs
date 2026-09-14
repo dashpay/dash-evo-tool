@@ -3,6 +3,7 @@ mod contested_names_db;
 mod contract_token_db;
 mod dpns_vote_operations;
 mod dpns_vote_state;
+pub(crate) use dpns_vote_state::DpnsVoteRefreshResults;
 pub mod feature_gate;
 mod identity_db;
 #[cfg(test)]
@@ -91,7 +92,10 @@ impl Drop for ContactRequestActionClaim<'_> {
     }
 }
 
-const MAX_CONCURRENT_DPNS_VOTERS: usize = 4;
+/// Voters DET talks to Platform about at once — the dispatch semaphore, the
+/// per-operation submission fan-out, the due-schedule sweep and the proved
+/// vote-state refresh all share this single budget.
+pub(crate) const MAX_CONCURRENT_DPNS_VOTERS: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct DpnsVoteDispatchCoordinator {

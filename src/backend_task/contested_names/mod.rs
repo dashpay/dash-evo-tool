@@ -2,21 +2,24 @@ mod edit_scheduled_vote;
 mod query_dpns_contested_resources;
 mod query_dpns_vote_contenders;
 mod query_ending_times;
+mod refresh_vote_states;
 mod vote_on_dpns_name;
 
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::{DapiAddressAvailability, TaskError};
-use crate::context::AppContext;
+use crate::context::{AppContext, MAX_CONCURRENT_DPNS_VOTERS};
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduleEditValidationError, DpnsVoteFailure, DpnsVoteOperation,
-    DpnsVoteOperationId, DpnsVotePollAvailability, DpnsVoteTarget, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming, dpns_schedule_is_overdue, dpns_vote_poll_availability,
+    DpnsVoteOperationId, DpnsVoteOutcome, DpnsVotePollAvailability, DpnsVoteTarget,
+    DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming, authoritative_dpns_vote_outcome,
+    dpns_schedule_is_overdue, dpns_vote_lock_holders, dpns_vote_poll_availability,
     failed_before_broadcast_outcome, unavailable_preflight_outcome, validate_dpns_schedule_edit,
     validate_dpns_schedule_time,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
+use crate::utils::time::now_ms;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -29,7 +32,6 @@ use dash_sdk::platform::{FetchMany, Identifier};
 use futures::{StreamExt, stream};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use crate::model::dpns_voting::SCHEDULED_VOTE_MAX_LATENESS_MS;
@@ -353,37 +355,32 @@ impl AppContext {
             vote_poll_id: self.dpns_vote_poll_id(&scheduled_vote.contested_name)?,
         };
         let operations = self.dpns_vote_operations()?;
-        if let Some(operation) = preferred_operation_for_scheduled_key(&operations, &key)?.cloned()
-        {
-            for outcome in &operation.targets {
-                if outcome.target.key != key {
-                    continue;
-                }
-                match outcome.status {
-                    DpnsVoteTargetStatus::Scheduled => {
-                        if !self
-                            .queue_scheduled_dpns_vote_target(operation.id, &outcome.target.key)?
-                        {
-                            return Err(TaskError::DpnsVoteTargetBusy);
-                        }
-                        return self
-                            .dpns_vote_operation(operation.id)?
-                            .ok_or(TaskError::DpnsVoteOperationRecordMissing);
-                    }
-                    DpnsVoteTargetStatus::Unconfirmed
-                    | DpnsVoteTargetStatus::Queued
-                    | DpnsVoteTargetStatus::Submitting
-                    | DpnsVoteTargetStatus::Confirming => {
+        if let Some(outcome) = preferred_outcome_for_scheduled_key(&operations, &key)?.cloned() {
+            match outcome.status {
+                DpnsVoteTargetStatus::Scheduled => {
+                    if !self.queue_scheduled_dpns_vote_target(
+                        outcome.operation_id,
+                        &outcome.target.key,
+                    )? {
                         return Err(TaskError::DpnsVoteTargetBusy);
                     }
-                    DpnsVoteTargetStatus::Confirmed
-                    | DpnsVoteTargetStatus::Rejected
-                    | DpnsVoteTargetStatus::FailedBeforeSubmission
-                    | DpnsVoteTargetStatus::Cancelled
-                    | DpnsVoteTargetStatus::NotApplied => {
-                        // An explicit Cast now action is a deliberate retry and
-                        // may create a new operation below.
-                    }
+                    return self
+                        .dpns_vote_operation(outcome.operation_id)?
+                        .ok_or(TaskError::DpnsVoteOperationRecordMissing);
+                }
+                DpnsVoteTargetStatus::Unconfirmed
+                | DpnsVoteTargetStatus::Queued
+                | DpnsVoteTargetStatus::Submitting
+                | DpnsVoteTargetStatus::Confirming => {
+                    return Err(TaskError::DpnsVoteTargetBusy);
+                }
+                DpnsVoteTargetStatus::Confirmed
+                | DpnsVoteTargetStatus::Rejected
+                | DpnsVoteTargetStatus::FailedBeforeSubmission
+                | DpnsVoteTargetStatus::Cancelled
+                | DpnsVoteTargetStatus::NotApplied => {
+                    // An explicit Cast now action is a deliberate retry and
+                    // may create a new operation below.
                 }
             }
         }
@@ -452,7 +449,7 @@ impl AppContext {
         if targets.is_empty() {
             return Ok(());
         }
-        let now_ms = UNIX_EPOCH.elapsed().unwrap_or_default().as_millis() as u64;
+        let now_ms = now_ms();
         // Reject invalid times even when the contest has not been cached yet.
         for target in targets {
             if let VoteTiming::Scheduled(timestamp) = target.timing {
@@ -642,7 +639,6 @@ impl AppContext {
                 .push(outcome.target.clone());
         }
 
-        const MAX_CONCURRENT_VOTERS: usize = 4;
         stream::iter(groups)
             .map(|(voter_id, targets)| {
                 let app_context = Arc::clone(self);
@@ -809,7 +805,7 @@ impl AppContext {
                     Ok(())
                 }
             })
-            .buffer_unordered(MAX_CONCURRENT_VOTERS)
+            .buffer_unordered(MAX_CONCURRENT_DPNS_VOTERS)
             .collect::<Vec<Result<(), TaskError>>>()
             .await
             .into_iter()
@@ -878,7 +874,7 @@ impl AppContext {
             .into_iter()
             .map(|contest| (contest.normalized_contested_name.clone(), contest))
             .collect::<BTreeMap<_, _>>();
-        let now_ms = UNIX_EPOCH.elapsed().unwrap_or_default().as_millis() as u64;
+        let now_ms = now_ms();
         for outcome in operation
             .targets
             .iter()
@@ -1034,33 +1030,25 @@ impl AppContext {
         preserve_eligibility_since_ms: Option<u64>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let (due_operations, in_progress) = self
-            .prepare_due_scheduled_votes(
-                || {
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0)
-                },
-                preserve_eligibility_since_ms,
-                async {
-                    for operation in
-                        self.dpns_vote_operations()?
-                            .into_iter()
-                            .filter(|operation| {
-                                operation.targets.iter().any(|outcome| {
-                                    outcome.status == DpnsVoteTargetStatus::Unconfirmed
-                                })
-                            })
-                    {
-                        let result = self
-                            .reconcile_dpns_vote_operation(operation.id, sdk)
-                            .await?;
-                        let _ = sender.send(TaskResult::unattributed_success(result)).await;
-                    }
+            .prepare_due_scheduled_votes(now_ms, preserve_eligibility_since_ms, async {
+                for operation in self
+                    .dpns_vote_operations()?
+                    .into_iter()
+                    .filter(|operation| {
+                        operation
+                            .targets
+                            .iter()
+                            .any(|outcome| outcome.status == DpnsVoteTargetStatus::Unconfirmed)
+                    })
+                {
+                    let result = self
+                        .reconcile_dpns_vote_operation(operation.id, sdk)
+                        .await?;
+                    let _ = sender.send(TaskResult::unattributed_success(result)).await;
+                }
 
-                    Ok(())
-                },
-            )
+                Ok(())
+            })
             .await?;
         if due_operations.is_empty() {
             return Ok(BackendTaskSuccessResult::ScheduledVoteSweepCompleted {
@@ -1091,7 +1079,7 @@ impl AppContext {
                     (operation_id, result)
                 }
             })
-            .buffer_unordered(4)
+            .buffer_unordered(MAX_CONCURRENT_DPNS_VOTERS)
             .collect::<Vec<_>>()
             .await;
         let mut first_error = None;
@@ -1116,29 +1104,15 @@ impl AppContext {
     }
 }
 
-fn preferred_operation_for_scheduled_key<'a>(
+/// The outcome that speaks for `key`, rejecting a journal holding two locks on it.
+pub(crate) fn preferred_outcome_for_scheduled_key<'a>(
     operations: &'a [DpnsVoteOperation],
-    key: &DpnsVoteTargetKey,
-) -> Result<Option<&'a DpnsVoteOperation>, TaskError> {
-    let mut lock_holders = operations.iter().filter(|operation| {
-        operation
-            .outcome(key)
-            .is_some_and(|outcome| outcome.status.holds_lock())
-    });
-    let lock_holder = lock_holders.next();
-    if lock_holders.next().is_some() {
+    key: &'a DpnsVoteTargetKey,
+) -> Result<Option<&'a DpnsVoteOutcome>, TaskError> {
+    if dpns_vote_lock_holders(operations, key).nth(1).is_some() {
         return Err(TaskError::DpnsVoteTargetBusy);
     }
-    Ok(lock_holder.or_else(|| {
-        operations
-            .iter()
-            .filter(|operation| {
-                operation
-                    .outcome(key)
-                    .is_some_and(|outcome| !outcome.status.holds_lock())
-            })
-            .max_by_key(|operation| (operation.created_at, operation.id))
-    }))
+    Ok(authoritative_dpns_vote_outcome(operations, key))
 }
 
 fn scheduled_vote_is_due(
@@ -1525,7 +1499,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_schedule_validates_known_deadline_and_unknown_deadline_policy() {
-        let now = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let now = now_ms();
         let end = now + 120_000;
         for (timestamp, deadline, expected_valid) in [
             (end - 1, Some(end), true),
@@ -1554,7 +1528,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_schedule_rejects_mixed_deadlines_atomically_and_missing_or_closed_contests() {
-        let now = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let now = now_ms();
         let timestamp = now + 60_000;
         let (_temp, context) = vote_context();
         context.seed_dpns_contest_for_test("alice", Some(timestamp + 1), false);
@@ -1687,19 +1661,19 @@ mod tests {
         let operations = vec![older.clone(), lock_holder.clone(), newer.clone()];
 
         assert_eq!(
-            preferred_operation_for_scheduled_key(&operations, &key)
+            preferred_outcome_for_scheduled_key(&operations, &key)
                 .unwrap()
                 .unwrap()
-                .id,
+                .operation_id,
             lock_holder.id
         );
 
         let terminal_operations = vec![older, newer.clone()];
         assert_eq!(
-            preferred_operation_for_scheduled_key(&terminal_operations, &key)
+            preferred_outcome_for_scheduled_key(&terminal_operations, &key)
                 .unwrap()
                 .unwrap()
-                .id,
+                .operation_id,
             newer.id
         );
     }

@@ -14,9 +14,10 @@ use crate::model::contested_name::{
 };
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTargetKey,
-    DpnsVoteTargetStatus, VoteTiming,
+    DpnsVoteTargetStatus, VoteTiming, dpns_vote_authority_rank,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
@@ -45,7 +46,7 @@ fn scheduled_vote_journal_summary(
     voter_id: Identifier,
     dismissed: &BTreeSet<(DpnsVoteOperationId, DpnsVoteTargetKey)>,
 ) -> (bool, bool) {
-    let latest_by_target = operations
+    let authoritative_by_target = operations
         .iter()
         .flat_map(|operation| {
             operation
@@ -57,20 +58,25 @@ fn scheduled_vote_journal_summary(
             outcome.target.key.voter_id == voter_id
                 && matches!(outcome.target.timing, VoteTiming::Scheduled(_))
         })
-        .fold(BTreeMap::new(), |mut latest, (created_at, outcome)| {
-            let entry = latest
-                .entry(&outcome.target.key)
-                .or_insert((created_at, outcome));
-            if created_at >= entry.0 {
-                *entry = (created_at, outcome);
-            }
-            latest
-        });
+        .fold(
+            BTreeMap::new(),
+            |mut authoritative, (created_at, outcome)| {
+                let rank =
+                    dpns_vote_authority_rank(created_at, outcome.operation_id, outcome.status);
+                let entry = authoritative
+                    .entry(&outcome.target.key)
+                    .or_insert((rank, outcome));
+                if rank >= entry.0 {
+                    *entry = (rank, outcome);
+                }
+                authoritative
+            },
+        );
 
-    let pending = latest_by_target
+    let pending = authoritative_by_target
         .values()
         .any(|(_, outcome)| outcome.status.holds_lock());
-    let failed = latest_by_target.values().any(|(_, outcome)| {
+    let failed = authoritative_by_target.values().any(|(_, outcome)| {
         matches!(
             outcome.status,
             DpnsVoteTargetStatus::Rejected | DpnsVoteTargetStatus::FailedBeforeSubmission
@@ -147,13 +153,7 @@ impl StoredContestedName {
         } else if let Some(id) = awarded_to_id {
             ContestState::WonBy(id)
         } else if let Some(created_at) = latest_created_at {
-            let elapsed = Duration::from_millis(
-                (std::time::UNIX_EPOCH
-                    .elapsed()
-                    .unwrap_or_default()
-                    .as_millis() as u64)
-                    .saturating_sub(created_at),
-            );
+            let elapsed = Duration::from_millis(now_ms().saturating_sub(created_at));
             // New contenders may join only during the first half of the
             // contest window; the second half is vote-only.
             if elapsed <= contest_duration / 2 {
@@ -224,10 +224,7 @@ impl AppContext {
     /// Fetches every DPNS contest cached in the per-network k/v store whose
     /// `end_time` is in the future (or unknown).
     pub fn ongoing_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
-        let current_timestamp = std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let current_timestamp = now_ms();
         let kv = self.det_kv()?;
         let keys = kv
             .list(DetScope::Global, Some(CONTESTED_NAME_KEY_PREFIX))
@@ -270,10 +267,7 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> std::result::Result<Option<PendingUsername>, TaskError> {
-        let now_ms = std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = now_ms();
         Ok(self
             .pending_dpns_usernames
             .read()
@@ -291,10 +285,7 @@ impl AppContext {
         &self,
         identity_ids: &[Identifier],
     ) -> std::result::Result<HashMap<Identifier, PendingUsername>, TaskError> {
-        let now_ms = std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = now_ms();
         let pending = self
             .pending_dpns_usernames
             .read()
@@ -347,7 +338,7 @@ impl AppContext {
         end_time: Option<u64>,
         closed: bool,
     ) {
-        let now = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let now = now_ms();
         let stored = StoredContestedName {
             normalized_contested_name: name.into(),
             end_time,
@@ -385,6 +376,29 @@ impl AppContext {
         let Some(voter_id) = voter_id else {
             return Ok(crate::model::contested_name::MasternodeContestSummary::default());
         };
+        Ok(self
+            .masternode_contest_summaries(&[voter_id])?
+            .remove(&voter_id)
+            .unwrap_or_default())
+    }
+
+    /// Summarise many nodes at once, reading the shared state a single time.
+    ///
+    /// The contest cache, the derived vote-poll ids, the operation journal and
+    /// the schedule dismissals all depend on the contest set rather than the
+    /// node, so an operator with a large fleet must not pay for them per card.
+    /// Only the proved current-vote snapshot is genuinely per node. Nodes whose
+    /// summary cannot be built are omitted.
+    pub fn masternode_contest_summaries(
+        &self,
+        voter_ids: &[Identifier],
+    ) -> std::result::Result<
+        BTreeMap<Identifier, crate::model::contested_name::MasternodeContestSummary>,
+        TaskError,
+    > {
+        if voter_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
 
         let contests = self.ongoing_contested_names()?;
         let open_polls: Vec<Option<Identifier>> = contests
@@ -396,46 +410,48 @@ impl AppContext {
             })
             .collect();
         let open_contest_count = open_polls.len();
+        let poll_ids: Vec<Identifier> = open_polls.iter().flatten().copied().collect();
+        let operations = self.dpns_vote_operations()?;
+        let dismissed = self.dismissed_dpns_vote_schedules()?;
 
-        // One storage read per node for every open contest's proved state
-        // (VOTE-NFR-007), instead of one read per contest. A read failure
-        // degrades each contest to `Unavailable`, matching the prior
-        // per-contest fallback.
-        let poll_states = {
-            let poll_ids: Vec<Identifier> = open_polls.iter().flatten().copied().collect();
-            if poll_ids.is_empty() {
-                BTreeMap::new()
-            } else {
-                self.dpns_current_vote_states(voter_id, poll_ids)
-                    .unwrap_or_default()
-            }
-        };
-        let states = open_polls
+        Ok(voter_ids
             .iter()
-            .map(|poll| {
-                poll.and_then(|poll_id| poll_states.get(&poll_id).copied())
-                    .unwrap_or(DpnsCurrentVoteState::Unavailable)
+            .map(|voter_id| {
+                // One storage read per node for every open contest's proved state
+                // (VOTE-NFR-007), instead of one read per contest. A read failure
+                // degrades each contest to `Unavailable`, matching the prior
+                // per-contest fallback.
+                let poll_states = if poll_ids.is_empty() {
+                    BTreeMap::new()
+                } else {
+                    self.dpns_current_vote_states(*voter_id, poll_ids.iter().copied())
+                        .unwrap_or_default()
+                };
+                let states = open_polls
+                    .iter()
+                    .map(|poll| {
+                        poll.and_then(|poll_id| poll_states.get(&poll_id).copied())
+                            .unwrap_or(DpnsCurrentVoteState::Unavailable)
+                    })
+                    .collect::<Vec<_>>();
+                let needs_vote_count = states
+                    .iter()
+                    .filter(|state| **state == DpnsCurrentVoteState::Available(None))
+                    .count();
+                let (has_scheduled_vote, has_failed_scheduled_vote) =
+                    scheduled_vote_journal_summary(&operations, *voter_id, &dismissed);
+                (
+                    *voter_id,
+                    crate::model::contested_name::MasternodeContestSummary {
+                        open_contest_count,
+                        needs_vote_count,
+                        vote_state: vote_state_summary(&states),
+                        has_scheduled_vote,
+                        has_failed_scheduled_vote,
+                    },
+                )
             })
-            .collect::<Vec<_>>();
-        let needs_vote_count = states
-            .iter()
-            .filter(|state| **state == DpnsCurrentVoteState::Available(None))
-            .count();
-        let vote_state = vote_state_summary(&states);
-
-        let (has_scheduled_vote, has_failed_scheduled_vote) = scheduled_vote_journal_summary(
-            &self.dpns_vote_operations()?,
-            voter_id,
-            &self.dismissed_dpns_vote_schedules()?,
-        );
-
-        Ok(crate::model::contested_name::MasternodeContestSummary {
-            open_contest_count,
-            needs_vote_count,
-            vote_state,
-            has_scheduled_vote,
-            has_failed_scheduled_vote,
-        })
+            .collect())
     }
 
     /// Apply a batch of newly-seen normalized names. New names are stored
@@ -1000,19 +1016,26 @@ mod tests {
         );
     }
 
-    /// Counts reads of the per-node current-vote snapshot key so a test can
-    /// prove how many snapshot loads a caller performs. The `v2:` prefix is
-    /// the active snapshot key (`current_votes_key`), one per node.
+    /// Counts reads of the keys a summary pass touches, so a test can prove how
+    /// many loads a caller performs. `snapshot_reads` counts the per-node
+    /// current-vote snapshot (`current_votes_key`); `shared_reads` counts the
+    /// contest cache and operation journal, which do not depend on the node.
     #[derive(Default)]
     struct CurrentVotesReadCounter {
         inner: InMemoryKv,
         snapshot_reads: AtomicUsize,
+        shared_reads: AtomicUsize,
     }
 
     impl KvStore for CurrentVotesReadCounter {
         fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
             if key.starts_with("det:dpns_current_votes:v3:") {
                 self.snapshot_reads.fetch_add(1, Ordering::Relaxed);
+            }
+            if key.starts_with(CONTESTED_NAME_KEY_PREFIX)
+                || key.starts_with("det:dpns_vote_operation:v2:")
+            {
+                self.shared_reads.fetch_add(1, Ordering::Relaxed);
             }
             self.inner.get(scope, key)
         }
@@ -1081,6 +1104,63 @@ mod tests {
         assert_eq!(
             reads, 1,
             "expected one snapshot read per node, got {reads} for 5 open contests"
+        );
+    }
+
+    /// The contest cache and the operation journal do not depend on the node, so
+    /// summarising a fleet must read them once — not once per card.
+    #[test]
+    fn masternode_summaries_read_node_independent_state_once_for_the_whole_fleet() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(CurrentVotesReadCounter::default());
+        let kv = DetKv::from_store(store.clone());
+        let context = crate::context::test_support::test_app_context_with_kv(
+            temp_dir.path(),
+            Arc::new(kv.clone()),
+        );
+        context.set_det_kv_override_for_test(kv.clone());
+
+        for name in ["alice", "bob", "carol"] {
+            let stored = StoredContestedName {
+                normalized_contested_name: name.to_string(),
+                contestants: vec![contestant(1, Some(1))],
+                ..Default::default()
+            };
+            kv.put(DetScope::Global, &contested_name_key(name), &stored)
+                .unwrap();
+        }
+        let mut operation =
+            DpnsVoteOperation::new(vec![crate::model::dpns_voting::DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([1; 32]),
+                vote_poll_id: context.dpns_vote_poll_id("alice").unwrap(),
+            },
+            voter_alias: None,
+            contested_name: "alice".into(),
+            requested_choice:
+                dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(42),
+        }]);
+        context
+            .insert_dpns_vote_operation(&mut operation, None)
+            .unwrap();
+
+        let voters: Vec<Identifier> = (1..=8).map(|byte| Identifier::from([byte; 32])).collect();
+        let before = store.shared_reads.load(Ordering::Relaxed);
+        let summaries = context
+            .masternode_contest_summaries(&voters)
+            .expect("fleet summaries");
+        let reads = store.shared_reads.load(Ordering::Relaxed) - before;
+
+        assert_eq!(summaries.len(), voters.len());
+        assert_eq!(
+            reads,
+            4,
+            "expected one read of each of the 3 contests and 1 journal record for the whole \
+             fleet, got {reads} for {} nodes",
+            voters.len()
         );
     }
 

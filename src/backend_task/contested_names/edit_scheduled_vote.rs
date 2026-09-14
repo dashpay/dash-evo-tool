@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::dpns_voting::{
     DpnsScheduleEditValidationError, DpnsScheduledVoteEdit, validate_dpns_schedule_edit,
 };
+use crate::utils::time::now_ms;
 use dash_sdk::Sdk;
 
 impl AppContext {
@@ -45,10 +46,7 @@ impl AppContext {
             .ok_or_else(|| TaskError::VotePollNotFound {
                 name: target.contested_name.clone(),
             })?;
-        let now_ms = std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = now_ms();
         validate_dpns_schedule_edit(edit.choice, edit.unix_timestamp, now_ms, &contest).map_err(
             |error| match error {
                 DpnsScheduleEditValidationError::Time => TaskError::DpnsScheduledVoteInvalidTime,

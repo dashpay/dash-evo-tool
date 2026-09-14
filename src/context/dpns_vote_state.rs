@@ -2,33 +2,25 @@
 
 use super::AppContext;
 use crate::backend_task::error::TaskError;
-use crate::model::dpns_voting::DpnsCurrentVoteState;
-use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
-use dash_sdk::Sdk;
+use crate::model::dpns_voting::{DpnsCurrentVoteState, dpns_vote_poll};
+use crate::utils::time::now_ms;
+use crate::wallet_backend::{DetKv, DetScope, KvAdapterError, network_prefix};
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
-use dash_sdk::dpp::voting::votes::resource_vote::ResourceVote;
-use dash_sdk::dpp::voting::votes::resource_vote::accessors::v0::ResourceVoteGettersV0;
-use dash_sdk::drive::query::contested_resource_votes_given_by_identity_query::ContestedResourceVotesGivenByIdentityQuery;
-use dash_sdk::platform::{FetchMany, Identifier};
-use futures::{StreamExt, stream};
+use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+/// v1 predates network qualification, so it is one key rather than a prefix.
 const LEGACY_CURRENT_VOTES_KEY: &str = "det:dpns_current_votes:v1";
 const CURRENT_VOTES_KEY_PREFIX: &str = "det:dpns_current_votes:v3:";
-const VOTE_QUERY_PAGE_SIZE: u16 = 100;
+/// Superseded per-network prefixes, deleted on the first read that misses.
+/// Bumping [`CURRENT_VOTES_KEY_PREFIX`] means adding the retired value here.
+const LEGACY_CURRENT_VOTES_KEY_PREFIXES: [&str; 1] = ["det:dpns_current_votes:v2:"];
 const CURRENT_VOTE_MAX_AGE_MS: u64 = 120_000;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,13 +107,7 @@ fn vote_state_err(source: KvAdapterError) -> TaskError {
 }
 
 fn current_votes_key(network: Network) -> String {
-    let network = match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    };
-    format!("{CURRENT_VOTES_KEY_PREFIX}{network}")
+    format!("{CURRENT_VOTES_KEY_PREFIX}{}", network_prefix(network))
 }
 
 fn load_snapshot(
@@ -136,11 +122,13 @@ fn load_snapshot(
     {
         return Ok(Some(snapshot));
     }
-    // Cached v1/v2 values have no independent per-poll freshness and must be re-proved.
+    // Superseded values have no independent per-poll freshness and must be re-proved.
     kv.delete(scope, LEGACY_CURRENT_VOTES_KEY)
         .map_err(vote_state_err)?;
-    let previous_key = current_votes_key(network).replace(":v3:", ":v2:");
-    kv.delete(scope, &previous_key).map_err(vote_state_err)?;
+    for prefix in LEGACY_CURRENT_VOTES_KEY_PREFIXES {
+        kv.delete(scope, &format!("{prefix}{}", network_prefix(network)))
+            .map_err(vote_state_err)?;
+    }
     Ok(None)
 }
 
@@ -226,7 +214,7 @@ impl AppContext {
         &self,
         voter_id: Identifier,
     ) -> Result<(), TaskError> {
-        self.refresh_dpns_vote_state_with(
+        self.publish_dpns_vote_state(
             &self.det_kv()?,
             voter_id,
             std::future::ready(Err(Box::new(dash_sdk::Error::InvalidProvedResponse(
@@ -243,12 +231,14 @@ impl AppContext {
         voter_id: Identifier,
         votes: BTreeMap<[u8; 32], ResourceVoteChoice>,
     ) -> Result<(), TaskError> {
-        self.refresh_dpns_vote_state_with(&self.det_kv()?, voter_id, async { Ok(votes) })
+        self.publish_dpns_vote_state(&self.det_kv()?, voter_id, async { Ok(votes) })
             .await
             .map(|_| ())
     }
 
-    async fn refresh_dpns_vote_state_with(
+    /// Publish one voter's fetched choices as the newest proof, or record the
+    /// failure. Takes the query as a future so no network I/O lives in `context/`.
+    pub(crate) async fn publish_dpns_vote_state(
         &self,
         kv: &DetKv,
         voter_id: Identifier,
@@ -309,28 +299,13 @@ impl AppContext {
         })
     }
 
-    /// Build the exact Platform vote-poll ID for one normalized DPNS label.
+    /// Build the exact Platform vote-poll ID for one DPNS label.
     pub fn dpns_vote_poll_id(&self, name: &str) -> Result<Identifier, TaskError> {
-        let document_type = self
-            .dpns_contract
-            .document_type_for_name("domain")
-            .map_err(|_| TaskError::DataContractNotFound)?;
-        let Some(contested_index) = document_type.find_contested_index() else {
-            return Err(TaskError::ContractSchemaMismatch {
-                detail: "DPNS domain document type has no contested index",
-            });
-        };
-        let normalized_name = convert_to_homograph_safe_chars(name);
-        ContestedDocumentResourceVotePoll {
-            index_name: contested_index.name.clone(),
-            index_values: vec![Value::from("dash"), Value::Text(normalized_name)],
-            document_type_name: document_type.name().to_owned(),
-            contract_id: self.dpns_contract.id(),
-        }
-        .unique_id()
-        .map_err(|source| TaskError::SdkError {
-            source_error: Box::new(dash_sdk::Error::Protocol(source)),
-        })
+        dpns_vote_poll(&self.dpns_contract, name)?
+            .unique_id()
+            .map_err(|source| TaskError::SdkError {
+                source_error: Box::new(dash_sdk::Error::Protocol(source)),
+            })
     }
 
     /// Read the latest proved state without performing network I/O in the frame loop.
@@ -364,34 +339,6 @@ impl AppContext {
                 )
             })
             .collect())
-    }
-
-    /// Refresh proved vote state once per loaded masternode, paging only as needed.
-    pub(crate) async fn refresh_dpns_vote_states(
-        &self,
-        sdk: &Sdk,
-    ) -> Result<DpnsVoteRefreshResults, TaskError> {
-        let voters = self.load_local_masternode_identities()?;
-        let kv = self.det_kv()?;
-
-        Ok(stream::iter(voters)
-            .map(|voter| {
-                let sdk = sdk.clone();
-                let kv = kv.clone();
-                async move {
-                    let voter_id = voter.identity.id();
-                    let result = self.refresh_dpns_vote_state_with(
-                        &kv, voter_id, fetch_votes_for_voter(&sdk, voter_id),
-                    ).await.map_err(Arc::new);
-                    if let Err(error) = &result {
-                        tracing::warn!(?error, %voter_id, "Could not refresh proved DPNS vote state");
-                    }
-                    (voter_id, result)
-                }
-            })
-            .buffer_unordered(4)
-            .collect::<BTreeMap<_, _>>()
-            .await)
     }
 
     /// Update the proved-state cache after a confirmed target.
@@ -433,49 +380,6 @@ impl AppContext {
         );
         Ok(())
     }
-}
-
-async fn fetch_votes_for_voter(
-    sdk: &Sdk,
-    voter_id: Identifier,
-) -> Result<BTreeMap<[u8; 32], ResourceVoteChoice>, Box<dash_sdk::Error>> {
-    let mut votes = BTreeMap::new();
-    let mut start_at = None;
-    loop {
-        let page = ResourceVote::fetch_many(
-            sdk,
-            ContestedResourceVotesGivenByIdentityQuery {
-                identity_id: voter_id,
-                offset: None,
-                limit: Some(VOTE_QUERY_PAGE_SIZE),
-                start_at,
-                order_ascending: true,
-            },
-        )
-        .await?;
-        let page_len = page.len();
-        let last_key = page.last().map(|(id, _)| id.to_buffer());
-        for (poll_id, vote) in page {
-            if let Some(vote) = vote {
-                votes.insert(poll_id.to_buffer(), vote.resource_vote_choice());
-            }
-        }
-        if page_len < usize::from(VOTE_QUERY_PAGE_SIZE) {
-            break;
-        }
-        let Some(last_key) = last_key else {
-            break;
-        };
-        start_at = Some((last_key, false));
-    }
-    Ok(votes)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -561,7 +465,7 @@ mod tests {
         let (published_tx, published_rx) = tokio::sync::oneshot::channel();
         let first = async {
             let snapshot = context
-                .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+                .publish_dpns_vote_state(&kv, voter, async { Ok(BTreeMap::new()) })
                 .await
                 .unwrap();
             published_tx.send(()).unwrap();
@@ -570,7 +474,7 @@ mod tests {
         let second = async {
             published_rx.await.unwrap();
             context
-                .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+                .publish_dpns_vote_state(&kv, voter, async { Ok(BTreeMap::new()) })
                 .await
                 .unwrap()
         };
@@ -608,7 +512,7 @@ mod tests {
         let voter = Identifier::from([1; 32]);
         let poll = Identifier::from([2; 32]);
         let older = context
-            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .publish_dpns_vote_state(&kv, voter, async { Ok(BTreeMap::new()) })
             .await
             .unwrap();
         context
@@ -644,7 +548,7 @@ mod tests {
         let poll = Identifier::from([2; 32]);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
-        let older = context.refresh_dpns_vote_state_with(&kv, voter, async {
+        let older = context.publish_dpns_vote_state(&kv, voter, async {
             started_tx.send(()).unwrap();
             finish_rx.await.unwrap();
             Ok(BTreeMap::new())
@@ -693,12 +597,12 @@ mod tests {
         let voter = Identifier::from([1; 32]);
         let poll = Identifier::from([2; 32]);
         let older = context
-            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .publish_dpns_vote_state(&kv, voter, async { Ok(BTreeMap::new()) })
             .await
             .unwrap();
         assert!(
             context
-                .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+                .publish_dpns_vote_state(&kv, voter, async { Err(connection_error()) })
                 .await
                 .is_err()
         );
@@ -732,13 +636,13 @@ mod tests {
         let voter = Identifier::from([1; 32]);
         let poll = Identifier::from([2; 32]);
         let older = context
-            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .publish_dpns_vote_state(&kv, voter, async { Ok(BTreeMap::new()) })
             .await
             .unwrap();
         store.fail_next_gets_containing("det:dpns_current_votes:", 1);
         assert!(
             context
-                .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+                .publish_dpns_vote_state(&kv, voter, async { Err(connection_error()) })
                 .await
                 .is_err()
         );
@@ -760,7 +664,7 @@ mod tests {
         let poll = Identifier::from([2; 32]);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
-        let older = context.refresh_dpns_vote_state_with(&kv, voter, async {
+        let older = context.publish_dpns_vote_state(&kv, voter, async {
             started_tx.send(()).unwrap();
             finish_rx.await.unwrap();
             Ok(BTreeMap::from([(
@@ -771,7 +675,7 @@ mod tests {
         let newer = async {
             started_rx.await.unwrap();
             let result = context
-                .refresh_dpns_vote_state_with(&kv, voter, async {
+                .publish_dpns_vote_state(&kv, voter, async {
                     Ok(BTreeMap::from([(
                         poll.to_buffer(),
                         ResourceVoteChoice::Lock,
@@ -803,7 +707,7 @@ mod tests {
         let poll = Identifier::from([2; 32]);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
-        let refresh = context.refresh_dpns_vote_state_with(&kv, voter, async {
+        let refresh = context.publish_dpns_vote_state(&kv, voter, async {
             started_tx.send(()).unwrap();
             finish_rx.await.unwrap();
             Err(connection_error())
@@ -832,7 +736,7 @@ mod tests {
         let voter = Identifier::from([1; 32]);
         let poll = Identifier::from([2; 32]);
         let result = context
-            .refresh_dpns_vote_state_with(&kv, voter, async { Ok(BTreeMap::new()) })
+            .publish_dpns_vote_state(&kv, voter, async { Ok(BTreeMap::new()) })
             .await
             .unwrap();
         context
@@ -885,7 +789,7 @@ mod tests {
             .unwrap();
         assert!(
             context
-                .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+                .publish_dpns_vote_state(&kv, voter, async { Err(connection_error()) })
                 .await
                 .is_err()
         );
@@ -988,7 +892,7 @@ mod tests {
         context.set_det_kv_override_for_test(kv.clone());
         let voter = Identifier::from([1; 32]);
         let error = context
-            .refresh_dpns_vote_state_with(&kv, voter, async { Err(connection_error()) })
+            .publish_dpns_vote_state(&kv, voter, async { Err(connection_error()) })
             .await
             .unwrap_err();
         assert!(error.contains_dapi_reachability_failure());

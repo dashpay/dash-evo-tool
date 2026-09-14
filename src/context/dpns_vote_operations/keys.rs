@@ -5,7 +5,7 @@
 
 use crate::backend_task::error::TaskError;
 use crate::model::dpns_voting::DpnsVoteOperationId;
-use crate::wallet_backend::KvAdapterError;
+use crate::wallet_backend::{KvAdapterError, network_prefix};
 use dash_sdk::dpp::dashcore::Network;
 
 pub(super) const LEGACY_OPERATION_INDEX_KEY: &str = "det:dpns_vote_operations:v1";
@@ -20,42 +20,36 @@ pub(super) const SCHEDULE_DISMISSAL_KEY_PREFIX: &str = "det:dpns_vote_schedule_d
 pub(super) const IMMEDIATE_HISTORY_KEY_PREFIX: &str = "det:dpns_vote_immediate_history:v1:";
 pub(super) const SCHEDULED_HISTORY_KEY_PREFIX: &str = "det:dpns_vote_scheduled_history:v1:";
 
-pub(super) fn network_tag(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    }
-}
-
 pub(super) fn operation_index_key(network: Network) -> String {
-    format!("{OPERATION_INDEX_KEY_PREFIX}{}", network_tag(network))
+    format!("{OPERATION_INDEX_KEY_PREFIX}{}", network_prefix(network))
 }
 
 pub(super) fn operation_key(network: Network, id: DpnsVoteOperationId) -> String {
-    format!("{OPERATION_KEY_PREFIX}{}:{id}", network_tag(network))
+    format!("{OPERATION_KEY_PREFIX}{}:{id}", network_prefix(network))
 }
 
 pub(super) fn operation_key_prefix(network: Network) -> String {
-    format!("{OPERATION_KEY_PREFIX}{}:", network_tag(network))
+    format!("{OPERATION_KEY_PREFIX}{}:", network_prefix(network))
 }
 
 pub(super) fn schedule_dismissal_key(network: Network, id: DpnsVoteOperationId) -> String {
     format!(
         "{SCHEDULE_DISMISSAL_KEY_PREFIX}{}:{id}",
-        network_tag(network)
+        network_prefix(network)
     )
 }
 
 pub(super) fn operation_lock_index_key(network: Network) -> String {
-    format!("{OPERATION_LOCK_INDEX_KEY_PREFIX}{}", network_tag(network))
+    format!(
+        "{OPERATION_LOCK_INDEX_KEY_PREFIX}{}",
+        network_prefix(network)
+    )
 }
 
 pub(super) fn operation_lock_index_dirty_key(network: Network) -> String {
     format!(
         "{OPERATION_LOCK_INDEX_DIRTY_KEY_PREFIX}{}",
-        network_tag(network)
+        network_prefix(network)
     )
 }
 

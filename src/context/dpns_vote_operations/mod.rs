@@ -18,10 +18,12 @@ use crate::context::identity_db::{
 };
 use crate::model::dpns_voting::{
     DpnsCurrentVoteState, DpnsScheduledVoteClearDisposition, DpnsScheduledVoteClearOutcome,
-    DpnsScheduledVoteEdit, DpnsScheduledVoteKey, DpnsVoteFailure, DpnsVoteOperation,
-    DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
+    DpnsScheduledVoteEdit, DpnsScheduledVoteKey, DpnsVoteAuthorityRank, DpnsVoteFailure,
+    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget, DpnsVoteTargetKey,
+    DpnsVoteTargetStatus, VoteTiming, authoritative_dpns_vote_outcome, dpns_vote_authority_rank,
     unavailable_preflight_outcome,
 };
+use crate::utils::time::now_ms;
 use crate::wallet_backend::{DetKv, DetScope};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -463,12 +465,7 @@ impl AppContext {
     ) -> Result<(DpnsVoteOperationId, Option<TaskError>), TaskError> {
         let (_guard, kv) = self.journal()?;
         let mut operation = operation_for_schedule_edit(&kv, self.network, edit)?;
-        if edit.unix_timestamp
-            <= std::time::UNIX_EPOCH
-                .elapsed()
-                .unwrap_or_default()
-                .as_millis() as u64
-        {
+        if edit.unix_timestamp <= now_ms() {
             return Err(TaskError::DpnsScheduledVoteInvalidTime);
         }
         let outcome = operation
@@ -883,16 +880,8 @@ impl AppContext {
                 if lock_index.contains_key(key) {
                     return Err(TaskError::DpnsScheduledVoteAlreadyStarted);
                 }
-                operations
-                    .iter()
-                    .filter_map(|operation| {
-                        operation
-                            .outcome(key)
-                            .filter(|outcome| !outcome.status.holds_lock())
-                            .map(|outcome| (operation.created_at, operation.id, outcome.status))
-                    })
-                    .max_by_key(|(created_at, operation_id, _)| (*created_at, *operation_id))
-                    .map(|(_, operation_id, status)| (operation_id, status))
+                authoritative_dpns_vote_outcome(&operations, key)
+                    .map(|outcome| (outcome.operation_id, outcome.status))
             }
         };
 
@@ -968,10 +957,7 @@ impl AppContext {
         let mut retained = BTreeSet::new();
         let mut outcomes = BTreeMap::<
             DpnsScheduledVoteKey,
-            (
-                Option<(bool, u64, DpnsVoteOperationId)>,
-                DpnsScheduledVoteClearOutcome,
-            ),
+            (Option<DpnsVoteAuthorityRank>, DpnsScheduledVoteClearOutcome),
         >::new();
 
         for mut operation in load_operations(&kv, self.network)? {
@@ -1011,7 +997,7 @@ impl AppContext {
                         DpnsScheduledVoteClearDisposition::Cleared
                     }
                 };
-                let rank = (status.holds_lock(), operation.created_at, operation.id);
+                let rank = dpns_vote_authority_rank(operation.created_at, operation.id, status);
                 let should_replace = outcomes
                     .get(&key)
                     .is_none_or(|(existing_rank, _)| existing_rank.is_none_or(|old| rank > old));
@@ -1187,6 +1173,88 @@ mod tests {
             unix_timestamp: 42,
             executed_successfully: false,
         }
+    }
+
+    /// Two operations stamped inside the same millisecond — reachable whenever a
+    /// bulk review commits — must not make the four sites that pick "the
+    /// operation that speaks for this target" disagree with each other.
+    #[test]
+    fn operations_sharing_a_millisecond_agree_on_the_authoritative_operation() {
+        let older_id = DpnsVoteOperationId::from_bytes([1; 16]);
+        let newer_id = DpnsVoteOperationId::from_bytes([2; 16]);
+        let voter_id = Identifier::from([1; 32]);
+        let key = DpnsVoteTargetKey {
+            network: Network::Testnet,
+            voter_id,
+            vote_poll_id: Identifier::from([2; 32]),
+        };
+        // Two of the four sites consume what they select, so each gets its own
+        // journal. The higher id is written first so that "last record wins"
+        // and "highest id wins" cannot agree by accident.
+        let seed = || {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let context = crate::context::test_support::test_app_context(temp.path());
+            context.set_det_kv_override_for_test(kv());
+            for (id, status) in [
+                (newer_id, DpnsVoteTargetStatus::Rejected),
+                (older_id, DpnsVoteTargetStatus::Confirmed),
+            ] {
+                let mut operation = scheduled_operation(status, 2, "alice");
+                operation.id = id;
+                operation.created_at = 1_000;
+                operation.targets[0].operation_id = id;
+                context
+                    .insert_dpns_vote_operation(&mut operation, None)
+                    .expect("seed journal record");
+            }
+            (temp, context)
+        };
+
+        let (_temp, context) = seed();
+        let operations = context.dpns_vote_operations().unwrap();
+        assert_eq!(
+            crate::backend_task::contested_names::preferred_outcome_for_scheduled_key(
+                &operations,
+                &key
+            )
+            .unwrap()
+            .map(|outcome| outcome.operation_id),
+            Some(newer_id),
+            "cast-now selection must break the tie on the operation id"
+        );
+
+        let (_temp, context) = seed();
+        context
+            .remove_scheduled_dpns_vote(None, &key, "alice")
+            .unwrap();
+        assert!(
+            context
+                .dismissed_dpns_vote_schedules()
+                .unwrap()
+                .contains(&(newer_id, key.clone())),
+            "dismissal must land on the same operation the other sites prefer"
+        );
+
+        let (_temp, context) = seed();
+        assert_eq!(
+            context
+                .clear_all_scheduled_dpns_votes()
+                .unwrap()
+                .into_iter()
+                .map(|outcome| outcome.operation_id)
+                .collect::<Vec<_>>(),
+            vec![Some(newer_id)],
+            "Clear All must report the same operation the other sites prefer"
+        );
+
+        let (_temp, context) = seed();
+        assert!(
+            context
+                .masternode_contest_summary(Some(voter_id))
+                .unwrap()
+                .has_failed_scheduled_vote,
+            "the node card must report the failure of the same operation the other sites prefer"
+        );
     }
 
     /// VOTE-TC-040/041: one unresolved target cannot be inserted twice.
@@ -2024,7 +2092,9 @@ mod tests {
             crate::context::test_support::test_app_context_with_kv(dir.path(), Arc::new(kv()));
         context.set_det_kv_override_for_test(kv());
         let mut oldest = None;
-        for index in 0..258 {
+        // One completion past the prune threshold, so exactly one prune runs and
+        // trims the history back to its cap.
+        for index in 0..(DPNS_SCHEDULED_HISTORY_LIMIT + DPNS_HISTORY_PRUNE_SLACK + 1) as u64 {
             let mut completed = scheduled_operation(
                 DpnsVoteTargetStatus::Confirmed,
                 2,
@@ -2096,7 +2166,9 @@ mod tests {
             );
             context.set_det_kv_override_for_test(kv.clone());
             let mut oldest = None;
-            for index in 0..256 {
+            // Fill the history to the prune threshold so the `newest` write below
+            // is the one that prunes, and meets the injected cleanup failure.
+            for index in 0..(DPNS_SCHEDULED_HISTORY_LIMIT + DPNS_HISTORY_PRUNE_SLACK) as u64 {
                 let mut completed = scheduled_operation(
                     DpnsVoteTargetStatus::Confirmed,
                     2,
@@ -2200,7 +2272,7 @@ mod tests {
                 std::slice::from_ref(&current_mirror),
             )
             .unwrap();
-        for index in 1..=256 {
+        for index in 1..=(DPNS_SCHEDULED_HISTORY_LIMIT + DPNS_HISTORY_PRUNE_SLACK) as u64 {
             let mut completed = scheduled_operation(
                 DpnsVoteTargetStatus::Confirmed,
                 3,
@@ -2418,7 +2490,10 @@ mod tests {
     fn immediate_history_delete_failure_is_retried_without_losing_unresolved_locks() {
         let store = Arc::new(FailingKv::default());
         let kv = DetKv::from_store(store.clone());
-        for created_at in 0..256 {
+        // Fill the history to the prune threshold so the `newest` write below is
+        // the one that prunes, and meets the injected delete failure.
+        let prune_threshold = DPNS_IMMEDIATE_HISTORY_LIMIT + DPNS_HISTORY_PRUNE_SLACK;
+        for created_at in 0..prune_threshold as u64 {
             let mut completed = operation(DpnsVoteTargetStatus::Confirmed);
             completed.created_at = created_at;
             persist_operation(&kv, Network::Testnet, &completed).unwrap();
@@ -2428,13 +2503,17 @@ mod tests {
         store.fail_next_deletes_containing(OPERATION_KEY_PREFIX, 1);
         let newest = operation(DpnsVoteTargetStatus::Confirmed);
         persist_operation(&kv, Network::Testnet, &newest).unwrap();
-        assert_eq!(load_operations(&kv, Network::Testnet).unwrap().len(), 258);
+        assert_eq!(
+            load_operations(&kv, Network::Testnet).unwrap().len(),
+            prune_threshold + 2,
+            "a failed cleanup must retain every record"
+        );
         assert_eq!(
             prune_completed_history(&kv, Network::Testnet, None, HistoryKind::Immediate).unwrap(),
-            1
+            DPNS_HISTORY_PRUNE_SLACK + 1
         );
         let remaining = load_operations(&kv, Network::Testnet).unwrap();
-        assert_eq!(remaining.len(), 257);
+        assert_eq!(remaining.len(), DPNS_IMMEDIATE_HISTORY_LIMIT + 1);
         assert!(remaining.iter().any(|item| item.id == newest.id));
         assert_eq!(
             load_or_rebuild_lock_index(&kv, Network::Testnet)

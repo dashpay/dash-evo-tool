@@ -41,6 +41,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn index_values_uses_the_given_normalized_label() {
+        // Given: a pre-normalized DPNS label (homographs already substituted).
+        let normalized = "a11ce";
+
+        // When: constructing the vote poll index values.
+        let values = dpns_vote_poll_index_values(normalized);
+
+        // Then: first element is the `"dash"` parent, second is the label as-given.
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], Value::from("dash"));
+        assert_eq!(values[1], Value::Text("a11ce".to_owned()));
+    }
+
+    #[test]
+    fn index_values_do_not_renormalize_the_label() {
+        // Given: a label that still contains homograph characters.
+        let not_yet_normalized = "alice";
+
+        // When: passing it directly to the helper (violating the contract).
+        let values = dpns_vote_poll_index_values(not_yet_normalized);
+
+        // Then: the helper does NOT renormalize — the raw label is returned as-is.
+        // (Caller is responsible for normalizing before calling.)
+        assert_eq!(values[1], Value::Text("alice".to_owned()));
+    }
+
     /// VOTE-TC-003: choosing the proved current vote cannot create a target.
     #[test]
     fn operation_suppresses_exact_no_ops() {
@@ -163,14 +190,21 @@ mod tests {
         );
     }
 }
+use crate::backend_task::error::TaskError;
+use crate::utils::time::now_ms;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::DataContract;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::platform::Identifier;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Proved current vote state for one node × poll.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,10 +479,7 @@ impl DpnsVoteOperation {
     /// Build an operation while removing targets that match proved current state.
     pub fn new(targets: Vec<DpnsVoteTarget>) -> Self {
         let id = DpnsVoteOperationId::random();
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as TimestampMillis;
+        let created_at = now_ms();
         let original_len = targets.len();
         let targets = targets
             .into_iter()
@@ -489,4 +520,99 @@ impl DpnsVoteOperation {
             .iter()
             .all(|outcome| !outcome.status.holds_lock())
     }
+}
+
+/// Build `[Value::from("dash"), Value::Text(normalized_label.to_owned())]` for a DPNS vote poll.
+///
+/// Caller must pre-normalize the label via `convert_to_homograph_safe_chars`
+/// (`alice` → `a11ce`); Platform indexes polls under the normalized form.
+fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
+    vec![
+        Value::from("dash"),
+        Value::Text(normalized_label.to_owned()),
+    ]
+}
+
+/// The exact Platform vote poll for one DPNS label under `dpns_contract`.
+///
+/// Normalizes `name` itself, so callers pass the label as the user typed it.
+/// This is the only construction of the poll: its `unique_id()` keys every
+/// target lock and journal record, while the poll itself is what gets voted on,
+/// so a second spelling would let DET lock one poll and submit another.
+///
+/// # Errors
+///
+/// [`TaskError::DataContractNotFound`] when the contract carries no `domain`
+/// document type, and [`TaskError::ContractSchemaMismatch`] when that document
+/// type declares no contested index.
+pub fn dpns_vote_poll(
+    dpns_contract: &DataContract,
+    name: &str,
+) -> Result<ContestedDocumentResourceVotePoll, TaskError> {
+    let document_type = dpns_contract
+        .document_type_for_name("domain")
+        .map_err(|_| TaskError::DataContractNotFound)?;
+    let Some(contested_index) = document_type.find_contested_index() else {
+        return Err(TaskError::ContractSchemaMismatch {
+            detail: "DPNS domain document type has no contested index",
+        });
+    };
+    Ok(ContestedDocumentResourceVotePoll {
+        index_name: contested_index.name.clone(),
+        index_values: dpns_vote_poll_index_values(&convert_to_homograph_safe_chars(name)),
+        document_type_name: document_type.name().to_owned(),
+        contract_id: dpns_contract.id(),
+    })
+}
+
+/// Ordering that decides which operation currently speaks for one target.
+pub type DpnsVoteAuthorityRank = (bool, TimestampMillis, DpnsVoteOperationId);
+
+/// Rank one operation's outcome for a target: a lock holder outranks history,
+/// then the newest `(created_at, operation id)` wins.
+///
+/// The operation id is part of the rank, not a fallback: `created_at` comes from
+/// a millisecond clock, so a bulk review commits several operations under one
+/// timestamp and ties are routinely reachable. Every site that asks "which
+/// operation speaks for this target" must order by this rank, or the Scheduled
+/// Votes screen, the node cards and the cast/cancel paths can each name a
+/// different operation for the same journal.
+pub fn dpns_vote_authority_rank(
+    created_at: TimestampMillis,
+    operation_id: DpnsVoteOperationId,
+    status: DpnsVoteTargetStatus,
+) -> DpnsVoteAuthorityRank {
+    (status.holds_lock(), created_at, operation_id)
+}
+
+/// The outcome that currently speaks for `key`, by [`dpns_vote_authority_rank`].
+///
+/// Returns `None` when no operation in `operations` targets `key`.
+pub fn authoritative_dpns_vote_outcome<'a>(
+    operations: &'a [DpnsVoteOperation],
+    key: &DpnsVoteTargetKey,
+) -> Option<&'a DpnsVoteOutcome> {
+    operations
+        .iter()
+        .filter_map(|operation| {
+            operation
+                .outcome(key)
+                .map(|outcome| (operation.created_at, outcome))
+        })
+        .max_by_key(|(created_at, outcome)| {
+            dpns_vote_authority_rank(*created_at, outcome.operation_id, outcome.status)
+        })
+        .map(|(_, outcome)| outcome)
+}
+
+/// Operations still holding the target lock for `key`; more than one is a conflict.
+pub fn dpns_vote_lock_holders<'a>(
+    operations: &'a [DpnsVoteOperation],
+    key: &'a DpnsVoteTargetKey,
+) -> impl Iterator<Item = &'a DpnsVoteOperation> {
+    operations.iter().filter(move |operation| {
+        operation
+            .outcome(key)
+            .is_some_and(|outcome| outcome.status.holds_lock())
+    })
 }

@@ -189,6 +189,7 @@ impl AppContext {
             .map_err(|error| rebrand_dpns_domain_conflict(TaskError::from(error)))?;
 
         let dpns_names_document_query = DocumentQuery {
+            sub_queries: Vec::new(),
             select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),

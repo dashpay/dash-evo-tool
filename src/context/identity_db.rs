@@ -985,15 +985,8 @@ impl AppContext {
         Ok(())
     }
 
-    /// Test-only: write a wallet-less identity's sidecar record WITHOUT the
-    /// upstream unowned-scope mirror [`Self::insert_local_qualified_identity`]
-    /// always performs for one. Simulates the genuine pre-#955 on-disk shape
-    /// — a sidecar record that predates the mirror existing at all — which a
-    /// [`WalletBackend::remove_unowned_identity`](crate::wallet_backend::WalletBackend::remove_unowned_identity)
-    /// call cannot: that leaves a *tombstoned* upstream row (an add-then-
-    /// remove path), not the *absent* row (a row that was never added) an
-    /// upgrading pre-#955 install actually has, and upstream's upsert may
-    /// treat reviving a tombstone differently from a first insert.
+    /// Test-only: store a wallet-less sidecar without its upstream mirror,
+    /// matching an install that predates unowned-identity registration.
     #[cfg(test)]
     pub(crate) fn insert_local_qualified_identity_sidecar_only(
         &self,
@@ -1439,12 +1432,9 @@ impl AppContext {
     /// from it is gone whatever its blob still says) and then on the record's
     /// `wallet_hash`.
     ///
-    /// The boot reconcile re-checks this before withdrawing an upstream
-    /// unowned registration: an identity stored after its id scan must keep
-    /// its registration, while one that has since gained a wallet must still
-    /// lose it — a distinction [`Self::has_local_qualified_identity`] cannot
-    /// make. Two wrapper reads, the roster and the record: no blob decode, no
-    /// vault touch.
+    /// Boot reconciliation re-checks this before adding an unowned registration,
+    /// so an identity that gained a wallet after the snapshot is not re-added.
+    /// Reads the roster and wrapper without decoding the identity or opening keys.
     pub(crate) fn stored_identity_is_wallet_less(
         &self,
         id: &Identifier,
@@ -1656,23 +1646,15 @@ impl AppContext {
     /// children. Returns `Ok(())` even when the identity is unknown —
     /// mirrors the pre-C7 `DELETE` which silently no-ops on missing rows.
     ///
-    /// Cleanup verdict: explicit. DET never issues a row `DELETE` against the
-    /// upstream `identities` table (that table is owned by the upstream sync
-    /// layer; DET stores the qualified-identity blob in the `meta_identity`
-    /// k/v scope only), so the upstream `cascade_meta_on_identity_delete`
-    /// trigger — which fires on `DELETE`, not `UPDATE` — never reaches this
-    /// path. This method therefore drains the Identity scope itself — the
-    /// blob, the top-up history, and every scheduled vote queued for this
-    /// identity — and removes the Global index entries that the trigger
-    /// would not touch. For the same reason it clears this identity's DashPay
-    /// contact overlays and its token-list preferences, which live under
-    /// Global keys naming the owner and so outlive the scope drain.
+    /// Explicitly drains the Identity scope, including its blob, top-up history
+    /// and scheduled votes, before deleting vault keys. It also removes Global
+    /// index entries, DashPay overlays and token preferences that upstream
+    /// identity cascades cannot reach. Wallet-owned upstream rows remain intact.
     ///
-    /// For a wallet-less identity this also *tombstones* (never row-deletes)
-    /// its mirrored row in the upstream unowned scope, via
+    /// For a wallet-less identity this also deletes its upstream mirrored row via
     /// [`WalletBackend::remove_unowned_identity`](crate::wallet_backend::WalletBackend::remove_unowned_identity)
     /// below — so upstream stops advertising a node this device no longer
-    /// has. Best-effort, and retried like registration is: a tombstone lost
+    /// has. Best-effort, and retried like registration is: a removal lost
     /// here is re-issued by the next boot's
     /// `AppContext::reconcile_unowned_identities`, which withdraws every
     /// unowned registration whose sidecar record is gone.
@@ -1953,7 +1935,7 @@ impl AppContext {
     /// Test-only: remove `identifier` from the Global enumeration index
     /// without touching the upstream unowned scope or any other
     /// Identity-scoped data. Simulates a sidecar delete whose upstream
-    /// tombstone never landed — e.g. a crash between
+    /// removal never landed — e.g. a crash between
     /// [`Self::delete_local_qualified_identity`]'s sidecar drain and its
     /// [`WalletBackend::remove_unowned_identity`](crate::wallet_backend::WalletBackend::remove_unowned_identity)
     /// call, or the `wallet_backend()` guard above finding no backend wired

@@ -49,6 +49,7 @@ mod loader;
 mod payments;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
+pub mod platform_compatibility;
 pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
@@ -417,7 +418,7 @@ struct Inner {
     #[cfg(test)]
     swallow_next_unowned_write: std::sync::atomic::AtomicBool,
     /// Drops the next unowned-scope removal, reproducing upstream's swallowed
-    /// tombstone persist — it logs and returns the removed identity anyway —
+    /// deletion persist — it logs and returns the removed identity anyway —
     /// which leaves the withdrawn row on disk.
     #[cfg(test)]
     swallow_next_unowned_removal: std::sync::atomic::AtomicBool,
@@ -560,10 +561,7 @@ impl WalletBackend {
         let wallet_database_path = wallet_database_path(ctx.data_dir(), network);
 
         let persister_config = SqlitePersisterConfig::new(wallet_database_path.clone());
-        let persister = Arc::new(
-            SqlitePersister::open(persister_config)
-                .map_err(TaskError::from_wallet_storage_open_error)?,
-        );
+        let persister = Arc::new(platform_compatibility::open(persister_config)?);
         // Reuse the vault handle `AppContext` already opened at boot. The file
         // backend holds an exclusive advisory lock for the handle's lifetime,
         // so opening a second handle here would fail with `AlreadyLocked` — and
@@ -2589,7 +2587,10 @@ impl WalletBackend {
                     }
                 };
                 recorded.map_err(|e| TaskError::WalletBackend {
-                    source: Arc::new(e.into()),
+                    source: Arc::new(platform_wallet::PlatformWalletError::from_store_failure(
+                        self.inner.wallet_persister.as_ref(),
+                        e,
+                    )),
                 })?;
             }
             None => match direction {
@@ -3141,7 +3142,13 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
 
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
-        | P::PlatformNodePool(_)
+        | P::StaleReservation
+        | P::InputMidBroadcast { .. }
+        | P::AssetLockInputConflict { .. }
+        | P::AssetLockInputContested { .. }
+        | P::MasternodeListUnavailable
+        | P::SeedBindingUnanswered { .. }
+        | P::ContactSyncUnreachable { .. }
         | P::PersisterLoad(_)
         | P::AddressNonceMismatch { .. }
         | P::WalletNotFound(_)
@@ -3441,7 +3448,13 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 
         // Everything else — preconditions, wallet state, builder errors.
         P::WalletCreation(_)
-        | P::PlatformNodePool(_)
+        | P::StaleReservation
+        | P::InputMidBroadcast { .. }
+        | P::AssetLockInputConflict { .. }
+        | P::AssetLockInputContested { .. }
+        | P::MasternodeListUnavailable
+        | P::SeedBindingUnanswered { .. }
+        | P::ContactSyncUnreachable { .. }
         | P::WalletNotFound(_)
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)

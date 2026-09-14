@@ -625,14 +625,13 @@ impl AppContext {
     /// `<data_dir>/det-app.sqlite`. Used by every `AppContext::new`
     /// callsite — pass a single `Arc<DetKv>` to all per-network
     /// contexts so they share the same blob.
-    pub fn open_app_kv(
-        data_dir: &std::path::Path,
-    ) -> Result<Arc<DetKv>, platform_wallet_storage::WalletStorageError> {
-        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
-        crate::app_dir::ensure_data_dir_exists(data_dir)?;
+    pub fn open_app_kv(data_dir: &std::path::Path) -> Result<Arc<DetKv>, TaskError> {
+        use platform_wallet_storage::SqlitePersisterConfig;
+        crate::app_dir::ensure_data_dir_exists(data_dir)
+            .map_err(|source| TaskError::FileSystem { source })?;
         let path = data_dir.join("det-app.sqlite");
         let config = SqlitePersisterConfig::new(path);
-        let persister = Arc::new(SqlitePersister::open(config)?);
+        let persister = Arc::new(crate::wallet_backend::platform_compatibility::open(config)?);
         Ok(Arc::new(DetKv::new(persister)))
     }
 
@@ -1627,6 +1626,39 @@ pub(crate) const fn default_platform_version(_network: &Network) -> &'static Pla
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_compatibility_open_app_kv_preserves_pr_pin_preferences() {
+        use crate::wallet_backend::DetScope;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("det-app.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(include_str!(
+            "../wallet_backend/platform_compatibility/fixtures/67d4ef3.sql"
+        ))
+        .unwrap();
+        let preference = "saved preference".to_owned();
+        let mut encoded = vec![1];
+        encoded.extend(
+            bincode::serde::encode_to_vec(&preference, bincode::config::standard()).unwrap(),
+        );
+        db.execute(
+            "INSERT INTO meta_global (key, value) VALUES (?1, ?2)",
+            rusqlite::params!["det:test:preference", encoded],
+        )
+        .unwrap();
+        drop(db);
+
+        for _ in 0..2 {
+            let kv = AppContext::open_app_kv(dir.path()).unwrap();
+            assert_eq!(
+                kv.get::<String>(DetScope::Global, "det:test:preference")
+                    .unwrap(),
+                Some(preference.clone())
+            );
+        }
+    }
 
     #[test]
     fn epoch_workaround_uses_v12_for_every_network() {

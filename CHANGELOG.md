@@ -29,6 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A scheduled workflow renews expiring migration fixture archives without
+  changing their contents and proposes updated manifest pointers in a PR.
+
 - Historical-profile migration tests cover v0.9.3 and the September 8 weekly
   release, including protected wallets and repeat startup. CLI tools expose
   saved identity bindings, inspect storage without starting an upgrade, and

@@ -14,7 +14,7 @@ mod tests {
     use dash_sdk::platform::Identifier;
 
     #[test]
-    fn additional_scenarios_automatic_window_boundary_and_overflow() {
+    fn automatic_window_boundary_and_overflow() {
         assert!(!dpns_schedule_is_overdue(1_000, 121_000));
         assert!(dpns_schedule_is_overdue(1_000, 121_001));
         assert!(!dpns_schedule_is_overdue(1_000, 999));
@@ -178,6 +178,42 @@ pub enum DpnsCurrentVoteState {
     Checking,
     Available(Option<ResourceVoteChoice>),
     Unavailable,
+}
+
+/// Whether a vote poll can still accept a submitted transition.
+///
+/// Reconciliation needs a terminal negative verdict, and a current choice that
+/// merely differs from the requested one never supplies it — the submitted
+/// transition may still be waiting to apply. A closed poll does supply it: no
+/// transition can apply to a decided contest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsVotePollAvailability {
+    /// The poll is open, or DET has no proof that it closed. Absence of
+    /// evidence must never be read as closure, so unknown polls land here.
+    MayAccept,
+    /// The contest is decided or its deadline has passed.
+    ProvedClosed,
+}
+
+/// Classify a poll from its cached contest, if DET has one.
+///
+/// `now_ms` is the current wall clock in Unix milliseconds, matched against the
+/// contest deadline. Returns [`DpnsVotePollAvailability::MayAccept`] for a
+/// contest DET has never cached.
+pub fn dpns_vote_poll_availability(
+    contest: Option<&crate::model::contested_name::ContestedName>,
+    now_ms: u64,
+) -> DpnsVotePollAvailability {
+    let Some(contest) = contest else {
+        return DpnsVotePollAvailability::MayAccept;
+    };
+    let decided = !contest.is_votable();
+    let expired = contest.end_time.is_some_and(|end| end <= now_ms);
+    if decided || expired {
+        DpnsVotePollAvailability::ProvedClosed
+    } else {
+        DpnsVotePollAvailability::MayAccept
+    }
 }
 
 /// Durable identity of one submitted voting batch.

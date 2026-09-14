@@ -16,7 +16,7 @@ for key in MCP_API_KEY TESTNET_core_rpc_password MAINNET_core_rpc_user LOCAL_wal
     if bash "$SCRIPT_DIR/pack.sh" "$scratch/data" "$scratch/rejected" > "$scratch/pack.log" 2>&1; then
         fail "pack accepted $key"
     fi
-    rg -Fq "$key" "$scratch/pack.log" || fail "pack did not identify $key"
+    grep -Fq "$key" "$scratch/pack.log" || fail "pack did not identify $key"
 done
 printf ' export TESTNET_core_rpc_password = "" # empty\nMCP_API_KEY=\n' > "$scratch/data/.env"
 bash "$SCRIPT_DIR/pack.sh" "$scratch/data" "$scratch/clean-export" > "$scratch/pack.log"
@@ -25,7 +25,7 @@ echo 'PASS: fixture credential checks'
 if bash "$SCRIPT_DIR/capture-headless.sh" --network mainnet --data-dir "$scratch/capture" > "$scratch/capture.log" 2>&1; then
     fail 'capture accepted mainnet'
 fi
-rg -q 'must be captured on testnet' "$scratch/capture.log" || fail 'testnet guard did not run first'
+grep -q 'must be captured on testnet' "$scratch/capture.log" || fail 'testnet guard did not run first'
 echo 'PASS: capture testnet guard'
 
 cat > "$scratch/bin/det-cli" <<'EOF'
@@ -65,7 +65,7 @@ for digest in '' invalid; do
     if bash "$SCRIPT_DIR/download-fixtures.sh" --manifest "$scratch/manifest.json" --dest "$scratch/download" --strict > "$scratch/download.log" 2>&1; then
         fail 'strict downloader accepted invalid digest'
     fi
-    rg -q 'valid sha256' "$scratch/download.log" || fail 'digest validation did not fail first'
+    grep -q 'valid sha256' "$scratch/download.log" || fail 'digest validation did not fail first'
     [ ! -e "$GH_CALL_LOG" ] || fail 'invalid digest reached the network'
 done
 echo 'PASS: strict digest validation before network access'
@@ -78,7 +78,7 @@ check_coverage() {
     bash "$SCRIPT_DIR/check-coverage.sh" --manifest "$scratch/manifest.json" --enforce-after "$baseline" > "$scratch/coverage.log" 2>&1 || result=$?
     if [ "$expected" = missing ]; then
         [ "$result" -ne 0 ] || fail "coverage missed $release after $baseline"
-        rg -q 'Published releases with no migration fixture' "$scratch/coverage.log" || fail 'coverage failed for an unrelated reason'
+        grep -q 'Published releases with no migration fixture' "$scratch/coverage.log" || fail 'coverage failed for an unrelated reason'
     else
         [ "$result" -eq 0 ] || fail "coverage incorrectly requires $release after $baseline"
     fi

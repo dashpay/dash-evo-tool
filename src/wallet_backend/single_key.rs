@@ -27,8 +27,8 @@ use zeroize::Zeroizing;
 use crate::backend_task::error::TaskError;
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::alias::{
-    AliasSource, DefaultAliasKind, ensure_alias_unique, next_default_alias, resolve_alias,
-    validate_stored_alias,
+    AliasSource, DefaultAliasKind, dedupe_preserved_alias, ensure_alias_unique, next_default_alias,
+    resolve_alias, validate_stored_alias,
 };
 use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
@@ -204,8 +204,13 @@ impl<'a> SingleKeyView<'a> {
     /// smallest unused "Key N", uniqueness among imported keys) before any
     /// write, and the index write guard is held from resolution until the
     /// key is indexed so concurrent imports/renames cannot claim the same
-    /// name. [`AliasSource::Preserved`] keeps a legacy alias as stored
-    /// (length-checked only) and does not take the guard early.
+    /// name. [`AliasSource::Preserved`] keeps a legacy alias's length
+    /// (length-checked as stored) but no longer keeps an exact duplicate: a
+    /// name another imported key already uses is disambiguated with the
+    /// smallest free `_1`, `_2`, … suffix via [`dedupe_preserved_alias`]. It
+    /// does not take the guard early — migration/restore import legacy rows
+    /// one at a time, so each dedup check already sees every key imported so
+    /// far.
     pub fn import_wif_with_passphrase(
         &self,
         wif: &str,
@@ -243,7 +248,16 @@ impl<'a> SingleKeyView<'a> {
                 let resolved = resolve_single_key_alias(&index, &raw, &address_str)?;
                 (Some(resolved), Some(index))
             }
-            AliasSource::Preserved(alias) => (alias, None),
+            AliasSource::Preserved(alias) => {
+                let deduped = alias.map(|alias| {
+                    let taken: Vec<String> = read_recover(self.index)
+                        .values()
+                        .filter_map(|key| key.alias.clone())
+                        .collect();
+                    dedupe_preserved_alias(alias, taken.iter().map(String::as_str))
+                });
+                (deduped, None)
+            }
         };
 
         // Extracted WIF bytes wrapped in `Zeroizing` so the stack copy wipes
@@ -2134,9 +2148,12 @@ mod tests {
     }
 
     /// Legacy data keeps its shape: a missing alias stays missing (no
-    /// synthetic "Key N" is written) and legacy duplicates are not rejected.
+    /// synthetic "Key N" is written), and legacy duplicates are never
+    /// rejected — but a colliding legacy alias is not kept as an exact
+    /// duplicate either; it is disambiguated with a `_1`, `_2`, … suffix by
+    /// [`dedupe_preserved_alias`].
     #[test]
-    fn preserved_import_keeps_missing_alias_and_legacy_duplicates() {
+    fn preserved_import_keeps_missing_alias_and_dedupes_legacy_duplicates() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
         let view = transient_view(&store, &index);
@@ -2144,19 +2161,30 @@ mod tests {
         let unnamed = view
             .import_wif(&wif_for_byte(0x11), AliasSource::Preserved(None))
             .expect("unnamed legacy import");
-        view.import_wif(
-            &wif_for_byte(0x12),
-            AliasSource::Preserved(Some("Dup".into())),
-        )
-        .expect("first legacy duplicate");
-        view.import_wif(
-            &wif_for_byte(0x13),
-            AliasSource::Preserved(Some("Dup".into())),
-        )
-        .expect("second legacy duplicate");
+        let first_dup = view
+            .import_wif(
+                &wif_for_byte(0x12),
+                AliasSource::Preserved(Some("Dup".into())),
+            )
+            .expect("first legacy duplicate");
+        let second_dup = view
+            .import_wif(
+                &wif_for_byte(0x13),
+                AliasSource::Preserved(Some("Dup".into())),
+            )
+            .expect("second legacy duplicate");
+        let third_dup = view
+            .import_wif(
+                &wif_for_byte(0x14),
+                AliasSource::Preserved(Some("Dup".into())),
+            )
+            .expect("third legacy duplicate");
 
         assert_eq!(unnamed.alias, None);
-        assert_eq!(view.list().len(), 3);
+        assert_eq!(first_dup.alias.as_deref(), Some("Dup"));
+        assert_eq!(second_dup.alias.as_deref(), Some("Dup_1"));
+        assert_eq!(third_dup.alias.as_deref(), Some("Dup_2"));
+        assert_eq!(view.list().len(), 4);
     }
 
     #[test]

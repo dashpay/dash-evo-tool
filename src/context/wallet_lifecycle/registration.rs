@@ -31,7 +31,8 @@ impl AppContext {
     /// is resolved by the backend: cleaned, blank replaced by the smallest
     /// unused "Key N", and rejected when another imported key already uses it.
     /// [`AliasSource::Preserved`](crate::model::wallet::alias::AliasSource::Preserved)
-    /// keeps a legacy alias (or its absence) as stored.
+    /// keeps a legacy alias's absence as stored, but disambiguates a legacy
+    /// duplicate with a `_1`, `_2`, … suffix rather than keeping it exact.
     pub fn import_single_key_wif(
         &self,
         wif: &str,

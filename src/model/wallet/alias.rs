@@ -72,9 +72,11 @@ pub enum AliasSource {
     /// Typed by the user (UI or MCP). Cleaned, blank replaced by the default
     /// name, and checked for uniqueness within its wallet kind.
     UserEntered(String),
-    /// Carried over verbatim from existing storage (legacy migration or
-    /// restore). Only the length is checked; `None` stays unnamed, and legacy
-    /// duplicates are kept rather than rejected.
+    /// Carried over from existing storage (legacy migration or restore).
+    /// Length is checked as stored; `None` stays unnamed. A legacy duplicate
+    /// is never rejected, but it is not kept as an exact duplicate either —
+    /// [`dedupe_preserved_alias`] suffixes it `_1`, `_2`, … with the smallest
+    /// free number.
     Preserved(Option<String>),
 }
 
@@ -160,6 +162,36 @@ pub fn ensure_alias_unique<'a>(
         return Err(AliasError::AlreadyUsed);
     }
     Ok(())
+}
+
+/// Disambiguate a legacy ([`AliasSource::Preserved`]) alias against
+/// `existing` (aliases already in use in the same wallet kind, compared
+/// after cleaning): a colliding name is never kept as an exact duplicate —
+/// it is suffixed `_1`, `_2`, … with the smallest free number instead. A
+/// blank alias is "unnamed", not a name, and is returned unchanged; it never
+/// collides, matching [`ensure_alias_unique`].
+///
+/// The base is truncated, if needed, so the suffixed result still fits
+/// [`MAX_WALLET_ALIAS_CHARS`].
+pub fn dedupe_preserved_alias<'a>(
+    alias: String,
+    existing: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let taken: HashSet<String> = existing.into_iter().map(clean_alias).collect();
+    let cleaned = clean_alias(&alias);
+    if cleaned.is_empty() || !taken.contains(&cleaned) {
+        return alias;
+    }
+    let base_chars: Vec<char> = cleaned.chars().collect();
+    (1usize..)
+        .find_map(|n| {
+            let suffix = format!("_{n}");
+            let max_base_chars = MAX_WALLET_ALIAS_CHARS.saturating_sub(suffix.chars().count());
+            let base: String = base_chars.iter().take(max_base_chars).collect();
+            let candidate = format!("{base}{suffix}");
+            (!taken.contains(&candidate)).then_some(candidate)
+        })
+        .expect("infinite suffix sequence always finds a free name")
 }
 
 #[cfg(test)]
@@ -346,5 +378,66 @@ mod tests {
         let error = resolve_alias(&"w".repeat(65), default_name).expect_err("too long");
         let source = std::error::Error::source(&error).expect("length source");
         assert!(source.downcast_ref::<TextLengthError>().is_some());
+    }
+
+    #[test]
+    fn dedupe_leaves_a_unique_alias_untouched() {
+        assert_eq!(
+            dedupe_preserved_alias("Savings".into(), ["Checking"]),
+            "Savings"
+        );
+    }
+
+    #[test]
+    fn dedupe_suffixes_a_single_collision() {
+        assert_eq!(dedupe_preserved_alias("Dup".into(), ["Dup"]), "Dup_1");
+    }
+
+    #[test]
+    fn dedupe_finds_the_smallest_free_suffix() {
+        assert_eq!(
+            dedupe_preserved_alias("Dup".into(), ["Dup", "Dup_1", "Dup_2"]),
+            "Dup_3"
+        );
+    }
+
+    #[test]
+    fn dedupe_fills_a_suffix_gap() {
+        // "Dup_1" was freed (renamed/removed elsewhere) — reuse it rather than
+        // skipping straight to "Dup_2".
+        assert_eq!(
+            dedupe_preserved_alias("Dup".into(), ["Dup", "Dup_2"]),
+            "Dup_1"
+        );
+    }
+
+    #[test]
+    fn dedupe_compares_cleaned_forms() {
+        assert_eq!(dedupe_preserved_alias("Dup".into(), ["  Dup  "]), "Dup_1");
+    }
+
+    #[test]
+    fn dedupe_never_touches_a_blank_alias() {
+        assert_eq!(dedupe_preserved_alias("".into(), [""]), "");
+        assert_eq!(dedupe_preserved_alias("   ".into(), ["   "]), "   ");
+    }
+
+    #[test]
+    fn dedupe_truncates_the_base_to_keep_the_suffixed_name_within_the_limit() {
+        let base = "a".repeat(MAX_WALLET_ALIAS_CHARS);
+        let deduped = dedupe_preserved_alias(base.clone(), [base.as_str()]);
+        assert_eq!(
+            deduped,
+            format!("{}_1", "a".repeat(MAX_WALLET_ALIAS_CHARS - 2))
+        );
+        assert_eq!(deduped.chars().count(), MAX_WALLET_ALIAS_CHARS);
+    }
+
+    #[test]
+    fn dedupe_keeps_finding_room_past_nine_suffixes() {
+        let taken: Vec<String> = (1..=9).map(|n| format!("Dup_{n}")).collect();
+        let mut existing: Vec<&str> = vec!["Dup"];
+        existing.extend(taken.iter().map(String::as_str));
+        assert_eq!(dedupe_preserved_alias("Dup".into(), existing), "Dup_10");
     }
 }

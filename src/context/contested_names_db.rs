@@ -882,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn r2_dismissed_failure_does_not_hide_unresolved_sibling() {
+    fn dismissed_failure_does_not_hide_unresolved_sibling() {
         let temp = tempfile::tempdir().unwrap();
         let context = test_app_context(temp.path());
         context.set_det_kv_override_for_test(empty_kv());

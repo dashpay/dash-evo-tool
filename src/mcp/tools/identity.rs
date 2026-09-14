@@ -59,8 +59,8 @@ impl ToolBase for ListIdentitiesTool {
     fn description() -> Option<Cow<'static, str>> {
         Some(
             "List the identities saved for the active network, with their DPNS names, \
-             balances and wallet bindings. Reads persisted state only — it makes no \
-             network calls and never refreshes from Platform."
+             balances and wallet bindings. Prepares local storage when needed, then \
+             reads saved identities without refreshing them from Platform."
                 .into(),
         )
     }
@@ -82,11 +82,15 @@ impl AsyncTool<DashMcpService> for ListIdentitiesTool {
         // this reports what is on disk rather than what the chain currently says.
         resolve::ensure_wallets_hydrated(&ctx).await?;
 
-        let identities =
-            ctx.load_local_qualified_identities()
-                .map_err(McpToolError::TaskFailed)?
-                .into_iter()
-                .map(|qi| IdentityEntry {
+        let identities = ctx
+            .load_local_qualified_identities()
+            .map_err(McpToolError::TaskFailed)?
+            .into_iter()
+            .map(|qi| {
+                let link = ctx
+                    .stored_identity_wallet_link(&qi.identity.id())
+                    .map_err(McpToolError::TaskFailed)?;
+                Ok(IdentityEntry {
                     id: qi.identity.id().to_string(
                         dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                     ),
@@ -95,10 +99,14 @@ impl AsyncTool<DashMcpService> for ListIdentitiesTool {
                     balance_credits: qi.identity.balance(),
                     alias: qi.alias,
                     dpns_names: qi.dpns_names.into_iter().map(|name| name.name).collect(),
-                    wallet_index: qi.wallet_index,
-                    wallet_seed_hashes: qi.associated_wallets.keys().map(hex::encode).collect(),
+                    wallet_index: link.map(|(_, index)| index),
+                    wallet_seed_hashes: link
+                        .map(|(hash, _)| hex::encode(hash))
+                        .into_iter()
+                        .collect(),
                 })
-                .collect();
+            })
+            .collect::<Result<_, McpToolError>>()?;
 
         Ok(ListIdentitiesOutput { identities })
     }

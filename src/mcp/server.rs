@@ -130,6 +130,11 @@ impl std::fmt::Debug for DashMcpService {
 }
 
 impl DashMcpService {
+    /// Observe an initialized context without starting standalone storage.
+    pub(crate) fn initialized_ctx(&self) -> Option<Arc<AppContext>> {
+        self.ctx.load()
+    }
+
     /// For HTTP mode: wrap the GUI's shared ArcSwap (same reference).
     #[cfg(feature = "mcp")]
     pub fn new_shared(app_context: Arc<arc_swap::ArcSwap<AppContext>>) -> Self {

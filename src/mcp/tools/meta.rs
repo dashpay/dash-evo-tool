@@ -20,10 +20,12 @@ use crate::backend_task::migration::finish_unwire::{
 };
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::DEFAULT_DB_VERSION;
+use crate::database::{Database, table_exists};
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::{DashMcpService, network_display_name};
 use crate::mcp::tools::{NetworkParams, ToolNameParams};
+use crate::model::settings::AppSettings;
 use crate::wallet_backend::{DetKv, DetScope};
 
 /// Return the full tool definition (schema, annotations, description) for a tool.
@@ -204,16 +206,20 @@ impl AsyncTool<DashMcpService> for AppStorageStatus {
         service: &DashMcpService,
         param: NetworkParams,
     ) -> Result<AppStorageStatusOutput, McpToolError> {
-        let ctx = service.tool_ctx().await?;
+        let Some(ctx) = service.initialized_ctx() else {
+            let data_dir = crate::app_dir::app_user_data_dir_path().map_err(|source| {
+                McpToolError::TaskFailed(crate::backend_task::error::TaskError::FileSystem {
+                    source,
+                })
+            })?;
+            return inspect_storage(&data_dir, param.network.as_deref());
+        };
         resolve::verify_network(&ctx, param.network.as_deref())?;
         // Deliberately no `ensure_wallets_hydrated` / `ensure_spv_synced`: this
         // tool must observe the upgrade, not trigger it. Everything it reads is
         // reachable straight off `AppContext`.
 
-        let data_db_version = ctx
-            .db
-            .stored_data_version()
-            .map_err(|e| McpToolError::Internal(format!("read data.db version: {e}")))?;
+        let data_db_version = ctx.db.stored_data_version().map_err(storage_read_error)?;
 
         let app_kv = ctx.app_kv();
         let mut sentinels = Vec::with_capacity(ALL_NETWORKS.len());
@@ -233,7 +239,7 @@ impl AsyncTool<DashMcpService> for AppStorageStatus {
             data_db_version,
             data_db_expected_version: DEFAULT_DB_VERSION,
             data_db_up_to_date: data_db_version == Some(i64::from(DEFAULT_DB_VERSION)),
-            wallet_storage_lineage: wallet_storage_lineage(ctx.data_dir()),
+            wallet_storage_lineage: wallet_storage_lineage(ctx.data_dir())?,
             migration: summarize_migration(&ctx.migration_status().state()),
             sentinels,
         })
@@ -254,29 +260,20 @@ fn read_sentinel(app_kv: &DetKv, key: &str) -> Result<Option<SentinelRecord>, Mc
         .map_err(|source| McpToolError::TaskFailed(MigrationError::Sentinel { source }.into()))
 }
 
-/// Newest applied upstream migration in `det-app.sqlite`, or `None` when the
-/// profile has no migration history to report.
-///
-/// Best-effort by design: a profile the upstream store has never opened has no
-/// history table at all, which is an answer rather than a failure — a
-/// diagnostic tool that refused to report anything else in that case would be
-/// useless on exactly the profiles worth diagnosing.
-fn wallet_storage_lineage(data_dir: &Path) -> Option<WalletStorageLineage> {
-    match read_wallet_storage_lineage(data_dir) {
-        Ok(lineage) => lineage,
-        Err(error) => {
-            tracing::debug!(%error, "No upstream schema history to report for det-app.sqlite");
-            None
-        }
-    }
+/// Missing storage or history is absent; unreadable or corrupt storage is an error.
+fn wallet_storage_lineage(data_dir: &Path) -> Result<Option<WalletStorageLineage>, McpToolError> {
+    let Some(conn) = open_existing(&data_dir.join("det-app.sqlite"))? else {
+        return Ok(None);
+    };
+    read_wallet_storage_lineage(&conn).map_err(storage_read_error)
 }
 
-fn read_wallet_storage_lineage(data_dir: &Path) -> rusqlite::Result<Option<WalletStorageLineage>> {
-    let conn = Connection::open_with_flags(
-        data_dir.join("det-app.sqlite"),
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
-    conn.busy_timeout(SCHEMA_HISTORY_BUSY_TIMEOUT)?;
+fn read_wallet_storage_lineage(
+    conn: &Connection,
+) -> rusqlite::Result<Option<WalletStorageLineage>> {
+    if !table_exists(conn, "refinery_schema_history")? {
+        return Ok(None);
+    }
     conn.query_row(
         "SELECT version, name, checksum FROM refinery_schema_history \
          ORDER BY version DESC LIMIT 1",
@@ -290,6 +287,108 @@ fn read_wallet_storage_lineage(data_dir: &Path) -> rusqlite::Result<Option<Walle
         },
     )
     .optional()
+}
+
+fn storage_read_error(source: rusqlite::Error) -> McpToolError {
+    McpToolError::StorageInspection { source }
+}
+
+fn open_existing(path: &Path) -> Result<Option<Connection>, McpToolError> {
+    if !path.try_exists().map_err(|source| {
+        McpToolError::TaskFailed(crate::backend_task::error::TaskError::FileSystem { source })
+    })? {
+        return Ok(None);
+    }
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(storage_read_error)?;
+    conn.busy_timeout(SCHEMA_HISTORY_BUSY_TIMEOUT)
+        .map_err(storage_read_error)?;
+    Ok(Some(conn))
+}
+
+fn inspect_storage(
+    data_dir: &Path,
+    expected: Option<&str>,
+) -> Result<AppStorageStatusOutput, McpToolError> {
+    let app = open_existing(&data_dir.join("det-app.sqlite"))?;
+    let legacy_path = data_dir.join("data.db");
+    let legacy = if open_existing(&legacy_path)?.is_some() {
+        Some(Database::open_legacy_read_only(&legacy_path).map_err(storage_read_error)?)
+    } else {
+        None
+    };
+    let data_db_version = legacy
+        .as_ref()
+        .map(Database::stored_data_version)
+        .transpose()
+        .map_err(storage_read_error)?
+        .flatten();
+    let settings: Option<AppSettings> = app
+        .as_ref()
+        .map(|conn| DetKv::read_global(conn, AppSettings::KV_KEY))
+        .transpose()
+        .map_err(|source| McpToolError::StorageMetadata { source })?
+        .flatten();
+    let network = match settings {
+        Some(settings) => settings.network,
+        None => legacy
+            .as_ref()
+            .map(Database::read_legacy_app_settings)
+            .transpose()
+            .map_err(storage_read_error)?
+            .flatten()
+            .map(|settings| settings.network)
+            .unwrap_or(Network::Mainnet),
+    };
+    let active_network = network_display_name(network).to_owned();
+    if let Some(expected) = expected
+        && !expected.eq_ignore_ascii_case(&active_network)
+    {
+        return Err(McpToolError::NetworkMismatch {
+            expected: expected.to_owned(),
+            actual: active_network,
+        });
+    }
+    let read = |key: &str| -> Result<Option<SentinelRecord>, McpToolError> {
+        Ok(app
+            .as_ref()
+            .map(|conn| DetKv::read_global::<MigrationCompletion>(conn, key))
+            .transpose()
+            .map_err(|source| McpToolError::TaskFailed(MigrationError::Sentinel { source }.into()))?
+            .flatten()
+            .map(|completion| SentinelRecord {
+                completed_at: completion.completed_at,
+                sha: completion.sha,
+                network_count: completion.network_count,
+            }))
+    };
+    let sentinels = ALL_NETWORKS
+        .into_iter()
+        .map(|network| {
+            Ok(NetworkSentinels {
+                network: network_display_name(network).to_owned(),
+                wallet_drain: read(&sentinel_key_for(network))?,
+                app_data: read(&app_data_sentinel_key_for(network))?,
+                identities: read(&identities_sentinel_key_for(network))?,
+                dapi_refresh: read(&dapi_refresh_sentinel_key_for(network))?,
+            })
+        })
+        .collect::<Result<_, McpToolError>>()?;
+    Ok(AppStorageStatusOutput {
+        app_version: crate::VERSION.to_owned(),
+        active_network,
+        data_db_version,
+        data_db_expected_version: DEFAULT_DB_VERSION,
+        data_db_up_to_date: data_db_version == Some(i64::from(DEFAULT_DB_VERSION)),
+        wallet_storage_lineage: app
+            .as_ref()
+            .map(read_wallet_storage_lineage)
+            .transpose()
+            .map_err(storage_read_error)?
+            .flatten(),
+        migration: summarize_migration(&MigrationState::Idle),
+        sentinels,
+    })
 }
 
 /// Finish the storage update for password-protected wallets without the
@@ -367,7 +466,7 @@ impl AsyncTool<DashMcpService> for AppStorageUpdate {
         // A desktop session collects wallet passwords in its own window, and its
         // storage update may be parked on that prompt while holding the
         // preparation gate. Never add a remote channel for the same password.
-        // TODO(SEC-001): this sees only a desktop app in this process. A
+        // TODO: this sees only a desktop app in this process. A
         // standalone det-cli sharing the data directory with a running desktop
         // app in another process is not refused; that needs a cross-process
         // lock on the data directory. Accepted limitation, see
@@ -383,7 +482,7 @@ impl AsyncTool<DashMcpService> for AppStorageUpdate {
             });
         }
 
-        // TODO(SEC-003): wrong passwords are not rate-limited. Every call costs
+        // TODO: wrong passwords are not rate-limited. Every call costs
         // one Argon2id derivation per locked wallet and nothing more, so a
         // bearer-token holder can guess repeatedly. Needs attempt throttling
         // with backoff. Accepted limitation, see
@@ -595,6 +694,107 @@ mod tests {
     fn missing_app_store_reports_no_lineage() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        assert!(wallet_storage_lineage(dir.path()).is_none());
+        assert!(
+            wallet_storage_lineage(dir.path())
+                .expect("missing store")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn storage_status_preserves_a_legacy_profile_and_its_network() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("data.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE settings (id INTEGER, network TEXT, database_version INTEGER);
+                INSERT INTO settings VALUES (1, 'testnet', 11);",
+            )
+            .unwrap();
+        }
+        let before = std::fs::read(&path).unwrap();
+        let output = inspect_storage(dir.path(), Some("testnet")).expect("inspect legacy storage");
+        assert_eq!(output.active_network, "testnet");
+        assert_eq!(output.data_db_version, Some(11));
+        assert!(!output.data_db_up_to_date);
+        assert!(output.sentinels.iter().all(|s| s.wallet_drain.is_none()));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert!(matches!(
+            inspect_storage(dir.path(), Some("mainnet")),
+            Err(McpToolError::NetworkMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn storage_status_reads_current_settings_and_markers_without_upgrading() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let kv = crate::context::AppContext::open_app_kv(dir.path()).unwrap();
+        kv.put(
+            DetScope::Global,
+            AppSettings::KV_KEY,
+            &AppSettings {
+                network: Network::Regtest,
+                ..AppSettings::default()
+            },
+        )
+        .unwrap();
+        let completion = MigrationCompletion {
+            completed_at: 123,
+            sha: "fixture".to_owned(),
+            network_count: 2,
+        };
+        kv.put(
+            DetScope::Global,
+            &sentinel_key_for(Network::Regtest),
+            &completion,
+        )
+        .unwrap();
+        let output = inspect_storage(dir.path(), Some("local")).unwrap();
+        assert_eq!(output.active_network, "local");
+        let marker = output
+            .sentinels
+            .iter()
+            .find(|s| s.network == "local")
+            .and_then(|s| s.wallet_drain.as_ref())
+            .expect("persisted marker");
+        assert_eq!((marker.completed_at, marker.network_count), (123, 2));
+        assert_eq!(marker.sha, "fixture");
+        assert!(output.wallet_storage_lineage.is_some());
+        assert!(!dir.path().join("secrets").exists());
+    }
+
+    #[test]
+    fn storage_status_distinguishes_missing_history_from_broken_storage() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("det-app.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            assert!(wallet_storage_lineage(dir.path()).unwrap().is_none());
+            conn.execute_batch("CREATE TABLE refinery_schema_history (version INTEGER);")
+                .unwrap();
+            assert!(wallet_storage_lineage(dir.path()).is_err());
+        }
+        std::fs::write(&path, b"invalid sqlite database").unwrap();
+        assert!(wallet_storage_lineage(dir.path()).is_err());
+        assert!(inspect_storage(dir.path(), None).is_err());
+    }
+
+    #[test]
+    fn storage_status_rejects_corrupted_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("det-app.sqlite")).unwrap();
+        conn.execute_batch("CREATE TABLE meta_global (key TEXT PRIMARY KEY, value BLOB);")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO meta_global VALUES (?1, ?2)",
+            rusqlite::params![AppSettings::KV_KEY, vec![255_u8]],
+        )
+        .unwrap();
+        assert!(matches!(
+            inspect_storage(dir.path(), None),
+            Err(McpToolError::StorageMetadata { .. })
+        ));
     }
 }

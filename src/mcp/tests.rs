@@ -3,6 +3,134 @@
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 
+#[cfg(feature = "cli")]
+struct DataDirOverride {
+    prior: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(feature = "cli")]
+impl DataDirOverride {
+    fn new(path: &std::path::Path) -> Self {
+        let lock = crate::test_support::DASH_EVO_DATA_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let prior = std::env::var_os("DASH_EVO_DATA_DIR");
+        // Safety: the data-directory mutex serializes this override.
+        unsafe { std::env::set_var("DASH_EVO_DATA_DIR", path) };
+        Self { prior, _lock: lock }
+    }
+}
+
+#[cfg(feature = "cli")]
+impl Drop for DataDirOverride {
+    fn drop(&mut self) {
+        // Safety: `_lock` is held until after the original value is restored.
+        unsafe {
+            match &self.prior {
+                Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
+                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "cli")]
+#[tokio::test]
+async fn standalone_storage_status_does_not_initialize_a_profile() {
+    use crate::mcp::server::DashMcpService;
+    use crate::mcp::tools::{NetworkParams, meta::AppStorageStatus};
+    use rmcp::handler::server::router::tool::AsyncTool;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _override = DataDirOverride::new(dir.path());
+    let service = DashMcpService::new_lazy();
+    let output = AppStorageStatus::invoke(&service, NetworkParams::default())
+        .await
+        .expect("inspect an empty profile");
+    let json = serde_json::to_value(output).expect("serialize status");
+    assert!(json["data_db_version"].is_null());
+    assert!(json["wallet_storage_lineage"].is_null());
+    assert_eq!(
+        std::fs::read_dir(dir.path())
+            .expect("read directory")
+            .count(),
+        0
+    );
+}
+
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identity_list_reports_only_the_persisted_wallet_binding() {
+    use crate::mcp::server::DashMcpService;
+    use crate::mcp::tools::{NetworkParams, identity::ListIdentitiesTool};
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use dash_sdk::dpp::{dashcore::Network, identity::Identity, prelude::Identifier};
+    use rmcp::handler::server::router::tool::AsyncTool;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = legacy_wallet_context(dir.path());
+    let mut hashes = Vec::new();
+    for (seed, alias) in [([0x92; 64], "Owner"), ([0x93; 64], "Unrelated")] {
+        let hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let xpub = crate::database::test_helpers::legacy_master_epk_bytes(&seed, Network::Testnet);
+        crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row(
+            &ctx.db,
+            &hash,
+            &seed,
+            &xpub,
+            alias,
+            Network::Testnet,
+        )
+        .unwrap();
+        hashes.push(hash);
+    }
+    resolve::ensure_wallets_hydrated(&ctx).await.unwrap();
+    for (byte, link) in [(1, Some((hashes[0], 7))), (2, None)] {
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::new([byte; 32]),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            )
+            .unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        ctx.insert_local_qualified_identity(&identity, &link)
+            .unwrap();
+    }
+    let loaded = ctx.load_local_qualified_identities().unwrap();
+    assert!(loaded.iter().all(|qi| qi.associated_wallets.len() == 2));
+    let service = DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::new(Arc::clone(&ctx))));
+    let output = ListIdentitiesTool::invoke(&service, NetworkParams::default())
+        .await
+        .unwrap();
+    let json = serde_json::to_value(output).unwrap();
+    ctx.wallet_backend().unwrap().shutdown().await;
+    assert_eq!(
+        json["identities"][0]["wallet_seed_hashes"],
+        serde_json::json!([hex::encode(hashes[0])])
+    );
+    assert_eq!(json["identities"][0]["wallet_index"], 7);
+    assert_eq!(
+        json["identities"][1]["wallet_seed_hashes"],
+        serde_json::json!([])
+    );
+    assert!(json["identities"][1]["wallet_index"].is_null());
+}
+
 pub(super) fn legacy_wallet_context(
     data_dir: &std::path::Path,
 ) -> std::sync::Arc<crate::context::AppContext> {
@@ -224,24 +352,6 @@ fn error_codes_are_distinct() {
 async fn standalone_boot_restores_the_legacy_network() {
     use dash_sdk::dpp::dashcore::Network;
 
-    /// Holds the process-global data-dir override for the test's lifetime and
-    /// restores the prior value on drop, panics included.
-    struct DataDirOverride {
-        prior: Option<String>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-    impl Drop for DataDirOverride {
-        fn drop(&mut self) {
-            // Safety: `_lock` is still held while the prior value is restored.
-            unsafe {
-                match &self.prior {
-                    Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
-                    None => std::env::remove_var("DASH_EVO_DATA_DIR"),
-                }
-            }
-        }
-    }
-
     let dir = tempfile::tempdir().expect("tempdir");
     {
         let conn = rusqlite::Connection::open(dir.path().join("data.db")).expect("create data.db");
@@ -264,14 +374,7 @@ async fn standalone_boot_restores_the_legacy_network() {
         )
         .expect("write the v0.9.3 settings row");
     }
-    let _override = DataDirOverride {
-        prior: std::env::var("DASH_EVO_DATA_DIR").ok(),
-        _lock: crate::test_support::DASH_EVO_DATA_DIR_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()),
-    };
-    // Safety: DASH_EVO_DATA_DIR_LOCK, held by `_override`, serializes this override.
-    unsafe { std::env::set_var("DASH_EVO_DATA_DIR", dir.path()) };
+    let _override = DataDirOverride::new(dir.path());
 
     let ctx = crate::mcp::server::init_app_context()
         .await

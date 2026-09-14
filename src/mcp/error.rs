@@ -30,6 +30,20 @@ pub enum McpToolError {
     TaskFailed(#[source] TaskError),
     #[error("{0}")]
     Internal(String),
+    #[error(
+        "The saved storage state could not be read. Close other copies of Dash Evo Tool and retry."
+    )]
+    StorageInspection {
+        #[source]
+        source: rusqlite::Error,
+    },
+    #[error(
+        "The saved storage metadata could not be read. Close other copies of Dash Evo Tool and retry."
+    )]
+    StorageMetadata {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
 }
 
 impl From<crate::model::masternode_input::MasternodeInputError> for McpToolError {
@@ -73,6 +87,8 @@ impl From<McpToolError> for McpError {
                 )
             }
             McpToolError::Internal(_) => (CODE_INTERNAL, e.to_string(), None),
+            McpToolError::StorageInspection { .. } => (CODE_INTERNAL, e.to_string(), None),
+            McpToolError::StorageMetadata { .. } => (CODE_INTERNAL, e.to_string(), None),
         };
         McpError {
             code: ErrorCode(code),

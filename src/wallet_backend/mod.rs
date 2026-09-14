@@ -3136,6 +3136,31 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // Upstream refused to start a new identity-funded shield while an
+        // earlier one is unresolved. Nothing was built or broadcast, so the
+        // user must wait for the earlier payment rather than retry now.
+        other @ P::ShieldedIdentityDebitPending { identity_id } => {
+            TaskError::ShieldedIdentityDebitPending {
+                identity_id: dash_sdk::platform::Identifier::from(identity_id),
+                source: Box::new(other),
+            }
+        }
+
+        // Durable recovery data is damaged or needs keys that are not loaded.
+        // Retrying cannot help; the user must restore data or keys first.
+        other @ P::ShieldedRecoveryCorrupted { account_index, .. } => {
+            TaskError::ShieldedRecoveryCorrupted {
+                account_index,
+                source: Box::new(other),
+            }
+        }
+        other @ P::ShieldedRecoveryKeysRequired { account_index, .. } => {
+            TaskError::ShieldedRecoveryKeysRequired {
+                account_index,
+                source: Box::new(other),
+            }
+        }
+
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
         | P::StaleReservation
@@ -3508,6 +3533,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // shielded op. `map_shielded_op_error` routes it where it can occur.
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. }
+        // Shielded debit / recovery outcomes are likewise unreachable from
+        // identity register, top-up or address funding.
+        | P::ShieldedIdentityDebitPending { .. }
+        | P::ShieldedRecoveryCorrupted { .. }
+        | P::ShieldedRecoveryKeysRequired { .. }
         // Funding and credit shortfalls, like their `CoreInsufficientFunds`
         // sibling above: the submission never reached Platform.
         | P::CorePooledInsufficientFunds { .. }
@@ -4428,6 +4458,75 @@ mod tests {
             map_shielded_op_error(P::ShieldedNotBound),
             TaskError::ShieldedNotBound
         ));
+    }
+
+    /// Debit-pending and the two recovery outcomes carry guidance the generic
+    /// `WalletBackend` envelope ("please retry") would contradict, so each
+    /// routes to its own typed variant with its identifying field intact.
+    #[test]
+    fn map_shielded_op_error_routes_recovery_and_debit_pending() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let identity_bytes = [0x5D; 32];
+        match map_shielded_op_error(P::ShieldedIdentityDebitPending {
+            identity_id: identity_bytes,
+        }) {
+            TaskError::ShieldedIdentityDebitPending { identity_id, .. } => {
+                assert_eq!(
+                    identity_id,
+                    dash_sdk::platform::Identifier::from(identity_bytes)
+                );
+            }
+            other => panic!("Expected ShieldedIdentityDebitPending, got: {other:?}"),
+        }
+
+        for expected in [Some(3), None] {
+            match map_shielded_op_error(P::ShieldedRecoveryCorrupted {
+                account_index: expected,
+                reason: "row 7 is damaged".to_string(),
+            }) {
+                TaskError::ShieldedRecoveryCorrupted { account_index, .. } => {
+                    assert_eq!(account_index, expected);
+                }
+                other => panic!("Expected ShieldedRecoveryCorrupted, got: {other:?}"),
+            }
+        }
+
+        match map_shielded_op_error(P::ShieldedRecoveryKeysRequired {
+            account_index: 2,
+            reason: "viewing keys missing".to_string(),
+        }) {
+            TaskError::ShieldedRecoveryKeysRequired { account_index, .. } => {
+                assert_eq!(account_index, 2);
+            }
+            other => panic!("Expected ShieldedRecoveryKeysRequired, got: {other:?}"),
+        }
+    }
+
+    /// No identity register / top-up / address-funding flow runs a shielded
+    /// op, so these outcomes land in the generic `Other` bucket there.
+    #[test]
+    fn identity_op_error_kind_buckets_new_shielded_recovery_variants_as_other() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let errors = [
+            P::ShieldedIdentityDebitPending {
+                identity_id: [0x5D; 32],
+            },
+            P::ShieldedRecoveryCorrupted {
+                account_index: None,
+                reason: "damaged".to_string(),
+            },
+            P::ShieldedRecoveryKeysRequired {
+                account_index: 0,
+                reason: "keys missing".to_string(),
+            },
+        ];
+        for error in &errors {
+            assert!(
+                matches!(identity_op_error_kind(error), IdentityOpErrorKind::Other),
+                "Expected IdentityOpErrorKind::Other for {error:?}"
+            );
+        }
     }
 
     fn broadcast_unconfirmed() -> platform_wallet::error::PlatformWalletError {

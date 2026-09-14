@@ -37,33 +37,29 @@ probe) lives outside the repository in
 **bincode blobs: no migration.** `grovedb-bincode` 2.1.0 is a fork of bincode
 2.0.1. On every ordinary (non-`*_untrusted`) entry point DET uses (native
 `encode_to_vec`/`decode_from_slice`, `bincode::serde`, and the derive macros),
-it produces the same bytes and accepts the same inputs. This was proven from
-source: files and function bodies hash-identical, and the fork's derive
-output reduces to the original's by literal substitution. See
-`## grovedb-bincode wire compatibility` in `platform-4.2-dev-impact.md`. That
-covers stored `QualifiedIdentity`/`KeyStorage`, token configurations, the
-secret envelopes and every serde sidecar.
+it produces the same bytes and accepts the same inputs. That covers stored
+`QualifiedIdentity`/`KeyStorage`, token configurations, the secret envelopes
+and every serde sidecar.
 
-The proof is backed by committed fixtures under `tests/fixtures/bincode_pre_bump/`.
-They were written with crates.io bincode 2.0.1 on the old pin, before the
-dependency switch, and must never be regenerated.
+This verdict rests on source-level analysis only (see
+`## grovedb-bincode wire compatibility` in `platform-4.2-dev-impact.md`):
 
-| Fixture | SHA-256 | Guard test |
-| --- | --- | --- |
-| `qualified_identity.bin` | `d851ca2dc406350932e30341c4047e63f37652727f42eed78557b0c4f388198f` | `model::qualified_identity::bincode_pre_bump_fixture_tests` |
-| `contested_name.bin` | `d6fcde1fd65485fcebd02a7ac2af21133ed7115f6ec3b47491f9a6bb4dbd4cc6` | `model::contested_name::bincode_pre_bump_fixture_tests` |
-| `token_configuration.bin` | `92c5b82f907273eea4c48fb628c49d969c51402d0bf4ff846348c7824ed9f6e0` | `context::contract_token_db::bincode_pre_bump_fixture_tests` |
-| `stored_seed_envelope.bin` | `68c6dce3d8c1674d93986b26751bfb4c40f94d8366a6ec92f70be148f0114579` | `model::wallet::seed_envelope::bincode_pre_bump_fixture_tests` |
-| `wallet_meta.bin` | `afce0da03252ff5a26274831f0f2dba97af2de7d8f4a5c3a8d5b20a028f9d6be` | `model::wallet::meta::bincode_pre_bump_fixture_tests` |
+- **Runtime.** Every file outside the untrusted additions is byte-identical
+  between bincode 2.0.1 and grovedb-bincode 2.1.0. In the files that differ,
+  the bodies on the ordinary path hash-identical (`Decoder for DecoderImpl`,
+  `decode_from_slice`, `borrow_decode_from_slice`, the serde decode chain,
+  limit accounting). The serde deserializer's edited methods reduce to the old
+  behaviour under the fixed `Ordinary` policy.
+- **Derive macros.** `Encode` generation is hash-identical. `Decode` and
+  `BorrowDecode` generation reduce to bincode_derive 2.0.1's output by literal
+  substitution when the fork's `untrusted` attribute is unset, which holds for
+  every plain `#[derive(Decode)]`/`#[derive(BorrowDecode)]`.
 
-Each guard does four things:
-
-- Decodes the fixture through the production reader: `QualifiedIdentity::from_bytes` with its decode limit, and `decode_token_config` for token configurations.
-- Requires the whole blob to be consumed and the value to equal the synthetic original.
-- Re-encodes the value byte-for-byte.
-- Checks that the fixture differs from the legacy-config encoding.
-
-The identity fixture carries every `PrivateKeyData` variant and `PrivateKeyTarget`, voter and operator identities, contract bounds, a disabled key, and a `WalletDerivationPath` with all four `ChildNumber` kinds. The token fixture carries a perpetual `DistributionFunction`, whose upstream `Decode` impl was rewritten. `ContestedName` is persisted through a serde record today; its fixture guards the forked derive macros. All fixture values are synthetic.
+This repository has no executable regression fixture for bincode wire
+compatibility. The fork's own compatibility tests against bincode 2.0.1 were
+read, not run. Existing blobs round-trip through the persistence unit tests,
+but those tests encode and decode with the same crate, so they cannot detect
+an encoder drift.
 
 **`platform-wallet-storage`: no change.** No migration, schema or secret-envelope
 change between the pins.
@@ -112,15 +108,15 @@ historical record. Two of its claims are stale:
 
 ## Validation and limits
 
-- The pre-bump fixture guards passed on the old pin with crates.io bincode
-  2.0.1, before the dependency switch, and again on the new pin.
+- bincode wire compatibility: source-level analysis only (see
+  "Existing data"); no executable fixture.
 - `cargo check --all-features --all-targets`,
   `cargo fmt --all`, and
   `cargo clippy --all-features --all-targets -- -D warnings` on the new pin.
 - `cargo test --all-features --lib`, scoped to the bincode-persistence modules
   (identity blobs including the golden v0.9.3 blob, key storage, seed and
   single-key envelopes, DET k/v, wallet meta, settings, contested names, token
-  registry), the fixture guards, and the new shielded error-mapping and
+  registry), and the new shielded error-mapping and
   message tests.
 - Not run: the full workspace suite (CI covers it), backend E2E, GUI tests, and
   opening a real user's shielded store. Checks used Linux and synthetic data.

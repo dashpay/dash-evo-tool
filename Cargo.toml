@@ -59,10 +59,10 @@ tokio = { version = "1.46.1", features = ["full"] }
 # platform-value and rust-dashcore implement `Encode`/`Decode` against; the trait
 # identities must match or DET's codecs over those types stop compiling. On the ordinary
 # (non-`*_untrusted`) paths DET uses — native, `bincode::serde` and the derive macros —
-# its wire format is identical to bincode 2.0.1, proven from hash-identical source and
-# derive-codegen substitution (docs/ai-design/2026-09-14-platform-4.2-dev-bump/) and
-# pinned by the pre-bump fixtures in tests/fixtures/bincode_pre_bump/. This switch
-# therefore needs no read-old/write-new migration. Any other encoder change still does:
+# its wire format is identical to bincode 2.0.1, per source-level analysis of hash-identical
+# function bodies and derive-codegen substitution (docs/ai-design/2026-09-14-platform-4.2-dev-bump/);
+# no executable fixture pins it. This switch therefore needs no read-old/write-new
+# migration. Any other encoder change still does:
 # this crate encodes the on-disk wallet-secret envelopes and QualifiedIdentity blobs.
 bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 hex = { version = "0.4.3" }

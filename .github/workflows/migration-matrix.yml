@@ -21,6 +21,12 @@ on:
     paths: &migration_paths
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/config.toml"
+      - "build.rs"
+      - "src/bin/det_cli/**"
+      - "src/mcp/**"
+      - "src/logging.rs"
       - "src/database/**"
       - "src/backend_task/migration/**"
       - "src/model/data_migration.rs"
@@ -47,6 +53,10 @@ on:
   # Draft PRs are suppressed by the `draft != true` guards below and otherwise
   # have no way to run CI at all; a manual run covers them.
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      MIGRATION_V093_WALLET_PASSWORD:
+        required: true
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -58,9 +68,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # PR #983 is covered on every branch push by migration-matrix-pr.yml.
   pin-ancestry:
     name: Platform pin guard
-    if: github.event.pull_request.draft != true
+    if: github.event.pull_request.draft != true && github.event.pull_request.number != 983
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,7 +88,7 @@ jobs:
   build:
     name: Build det-cli
     needs: pin-ancestry
-    if: github.event.pull_request.draft != true
+    if: github.event.pull_request.draft != true && github.event.pull_request.number != 983
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -145,7 +156,7 @@ jobs:
   matrix:
     name: Migration matrix
     needs: build
-    if: github.event.pull_request.draft != true
+    if: github.event.pull_request.draft != true && github.event.pull_request.number != 983
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -250,6 +261,7 @@ jobs:
           # det-cli needs the `cli` feature, which `--features testing` below
           # does not enable, so Cargo builds no det-cli for the harness to find.
           DET_CLI_BIN: ${{ runner.temp }}/bin/det-cli
+          MIGRATION_V093_WALLET_PASSWORD: ${{ secrets.MIGRATION_V093_WALLET_PASSWORD }}
         run: cargo test --locked --test migration-matrix --features testing
 
       # The weekly profile once more, opened directly through the

@@ -148,3 +148,43 @@ mod tests {
         assert_zeroize_on_drop(&decoded.encrypted_seed);
     }
 }
+
+/// Wire-format guard for the switch from crates.io `bincode 2.0.1` to the
+/// `grovedb-bincode` fork. The fixture was written by `bincode 2.0.1` before
+/// the switch and must never be regenerated.
+#[cfg(test)]
+mod bincode_pre_bump_fixture_tests {
+    use super::*;
+
+    const FIXTURE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/bincode_pre_bump/stored_seed_envelope.bin"
+    ));
+
+    /// Synthetic envelope — byte patterns only, no real seed material.
+    fn sample() -> StoredSeedEnvelope {
+        StoredSeedEnvelope {
+            encrypted_seed: Zeroizing::new(vec![0xA5; 80]),
+            salt: vec![0x5A; 16],
+            nonce: vec![0x3C; 12],
+            password_hint: Some("fixture hint".to_string()),
+            uses_password: true,
+            xpub_encoded: (0..78u8).collect(),
+        }
+    }
+
+    #[test]
+    fn pre_bump_bytes_decode_and_reencode_identically() {
+        let cfg = bincode::config::standard();
+        let (decoded, consumed): (StoredSeedEnvelope, usize) =
+            bincode::serde::decode_from_slice(FIXTURE, cfg).expect("decode pre-bump fixture");
+        assert_eq!(consumed, FIXTURE.len(), "the whole blob must be consumed");
+        assert_eq!(decoded, sample(), "decoded value drifted");
+        let reencoded = bincode::serde::encode_to_vec(&decoded, cfg).expect("encode");
+        assert_eq!(reencoded, FIXTURE, "re-encoded bytes drifted");
+        // Sensitivity: the byte comparison tells encodings apart.
+        let legacy = bincode::serde::encode_to_vec(sample(), bincode::config::legacy())
+            .expect("encode legacy");
+        assert_ne!(legacy, FIXTURE, "fixture must pin the standard encoding");
+    }
+}

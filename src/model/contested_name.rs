@@ -25,7 +25,7 @@ impl ContestState {
     }
 }
 
-#[derive(Debug, Encode, Decode, Clone)]
+#[derive(Debug, Encode, Decode, Clone, PartialEq)]
 pub struct ContestedName {
     pub normalized_contested_name: String,
     pub contestants: Option<Vec<Contestant>>,
@@ -210,7 +210,7 @@ pub struct MasternodeContestSummary {
     pub has_scheduled_vote: bool,
 }
 
-#[derive(Debug, Encode, Decode, Clone)]
+#[derive(Debug, Encode, Decode, Clone, PartialEq)]
 pub struct Contestant {
     pub id: Identifier,
     pub name: String,
@@ -482,5 +482,87 @@ mod tests {
             MAX_PENDING_USERNAME_DISPLAY_CHARS
         );
         assert!(sanitized.chars().all(|character| character == 'é'));
+    }
+}
+
+/// Wire-format guard for the switch from crates.io `bincode 2.0.1` to the
+/// `grovedb-bincode` fork (and its forked derive macros). The fixture was
+/// written by `bincode 2.0.1` before the switch and must never be regenerated.
+#[cfg(test)]
+mod bincode_pre_bump_fixture_tests {
+    use super::*;
+
+    const FIXTURE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/bincode_pre_bump/contested_name.bin"
+    ));
+
+    /// Covers every field kind the derive emits: `Identifier` (upstream
+    /// type), nested `Vec`/`Option`, a data-carrying enum variant, and a
+    /// `BTreeMap` keyed by a tuple with `ResourceVoteChoice` values.
+    fn sample() -> ContestedName {
+        let alice = Identifier::from([0x51; 32]);
+        let bob = Identifier::from([0x52; 32]);
+        let voter = Identifier::from([0x53; 32]);
+        let mut my_votes = BTreeMap::new();
+        my_votes.insert(
+            (voter, PrivateKeyTarget::PrivateKeyOnVoterIdentity, 2),
+            ResourceVoteChoice::TowardsIdentity(alice),
+        );
+        my_votes.insert(
+            (voter, PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+            ResourceVoteChoice::Abstain,
+        );
+        my_votes.insert(
+            (bob, PrivateKeyTarget::PrivateKeyOnOperatorIdentity, 1),
+            ResourceVoteChoice::Lock,
+        );
+        ContestedName {
+            normalized_contested_name: "fixture-name".to_string(),
+            contestants: Some(vec![
+                Contestant {
+                    id: alice,
+                    name: "Fixture-Name".to_string(),
+                    info: "first contender".to_string(),
+                    votes: 17,
+                    created_at: Some(1_700_000_000_000),
+                    created_at_block_height: Some(123_456),
+                    created_at_core_block_height: Some(987_654),
+                    document_id: Identifier::from([0x61; 32]),
+                },
+                Contestant {
+                    id: bob,
+                    name: "fixture-name".to_string(),
+                    info: String::new(),
+                    votes: 0,
+                    created_at: None,
+                    created_at_block_height: None,
+                    created_at_core_block_height: None,
+                    document_id: Identifier::from([0x62; 32]),
+                },
+            ]),
+            locked_votes: Some(3),
+            abstain_votes: Some(5),
+            awarded_to: Some(alice),
+            end_time: Some(1_700_000_600_000),
+            state: ContestState::WonBy(alice),
+            last_updated: Some(1_700_000_300_000),
+            my_votes,
+        }
+    }
+
+    #[test]
+    fn pre_bump_bytes_decode_and_reencode_identically() {
+        let cfg = bincode::config::standard();
+        let (decoded, consumed): (ContestedName, usize) =
+            bincode::decode_from_slice(FIXTURE, cfg).expect("decode pre-bump fixture");
+        assert_eq!(consumed, FIXTURE.len(), "the whole blob must be consumed");
+        assert_eq!(decoded, sample(), "decoded value drifted");
+        let reencoded = bincode::encode_to_vec(&decoded, cfg).expect("encode");
+        assert_eq!(reencoded, FIXTURE, "re-encoded bytes drifted");
+        // Sensitivity: the byte comparison tells encodings apart.
+        let legacy =
+            bincode::encode_to_vec(sample(), bincode::config::legacy()).expect("encode legacy");
+        assert_ne!(legacy, FIXTURE, "fixture must pin the standard encoding");
     }
 }

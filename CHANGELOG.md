@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- The CLI keeps MCP requests at the selected endpoint without following HTTP
+  redirects. Migration fixture packaging rejects configured credentials, and
+  CI requires verified archive checksums and a runtime fixture password.
+
 - **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
   the lock file moves from 0.11.14 to 0.11.15, which fixes a remote
   memory-exhaustion issue in out-of-order stream reassembly. The crate is an
@@ -24,6 +28,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in `Cargo.toml` marks the re-check.
 
 ### Added
+
+- Historical-profile migration tests cover v0.9.3 and the September 8 weekly
+  release, including protected wallets and repeat startup. CLI tools expose
+  saved identity bindings, inspect storage without starting an upgrade, and
+  complete protected storage updates using password files or standard input.
 
 - **Keys saved on this device but not on the identity's key lists are now
   listed**: a key can be saved here while appearing on none of the identity's

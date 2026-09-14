@@ -79,6 +79,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check fixture scripts
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/migration-fixtures/test-scripts.sh
+
       # Fetches only the upstream commit graph plus the pinned rev's migration
       # sources — seconds, not a full platform clone. See the script header for
       # why ancestry alone is not sufficient.

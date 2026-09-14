@@ -42,7 +42,7 @@
             "expected_outcome": "needs_desktop",
             "password_env": "MIGRATION_V093_WALLET_PASSWORD",
             "mnemonic_env_convention": "MIGRATION_FIXTURE_PROTECTED_MNEMONIC",
-            "note": "Empty/unfunded. Exists only to exercise the protected-wallet code path. Password matches the PROTECTED_PASSWORD convention already used in src/backend_task/migration/v093_upgrade.rs."
+            "note": "Empty/unfunded. Exists only to exercise the protected-wallet code path. Supply its password through the named runtime environment variable."
           }
         ],
         "identity": null

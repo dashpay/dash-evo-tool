@@ -147,11 +147,7 @@ impl AppContext {
         // before any network fetch — so the existing node's alias/keys/protection
         // tier are never silently overwritten. Checked here, at the storage
         // layer, so every `RejectIfExists` caller is guarded uniformly.
-        let existing_stored = if encryption_password.is_some() {
-            self.get_local_qualified_identity_unmigrated(&identity_id)?
-        } else {
-            self.get_local_qualified_identity(&identity_id)?
-        };
+        let existing_stored = self.get_local_qualified_identity(&identity_id)?;
         match load_mode {
             IdentityLoadMode::RejectIfExists if existing_stored.is_some() => {
                 return Err(TaskError::DuplicateProTxHash { identity_id });
@@ -546,11 +542,12 @@ impl AppContext {
         let _guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let existing = self.get_local_qualified_identity_unmigrated(&identity_id)?;
+        let existing = self.get_local_qualified_identity(&identity_id)?;
         if load_mode == IdentityLoadMode::RejectIfExists && existing.is_some() {
             return Err(TaskError::DuplicateProTxHash { identity_id });
         }
         let mut relevant_keys = qi.private_keys.keys_set();
+        relevant_keys.extend(self.retained_identity_import_keys(&identity_id)?);
         if let Some(existing) = existing {
             super::protect_identity_keys::reject_resident_identity_plaintext(
                 &existing.private_keys,
@@ -570,7 +567,7 @@ impl AppContext {
         use crate::wallet_backend::secret_seam::SecretScheme;
         // Verify every existing password before changing any label, including keys omitted on reload.
         let mut stored_keys = BTreeMap::new();
-        for (target, key_id) in relevant_keys {
+        for (target, key_id) in relevant_keys.iter().cloned() {
             let scheme = view.scheme(&target, key_id)?;
             let raw = match scheme {
                 SecretScheme::Protected => view.get_protected(&target, key_id, &password)?,
@@ -610,7 +607,8 @@ impl AppContext {
                 }
             }
         }
-        // Write only protected entries; retain completed writes for retry without deleting old keys.
+        self.record_identity_import_keys(&identity_id, &relevant_keys)?;
+        // Retained placements remain discoverable even if the identity record never lands.
         for ((target, key_id), raw) in pending {
             view.store_protected(&target, key_id, &raw, &password)?;
         }
@@ -950,7 +948,12 @@ mod tests {
 
     async fn protected_import_context() -> (Arc<AppContext>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
-        let data_dir = temp_dir.path().to_path_buf();
+        let ctx = open_protected_import_context(temp_dir.path()).await;
+        (ctx, temp_dir)
+    }
+
+    async fn open_protected_import_context(data_dir: &std::path::Path) -> Arc<AppContext> {
+        let data_dir = data_dir.to_path_buf();
         ensure_env_file(&data_dir);
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
@@ -973,7 +976,7 @@ mod tests {
             .await
             .expect("wire wallet backend offline");
 
-        (ctx, temp_dir)
+        ctx
     }
 
     fn reopen_vault_snapshot(
@@ -1087,6 +1090,188 @@ mod tests {
         .expect("same-password retry");
         assert!(ctx.is_identity_listed(&retry.identity.id()).unwrap());
         ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_import_changed_retry_checks_retained_keys_and_removal_cleans_them() {
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let (ctx, dir) = protected_import_context().await;
+        let (qi, _) = masternode_shaped_qi();
+        let id = qi.identity.id();
+        let password = Secret::new("synthetic-import-password");
+        let first = qi.private_keys.keys_set().first().unwrap().clone();
+        let last = qi.private_keys.keys_set().last().unwrap().clone();
+        let fault = WriteFault::arm(2);
+        assert!(
+            ctx.persist_loaded_identity(
+                &mut qi.clone(),
+                &None,
+                Some(&password),
+                IdentityLoadMode::RejectIfExists,
+            )
+            .is_err()
+        );
+        drop(fault);
+        assert!(ctx.stored_identity_blob(&id).unwrap().is_none());
+        ctx.wallet_backend().unwrap().shutdown().await;
+        // The SDK provider retains the original context; reopen durable snapshots instead.
+        let snapshot = tempfile::tempdir().unwrap();
+        for name in ["det-app.sqlite", "det-testnet.sqlite"] {
+            let connection = rusqlite::Connection::open(dir.path().join(name)).unwrap();
+            connection
+                .execute(
+                    "VACUUM INTO ?1",
+                    [snapshot.path().join(name).to_str().unwrap()],
+                )
+                .unwrap();
+        }
+        std::fs::create_dir_all(snapshot.path().join("secrets")).unwrap();
+        std::fs::copy(
+            dir.path().join("secrets/det-secrets.pwsvault"),
+            snapshot.path().join("secrets/det-secrets.pwsvault"),
+        )
+        .unwrap();
+        let ctx = open_protected_import_context(snapshot.path()).await;
+
+        let mut retry = qi.clone();
+        retry.private_keys = KeyStorage::default();
+        retry.private_keys.insert_at(
+            last.clone(),
+            qi.private_keys.entry_at(&last).unwrap().clone(),
+        );
+        let fault = WriteFault::arm(0);
+        assert!(matches!(
+            ctx.persist_loaded_identity(
+                &mut retry,
+                &None,
+                Some(&Secret::new("different-import-password")),
+                IdentityLoadMode::RejectIfExists,
+            ),
+            Err(TaskError::IdentityKeyPassphraseIncorrect)
+        ));
+        assert!(fault.schemes().is_empty());
+        drop(fault);
+
+        ctx.persist_loaded_identity(
+            &mut retry,
+            &None,
+            Some(&password),
+            IdentityLoadMode::RejectIfExists,
+        )
+        .expect("same-password subset retry");
+        let backend = ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+        assert_eq!(
+            view.scheme(&first.0, first.1).unwrap(),
+            SecretScheme::Protected
+        );
+        assert!(
+            !ctx.get_local_qualified_identity(&id)
+                .unwrap()
+                .unwrap()
+                .private_keys
+                .keys_set()
+                .contains(&first)
+        );
+        ctx.unprotect_identity_keys(id, password)
+            .expect("remove protection including retained keys");
+        for placement in [&first, &last] {
+            assert_eq!(
+                view.scheme(&placement.0, placement.1).unwrap(),
+                SecretScheme::Unprotected
+            );
+        }
+        let replacement = Secret::new("replacement-import-password");
+        ctx.protect_identity_keys(id, replacement.clone(), None)
+            .expect("protect all retained keys again");
+        for placement in [&first, &last] {
+            assert!(
+                view.get_protected(
+                    &placement.0,
+                    placement.1,
+                    &SecretString::new(replacement.expose_secret())
+                )
+                .unwrap()
+                .is_some()
+            );
+        }
+        ctx.delete_local_qualified_identity(&id)
+            .expect("remove imported identity and retained keys");
+        for (target, key_id) in qi.private_keys.keys_set() {
+            assert_eq!(view.scheme(&target, key_id).unwrap(), SecretScheme::Absent);
+        }
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_import_inventory_failure_prevents_secret_writes() {
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let (ctx, dir) = protected_import_context().await;
+        let (mut qi, _) = masternode_shaped_qi();
+        let conn = rusqlite::Connection::open(dir.path().join("det-testnet.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_inventory BEFORE INSERT ON meta_global \
+             WHEN NEW.key LIKE 'det:identity_import_keys:v1:%' \
+             BEGIN SELECT RAISE(FAIL, 'injected inventory persistence failure'); END;",
+        )
+        .unwrap();
+        let fault = WriteFault::arm(0);
+        assert!(
+            ctx.persist_loaded_identity(
+                &mut qi,
+                &None,
+                Some(&Secret::new("synthetic-import-password")),
+                IdentityLoadMode::RejectIfExists,
+            )
+            .is_err()
+        );
+        assert!(fault.schemes().is_empty());
+        drop(fault);
+        assert!(
+            ctx.stored_identity_blob(&qi.identity.id())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            ctx.retained_identity_import_keys(&qi.identity.id())
+                .unwrap()
+                .is_empty()
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_import_inventory_cleanup_failure_is_resumed() {
+        let (ctx, dir) = protected_import_context().await;
+        let (mut qi, _) = masternode_shaped_qi();
+        let id = qi.identity.id();
+        ctx.persist_loaded_identity(
+            &mut qi,
+            &None,
+            Some(&Secret::new("synthetic-import-password")),
+            IdentityLoadMode::RejectIfExists,
+        )
+        .unwrap();
+        let conn = rusqlite::Connection::open(dir.path().join("det-testnet.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_inventory_cleanup BEFORE DELETE ON meta_global \
+             WHEN OLD.key LIKE 'det:identity_import_keys:v1:%' \
+             BEGIN SELECT RAISE(FAIL, 'injected inventory cleanup failure'); END;",
+        )
+        .unwrap();
+        assert!(ctx.delete_local_qualified_identity(&id).is_err());
+        assert!(ctx.stored_identity_blob(&id).unwrap().is_none());
+        assert!(!ctx.retained_identity_import_keys(&id).unwrap().is_empty());
+        conn.execute_batch("DROP TRIGGER fail_inventory_cleanup")
+            .unwrap();
+        ctx.resume_pending_vault_cleanups();
+        assert!(ctx.retained_identity_import_keys(&id).unwrap().is_empty());
+        let backend = ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+        for (target, key_id) in qi.private_keys.keys_set() {
+            assert_eq!(view.scheme(&target, key_id).unwrap(), SecretScheme::Absent);
+        }
+        backend.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

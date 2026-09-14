@@ -164,6 +164,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - Context is the glue: UI reads from it, backend tasks operate through it
 - Data types shared between layers belong in `model/`, not in `ui/` or `database/`
 - Wallet secret bytes enter/leave only through the `wallet_backend/secret_seam.rs` chokepoint
+- Identity reads do not migrate or rewrite keys. `prepare_storage` explicitly runs legacy key migration under each identity's record lock. Protected imports persist their key inventory before secret writes; retained entries participate in password checks, protection changes, and identity removal even when absent from the identity blob.
 
 **In practice**, the codebase has established patterns that differ from the model:
 - UI may **read** from DB through `AppContext` wrapper methods (e.g., `app_context.load_local_qualified_identities()`)

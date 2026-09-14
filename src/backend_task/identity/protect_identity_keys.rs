@@ -1,4 +1,4 @@
-//! Identity key password protection opt-in / opt-out migrations: seal an identity's keys under one
+//! Identity key password protection: seal an identity's keys under one
 //! per-identity password (Tier-2) or revert them to keyless (Tier-1).
 //!
 //! Both operate over the identity's existing per-key vault labels, in place
@@ -28,7 +28,7 @@ use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
 /// Every `(target, key_id)` of an identity, the iteration unit for both
-/// migrations.
+/// protection changes.
 type IdentityKeySet = BTreeSet<(PrivateKeyTarget, KeyID)>;
 
 impl AppContext {
@@ -37,7 +37,7 @@ impl AppContext {
     ///
     /// Holds this identity's
     /// [`identity_record_lock`](AppContext::identity_record_lock) for the whole
-    /// migration: a tier change decides which password every one of the
+    /// protection change: it decides which password every one of the
     /// identity's keys opens under, so it must not interleave with another
     /// writer that seals keys of its own — see
     /// [`recover_legacy_identity_data`](AppContext::recover_legacy_identity_data).
@@ -77,13 +77,14 @@ impl AppContext {
         let identity_id = qi.identity.id();
 
         // Fail-closed: any resident plaintext key left by an incomplete
-        // get-path migration has an `Absent` label `seal_identity_keys` would
+        // startup migration has an `Absent` label `seal_identity_keys` would
         // skip, so refuse here rather than emit a false-protected result.
         reject_resident_identity_plaintext(&qi.private_keys)?;
 
         let backend = self.wallet_backend()?;
         let id = identity_id.to_buffer();
-        let keys = qi.private_keys.keys_set();
+        let mut keys = qi.private_keys.keys_set();
+        keys.extend(self.retained_identity_import_keys(&identity_id)?);
         let view = IdentityKeyView::new(backend.secret_store(), id);
         let pw = SecretString::new(password.expose_secret());
 
@@ -138,7 +139,8 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         let backend = self.wallet_backend()?;
         let id = qi.identity.id().to_buffer();
-        let keys = qi.private_keys.keys_set();
+        let mut keys = qi.private_keys.keys_set();
+        keys.extend(self.retained_identity_import_keys(&identity_id)?);
         let view = IdentityKeyView::new(backend.secret_store(), id);
         let pw = SecretString::new(password.expose_secret());
 
@@ -170,7 +172,7 @@ impl AppContext {
 /// Protection and import preflights reject an
 /// identity that still carries resident plaintext (`Clear`/`AlwaysClear`) keys
 /// on disk. Such a
-/// key means the eager load-path vault migration did not complete — its vault
+/// key means the startup vault migration did not complete — its vault
 /// write failed, or it was skipped on an already-protected identity — so the key
 /// has no vault label and [`seal_identity_keys`] would silently skip its
 /// `Absent` scheme and report a false success. Wallet-derived
@@ -183,7 +185,7 @@ impl AppContext {
 /// them and issue a false-protected result. See [`KeyStorage::has_encrypted_legacy_keys`].
 ///
 /// The two rejections carry DIFFERENT recovery actions, so they map to distinct
-/// errors: resident plaintext is finished by the load-path migration on the next
+/// errors: resident plaintext is retried by the startup migration on the next
 /// launch ([`TaskError::IdentityKeyProtectionIncomplete`] → "close and reopen"),
 /// whereas a legacy `Encrypted` key has no migration path
 /// ([`TaskError::IdentityKeyProtectionLegacyFormat`] → "load the identity again").
@@ -206,7 +208,7 @@ pub(super) fn reject_resident_identity_plaintext(
 /// already-`Protected` key is skipped, and an `Absent` key (not vault-stored —
 /// a wallet-derived or resident-plaintext key, protected by other means) is
 /// skipped. Crash-safe: the same-label upsert never loses a key, so a re-run
-/// finishes a partial migration.
+/// finishes a partial protection change.
 ///
 /// At-rest residual (known): the in-place upsert replaces the value at
 /// the label, but the PRE-opt-in keyless plaintext may persist in freed
@@ -244,7 +246,7 @@ fn seal_identity_keys(
 }
 
 /// Verify `password` opens EVERY already-`Protected` key in `keys`, before any
-/// vault mutation. Both migrations call this up front so they are atomic
+/// vault mutation. Both protection changes call this up front so they are atomic
 /// by construction: if `password` fails to open any protected key, the mismatch
 /// surfaces from `get_protected` as [`TaskError::IdentityKeyPassphraseIncorrect`]
 /// (no oracle) with zero state changes — opt-in can't seal the rest under a
@@ -557,7 +559,7 @@ mod tests {
     }
 
     /// A `KeyStorage` holding a single resident-plaintext `Clear` key — the state
-    /// the load-path vault migration leaves behind when its vault write failed or
+    /// the startup vault migration leaves behind when its vault write failed or
     /// was skipped, so the key's vault label is `Absent`.
     fn ks_with_resident_clear() -> KeyStorage {
         let pv = PlatformVersion::latest();
@@ -672,7 +674,7 @@ mod tests {
     }
 
     /// Fail-closed: an identity still carrying a resident-plaintext key
-    /// (the load-path vault migration did not move it, so its vault label is
+    /// (the startup vault migration did not move it, so its vault label is
     /// `Absent`) is rejected at the protect boundary rather than reported as
     /// protected — the false-`IdentityKeysProtected{count:0}` regression.
     #[test]
@@ -824,7 +826,7 @@ mod tests {
             .expect("wire wallet backend offline");
 
         // A loaded identity still carrying resident plaintext (the state an
-        // incomplete get-path migration leaves: `Clear`/`AlwaysClear` with an
+        // incomplete startup migration leaves: `Clear`/`AlwaysClear` with an
         // `Absent` vault label). It is NOT stored in the vault, so the seal would
         // see only `Absent` and report a false success without the guard.
         let qi = qi_clear_pair_plus_wallet_derived();

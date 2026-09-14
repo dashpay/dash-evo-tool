@@ -10,7 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Identity imports with a password now encrypt private keys before their first
   storage write. Interrupted new imports retain protected entries, and retries
-  preserve existing keys when a supplied password or key conflicts.
+  preserve existing keys when a supplied password or key conflicts. A durable
+  key inventory includes entries omitted on retry in password checks and removal.
+
+- Identity reads no longer migrate or rewrite stored keys. Storage preparation
+  explicitly migrates legacy keys under each identity's record lock.
 
 - **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
   the lock file moves from 0.11.14 to 0.11.15, which fixes a remote

@@ -1330,12 +1330,8 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
 /// the identity blob. The import has to route them through the vault seam, so
 /// the at-rest blob keeps only `InVault` placeholders.
 ///
-/// This reads the stored bytes **immediately after the migration, before any
-/// load path runs**, and that ordering is the whole point: reading them after a
-/// `load_local_qualified_identities()` would prove nothing, because the eager
-/// load-path repair (`migrate_identity_keys_to_vault`) vaults resident plaintext
-/// on read and would mask an importer that had written it. "Repaired on next
-/// read" is not a security property — the bytes must never hit the disk at all.
+/// Inspect the stored bytes immediately after import, before the separate
+/// startup repair can normalize any legacy resident keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_import_never_writes_a_plaintext_key_to_disk() {
     let tmp = tempfile::tempdir().expect("tempdir");

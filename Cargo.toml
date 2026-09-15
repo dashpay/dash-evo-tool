@@ -71,7 +71,7 @@ itertools = "0.15.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
 tracing = "0.1.41"
-rand = "0.9"
+rand = "0.10"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"

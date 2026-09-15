@@ -102,6 +102,7 @@ impl AppContext {
         }
 
         let drain = crate::backend_task::migration::finish_unwire::run_gated(self, &gate).await;
+        let identity_keys = self.migrate_local_identity_keys_to_vault();
 
         // Run the sweep on the drain's failure path too: a deterministic drain
         // failure would otherwise postpone the only recovery path for orphaned
@@ -114,6 +115,7 @@ impl AppContext {
         self.run_pending_vault_cleanup_sweep(&gate);
 
         drain?;
+        identity_keys?;
         self.storage_prepared.store(true, Ordering::Release);
         Ok(())
     }

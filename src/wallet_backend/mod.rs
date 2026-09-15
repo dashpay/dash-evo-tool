@@ -466,6 +466,8 @@ struct Inner {
     /// `AppContext::app_kv` so settings and wallet meta both write into
     /// the same persister.
     app_kv: Arc<DetKv>,
+    /// Serializes single-key metadata writers without blocking index readers.
+    single_key_alias_write_lock: std::sync::Mutex<()>,
     /// In-memory index of imported single-key entries, keyed by their
     /// P2PKH address. Drives `SingleKeyView::list` without enumerating
     /// the (non-enumerable) secret store. Seeded on cold boot from the
@@ -652,6 +654,7 @@ impl WalletBackend {
                 wallet_database_path,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
+                single_key_alias_write_lock: std::sync::Mutex::new(()),
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
                 secret_access,
@@ -2133,6 +2136,7 @@ impl WalletBackend {
     /// [`Self::sign_single_key`] (the JIT chokepoint), not this view.
     pub fn single_key(&self) -> SingleKeyView<'_> {
         SingleKeyView {
+            alias_write_lock: &self.inner.single_key_alias_write_lock,
             secret_store: &self.inner.secret_store,
             index: &self.inner.single_key_index,
             network: self.inner.network,

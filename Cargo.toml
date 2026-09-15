@@ -94,8 +94,9 @@ bitflags = "2.10"
 rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
-# Wallet alias cleaning (strip Cc/Cf) and grapheme-safe alias input truncation.
-# Both are already in the tree through egui/epaint.
+# Unicode data for alias cleaning and grapheme-safe input truncation.
+# These crates are already transitive dependencies.
+icu_properties = "2.2.0"
 unicode-general-category = "1.1.0"
 unicode-segmentation = "1.13.2"
 argon2 = "0.5.3" # For Argon2 key derivation

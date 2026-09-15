@@ -5,7 +5,8 @@
 //! MCP import) routes the raw text through [`resolve_alias`]:
 //!
 //! 1. [`clean_alias`] removes Unicode control (`Cc`) and format (`Cf`)
-//!    characters — zero-width joiners/spaces, BOM, bidirectional overrides —
+//!    characters and Unicode default-ignorables (including variation selectors
+//!    and Hangul fillers) using ICU property data,
 //!    and then trims surrounding whitespace, so a name that is visually blank
 //!    or uses bidi tricks to mimic another wallet cannot be saved as-is.
 //! 2. A blank result means "use the default name" (see [`next_default_alias`]).
@@ -22,6 +23,7 @@
 
 use std::collections::HashSet;
 
+use icu_properties::{CodePointSetData, props::DefaultIgnorableCodePoint};
 use thiserror::Error;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
@@ -84,10 +86,10 @@ fn is_stripped_char(c: char) -> bool {
     matches!(
         get_general_category(c),
         GeneralCategory::Control | GeneralCategory::Format
-    )
+    ) || CodePointSetData::new::<DefaultIgnorableCodePoint>().contains(c)
 }
 
-/// Remove control/format characters, then trim surrounding whitespace.
+/// Remove control, format, and default-ignorable characters, then trim whitespace.
 ///
 /// Stripping runs first so invisible characters wrapped around whitespace
 /// (e.g. `"\u{FEFF} "`) cannot keep an otherwise blank name alive.
@@ -200,6 +202,35 @@ mod tests {
 
     fn default_name() -> String {
         "Wallet 1".to_owned()
+    }
+
+    #[test]
+    fn default_ignorable_aliases_use_default_names() {
+        for c in [
+            '\u{fe00}',
+            '\u{fe0f}',
+            '\u{e0100}',
+            '\u{e01ef}',
+            '\u{115f}',
+            '\u{1160}',
+            '\u{3164}',
+            '\u{ffa0}',
+            '\u{034f}',
+            '\u{180b}',
+        ] {
+            let raw = format!(" {c} ");
+            assert_eq!(
+                resolve_alias(&raw, default_name),
+                Ok(default_name()),
+                "{c:?}"
+            );
+            assert_eq!(alias_char_count(&raw), 0, "{c:?}");
+            assert_eq!(
+                ensure_alias_unique(&format!("Savings{c}"), ["Savings"]),
+                Err(AliasError::AlreadyUsed)
+            );
+        }
+        assert_eq!(clean_alias("Cafe\u{301} 日本語"), "Cafe\u{301} 日本語");
     }
 
     #[test]

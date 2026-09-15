@@ -99,7 +99,7 @@ pub(crate) fn single_key_namespace_id() -> SecretWalletId {
 /// `index`: clean it, replace a blank one with the smallest unused "Key N",
 /// and reject a name another imported key already uses. The key at
 /// `own_address` is excluded, so a key may keep (or re-import with) its
-/// current name. The caller must hold the index write guard until the
+/// current name. The caller must hold the alias writer lock until the
 /// resolved alias is inserted.
 fn resolve_single_key_alias(
     index: &std::collections::BTreeMap<String, ImportedKey>,
@@ -123,6 +123,7 @@ fn resolve_single_key_alias(
 /// [`WalletBackend::single_key`](super::WalletBackend::single_key).
 pub struct SingleKeyView<'a> {
     pub(crate) secret_store: &'a Arc<SecretStore>,
+    pub(crate) alias_write_lock: &'a std::sync::Mutex<()>,
     pub(crate) index: &'a std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
     pub(crate) network: Network,
     /// Enumerable cross-network sidecar holding the imported-key
@@ -165,15 +166,18 @@ impl std::fmt::Debug for ImportPassphrase {
 impl<'a> SingleKeyView<'a> {
     /// Borrow the moving parts of a [`SingleKeyView`] without going
     /// through [`WalletBackend::single_key`]. Kept `pub` so benches and
-    /// downstream tooling can build the view from owned `Arc`s.
+    /// downstream tooling can build the view from owned `Arc`s. All views
+    /// sharing an index must share the same `alias_write_lock`.
     pub fn from_views(
         secret_store: &'a Arc<SecretStore>,
+        alias_write_lock: &'a std::sync::Mutex<()>,
         index: &'a std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
         network: Network,
         app_kv: Option<&'a Arc<DetKv>>,
     ) -> Self {
         Self {
             secret_store,
+            alias_write_lock,
             index,
             network,
             app_kv,
@@ -200,17 +204,11 @@ impl<'a> SingleKeyView<'a> {
     /// empty / `None` passphrase falls back to the legacy
     /// unprotected-but-vault-encrypted shape.
     ///
-    /// A [`AliasSource::UserEntered`] alias is resolved (cleaned, blank →
-    /// smallest unused "Key N", uniqueness among imported keys) before any
-    /// write, and the index write guard is held from resolution until the
-    /// key is indexed so concurrent imports/renames cannot claim the same
-    /// name. [`AliasSource::Preserved`] keeps a legacy alias's length
-    /// (length-checked as stored) but no longer keeps an exact duplicate: a
-    /// name another imported key already uses is disambiguated with the
-    /// smallest free `_1`, `_2`, … suffix via [`dedupe_preserved_alias`]. It
-    /// does not take the guard early — migration/restore import legacy rows
-    /// one at a time, so each dedup check already sees every key imported so
-    /// far.
+    /// User-entered aliases are cleaned, defaulted, and checked for uniqueness.
+    /// Preserved aliases keep their stored form unless another key uses the
+    /// name, in which case the smallest free `_1`, `_2`, … suffix is added.
+    /// The alias writer lock spans resolution through persistence and indexing;
+    /// index readers remain available during encryption and storage writes.
     pub fn import_wif_with_passphrase(
         &self,
         wif: &str,
@@ -238,25 +236,21 @@ impl<'a> SingleKeyView<'a> {
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
 
-        // Resolve a user-entered alias before any write. The guard stays held
-        // through the writes below so the uniqueness check and the index insert
-        // are atomic relative to every other alias writer (`set_alias` takes
-        // the same guard). Lock order: index guard → secret store / sidecar.
-        let (alias, mut user_alias_guard) = match alias {
-            AliasSource::UserEntered(raw) => {
-                let index = write_recover(self.index);
-                let resolved = resolve_single_key_alias(&index, &raw, &address_str)?;
-                (Some(resolved), Some(index))
-            }
-            AliasSource::Preserved(alias) => {
-                let deduped = alias.map(|alias| {
-                    let taken: Vec<String> = read_recover(self.index)
-                        .values()
-                        .filter_map(|key| key.alias.clone())
-                        .collect();
-                    dedupe_preserved_alias(alias, taken.iter().map(String::as_str))
-                });
-                (deduped, None)
+        // Lock order: alias writer → short index access or secret store/sidecar.
+        let _alias_guard = self.alias_write_lock.lock()?;
+        let alias = {
+            let index = read_recover(self.index);
+            match alias {
+                AliasSource::UserEntered(raw) => {
+                    Some(resolve_single_key_alias(&index, &raw, &address_str)?)
+                }
+                AliasSource::Preserved(alias) => alias.map(|alias| {
+                    let taken = index
+                        .iter()
+                        .filter(|(address, _)| *address != &address_str)
+                        .filter_map(|(_, key)| key.alias.as_deref());
+                    dedupe_preserved_alias(alias, taken)
+                }),
             }
         };
 
@@ -322,10 +316,7 @@ impl<'a> SingleKeyView<'a> {
                 })?;
         }
 
-        match user_alias_guard.as_mut() {
-            Some(index) => index.insert(address_str, imported.clone()),
-            None => write_recover(self.index).insert(address_str, imported.clone()),
-        };
+        write_recover(self.index).insert(address_str, imported.clone());
         Ok(imported)
     }
 
@@ -340,18 +331,20 @@ impl<'a> SingleKeyView<'a> {
     /// alias resets the key to the smallest unused "Key N", and a name another
     /// imported key already uses is rejected. Returns the alias actually saved.
     ///
-    /// The index write guard spans resolution and persistence so alias writers
+    /// The alias writer lock spans resolution and persistence so alias writers
     /// serialize and the uniqueness check cannot go stale. With a sidecar, the
     /// index changes only after a successful write. Without one, the transient
     /// in-memory index is updated directly.
     pub fn set_alias(&self, address: &str, alias: &str) -> Result<String, TaskError> {
-        let mut idx = write_recover(self.index);
+        let _alias_guard = self.alias_write_lock.lock()?;
+        let idx = read_recover(self.index);
         let mut updated = idx
             .get(address)
             .cloned()
             .ok_or(TaskError::ImportedKeyNotFound)?;
         let alias = resolve_single_key_alias(&idx, alias, address)?;
         updated.alias = Some(alias.clone());
+        drop(idx);
 
         if let Some(kv) = self.app_kv {
             let key = meta_key_for(self.network, address);
@@ -361,7 +354,7 @@ impl<'a> SingleKeyView<'a> {
                 }
             })?;
         }
-        idx.insert(address.to_string(), updated);
+        write_recover(self.index).insert(address.to_string(), updated);
         Ok(alias)
     }
 
@@ -439,6 +432,7 @@ impl<'a> SingleKeyView<'a> {
     /// its secret-store row, and remove the k/v sidecar entry. Idempotent
     /// — absent addresses are an `Ok(())`.
     pub fn forget(&self, address: &str) -> Result<(), TaskError> {
+        let _alias_guard = self.alias_write_lock.lock()?;
         let label = label_for_address(address);
         SecretSeam::new(self.secret_store).delete_secret(&single_key_namespace_id(), &label)?;
         if let Some(kv) = self.app_kv {
@@ -583,6 +577,7 @@ impl<'a> SingleKeyView<'a> {
     /// `entry().or_insert` pattern in
     /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets)).
     pub fn rehydrate_index(&self) -> Result<(), TaskError> {
+        let _alias_guard = self.alias_write_lock.lock()?;
         let metas = self.list_persisted();
         if metas.is_empty() {
             return Ok(());
@@ -1101,6 +1096,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1123,6 +1119,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1184,6 +1181,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1229,6 +1227,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1260,6 +1259,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1288,6 +1288,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1503,6 +1504,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1537,6 +1539,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1569,6 +1572,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1614,6 +1618,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1668,6 +1673,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1726,6 +1732,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1797,6 +1804,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1870,6 +1878,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1909,6 +1918,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1946,6 +1956,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -1989,6 +2000,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -2010,6 +2022,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -2036,9 +2049,11 @@ mod tests {
 
     fn transient_view<'a>(
         store: &'a Arc<SecretStore>,
+        alias_write_lock: &'a std::sync::Mutex<()>,
         index: &'a std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
     ) -> SingleKeyView<'a> {
         SingleKeyView {
+            alias_write_lock,
             secret_store: store,
             index,
             network: Network::Testnet,
@@ -2057,7 +2072,8 @@ mod tests {
     fn user_import_blank_alias_takes_smallest_unused_key_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
 
         let first = view
             .import_wif(&wif_for_byte(0x11), AliasSource::UserEntered("  ".into()))
@@ -2083,7 +2099,8 @@ mod tests {
     fn user_import_cleans_the_alias() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
 
         let imported = view
             .import_wif(
@@ -2099,7 +2116,8 @@ mod tests {
     fn user_import_duplicate_alias_is_rejected_before_writes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
         view.import_wif(
             &wif_for_byte(0x11),
             AliasSource::UserEntered("Savings".into()),
@@ -2135,7 +2153,8 @@ mod tests {
     fn user_reimport_may_keep_its_own_alias() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
         view.import_wif(known_wif(), AliasSource::UserEntered("Savings".into()))
             .expect("first import");
 
@@ -2147,6 +2166,102 @@ mod tests {
         assert_eq!(view.list().len(), 1);
     }
 
+    #[test]
+    fn alias_imports_serialize_without_blocking_index_readers() {
+        for first_alias in [
+            AliasSource::Preserved(Some("Savings".into())),
+            AliasSource::UserEntered("Savings".into()),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
+            let gated_store = Arc::new(FirstAliasPutGate::default());
+            let kv = Arc::new(DetKv::from_store(gated_store.clone()));
+            let view = SingleKeyView {
+                alias_write_lock: &std::sync::Mutex::new(()),
+                secret_store: &store,
+                index: &index,
+                network: Network::Testnet,
+                app_kv: Some(&kv),
+            };
+            gated_store.arm();
+            std::thread::scope(|scope| {
+                let first = scope.spawn(|| view.import_wif(&wif_for_byte(0x11), first_alias));
+                gated_store.wait_until_first_put();
+                let readable = index.try_read().is_ok();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let view = &view;
+                let second = scope.spawn(move || {
+                    let result = view.import_wif(
+                        &wif_for_byte(0x12),
+                        AliasSource::Preserved(Some("Savings".into())),
+                    );
+                    tx.send(()).expect("send completion");
+                    result
+                });
+                let completed_early = rx
+                    .recv_timeout(std::time::Duration::from_millis(200))
+                    .is_ok();
+                gated_store.release_first_put();
+                let first = first.join().expect("first thread").expect("first import");
+                let second = second
+                    .join()
+                    .expect("second thread")
+                    .expect("second import");
+                assert!(readable, "list readers must not wait for persistence");
+                assert!(
+                    !completed_early,
+                    "alias writers must wait for pending imports"
+                );
+                assert_eq!(first.alias.as_deref(), Some("Savings"));
+                assert_eq!(second.alias.as_deref(), Some("Savings_1"));
+                for imported in [first, second] {
+                    let persisted = kv
+                        .get::<ImportedKey>(
+                            DetScope::Global,
+                            &meta_key_for(Network::Testnet, &imported.address),
+                        )
+                        .expect("read")
+                        .expect("persisted");
+                    assert_eq!(persisted.alias, imported.alias);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn preserved_reimports_keep_aliases_after_duplicate_migration() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fixture = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
+            secret_store: &fixture.store,
+            index: &fixture.index,
+            network: Network::Testnet,
+            app_kv: Some(&fixture.kv),
+        };
+        for _ in 0..3 {
+            for (byte, expected) in [(0x11, "Dup"), (0x12, "Dup_1"), (0x13, "Dup_2")] {
+                let imported = view
+                    .import_wif(
+                        &wif_for_byte(byte),
+                        AliasSource::Preserved(Some("Dup".into())),
+                    )
+                    .expect("import");
+                assert_eq!(imported.alias.as_deref(), Some(expected));
+                let persisted = fixture
+                    .kv
+                    .get::<ImportedKey>(
+                        DetScope::Global,
+                        &meta_key_for(Network::Testnet, &imported.address),
+                    )
+                    .expect("read")
+                    .expect("persisted");
+                assert_eq!(persisted.alias, imported.alias);
+            }
+        }
+        assert_eq!(view.list().len(), 3);
+    }
+
     /// Legacy data keeps its shape: a missing alias stays missing (no
     /// synthetic "Key N" is written), and legacy duplicates are never
     /// rejected — but a colliding legacy alias is not kept as an exact
@@ -2156,7 +2271,8 @@ mod tests {
     fn preserved_import_keeps_missing_alias_and_dedupes_legacy_duplicates() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
 
         let unnamed = view
             .import_wif(&wif_for_byte(0x11), AliasSource::Preserved(None))
@@ -2191,7 +2307,8 @@ mod tests {
     fn set_alias_blank_resets_to_default_key_name() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
         let renamed = view
             .import_wif(
                 &wif_for_byte(0x11),
@@ -2216,7 +2333,8 @@ mod tests {
     fn set_alias_to_its_own_alias_succeeds() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
         let imported = view
             .import_wif(known_wif(), AliasSource::UserEntered("Savings".into()))
             .expect("import");
@@ -2232,7 +2350,8 @@ mod tests {
     fn set_alias_to_another_keys_alias_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, _) = fresh_view(dir.path(), Network::Testnet);
-        let view = transient_view(&store, &index);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view = transient_view(&store, &alias_write_lock, &index);
         let renamed = view
             .import_wif(
                 &wif_for_byte(0x11),
@@ -2265,9 +2384,11 @@ mod tests {
         let store =
             Arc::new(open_secret_store(&dir.path().join("secrets.pwsvault")).expect("open vault"));
         let index = Arc::new(std::sync::RwLock::new(std::collections::BTreeMap::new()));
+        let alias_write_lock = Arc::new(std::sync::Mutex::new(()));
         let gated_store = Arc::new(FirstAliasPutGate::default());
         let kv = Arc::new(DetKv::from_store(gated_store.clone()));
         let view = SingleKeyView {
+            alias_write_lock: &alias_write_lock,
             secret_store: &store,
             index: &index,
             network: Network::Testnet,
@@ -2283,8 +2404,10 @@ mod tests {
         let first_index = index.clone();
         let first_kv = kv.clone();
         let first_address = address.clone();
+        let first_lock = alias_write_lock.clone();
         let first = std::thread::spawn(move || {
             SingleKeyView {
+                alias_write_lock: &first_lock,
                 secret_store: &first_store,
                 index: &first_index,
                 network: Network::Testnet,
@@ -2299,8 +2422,10 @@ mod tests {
         let later_kv = kv.clone();
         let later_address = address.clone();
         let (later_tx, later_rx) = std::sync::mpsc::channel();
+        let later_lock = alias_write_lock.clone();
         let later = std::thread::spawn(move || {
             let result = SingleKeyView {
+                alias_write_lock: &later_lock,
                 secret_store: &later_store,
                 index: &later_index,
                 network: Network::Testnet,
@@ -2357,6 +2482,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -2406,6 +2532,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -2455,6 +2582,7 @@ mod tests {
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,

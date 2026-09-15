@@ -2038,6 +2038,7 @@ dependencies = [
  "grovestark",
  "hex",
  "humantime",
+ "icu_properties",
  "image",
  "itertools 0.14.0",
  "native-dialog",

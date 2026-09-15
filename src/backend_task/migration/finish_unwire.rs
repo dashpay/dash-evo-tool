@@ -4080,6 +4080,7 @@ mod tests {
 
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -4159,6 +4160,7 @@ mod tests {
 
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -4262,6 +4264,7 @@ mod tests {
 
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,

@@ -101,6 +101,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Re-importing legacy private keys preserves their names, including duplicate-name
+  suffixes. Concurrent imports and renames reserve names without blocking wallet-list
+  reads during storage writes. Wallet names also strip Unicode default-ignorable
+  characters, including variation selectors and Hangul fillers.
+
 - The backend wallet lifecycle test reserves the withdrawal fee instead of
   attempting to withdraw the entire Platform address balance.
 

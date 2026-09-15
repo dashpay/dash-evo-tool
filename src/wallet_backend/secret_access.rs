@@ -1596,11 +1596,13 @@ mod tests {
 
     fn import_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
         let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
-        let view = SingleKeyView::from_views(store, &index, Network::Testnet, None);
+        let alias_write_lock = std::sync::Mutex::new(());
+        let view =
+            SingleKeyView::from_views(store, &alias_write_lock, &index, Network::Testnet, None);
         let imported = view
             .import_wif_with_passphrase(
                 &known_testnet_wif(),
-                Some("My Key".into()),
+                crate::model::wallet::alias::AliasSource::Preserved(Some("My Key".into())),
                 crate::wallet_backend::single_key::ImportPassphrase {
                     passphrase: Some(zeroize::Zeroizing::new(passphrase.to_string())),
                     hint: Some("the usual".into()),

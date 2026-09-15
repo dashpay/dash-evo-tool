@@ -136,14 +136,18 @@ impl<'a> WalletMetaView<'a> {
 
     /// Upsert the metadata for a single wallet. Re-writing the same value is an
     /// idempotent overwrite (DetKv upserts by key).
+    ///
+    /// Enforces only the alias length as stored: user-entered names are
+    /// cleaned, defaulted, and uniqueness-checked upstream (registration and
+    /// rename), while writes that carry an unchanged alias — including the
+    /// empty alias of an unnamed legacy wallet — must round-trip untouched.
     pub fn set(
         &self,
         network: Network,
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
-        crate::model::wallet::validate_wallet_alias(&meta.alias)
-            .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
+        crate::model::wallet::alias::validate_stored_alias(&meta.alias)?;
         self.0.set(network, seed_hash, meta)
     }
 
@@ -155,10 +159,12 @@ impl<'a> WalletMetaView<'a> {
         seed_hash: &WalletSeedHash,
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
-        if let Err(error) = crate::model::wallet::validate_wallet_alias(&meta.alias) {
+        if let Err(crate::model::wallet::alias::AliasError::TooLong { length }) =
+            crate::model::wallet::alias::validate_stored_alias(&meta.alias)
+        {
             tracing::warn!(
-                alias_chars = error.actual,
-                max_alias_chars = error.max,
+                alias_chars = length.actual,
+                max_alias_chars = length.max,
                 "Preserving an overlong legacy wallet alias during migration"
             );
         }
@@ -250,6 +256,21 @@ mod tests {
             .expect_err("overlong alias must fail");
         assert!(matches!(error, TaskError::InvalidWalletAliasLength { .. }));
         assert_eq!(view.get(Network::Mainnet, &seed), None);
+    }
+
+    /// An unnamed wallet (empty alias, e.g. legacy data) keeps its empty alias
+    /// through a metadata write that does not rename it — the write path never
+    /// substitutes a synthetic default name, so the wallet keeps rendering with
+    /// the seed-hash fallback label.
+    #[test]
+    fn set_keeps_empty_alias_of_unnamed_wallet() {
+        let kv = kv();
+        let view = WalletMetaView::new(&kv);
+        let seed: WalletSeedHash = [0x25; 32];
+        let unnamed = meta("", true, None);
+        view.set(Network::Mainnet, &seed, &unnamed)
+            .expect("an empty alias is a valid stored alias");
+        assert_eq!(view.get(Network::Mainnet, &seed), Some(unnamed));
     }
 
     #[test]

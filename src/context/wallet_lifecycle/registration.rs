@@ -25,10 +25,18 @@ impl AppContext {
     /// and the test seam — routes through here so vault write and
     /// in-memory mirror can never diverge. Returns the rebuilt display
     /// wallet so the caller can select it.
+    ///
+    /// A user-typed `alias`
+    /// ([`AliasSource::UserEntered`](crate::model::wallet::alias::AliasSource::UserEntered))
+    /// is resolved by the backend: cleaned, blank replaced by the smallest
+    /// unused "Key N", and rejected when another imported key already uses it.
+    /// [`AliasSource::Preserved`](crate::model::wallet::alias::AliasSource::Preserved)
+    /// keeps a legacy alias's absence as stored, but disambiguates a legacy
+    /// duplicate with a `_1`, `_2`, … suffix rather than keeping it exact.
     pub fn import_single_key_wif(
         &self,
         wif: &str,
-        alias: Option<String>,
+        alias: crate::model::wallet::alias::AliasSource,
         passphrase: crate::wallet_backend::single_key::ImportPassphrase,
     ) -> Result<
         (
@@ -98,31 +106,33 @@ impl AppContext {
     /// It sets the upstream SPV scan-window floor: a fresh wallet scans from
     /// the current tip, an imported one from genesis so deposits made before
     /// registration are still found.
+    ///
+    /// `wallet.alias` is treated as user input: it is cleaned, a blank or
+    /// missing alias becomes the smallest unused "Wallet N", and an alias
+    /// another loaded HD wallet already uses is rejected with
+    /// [`TaskError::WalletAliasAlreadyUsed`].
     pub fn register_wallet(
         self: &Arc<Self>,
-        wallet: Wallet,
+        mut wallet: Wallet,
         seed: &[u8; 64],
         origin: WalletOrigin,
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
         let seed_hash = wallet.seed_hash();
         let uses_password = wallet.uses_password;
 
-        // 0. Reject an invalid alias FIRST — this is pure input validation and
-        // must fail before any secret-critical write. A rejection at the
-        // `write_wallet_meta` layer would land AFTER `write_seed_envelope`,
-        // orphaning the encrypted seed (no meta row → never hydrated, no
-        // cleanup path). Mirrors the single-key import path.
-        if let Some(alias) = wallet.alias.as_deref() {
-            crate::model::wallet::validate_wallet_alias(alias)
-                .map_err(|source| TaskError::InvalidWalletAliasLength { source })?;
-        }
+        // Serialize with every other HD alias writer from resolution until the
+        // wallet is visible in `wallets`, so two concurrent registrations or a
+        // racing rename can never settle on the same name. Released before the
+        // address bootstrap.
+        let alias_guard = self.lock_hd_wallet_aliases();
 
-        // 1. Reject a duplicate import. The upstream `det-<network>.sqlite`
+        // 0. Reject a duplicate import. The upstream `det-<network>.sqlite`
         // persistor is the system of record now; DET no longer writes the
         // legacy `data.db.wallet` row (the fresh-install schema gates that
         // table out entirely). Uniqueness is enforced against the wallet-meta
         // sidecar and the in-memory map — the same key (`seed_hash`) the
-        // legacy unique constraint used.
+        // legacy unique constraint used. Checked before the alias so a
+        // re-import is reported as such, not as a name conflict.
         if self.wallets.read()?.contains_key(&seed_hash)
             || WalletMetaView::new(&self.app_kv)
                 .get(self.network, &seed_hash)
@@ -130,6 +140,21 @@ impl AppContext {
         {
             return Err(TaskError::WalletAlreadyImported);
         }
+
+        // 1. Resolve the alias before any secret-critical write — this is input
+        // validation. A rejection at the `write_wallet_meta` layer would land
+        // AFTER `write_seed_envelope`, orphaning the encrypted seed (no meta
+        // row → never hydrated, no cleanup path). Mirrors the single-key
+        // import path.
+        let alias = {
+            let wallets = self.wallets.read()?;
+            Self::resolve_hd_wallet_alias(
+                &wallets,
+                wallet.alias.as_deref().unwrap_or_default(),
+                &seed_hash,
+            )?
+        };
+        wallet.alias = Some(alias);
 
         // 2. Persist the seed-envelope vault entry — FAIL-CLOSED (F62). This is
         // the encrypted seed the W2 cold-boot bridge re-registers from; without
@@ -157,6 +182,7 @@ impl AppContext {
         wallets.insert(seed_hash, wallet_arc.clone());
         self.has_wallet.store(true, Ordering::Relaxed);
         drop(wallets);
+        drop(alias_guard);
 
         // 4. Bootstrap addresses from the seed the caller holds (fresh
         // register), then — for a password wallet — promote that seed into the
@@ -179,6 +205,41 @@ impl AppContext {
         self.register_wallet_upstream(seed_hash, seed, origin);
 
         Ok((seed_hash, wallet_arc))
+    }
+
+    /// Resolve a user-entered HD wallet alias against the loaded wallets:
+    /// clean it, replace a blank one with the smallest unused "Wallet N", and
+    /// reject a name another HD wallet already uses. The wallet identified by
+    /// `own_seed_hash` is excluded, so a wallet may keep its current name.
+    ///
+    /// Takes the already-held `wallets` map so callers never re-lock it. The
+    /// caller must hold [`Self::lock_hd_wallet_aliases`] until the resolved
+    /// alias is persisted and mirrored into `wallets`.
+    pub(crate) fn resolve_hd_wallet_alias(
+        wallets: &std::collections::BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+        raw: &str,
+        own_seed_hash: &WalletSeedHash,
+    ) -> Result<String, TaskError> {
+        use crate::model::wallet::alias::{
+            DefaultAliasKind, ensure_alias_unique, next_default_alias, resolve_alias,
+        };
+
+        let taken: Vec<String> = wallets
+            .iter()
+            .filter(|(seed_hash, _)| *seed_hash != own_seed_hash)
+            .filter_map(|(_, wallet)| {
+                wallet
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .alias
+                    .clone()
+            })
+            .collect();
+        let alias = resolve_alias(raw, || {
+            next_default_alias(DefaultAliasKind::HdWallet, taken.iter().map(String::as_str))
+        })?;
+        ensure_alias_unique(&alias, taken.iter().map(String::as_str))?;
+        Ok(alias)
     }
 
     /// Spawn the W1 upstream-registration subtask for a just-registered wallet.

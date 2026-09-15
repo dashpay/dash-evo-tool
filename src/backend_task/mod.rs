@@ -1301,8 +1301,10 @@ impl AppContext {
         };
 
         let cancellation_token = self.subtasks.cancellation_token.clone();
-        let spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
+        let mut spv_started = if start_spv && backend_wired && !cancellation_token.is_cancelled() {
             tokio::select! {
+                biased;
+                _ = cancellation_token.cancelled() => false,
                 result = start_backend(Arc::clone(&new_ctx), sender.clone()) => {
                     match result {
                         Ok(()) => {
@@ -1319,7 +1321,6 @@ impl AppContext {
                         }
                     }
                 }
-                _ = cancellation_token.cancelled() => false,
             }
         } else {
             false
@@ -1329,6 +1330,7 @@ impl AppContext {
         {
             backend.forget_all_secrets();
             backend.shutdown().await;
+            spv_started = false;
         }
         Ok(BackendTaskSuccessResult::NetworkContextCreated {
             network,

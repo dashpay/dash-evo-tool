@@ -2,6 +2,8 @@
 //! empty state + card grid (B3).
 
 use crate::support::{mount_app, with_isolated_data_dir};
+use dash_evo_tool::app::TaskResult;
+use dash_evo_tool::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -596,6 +598,73 @@ fn dpns_section_missing_voter_scoped_prompt() {
         assert!(
             harness.query_by_label("ProTxHash").is_none(),
             "the scoped prompt must not be FR-4's load form (no ProTxHash re-entry)"
+        );
+    });
+}
+
+/// The open `Add voting key` prompt and the key typed into it belong to the
+/// user's session, not to the stored record, so a backend result that merely
+/// lands while this page is visible must leave both alone.
+///
+/// Results reach whichever screen is visible, and several arrive with no user
+/// action at all — the auto-started identity-discovery sweep emits one
+/// `Progress` per scanned index. Re-opening the detail view on each one rebuilt
+/// it from the store and silently discarded a half-entered voting key, which
+/// read to the user as the prompt collapsing by itself.
+#[test]
+fn an_unrelated_task_result_keeps_the_open_voter_key_prompt() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x97, "mn-vote-keep", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-vote-keep").click();
+        harness.run_steps(3);
+
+        harness.get_by_label("Add voting key").click();
+        harness.run_steps(3);
+        harness
+            .query_all_by_role(Role::PasswordInput)
+            .next()
+            .expect("the scoped prompt renders a masked voting-key field")
+            .focus();
+        harness.event(egui::Event::Text("a-half-typed-voting-key".to_string()));
+        harness.step();
+        assert!(
+            !harness.get_by_label("Save").accesskit_node().is_disabled(),
+            "the premise: Save arms itself once the prompt holds a key"
+        );
+
+        // A result for a task this screen never dispatched, delivered through
+        // the same channel the discovery sweep and the SPV event bridge use.
+        harness
+            .state()
+            .task_result_sender
+            .try_send(TaskResult::Success {
+                context: BackendTaskContext::Unknown,
+                result: Box::new(BackendTaskSuccessResult::Progress {
+                    message: "Searching wallet identity index 1 of about 21.".to_string(),
+                    current: 1,
+                    total: 21,
+                }),
+            })
+            .expect("the frame loop's task channel accepts a result");
+        harness.run_steps(3);
+
+        assert!(
+            harness.query_by_label("Add voting key").is_none(),
+            "an unrelated result must not collapse the prompt back to its button"
+        );
+        assert!(
+            harness.query_by_label("Save").is_some(),
+            "the open prompt must survive an unrelated backend result"
+        );
+        assert!(
+            !harness.get_by_label("Save").accesskit_node().is_disabled(),
+            "the key typed into the prompt must survive with it"
         );
     });
 }

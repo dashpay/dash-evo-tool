@@ -528,6 +528,11 @@ impl From<&BackendTask> for BackendTaskContext {
     }
 }
 
+/// How one contest in a DPNS vote cast turned out: the normalized contested
+/// name, the choice sent for it, and whether Platform took it. A cast is
+/// per-contest, so one contest failing says nothing about the rest.
+pub type DPNSVoteOutcome = (String, ResourceVoteChoice, Result<(), Arc<TaskError>>);
+
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
@@ -565,7 +570,7 @@ pub enum BackendTaskSuccessResult {
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
+    DPNSVoteResults(Vec<DPNSVoteOutcome>),
     CastScheduledVote(ScheduledDPNSVote),
     /// A scheduled-vote sweep finished without a query, identity or Platform
     /// failure. The app uses this acknowledgement to retire a preserved

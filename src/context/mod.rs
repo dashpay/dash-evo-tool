@@ -1619,6 +1619,7 @@ impl AppContext {
 // Revert to `.with_version()` (a hard pin) or otherwise reconsider this once
 // https://github.com/dashpay/platform/pull/4231 merges and this repo's platform
 // pin advances past it.
+// TODO(platform-4.2-dev-bump): devnet should seed at ≥PV14 per rs-sdk::min_protocol_version; needs to confirm that function is reachable from DET's dash-sdk re-export first (open question) — see platform-4.2-dev-impact.md F5
 pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
     &PLATFORM_V12
 }

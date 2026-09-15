@@ -535,6 +535,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                             );
                             ui.colored_label(
                                 egui::Color32::DARK_RED,
+                                // TODO(platform-4.2-dev-bump): derive from the active platform version's contested_document_vote_resolution_fund_required_amount once PV14 is live on a real network; see /data/artifacts/dash-evo-tool/2026-09-14/platform-4.2-dev-impact.md F4
                                 "Cost ≈ 0.2006 Dash",
                             );
                         } else {

@@ -20,7 +20,7 @@ eframe = { version = "0.35.0", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
 # TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
 # dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml). Re-check when these pins move.
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "63cf57f40d0000bf3b2b26026c8fa1c71162852d", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "01d944795e3dc9776fd4d01959df9abc1ea98c87", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -30,15 +30,15 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "63cf57f40d0000b
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "63cf57f40d0000bf3b2b26026c8fa1c71162852d" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "63cf57f40d0000bf3b2b26026c8fa1c71162852d", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "01d944795e3dc9776fd4d01959df9abc1ea98c87" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "01d944795e3dc9776fd4d01959df9abc1ea98c87", features = [
     "serde",
     "shielded",
 ] }
 # `serde` backs `model::secret::Secret`'s `Deserialize`: the upstream
 # visitor copies a borrowed `&str` straight into guarded memory instead of
 # routing through a transient `String`. Secret schemas are included by `secrets`.
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "63cf57f40d0000bf3b2b26026c8fa1c71162852d", features = [
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "01d944795e3dc9776fd4d01959df9abc1ea98c87", features = [
     "shielded",
     "serde",
 ] }
@@ -50,15 +50,21 @@ serde = "1.0.219"
 serde_json = "1.0.140"
 serde_yaml_ng = { version = "0.10.0" }
 tokio = { version = "1.46.1", features = ["full"] }
-# INTENTIONAL(bincode-unmaintained-pin): the pin is deliberate; do not "fix" the audit
-# warning by bumping. bincode is flagged unmaintained (RUSTSEC-2025-0141, INFO-level —
-# no known vulnerability). The advisory
-# covers *all* versions, so no bump can clear it: 2.0.1 is the last functional release
-# and 3.0.0 is a tombstone whose lib.rs is a bare `compile_error!`. This crate encodes
-# the on-disk wallet-secret envelopes and QualifiedIdentity blobs, so switching encoders
-# changes the wire format of data users already have on disk — that needs a designed
-# read-old/write-new migration, not a dependency bump.
-bincode = { version = "=2.0.1", features = ["serde"] }
+# INTENTIONAL(bincode-unmaintained-pin): the exact pin is deliberate; do not "fix" the audit
+# warning by bumping. bincode is flagged unmaintained (RUSTSEC-2025-0141, INFO-level — no
+# known vulnerability). The advisory covers *all* versions, so no bump can clear it: 2.0.1
+# is the last functional release and 3.0.0 is a tombstone whose lib.rs is a bare
+# `compile_error!`.
+# The dependency is aliased to `grovedb-bincode`, the bincode 2.0.1 fork that dpp,
+# platform-value and rust-dashcore implement `Encode`/`Decode` against; the trait
+# identities must match or DET's codecs over those types stop compiling. On the ordinary
+# (non-`*_untrusted`) paths DET uses — native, `bincode::serde` and the derive macros —
+# its wire format is identical to bincode 2.0.1, per source-level analysis of hash-identical
+# function bodies and derive-codegen substitution (docs/ai-design/2026-09-14-platform-4.2-dev-bump/);
+# no executable fixture pins it. This switch therefore needs no read-old/write-new
+# migration. Any other encoder change still does:
+# this crate encodes the on-disk wallet-secret envelopes and QualifiedIdentity blobs.
+bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 hex = { version = "0.4.3" }
 async-trait = "0.1.89"
 itertools = "0.14.0"

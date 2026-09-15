@@ -198,24 +198,26 @@ mod tests {
     fn opening_one_popup_after_closing_another_ignores_its_opening_click() {
         let ctx = egui::Context::default();
 
-        let _ = ctx.run_ui(outside_press(), |ui| {
+        ctx.run_ui(outside_press(), |ui| {
             let mut popup = InfoPopup::new(
                 egui::Id::new("first_info_popup"),
                 "First popup",
                 "First message.",
             );
             assert!(!popup.show(ui).inner);
-        });
-        let _ = ctx.run_ui(outside_press(), |ui| {
+        })
+        .drop_without_applying_deltas();
+        ctx.run_ui(outside_press(), |ui| {
             let mut popup = InfoPopup::new(
                 egui::Id::new("first_info_popup"),
                 "First popup",
                 "First message.",
             );
             assert!(popup.show(ui).inner);
-        });
+        })
+        .drop_without_applying_deltas();
 
-        let _ = ctx.run_ui(outside_press(), |ui| {
+        ctx.run_ui(outside_press(), |ui| {
             let mut popup = InfoPopup::new(
                 egui::Id::new("second_info_popup"),
                 "Second popup",
@@ -225,6 +227,7 @@ mod tests {
                 !popup.show(ui).inner,
                 "the second popup must survive its own opening click"
             );
-        });
+        })
+        .drop_without_applying_deltas();
     }
 }

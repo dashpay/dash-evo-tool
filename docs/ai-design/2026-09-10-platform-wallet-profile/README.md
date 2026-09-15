@@ -9,7 +9,7 @@ network query, fetches optional avatar bytes, and maintains display timestamps.
 
 Avatar download or decoding failures stop the task before any profile query or
 write. Typed errors preserve the cause and tell the user how to correct the URL.
-DET checks the managing wallet's identity against the pinned upstream key policy
+DET checks the managing wallet's identity against the profile authentication policy
 before invoking the profile API; incompatible keys produce an actionable error.
 
 Failed display-timestamp writes remain in a per-network, per-identity in-memory
@@ -23,10 +23,11 @@ not permit initialization. Downloaded avatar bytes also populate the view cache.
 
 ## Scope and limitations
 
-- HIGH and CRITICAL authentication keys are selected upstream. The pinned
-  platform-wallet supports ECDSA_SECP256K1 only for profile writes. ECDSA_HASH160
-  support belongs in dashpay/platform; this migration does not close #760 for
-  HASH160-only identities. Related PRs: #762 and #978.
+- DET accepts active HIGH or CRITICAL authentication keys of type
+  ECDSA_SECP256K1 or ECDSA_HASH160. The existing signer supports both types.
+  Platform revision `7f809377dbb47ff60ea62054bf83346771d9140e` includes
+  [Platform #4653](https://github.com/dashpay/platform/pull/4653), which supports
+  both types for creation and replacement. Contact ECDH keys are unaffected.
 - An identity must be managed by a loaded wallet. An out-of-wallet identity
   cannot use this upstream API and receives an explicit error.
 - Upstream `ProfileUpdate` treats omitted fields as unchanged. Clearing an
@@ -56,3 +57,8 @@ with a wallet-derived HIGH secp256k1 authentication key and no CRITICAL
 authentication key, creates a profile, replaces it, and checks both the upstream
 cache and the published document. No recovery phrase or private key belongs in
 this document or test fixtures.
+
+Run the matching HASH160 case with the same flags and the filter
+`profile_create_and_replace_with_high_hash160_derived_key`. It registers HASH160
+MASTER and HIGH authentication keys, with no full-public-key signing alternative,
+then verifies both profile creation and replacement through the same backend path.

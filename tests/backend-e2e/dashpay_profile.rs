@@ -15,7 +15,7 @@ async fn profile_create_and_replace_with_high_derived_key() {
     profile_create_and_replace(KeyType::ECDSA_SECP256K1).await;
 }
 
-#[ignore = "requires Platform #4653, a funded E2E_WALLET_MNEMONIC, and live testnet"]
+#[ignore = "requires a funded E2E_WALLET_MNEMONIC and live testnet"]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn profile_create_and_replace_with_high_hash160_derived_key() {
     profile_create_and_replace(KeyType::ECDSA_HASH160).await;

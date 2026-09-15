@@ -25,10 +25,9 @@ not permit initialization. Downloaded avatar bytes also populate the view cache.
 
 - DET accepts active HIGH or CRITICAL authentication keys of type
   ECDSA_SECP256K1 or ECDSA_HASH160. The existing signer supports both types.
-  HASH160 publication requires [Platform #4653](https://github.com/dashpay/platform/pull/4653),
-  which widens upstream's selector for both create and replace. The Platform
-  dependency revision is unchanged and does not include that fix, so HASH160
-  writes still fail upstream until it is updated. Contact ECDH keys are unaffected.
+  Platform revision `7f809377dbb47ff60ea62054bf83346771d9140e` includes
+  [Platform #4653](https://github.com/dashpay/platform/pull/4653), which supports
+  both types for creation and replacement. Contact ECDH keys are unaffected.
 - An identity must be managed by a loaded wallet. An out-of-wallet identity
   cannot use this upstream API and receives an explicit error.
 - Upstream `ProfileUpdate` treats omitted fields as unchanged. Clearing an
@@ -59,8 +58,7 @@ authentication key, creates a profile, replaces it, and checks both the upstream
 cache and the published document. No recovery phrase or private key belongs in
 this document or test fixtures.
 
-After updating Platform to a revision containing #4653, run the matching HASH160
-case with the same flags and the filter
+Run the matching HASH160 case with the same flags and the filter
 `profile_create_and_replace_with_high_hash160_derived_key`. It registers HASH160
 MASTER and HIGH authentication keys, with no full-public-key signing alternative,
 then verifies both profile creation and replacement through the same backend path.

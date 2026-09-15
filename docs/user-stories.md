@@ -838,9 +838,8 @@ As a user, I want to create and edit my DashPay profile (name, bio, avatar) so t
 
 - Set display name, bio, and profile image.
 - Profile writes require a wallet-linked identity with an active HIGH or CRITICAL
-  ECDSA_SECP256K1 or ECDSA_HASH160 authentication key. HASH160 publication requires
-  a Platform revision containing dashpay/platform#4653; the current dependency pin
-  does not yet include it. Clearing existing fields awaits upstream support.
+  ECDSA_SECP256K1 or ECDSA_HASH160 authentication key.
+  Clearing existing fields awaits upstream support.
 - Changes are published as a state transition.
 
 ### DPY-002: Search DashPay profiles [Implemented]

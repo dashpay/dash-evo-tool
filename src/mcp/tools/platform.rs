@@ -58,7 +58,7 @@ pub struct WithdrawalEntry {
     pub owner_id: String,
     /// Amount in credits (atomic units).
     pub amount_credits: u64,
-    /// Status: "queued", "pooled", "broadcasted", "complete", or "expired".
+    /// Status: "queued", "pooled", "broadcasted", "complete", "expired", or "failed".
     pub status: String,
     /// Destination Dash address, or null when the output script is non-standard.
     pub address: Option<String>,

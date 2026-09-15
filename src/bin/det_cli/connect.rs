@@ -96,7 +96,45 @@ pub(super) async fn connect_http(
         // `Bearer Bearer <token>` on the wire and fail server-side auth.
         config = config.auth_header(token.to_string());
     }
-    let transport = StreamableHttpClientTransport::from_config(config);
+    let transport = StreamableHttpClientTransport::with_client(http_client()?, config);
     let client = ().serve(transport).await?;
     Ok(client)
+}
+
+fn http_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        // Tool arguments must stay at the destination validated by the CLI.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn http_client_returns_redirect_without_following_it() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let bytes_read = stream.read(&mut request).await.unwrap();
+            assert!(bytes_read > 0, "client closed before sending a request");
+            stream
+                .write_all(b"HTTP/1.1 302 Found\r\nLocation: /other\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let response = super::http_client()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+        server.await.unwrap();
+    }
 }

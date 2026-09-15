@@ -165,18 +165,53 @@ impl DetKv {
         let Some(bytes) = raw else {
             return Ok(None);
         };
-        let (&first, rest) = bytes.split_first().ok_or(KvAdapterError::Truncated)?;
-        if first != SCHEMA_VERSION {
-            return Err(KvAdapterError::SchemaVersion {
-                expected: SCHEMA_VERSION,
-                found: first,
-            });
-        }
-        let (value, _) =
-            bincode::serde::decode_from_slice::<T, _>(rest, bincode::config::standard())?;
-        Ok(Some(value))
+        decode_value(&bytes).map(Some)
     }
 
+    /// Read an existing app-store value without opening the migrating persister.
+    #[cfg(any(feature = "cli", feature = "mcp"))]
+    pub(crate) fn read_global<T: DeserializeOwned>(
+        conn: &rusqlite::Connection,
+        key: &str,
+    ) -> Result<Option<T>, KvAdapterError> {
+        use rusqlite::OptionalExtension;
+        let sqlite_error = |source| KvAdapterError::Store(KvError::Sqlite(source));
+        if !crate::database::table_exists(conn, "meta_global").map_err(sqlite_error)? {
+            return Ok(None);
+        }
+        conn.query_row(
+            "SELECT value FROM meta_global WHERE key = ?1",
+            [key],
+            |row| {
+                let bytes = row.get_ref(0)?.as_blob()?;
+                if bytes.len() > platform_wallet_storage::SIZE_LIMIT_BYTES {
+                    return Ok(Err(KvAdapterError::Store(KvError::ValueTooLarge {
+                        found: bytes.len(),
+                        max: platform_wallet_storage::SIZE_LIMIT_BYTES,
+                    })));
+                }
+                Ok(decode_value(bytes))
+            },
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .transpose()
+    }
+}
+
+fn decode_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, KvAdapterError> {
+    let (&first, rest) = bytes.split_first().ok_or(KvAdapterError::Truncated)?;
+    if first != SCHEMA_VERSION {
+        return Err(KvAdapterError::SchemaVersion {
+            expected: SCHEMA_VERSION,
+            found: first,
+        });
+    }
+    let (value, _) = bincode::serde::decode_from_slice::<T, _>(rest, bincode::config::standard())?;
+    Ok(value)
+}
+
+impl DetKv {
     /// Encode and upsert the value bound to `(scope, key)`.
     pub fn put<T: Serialize>(
         &self,

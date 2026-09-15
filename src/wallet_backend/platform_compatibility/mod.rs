@@ -57,6 +57,9 @@ fn upgrade(config: &SqlitePersisterConfig) -> Result<bool, UpgradeError> {
 }
 
 #[cfg(test)]
+mod real_fixture_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

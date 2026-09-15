@@ -61,8 +61,8 @@ tokio = { version = "1.46.1", features = ["full"] }
 # (non-`*_untrusted`) paths DET uses — native, `bincode::serde` and the derive macros —
 # its wire format is identical to bincode 2.0.1, per source-level analysis of hash-identical
 # function bodies and derive-codegen substitution (docs/ai-design/2026-09-14-platform-4.2-dev-bump/);
-# no executable fixture pins it. This switch therefore needs no read-old/write-new
-# migration. Any other encoder change still does:
+# Historical-profile migration tests verify the old encodings remain readable.
+# Any encoder change that breaks that compatibility needs a read-old/write-new migration:
 # this crate encodes the on-disk wallet-secret envelopes and QualifiedIdentity blobs.
 bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 hex = { version = "0.4.3" }
@@ -151,6 +151,11 @@ required-features = ["cli"]
 [[test]]
 name = "backend-e2e"
 path = "tests/backend-e2e/main.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "migration-matrix"
+path = "tests/migration-matrix/main.rs"
 required-features = ["testing"]
 
 [[test]]

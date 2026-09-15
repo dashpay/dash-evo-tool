@@ -19,7 +19,9 @@
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+use rand::RngCore;
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -62,9 +64,6 @@ const V093_DB_VERSION: u16 = 11;
 /// v0.9.3 testnet user must not be relaunched on mainnet.
 const USER_NETWORK: Network = Network::Testnet;
 
-const UNPROTECTED_SEED: [u8; 64] = [0xA9; 64];
-const PROTECTED_SEED: [u8; 64] = [0xC7; 64];
-const PROTECTED_PASSWORD: &str = "correct horse battery staple";
 const TOP_UP_AMOUNT: u64 = 123_456;
 const CONTESTED_NAME: &str = "quantum";
 
@@ -84,13 +83,41 @@ const PROTECTED_IDENTITY_ID: [u8; 32] = [0xCD; 32];
 /// Row F — a local row whose `data` blob is NULL (v0.9.3 allowed it).
 const NULL_BLOB_IDENTITY_ID: [u8; 32] = [0xEF; 32];
 
-/// The masternode owner key held `Clear` in row A's legacy blob. After the
-/// import it must exist only in the vault — never in `det-app.sqlite`.
-const OWNER_PRIVATE_KEY: [u8; 32] = [0x11; 32];
-/// The masternode voting key held `Clear` in row A's legacy blob.
-const VOTING_PRIVATE_KEY: [u8; 32] = [0x22; 32];
-/// The `Clear` key held by the wallet-less evonode identity (row C).
-const EVONODE_PRIVATE_KEY: [u8; 32] = [0x33; 32];
+struct TestSecrets {
+    unprotected_seed: [u8; 64],
+    protected_seed: [u8; 64],
+    password: String,
+    owner_key: [u8; 32],
+    voting_key: [u8; 32],
+    evonode_key: [u8; 32],
+}
+
+fn secrets() -> &'static TestSecrets {
+    static SECRETS: LazyLock<TestSecrets> = LazyLock::new(|| {
+        let mut unprotected_seed = [0; 64];
+        let mut protected_seed = [0; 64];
+        rand::rng().fill_bytes(&mut unprotected_seed);
+        rand::rng().fill_bytes(&mut protected_seed);
+        TestSecrets {
+            unprotected_seed,
+            protected_seed,
+            password: hex::encode(rand::random::<[u8; 32]>()),
+            owner_key: random_private_key(),
+            voting_key: random_private_key(),
+            evonode_key: random_private_key(),
+        }
+    });
+    &SECRETS
+}
+
+fn random_private_key() -> [u8; 32] {
+    loop {
+        let bytes = rand::random::<[u8; 32]>();
+        if dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&bytes).is_ok() {
+            return bytes;
+        }
+    }
+}
 
 /// Legacy `identity.status` column values. The bincode blob does **not** carry
 /// status, so these are what prove the column is restored on import rather than
@@ -99,27 +126,27 @@ const STATUS_ACTIVE: u8 = 2;
 const STATUS_PENDING_CREATION: u8 = 1;
 const STATUS_NOT_FOUND: u8 = 3;
 
-/// A **genuine v0.9.3** `QualifiedIdentity::to_bytes()` — the masternode
-/// identity of row A, carrying `Clear` owner and voting keys.
-///
-/// This is the wire-format contract between the two builds. v0.9.3 encodes with
-/// bincode `2.0.0-rc.3`; this tree decodes with `2.0.1`. Everything else about
-/// the import is reasoning about struct layout — this constant is the only proof
-/// that the actual bytes a real user has on disk still decode here.
-///
-/// To regenerate: build a throwaway crate (not a workspace member) depending on
-/// `dash-evo-tool` tag `v0.9.3`, construct the identity below — id
-/// [`IDENTITY_ID`], voter id [`VOTER_IDENTITY_ID`], type `Masternode`, alias
-/// `my-masternode`, `associated_owner_key_id = Some(0)`, an `OWNER` key (id 0,
-/// `Clear`([`OWNER_PRIVATE_KEY`]), `ECDSA_HASH160`) on
-/// `PrivateKeyOnMainIdentity` and a `VOTING` key (id 1,
-/// `Clear`([`VOTING_PRIVATE_KEY`]), `ECDSA_HASH160`) on
-/// `PrivateKeyOnVoterIdentity` — and print `hex::encode(qi.to_bytes())`.
-const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02000000060000020014fc7250a211deddc70ee5a2738de5f07817351cef00010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d00fc40420f00010100bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc01010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d00fc40420f00010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d0000010001010d6d792d6d61737465726e6f64650200000000060000020014fc7250a211deddc70ee5a2738de5f07817351cef000001111111111111111111111111111111111111111111111111111111111111111101010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d000001222222222222222222222222222222222222222222222222222222222222222200";
+/// v0.9.3 rc.3 wire-format template, with secret and public-key payloads replaced at runtime.
+/// The captured field layout pins compatibility with the current bincode decoder.
+const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02000000060000020014{owner_public}00010001050000020014{voting_public}00fc40420f00010100bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc01010001050000020014{voting_public}00fc40420f00010001050000020014{voting_public}0000010001010d6d792d6d61737465726e6f64650200000000060000020014{owner_public}000001{owner}01010001050000020014{voting_public}000001{voting}00";
 
-/// The legacy blob of row A, exactly as a v0.9.3 install holds it on disk.
+/// Populate only key payloads, preserving the captured v0.9.3 encoding layout.
 fn v093_masternode_blob() -> Vec<u8> {
-    hex::decode(V093_MASTERNODE_BLOB_HEX).expect("the golden blob is valid hex")
+    use dash_sdk::dpp::dashcore::{
+        hashes::{Hash, hash160},
+        secp256k1::{PublicKey, Secp256k1, SecretKey},
+    };
+    let public_hash = |key: &[u8; 32]| {
+        let key = SecretKey::from_slice(key).expect("generated valid key");
+        let public = PublicKey::from_secret_key(&Secp256k1::new(), &key);
+        hex::encode(hash160::Hash::hash(&public.serialize()).to_byte_array())
+    };
+    let encoded = V093_MASTERNODE_BLOB_HEX
+        .replace("{owner}", &hex::encode(secrets().owner_key))
+        .replace("{voting}", &hex::encode(secrets().voting_key))
+        .replace("{owner_public}", &public_hash(&secrets().owner_key))
+        .replace("{voting_public}", &public_hash(&secrets().voting_key));
+    hex::decode(encoded).expect("the populated template is valid hex")
 }
 
 fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
@@ -132,7 +159,7 @@ fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
         read_only: false,
         // 20 bytes: the shape of a hash160 key. The import never checks a key
         // against its public data, so a stand-in value is enough here — row A's
-        // keys, the ones that matter, come from the real v0.9.3 blob instead.
+        // keys, the ones that matter, use matching public hashes in the v0.9.3 template instead.
         data: BinaryData::new(vec![id as u8; 20]),
         disabled_at: None,
     })
@@ -140,7 +167,7 @@ fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
 
 /// Encode a `QualifiedIdentity` the way v0.9.3 did — same manual `Encode`, same
 /// bincode config. Used for the fixture rows whose exact bytes do not matter;
-/// row A instead carries the real v0.9.3 blob, which is what pins the wire format.
+/// row A uses the captured v0.9.3 template to pin the wire format.
 fn legacy_identity_blob(
     id: [u8; 32],
     identity_type: IdentityType,
@@ -433,7 +460,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
 
     // Unprotected wallet: v0.9.3 stores the raw 64-byte seed with EMPTY salt and
     // nonce (`add_new_wallet_screen.rs`: `(seed.to_vec(), vec![], vec![], false)`).
-    let unprotected = ClosedKeyItem::compute_seed_hash(&UNPROTECTED_SEED);
+    let unprotected = ClosedKeyItem::compute_seed_hash(&secrets().unprotected_seed);
     conn.execute(
         "INSERT INTO wallet
             (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
@@ -441,10 +468,10 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
          VALUES (?1, ?2, ?3, ?4, ?5, 'Masternode Owner Wallet', 1, 0, NULL, ?6)",
         params![
             unprotected.as_slice(),
-            UNPROTECTED_SEED.as_slice(),
+            secrets().unprotected_seed.as_slice(),
             Vec::<u8>::new(),
             Vec::<u8>::new(),
-            legacy_master_epk_bytes(&UNPROTECTED_SEED, USER_NETWORK),
+            legacy_master_epk_bytes(&secrets().unprotected_seed, USER_NETWORK),
             USER_NETWORK.to_string(),
         ],
     )
@@ -452,8 +479,9 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
 
     // Protected wallet: the legacy Argon2 + AES-256-GCM envelope, produced by the
     // very function v0.9.3 used, so the bytes under test are real ciphertext.
-    let envelope = encrypt_message(&PROTECTED_SEED, PROTECTED_PASSWORD).expect("encrypt seed");
-    let protected = ClosedKeyItem::compute_seed_hash(&PROTECTED_SEED);
+    let envelope =
+        encrypt_message(&secrets().protected_seed, &secrets().password).expect("encrypt seed");
+    let protected = ClosedKeyItem::compute_seed_hash(&secrets().protected_seed);
     conn.execute(
         "INSERT INTO wallet
             (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
@@ -464,7 +492,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
             envelope.ciphertext.as_slice(),
             envelope.salt.as_slice(),
             envelope.nonce.as_slice(),
-            legacy_master_epk_bytes(&PROTECTED_SEED, USER_NETWORK),
+            legacy_master_epk_bytes(&secrets().protected_seed, USER_NETWORK),
             USER_NETWORK.to_string(),
         ],
     )
@@ -520,7 +548,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
                 PrivateKeyTarget::PrivateKeyOnMainIdentity,
                 0,
                 Purpose::OWNER,
-                PrivateKeyData::Clear(EVONODE_PRIVATE_KEY),
+                PrivateKeyData::Clear(secrets().evonode_key),
             )],
         )),
         IdentityStatus::NotFound,
@@ -693,11 +721,11 @@ async fn run_migration_with_wallet_passwords(
                         .write()
                         .expect("wallet lock")
                         .wallet_seed
-                        .open(PROTECTED_PASSWORD)
+                        .open(&secrets().password)
                         .expect("fixture password opens protected wallet");
                     ctx.handle_wallet_unlocked(
                         &wallet,
-                        PROTECTED_PASSWORD,
+                        &secrets().password,
                         crate::context::WalletUnlockRetention::UntilAppClose,
                     )
                     .expect("the protected seed must land in the current vault");
@@ -864,7 +892,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         .expect("the unprotected seed must be readable from the vault after the upgrade");
     assert_eq!(
         raw_seed.as_slice(),
-        UNPROTECTED_SEED.as_slice(),
+        secrets().unprotected_seed.as_slice(),
         "the seed bytes are the wallet — they must arrive verbatim",
     );
     assert_eq!(
@@ -909,7 +937,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     assert!(!meta.uses_password);
     assert_eq!(
         meta.xpub_encoded,
-        legacy_master_epk_bytes(&UNPROTECTED_SEED, USER_NETWORK),
+        legacy_master_epk_bytes(&secrets().unprotected_seed, USER_NETWORK),
         "the master xpub must survive — the cold-boot picker renders addresses from it",
     );
     assert!(
@@ -1104,7 +1132,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 
 /// The cross-version wire contract, in isolation: a `QualifiedIdentity` encoded
 /// by the **real v0.9.3 binary** (bincode `2.0.0-rc.3`) still decodes on this
-/// tree (bincode `2.0.1`).
+/// tree (`grovedb-bincode` via the `bincode` alias).
 ///
 /// Everything else about the identity import is reasoning about struct layout.
 /// This is the one test that reads bytes a real user actually has on disk. If
@@ -1113,7 +1141,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 #[test]
 fn a_real_v093_identity_blob_still_decodes() {
     let qi = QualifiedIdentity::from_bytes(&v093_masternode_blob())
-        .expect("a genuine v0.9.3 identity blob must decode on the current bincode");
+        .expect("the populated v0.9.3 template must decode on the current bincode");
 
     assert_eq!(qi.identity.id().to_buffer(), IDENTITY_ID);
     assert_eq!(qi.identity_type, IdentityType::Masternode);
@@ -1135,13 +1163,13 @@ fn a_real_v093_identity_blob_still_decodes() {
     assert_eq!(
         keys.entry_at(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0))
             .map(|(_, data)| data.clone()),
-        Some(PrivateKeyData::Clear(OWNER_PRIVATE_KEY)),
+        Some(PrivateKeyData::Clear(secrets().owner_key)),
         "the masternode owner key must decode byte-for-byte",
     );
     assert_eq!(
         keys.entry_at(&(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1))
             .map(|(_, data)| data.clone()),
-        Some(PrivateKeyData::Clear(VOTING_PRIVATE_KEY)),
+        Some(PrivateKeyData::Clear(secrets().voting_key)),
         "the masternode voting key must decode byte-for-byte",
     );
 
@@ -1155,7 +1183,7 @@ fn a_real_v093_identity_blob_still_decodes() {
     );
 }
 
-/// The same real v0.9.3 blob, but asking the question a user asks: are these
+/// The same v0.9.3 template, but asking the question a user asks: are these
 /// keys *usable* after the upgrade?
 ///
 /// Decoding proves the bytes survived; it does not prove anything can find them.
@@ -1172,7 +1200,7 @@ fn both_keys_of_a_real_v093_blob_resolve_to_their_own_material() {
     use dash_sdk::dpp::identity::signer::Signer;
 
     let qi = QualifiedIdentity::from_bytes(&v093_masternode_blob())
-        .expect("a genuine v0.9.3 identity blob must decode on the current bincode");
+        .expect("the populated v0.9.3 template must decode on the current bincode");
 
     let owner = qi
         .identity
@@ -1365,7 +1393,11 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
             "{label}: a `Clear`/`AlwaysClear` key must never survive the import to disk — \
              it must be vaulted: got {key_data:?}",
         );
-        for key in [OWNER_PRIVATE_KEY, VOTING_PRIVATE_KEY, EVONODE_PRIVATE_KEY] {
+        for key in [
+            secrets().owner_key,
+            secrets().voting_key,
+            secrets().evonode_key,
+        ] {
             assert!(
                 !contains_bytes(&stored.qi_bytes, &key),
                 "{label}: raw private-key bytes must appear nowhere in the stored blob",
@@ -1384,7 +1416,7 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
             .expect("read owner key from the vault")
             .expect("the owner key must be in the vault")
             .as_slice(),
-        OWNER_PRIVATE_KEY.as_slice(),
+        secrets().owner_key.as_slice(),
         "the owner key must arrive in the vault intact",
     );
     assert_eq!(
@@ -1393,7 +1425,7 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
             .expect("read voting key from the vault")
             .expect("the voting key must be in the vault")
             .as_slice(),
-        VOTING_PRIVATE_KEY.as_slice(),
+        secrets().voting_key.as_slice(),
         "the voting key must arrive in the vault intact",
     );
 
@@ -1454,7 +1486,7 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
             .expect("read owner key from the vault")
             .expect("the owner key must be in the vault")
             .as_slice(),
-        OWNER_PRIVATE_KEY.as_slice(),
+        secrets().owner_key.as_slice(),
         "the masternode owner key must reach the vault even when the vote import fails — \
          otherwise a broken vote queue permanently costs the user control of their node",
     );

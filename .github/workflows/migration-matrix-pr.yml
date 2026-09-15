@@ -1,0 +1,17 @@
+name: Migration Matrix PR
+
+# Exercise PR #983's branch head on every push, including documentation-only
+# pushes and draft updates. The regular workflow covers other pull requests.
+on:
+  push:
+    branches: [feat/migration-test-matrix]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  migration:
+    uses: ./.github/workflows/migration-matrix.yml
+    secrets:
+      MIGRATION_V093_WALLET_PASSWORD: ${{ secrets.MIGRATION_V093_WALLET_PASSWORD }}

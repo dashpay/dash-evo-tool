@@ -401,7 +401,7 @@ pub enum TaskError {
     },
 
     /// An identity is still in the wallet store's unowned scope immediately
-    /// after being withdrawn from it — upstream's tombstone write logs a
+    /// after being withdrawn from it — upstream's deletion write logs a
     /// persist failure and reports the removal as done regardless, so the
     /// readback is the only evidence it landed. The next boot's reconcile
     /// re-issues the withdrawal, which is what the message offers. Carries the
@@ -421,6 +421,13 @@ pub enum TaskError {
     WalletStorage {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// A pinned-PR wallet database could not be upgraded without losing data.
+    #[error(transparent)]
+    PlatformDatabaseUpgrade {
+        #[from]
+        source: crate::wallet_backend::platform_compatibility::UpgradeError,
     },
 
     /// Persisted Core transaction rows could not be read through the upstream
@@ -2439,6 +2446,54 @@ pub enum TaskError {
         source: platform_wallet::wallet::shielded::FileShieldedStoreError,
     },
 
+    /// An earlier identity-funded shielded payment is still unresolved, so the
+    /// upstream coordinator refused to start this one. Nothing was built or
+    /// broadcast; retrying immediately hits the same refusal.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::ShieldedIdentityDebitPending`.
+    #[error(
+        "An earlier shielded payment from identity {identity_id} has not finished yet, so this payment was not started. Wait for the earlier payment to complete, then try again."
+    )]
+    ShieldedIdentityDebitPending {
+        identity_id: Identifier,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// Durable shielded recovery data is damaged, so a pending payment cannot
+    /// be identified or reconstructed safely. The upstream `reason` stays in
+    /// the source chain (details/logs) and never reaches the message.
+    ///
+    /// The advised recourse is real: removing the wallet runs upstream
+    /// `remove_wallet` → `unregister_wallet` → `purge_wallet`, which deletes
+    /// the wallet's `shielded_pending_spends` rows (damaged guards included);
+    /// re-importing then re-binds and re-syncs from chain.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::ShieldedRecoveryCorrupted`.
+    #[error("{message}", message = shielded_recovery_corrupted_message(*.account_index))]
+    ShieldedRecoveryCorrupted {
+        account_index: Option<u32>,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// An unresolved shielded payment needs viewing keys for an account that
+    /// is not currently available. The upstream `reason` stays in the source
+    /// chain (details/logs) and never reaches the message.
+    ///
+    /// Populated by `map_shielded_op_error` from
+    /// `PlatformWalletError::ShieldedRecoveryKeysRequired`.
+    #[error(
+        "A pending shielded payment needs shielded account #{account_index}, which is not available right now. Unlock or restore the wallet that holds this account, then try again."
+    )]
+    ShieldedRecoveryKeysRequired {
+        account_index: u32,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Network context errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -2840,6 +2895,18 @@ pub(crate) fn vault_error(
         };
     }
     class(Box::new(source))
+}
+
+/// User-facing text for [`TaskError::ShieldedRecoveryCorrupted`]. Upstream
+/// reports the account only when the damaged record identifies one, so each
+/// case gets its own complete sentence rather than a spliced fragment.
+fn shielded_recovery_corrupted_message(account_index: Option<u32>) -> String {
+    match account_index {
+        Some(account_index) => format!(
+            "Saved recovery data for shielded account #{account_index} is damaged, so a pending payment cannot be checked safely. Make sure you have this wallet's recovery phrase, remove the wallet, then import it again with that phrase."
+        ),
+        None => "Saved recovery data for your shielded funds is damaged, so a pending payment cannot be checked safely. Make sure you have this wallet's recovery phrase, remove the wallet, then import it again with that phrase.".to_string(),
+    }
 }
 
 /// Escapes control characters in a token name for safe display in error messages.
@@ -4625,6 +4692,65 @@ mod tests {
             matches!(err, TaskError::ShieldedTransitionBuildFailed { .. }),
             "Expected ShieldedTransitionBuildFailed, got: {err:?}"
         );
+    }
+
+    /// The shielded recovery messages interpolate only DET-owned fields and
+    /// never echo the upstream `reason` (which targets developers).
+    #[test]
+    fn shielded_recovery_displays_are_actionable_and_hide_upstream_reason() {
+        use platform_wallet::error::PlatformWalletError as P;
+        const REASON: &str = "pending spend row 7 has an ill-formed nullifier";
+
+        let corrupted = |account_index| TaskError::ShieldedRecoveryCorrupted {
+            account_index,
+            source: Box::new(P::ShieldedRecoveryCorrupted {
+                account_index,
+                reason: REASON.to_string(),
+            }),
+        };
+        let with_account = corrupted(Some(3)).to_string();
+        assert!(with_account.contains("#3"), "got: {with_account}");
+        let without_account = corrupted(None).to_string();
+        assert!(!without_account.contains('#'), "got: {without_account}");
+
+        let keys = TaskError::ShieldedRecoveryKeysRequired {
+            account_index: 2,
+            source: Box::new(P::ShieldedRecoveryKeysRequired {
+                account_index: 2,
+                reason: REASON.to_string(),
+            }),
+        }
+        .to_string();
+        assert!(keys.contains("#2"), "got: {keys}");
+
+        let identity_id = Identifier::from([0x5D; 32]);
+        let pending = TaskError::ShieldedIdentityDebitPending {
+            identity_id,
+            source: Box::new(P::ShieldedIdentityDebitPending {
+                identity_id: [0x5D; 32],
+            }),
+        }
+        .to_string();
+        assert!(
+            pending.contains(&identity_id.to_string(Encoding::Base58)),
+            "got: {pending}"
+        );
+
+        for msg in [&with_account, &without_account, &keys, &pending] {
+            assert!(!msg.contains(REASON), "upstream reason leaked: {msg}");
+        }
+        // Each action names a flow DET actually has (Remove + import with the
+        // recovery phrase; unlock/restore; wait) — never an absent backup flow.
+        for msg in [&with_account, &without_account] {
+            assert!(
+                msg.contains("recovery phrase") && msg.contains("import it again"),
+                "no remove-and-import action in: {msg}"
+            );
+            assert!(!msg.contains("backup"), "no backup flow exists: {msg}");
+        }
+        for msg in [&keys, &pending] {
+            assert!(msg.contains("then try again"), "no action in: {msg}");
+        }
     }
 
     #[test]

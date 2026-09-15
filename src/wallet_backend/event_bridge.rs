@@ -286,6 +286,12 @@ impl EventHandler for EventBridge {
                 *wallet_id
             }
             WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+            WalletEvent::TransactionsSwept {
+                wallet_id, txids, ..
+            } => {
+                self.snapshots.remove_transactions(wallet_id, txids);
+                *wallet_id
+            }
             WalletEvent::ChainLockProcessed { wallet_id, .. } => {
                 // Upstream chain-lock notification: no transaction deltas to
                 // accumulate, but balances may shift from unconfirmed to
@@ -990,6 +996,33 @@ mod tests {
             Some(crate::model::wallet::TransactionStatus::InstantSendLocked),
             "the InstantLock event must upgrade the accumulated record's status"
         );
+        assert!(drained_repaint(&mut rx));
+    }
+
+    #[test]
+    fn swept_transactions_leave_history_without_removing_other_wallets() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        let swept = received_record(&funding_address(), 100);
+        let retained = received_record(&funding_address(), 200);
+        let txid = swept.txid;
+        bridge
+            .snapshots
+            .accumulate_transactions(&[9; 32], [&swept, &retained]);
+        bridge.snapshots.accumulate_transactions(&[8; 32], [&swept]);
+
+        bridge.on_wallet_event(&WalletEvent::TransactionsSwept {
+            wallet_id: [9; 32],
+            txids: vec![txid],
+            superseded_by: retained.txid,
+            winner_mined_height: None,
+            released_outpoints: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+        });
+
+        assert_eq!(bridge.snapshots.transaction_status(&[9; 32], &txid), None);
+        assert_eq!(bridge.snapshots.transaction_count(&[9; 32]), 1);
+        assert_eq!(bridge.snapshots.transaction_count(&[8; 32]), 1);
         assert!(drained_repaint(&mut rx));
     }
 

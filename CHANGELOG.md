@@ -112,6 +112,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Cancelling a network switch takes priority over simultaneous startup and
+  reports chain sync as stopped after shutting down the new backend.
+
+- Profile saves stop when their picture cannot be downloaded, explain unsupported
+  signing keys, and retry failed display-timestamp storage on profile reads
+  without submitting another paid write.
+  Refreshing a profile preserves its saved dates, and pictures downloaded for
+  profile updates are cached for subsequent views.
+
+- DashPay profile writes use `platform-wallet`, enabling HIGH authentication
+  keys of type ECDSA_SECP256K1. HASH160 support remains an upstream limitation.
+  Writes require a wallet-linked identity; clearing existing profile fields
+  reports an explicit error because the upstream API preserves omitted fields.
+
+- The backend wallet lifecycle test reserves the withdrawal fee instead of
+  attempting to withdraw the entire Platform address balance.
+
 - Identity creation and top-up accounts are saved before payment and restored
   after restarting the app. Temporary save failures are retried a few times;
   if saving still fails, the payment stops and the app asks you to try again.
@@ -414,6 +431,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says plainly that the rate shown is fixed rather than read from the network.
 
 ### Changed
+
+- **Platform updated to `4.2.0-dev.8`** (`v4.2-dev`, `63cf57f`): existing
+  databases from the previously pinned PR are upgraded automatically with a
+  retained backup and verified data transfer. Both app preferences and network
+  wallet data are covered. Identity ownership changes preserve saved metadata,
+  and swept transactions leave the displayed history. The single-UTXO Max-send
+  regression test now passes and is enabled. See the
+  [upgrade review](docs/ai-design/2026-09-10-platform-pin/upgrade-notes.md) for
+  compatibility details and functionality still pending upstream.
 
 - **A funding transaction found again on the network is now labelled honestly**:
   when the app rediscovers a saved funding transaction from the chain rather

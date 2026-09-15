@@ -722,6 +722,7 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let queued_document_query = DocumentQuery {
+                    sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
@@ -772,6 +773,7 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let completed_document_query = DocumentQuery {
+                    sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
@@ -900,6 +902,7 @@ impl AppContext {
                 ];
 
                 let query = DocumentQuery {
+                    sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),

@@ -80,29 +80,21 @@ async fn derive_contact_info_keys(
 ///
 /// These properties eliminate typical ECB vulnerabilities (pattern leakage).
 /// See: https://github.com/dashpay/dips/blob/master/dip-0015.md
-#[allow(deprecated)]
 fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
-    use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::aes::Aes256;
-    use aes_gcm::aes::cipher::{BlockDecrypt, KeyInit};
+    use aes_gcm::aes::cipher::{BlockCipherDecrypt, KeyInit};
 
-    if encrypted.len() != 32 {
-        return Err("Invalid encrypted user ID length".to_string());
+    let mut decrypted: [u8; 32] = encrypted
+        .try_into()
+        .map_err(|_| "Invalid encrypted user ID length".to_string())?;
+
+    let cipher = Aes256::new(key.into());
+
+    // The 32-byte ciphertext is exactly two 16-byte AES blocks; decrypt each in place (ECB).
+    let (blocks, _) = decrypted.as_chunks_mut::<16>();
+    for block in blocks {
+        cipher.decrypt_block(block.into());
     }
-
-    let cipher = Aes256::new(GenericArray::from_slice(key));
-
-    // Split the 32-byte encrypted data into two 16-byte blocks for ECB mode
-    let mut decrypted = [0u8; 32];
-
-    let mut block1 = GenericArray::clone_from_slice(&encrypted[0..16]);
-    let mut block2 = GenericArray::clone_from_slice(&encrypted[16..32]);
-
-    cipher.decrypt_block(&mut block1);
-    cipher.decrypt_block(&mut block2);
-
-    decrypted[0..16].copy_from_slice(&block1);
-    decrypted[16..32].copy_from_slice(&block2);
 
     Ok(decrypted)
 }
@@ -112,25 +104,22 @@ pub(super) fn decrypt_private_data(
     encrypted_data: &[u8],
     key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    use cbc::cipher::BlockDecryptMut;
+    use cbc::cipher::BlockModeDecrypt;
     use cbc::cipher::KeyIvInit;
     use cbc::cipher::block_padding::Pkcs7;
     type Aes256CbcDec = cbc::Decryptor<aes_gcm::aes::Aes256>;
 
-    if encrypted_data.len() < 16 {
-        return Err("Encrypted data too short (no IV)".to_string());
-    }
-
     // Extract IV and ciphertext
-    let iv = &encrypted_data[0..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt
     let cipher = Aes256CbcDec::new(key.into(), iv.into());
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     Ok(decrypted.to_vec())

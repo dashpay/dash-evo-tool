@@ -77,7 +77,7 @@ pub fn encrypt_extended_public_key(
     public_key: [u8; 33],
     shared_key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Create the extended public key data (69 bytes)
     let mut xpub_data = Vec::with_capacity(69);
@@ -99,7 +99,7 @@ pub fn encrypt_extended_public_key(
     buffer[..xpub_data.len()].copy_from_slice(&xpub_data);
 
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, xpub_data.len())
+        .encrypt_padded::<Pkcs7>(&mut buffer, xpub_data.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
     // Verify the ciphertext is exactly 80 bytes
@@ -127,7 +127,7 @@ pub fn encrypt_extended_public_key(
 /// - For 63 bytes: 1 + 63 = 64, PKCS7 adds 16 = 80 byte ciphertext = 96 total (exceeds limit)
 /// - For 62 bytes: 1 + 62 = 63, PKCS7 adds 1 = 64 byte ciphertext = 80 total (at limit)
 pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 
     let label_bytes = label.as_bytes();
 
@@ -177,7 +177,7 @@ pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u
 
     // Encrypt with PKCS7 padding
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, padded_label.len())
+        .encrypt_padded::<Pkcs7>(&mut buffer, padded_label.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
     // Combine IV and ciphertext
@@ -203,7 +203,7 @@ pub fn decrypt_extended_public_key(
     encrypted_data: &[u8],
     shared_key: &[u8; 32],
 ) -> Result<(Vec<u8>, [u8; 32], [u8; 33]), String> {
-    use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Expected format: IV (16 bytes) + Encrypted Data (80 bytes) = 96 bytes
     if encrypted_data.len() != 96 {
@@ -214,8 +214,9 @@ pub fn decrypt_extended_public_key(
     }
 
     // Extract IV and ciphertext
-    let iv = &encrypted_data[..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt using CBC-AES-256 with PKCS7 padding
     type Aes256CbcDec = cbc::Decryptor<Aes256>;
@@ -223,7 +224,7 @@ pub fn decrypt_extended_public_key(
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     // Should decrypt to exactly 69 bytes after removing padding
@@ -248,7 +249,7 @@ pub fn decrypt_account_label(
     encrypted_data: &[u8],
     shared_key: &[u8; 32],
 ) -> Result<String, String> {
-    use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Expected format: IV (16 bytes) + Encrypted Data (32-64 bytes) = 48-80 bytes
     if encrypted_data.len() < 48 || encrypted_data.len() > 80 {
@@ -259,8 +260,9 @@ pub fn decrypt_account_label(
     }
 
     // Extract IV and ciphertext
-    let iv = &encrypted_data[..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt using CBC-AES-256 with PKCS7 padding
     type Aes256CbcDec = cbc::Decryptor<Aes256>;
@@ -268,7 +270,7 @@ pub fn decrypt_account_label(
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     // Extract the actual label from our custom format: [len][label][padding...]

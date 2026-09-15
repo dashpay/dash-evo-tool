@@ -101,8 +101,8 @@ rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
 argon2 = "0.6.0" # For Argon2 key derivation
-aes-gcm = "0.10.3" # For AES-256-GCM encryption
-cbc = "0.1.2" # For CBC mode encryption
+aes-gcm = "0.11.1" # For AES-256-GCM encryption
+cbc = "0.2.1" # For CBC mode encryption
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "8.0.0" }

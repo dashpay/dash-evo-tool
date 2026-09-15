@@ -1,5 +1,5 @@
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit};
 use argon2::{self, Argon2};
 use bip39::rand::{RngCore, rngs::OsRng};
 use zeroize::Zeroizing;
@@ -76,7 +76,6 @@ pub fn derive_password_key(
 
 /// Encrypt `message` under `password` with AES-256-GCM, returning the
 /// [`EncryptedEnvelope`] (ciphertext, salt, nonce).
-#[allow(deprecated)]
 pub(crate) fn encrypt_message(
     message: &[u8],
     password: &str,
@@ -89,22 +88,21 @@ pub(crate) fn encrypt_message(
     let key = derive_password_key(password, &salt)?;
 
     // Generate a random nonce
-    let mut nonce = vec![0u8; NONCE_SIZE];
+    let mut nonce = [0u8; NONCE_SIZE];
     OsRng.fill_bytes(&mut nonce);
 
     // Create cipher instance
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| EncryptionError::Encryption)?;
 
     // Encrypt the seed
-    let nonce_arr = Nonce::from_slice(&nonce);
     let ciphertext = cipher
-        .encrypt(nonce_arr, message)
+        .encrypt((&nonce).into(), message)
         .map_err(|_| EncryptionError::Encryption)?;
 
     Ok(EncryptedEnvelope {
         ciphertext,
         salt,
-        nonce,
+        nonce: nonce.to_vec(),
     })
 }
 
@@ -178,8 +176,9 @@ pub(crate) fn decrypt_message(
         DecryptError::Malformed
     })?;
     // Checked nonce conversion: an envelope with the wrong nonce length is a
-    // corrupt at-rest blob, not a panic. `Nonce::from_slice` panics on a length
-    // mismatch, which would poison the long-lived secret-store mutex.
+    // corrupt at-rest blob, not a panic. An unchecked slice-to-nonce conversion
+    // panics on a length mismatch, which would poison the long-lived
+    // secret-store mutex.
     let nonce_bytes: &[u8; NONCE_SIZE] = nonce.try_into().map_err(|_| {
         tracing::warn!(
             target = "model::wallet::encryption",
@@ -190,7 +189,7 @@ pub(crate) fn decrypt_message(
         DecryptError::Malformed
     })?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .decrypt(nonce_bytes.into(), ciphertext)
         .map_err(|_| DecryptError::WrongPassword)?;
     Ok(Zeroizing::new(plaintext))
 }
@@ -385,13 +384,15 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn aes_gcm_encrypt_matches_golden_vector() {
         let key = hex::decode(KAT_ARGON2ID_KEY_HEX).expect("key hex");
-        let nonce = hex::decode(KAT_NONCE_HEX).expect("nonce hex");
+        let nonce: [u8; NONCE_SIZE] = hex::decode(KAT_NONCE_HEX)
+            .expect("nonce hex")
+            .try_into()
+            .expect("12-byte nonce");
         let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher init");
         let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce), [0x2au8; 64].as_slice())
+            .encrypt((&nonce).into(), [0x2au8; 64].as_slice())
             .expect("encrypt");
         assert_eq!(hex::encode(ciphertext), KAT_SEED_CIPHERTEXT_HEX);
     }

@@ -9,7 +9,7 @@
 //! metadata sidecar in [`crate::model::single_key`], which is current code.
 
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit};
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
 use sha2::{Digest, Sha256};
@@ -190,7 +190,6 @@ impl ClosedSingleKey {
     }
 
     /// Decrypt the private key using a password
-    #[allow(deprecated)]
     pub fn decrypt_private_key(&self, password: &str) -> Result<[u8; 32], EncryptionError> {
         // Both the derived AES key and the decrypted plaintext are
         // secret-bearing; `derive_password_key` already returns a `Zeroizing`
@@ -198,10 +197,16 @@ impl ClosedSingleKey {
         // wipe on drop instead of lingering after the bytes are copied out.
         let key = derive_password_key(password, &self.salt)?;
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| EncryptionError::Malformed)?;
-        let nonce_arr = Nonce::from_slice(&self.nonce);
+        // A stored nonce of the wrong length is a corrupt at-rest blob, not a
+        // panic.
+        let nonce_arr: &[u8; 12] = self
+            .nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| EncryptionError::Malformed)?;
         let decrypted = Zeroizing::new(
             cipher
-                .decrypt(nonce_arr, self.encrypted_private_key.as_slice())
+                .decrypt(nonce_arr.into(), self.encrypted_private_key.as_slice())
                 .map_err(|_| EncryptionError::WrongPassword)?,
         );
 

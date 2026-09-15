@@ -7,9 +7,9 @@ use crate::model::dashpay::{
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
-use aes_gcm::aes::cipher::{BlockEncrypt, KeyInit};
+use aes_gcm::aes::cipher::{BlockCipherEncrypt, KeyInit};
 use bip39::rand::{SeedableRng, rngs::StdRng};
-use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::{
@@ -290,22 +290,15 @@ async fn derive_contact_info_keys(
 ///
 /// These properties eliminate typical ECB vulnerabilities (pattern leakage).
 /// See: https://github.com/dashpay/dips/blob/master/dip-0015.md
-#[allow(deprecated)]
 fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> Result<[u8; 32], String> {
-    use aes_gcm::aead::generic_array::GenericArray;
-    let cipher = Aes256::new(GenericArray::from_slice(key));
+    let cipher = Aes256::new(key.into());
 
-    // Split the 32-byte ID into two 16-byte blocks for ECB mode
-    let mut encrypted = [0u8; 32];
-
-    let mut block1 = GenericArray::clone_from_slice(&user_id[0..16]);
-    let mut block2 = GenericArray::clone_from_slice(&user_id[16..32]);
-
-    cipher.encrypt_block(&mut block1);
-    cipher.encrypt_block(&mut block2);
-
-    encrypted[0..16].copy_from_slice(&block1);
-    encrypted[16..32].copy_from_slice(&block2);
+    // The 32-byte ID is exactly two 16-byte AES blocks; encrypt each in place (ECB).
+    let mut encrypted = *user_id;
+    let (blocks, _) = encrypted.as_chunks_mut::<16>();
+    for block in blocks {
+        cipher.encrypt_block(block.into());
+    }
 
     Ok(encrypted)
 }
@@ -313,28 +306,20 @@ fn encrypt_to_user_id(user_id: &[u8; 32], key: &[u8; 32]) -> Result<[u8; 32], St
 /// Decrypt toUserId using AES-256-ECB as specified by DIP-0015.
 ///
 /// See `encrypt_to_user_id` for the rationale behind ECB mode usage per DIP-0015.
-#[allow(deprecated)]
 fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
-    use aes_gcm::aead::generic_array::GenericArray;
-    use aes_gcm::aes::cipher::BlockDecrypt;
+    use aes_gcm::aes::cipher::BlockCipherDecrypt;
 
-    if encrypted.len() != 32 {
-        return Err("Invalid encrypted user ID length".to_string());
+    let mut decrypted: [u8; 32] = encrypted
+        .try_into()
+        .map_err(|_| "Invalid encrypted user ID length".to_string())?;
+
+    let cipher = Aes256::new(key.into());
+
+    // The 32-byte ciphertext is exactly two 16-byte AES blocks; decrypt each in place (ECB).
+    let (blocks, _) = decrypted.as_chunks_mut::<16>();
+    for block in blocks {
+        cipher.decrypt_block(block.into());
     }
-
-    let cipher = Aes256::new(GenericArray::from_slice(key));
-
-    // Split the 32-byte encrypted data into two 16-byte blocks for ECB mode
-    let mut decrypted = [0u8; 32];
-
-    let mut block1 = GenericArray::clone_from_slice(&encrypted[0..16]);
-    let mut block2 = GenericArray::clone_from_slice(&encrypted[16..32]);
-
-    cipher.decrypt_block(&mut block1);
-    cipher.decrypt_block(&mut block2);
-
-    decrypted[0..16].copy_from_slice(&block1);
-    decrypted[16..32].copy_from_slice(&block2);
 
     Ok(decrypted)
 }
@@ -358,7 +343,7 @@ fn encrypt_private_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> 
     buffer[..data.len()].copy_from_slice(data);
 
     let encrypted = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, data.len())
+        .encrypt_padded::<Pkcs7>(&mut buffer, data.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
     // Combine IV and encrypted data

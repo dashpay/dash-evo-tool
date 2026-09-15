@@ -136,7 +136,7 @@ headless = ["cli", "mcp"]
 [dev-dependencies]
 egui_kittest = { version = "0.35.0", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
-criterion = "0.5.1"
+criterion = "0.8.2"
 # Used only by error-mapping unit tests to construct a genuine divergent-version
 # `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
 # version already in the graph via `platform-wallet-storage`; the `rusqlite`

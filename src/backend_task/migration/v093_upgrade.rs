@@ -1132,7 +1132,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 
 /// The cross-version wire contract, in isolation: a `QualifiedIdentity` encoded
 /// by the **real v0.9.3 binary** (bincode `2.0.0-rc.3`) still decodes on this
-/// tree (bincode `2.0.1`).
+/// tree (`grovedb-bincode` via the `bincode` alias).
 ///
 /// Everything else about the identity import is reasoning about struct layout.
 /// This is the one test that reads bytes a real user actually has on disk. If

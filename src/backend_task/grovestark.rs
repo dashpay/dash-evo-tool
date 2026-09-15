@@ -354,3 +354,30 @@ pub enum GroveSTARKError {
     #[error("Proof generation requires a release build (run with cargo run --release).")]
     UnsupportedBuild,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 8032 §7.1 TEST 1 through the same `SigningKey::from_bytes` +
+    /// `Signer::sign` path the GroveSTARK witness uses. Ed25519 signatures are
+    /// deterministic, so an `ed25519-dalek` bump must reproduce these bytes.
+    #[test]
+    fn ed25519_signing_matches_golden_rfc8032_vector() {
+        let secret: [u8; 32] =
+            hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+                .expect("secret hex")
+                .try_into()
+                .expect("32-byte secret");
+        let signing_key = SigningKey::from_bytes(&secret);
+        assert_eq!(
+            hex::encode(signing_key.verifying_key().as_bytes()),
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
+        assert_eq!(
+            hex::encode(signing_key.sign(b"").to_bytes()),
+            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155\
+             5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+        );
+    }
+}

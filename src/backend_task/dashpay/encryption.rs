@@ -331,6 +331,47 @@ mod tests {
         })
     }
 
+    /// DIP-15 CBC known-answer key/IV. The blobs below were generated
+    /// independently with Python `cryptography` 46 (OpenSSL) as
+    /// `IV ‖ AES-256-CBC-PKCS7(key = 00..1f, iv = 10..1f, pt)`, so they pin
+    /// interoperability with other DashPay clients across `cbc` / `aes` bumps.
+    const GOLDEN_CBC_KEY: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+
+    #[test]
+    fn decrypt_extended_public_key_opens_golden_blob() {
+        // Plaintext is 00..44 (69 bytes): fingerprint 00..03, chain code
+        // 04..23, public key 24..44.
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             9f3b7504926f8bd36e3118e903a4cd4a25c183f70fdb4812cc2453fa00b3d390\
+             fbd621f919e2d9a0cb10aa5647bee3a7038906cdf1b7b2f800aa3b55e1b639f8\
+             8f7e63058f429572f395a202317aa85d",
+        )
+        .expect("blob hex");
+        let (fingerprint, chain_code, public_key) =
+            decrypt_extended_public_key(&blob, &GOLDEN_CBC_KEY).expect("golden blob must decrypt");
+        let plaintext: Vec<u8> = (0u8..69).collect();
+        assert_eq!(fingerprint, plaintext[..4]);
+        assert_eq!(chain_code[..], plaintext[4..36]);
+        assert_eq!(public_key[..], plaintext[36..69]);
+    }
+
+    #[test]
+    fn decrypt_account_label_opens_golden_blob() {
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             1fc29550069dbbccc5ac76abcec951ea02fba84e7cea06406d5e66fa6fabe244",
+        )
+        .expect("blob hex");
+        let label =
+            decrypt_account_label(&blob, &GOLDEN_CBC_KEY).expect("golden blob must decrypt");
+        assert_eq!(label, "Savings");
+    }
+
     /// Byte-identity guard for the DIP-15 ECDH derivation.
     ///
     /// Pins the shared key for a fixed private key + fixed counterpart public

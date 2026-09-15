@@ -802,6 +802,21 @@ mod tests {
     const KEY: [u8; 32] = [7u8; 32];
     const OTHER_KEY: [u8; 32] = [9u8; 32];
 
+    /// DIP-15 `encToUserId` known-answer vector: AES-256-ECB(key = 00..1f,
+    /// pt = 40..5f), generated independently with Python `cryptography` 46
+    /// (OpenSSL). Pins interoperability across `aes` / `aes-gcm` bumps.
+    #[test]
+    fn to_user_id_ecb_matches_golden_vector() {
+        let key: [u8; 32] = std::array::from_fn(|i| i as u8);
+        let user_id: [u8; 32] = std::array::from_fn(|i| 0x40 + i as u8);
+        let expected = "a37edf3f975abaef937b62c78d5bb157974b412738e50f45c7f9db25413f274b";
+
+        let encrypted = encrypt_to_user_id(&user_id, &key).expect("encrypt");
+        assert_eq!(hex::encode(encrypted), expected);
+        let decrypted = decrypt_to_user_id(&encrypted, &key).expect("decrypt");
+        assert_eq!(decrypted, user_id);
+    }
+
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
     }

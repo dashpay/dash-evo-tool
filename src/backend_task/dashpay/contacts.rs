@@ -558,3 +558,42 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Known-answer vectors generated independently with Python
+    /// `cryptography` 46 (OpenSSL). They pin DIP-15 interoperability with other
+    /// DashPay clients across `cbc` / `aes` / `aes-gcm` bumps.
+    const GOLDEN_KEY: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+
+    #[test]
+    fn decrypt_private_data_opens_golden_blob() {
+        // IV (10..1f) ‖ AES-256-CBC-PKCS7(GOLDEN_KEY, IV, "DashPay private data!").
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             faea994a146288d4cdeb1833de096de0dbc32bac4771e7d99338f76072f8700f",
+        )
+        .expect("blob hex");
+        let plaintext = decrypt_private_data(&blob, &GOLDEN_KEY).expect("golden blob must decrypt");
+        assert_eq!(plaintext, b"DashPay private data!");
+    }
+
+    #[test]
+    fn decrypt_to_user_id_opens_golden_ecb_vector() {
+        // AES-256-ECB(GOLDEN_KEY, 40..5f).
+        let encrypted =
+            hex::decode("a37edf3f975abaef937b62c78d5bb157974b412738e50f45c7f9db25413f274b")
+                .expect("ciphertext hex");
+        let expected: [u8; 32] = std::array::from_fn(|i| 0x40 + i as u8);
+        assert_eq!(
+            decrypt_to_user_id(&encrypted, &GOLDEN_KEY).expect("decrypt"),
+            expected
+        );
+    }
+}

@@ -1348,10 +1348,11 @@ mod tests {
     /// Drives one render pass over a bare context so `ctx.data`-level effects
     /// (log-once, focus) can be inspected without a kittest harness.
     fn render_once(ctx: &egui::Context) {
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             let ctx = ui.ctx();
             ProgressOverlay::render_global(ctx, false);
-        });
+        })
+        .drop_without_applying_deltas();
     }
 
     #[test]
@@ -1567,7 +1568,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let _ = ctx.run_ui(raw, |ui| {
+        ctx.run_ui(raw, |ui| {
             let ctx = ui.ctx();
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
@@ -1587,7 +1588,8 @@ mod tests {
                     )
                 }));
             });
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(
             !leaked.get(),
             "claim_input must strip all text + nav/confirm key-down events while a block is up"
@@ -1645,7 +1647,7 @@ mod tests {
             events: vec![key_down(egui::Key::Enter), key_down(egui::Key::Space)],
             ..Default::default()
         };
-        let _ = ctx.run_ui(raw, |ui| {
+        ctx.run_ui(raw, |ui| {
             let ctx = ui.ctx();
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
@@ -1660,7 +1662,8 @@ mod tests {
                     )
                 }));
             });
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(
             !leaked.get(),
             "Enter/Space are stripped at frame start — never reach the button or a widget beneath"
@@ -1682,13 +1685,14 @@ mod tests {
             events: vec![egui::Event::Text("hi".to_string())],
             ..Default::default()
         };
-        let _ = ctx.run_ui(raw, |ui| {
+        ctx.run_ui(raw, |ui| {
             let ctx = ui.ctx();
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
                 kept.set(i.events.iter().any(|e| matches!(e, egui::Event::Text(_))));
             });
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(
             kept.get(),
             "claim_input must not strip input when no block is active"
@@ -1775,7 +1779,7 @@ mod tests {
         // No interaction has happened yet.
         assert!(overlay.current_value().is_none());
 
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 let response = overlay.show(ui).inner;
                 // A frame with no click is unchanged, valid, and value-free.
@@ -1783,7 +1787,8 @@ mod tests {
                 assert!(response.is_valid());
                 assert!(response.changed_value().is_none());
             });
-        });
+        })
+        .drop_without_applying_deltas();
 
         // current_value still None — clicks are surfaced via the response and
         // recorded on the instance only when they occur.
@@ -1918,13 +1923,14 @@ mod tests {
         let ctx = egui::Context::default();
         let mut overlay = ProgressOverlay::new().with_description("Working.");
         overlay.clear();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             egui::CentralPanel::default().show(ui, |ui| {
                 let response = overlay.show(ui).inner;
                 assert!(!response.has_changed());
                 assert!(response.changed_value().is_none());
             });
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(overlay.current_value().is_none());
     }
 }

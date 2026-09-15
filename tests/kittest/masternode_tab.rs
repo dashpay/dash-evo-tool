@@ -22,6 +22,35 @@ use egui::accesskit::{Role, Toggled};
 use egui_kittest::kittest::{NodeT, Queryable};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How long a spawned backend task gets to land its writes before a test gives
+/// up on it. Generous on purpose: the suite runs many harnesses in parallel,
+/// each with its own multi-worker runtime, so a task that finishes instantly
+/// alone can be starved for seconds. Exceeding this means something is wedged,
+/// not merely slow.
+const BACKEND_TASK_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Step `harness` until `settled` holds, or until [`BACKEND_TASK_DEADLINE`]
+/// passes.
+///
+/// Backend work runs off the frame thread, so a fixed `run_steps(n)` budget
+/// asserts on whatever happened to have landed by frame `n` — which on a loaded
+/// machine is regularly nothing. Returns quietly on timeout so the caller's own
+/// assertion is the one that reports what was still missing.
+fn settle_until(
+    harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
+    mut settled: impl FnMut(&egui_kittest::Harness<'static, dash_evo_tool::app::AppState>) -> bool,
+) {
+    let deadline = Instant::now() + BACKEND_TASK_DEADLINE;
+    while Instant::now() < deadline {
+        harness.step();
+        if settled(harness) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 /// Seed one wallet-less masternode/evonode identity into the live per-network
 /// identity DB (alias = `alias`, id = `[byte; 32]`, no keys → read-only node).
@@ -757,18 +786,13 @@ fn remove_flow_deletes_only_target_node() {
         confirm.click();
         // Removal runs on the backend. Wait for its result to navigate back
         // to the list before checking the cards, not merely for the DB write.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            harness.step();
-            if harness.query_by_label("Open mn-keep-me").is_some() {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "removal must return to the masternode list"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        settle_until(&mut harness, |harness| {
+            harness.query_by_label("Open mn-keep-me").is_some()
+        });
+        assert!(
+            harness.query_by_label("Open mn-keep-me").is_some(),
+            "removal must return to the masternode list"
+        );
 
         // Only the target node was deleted; the other remains (isolation).
         let remaining = app_context
@@ -833,7 +857,20 @@ fn remove_flow_deletes_associated_voter_identity() {
             .last()
             .expect("confirm button present");
         confirm.click();
-        harness.run_steps(3);
+        // One spawned task deletes the node and then its voter twin, both off
+        // the frame thread. Wait for both writes rather than budgeting frames —
+        // a frame budget catches the task mid-way and reports whichever delete
+        // had not landed yet as a removal that never happened.
+        settle_until(&mut harness, |_| {
+            app_context
+                .load_local_masternode_identities()
+                .expect("load")
+                .is_empty()
+                && app_context
+                    .get_local_qualified_identity(&voter_id)
+                    .expect("voter read")
+                    .is_none()
+        });
 
         // Both the node and its voter identity are deleted.
         assert_eq!(

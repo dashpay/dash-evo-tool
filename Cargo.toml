@@ -67,7 +67,7 @@ tokio = { version = "1.46.1", features = ["full"] }
 bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 hex = { version = "0.4.3" }
 async-trait = "0.1.89"
-itertools = "0.14.0"
+itertools = "0.15.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
 tracing = "0.1.41"

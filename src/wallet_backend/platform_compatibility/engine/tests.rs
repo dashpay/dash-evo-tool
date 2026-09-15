@@ -216,7 +216,142 @@ fn platform_compatibility_typed_validation_failure_never_rewrites_original() {
     .unwrap_err();
     assert!(matches!(error, UpgradeError::TypedValidation(_)));
     assert_eq!(snapshot(&path), before);
-    assert_eq!(snapshot(&backup_files(dir.path())[0]), before);
+    assert!(
+        backup_files(dir.path()).is_empty(),
+        "A failure before the rebuild leaves the original untouched, so no backup may remain."
+    );
+}
+
+#[test]
+fn platform_compatibility_repeated_failed_rebuilds_keep_one_backup() {
+    let (dir, path, _target) = fixture();
+    let before = snapshot(&path);
+    for attempt in 0..3 {
+        let stage = dir.path().join(format!("stage-{attempt}.sqlite"));
+        Connection::open(&stage)
+            .unwrap()
+            .execute_batch(TARGET_SCHEMA)
+            .unwrap();
+        let error = upgrade_with_hook(
+            &path,
+            &stage,
+            |_| Ok(()),
+            || Err(UpgradeError::Verification),
+        )
+        .unwrap_err();
+        assert!(matches!(error, UpgradeError::Verification));
+    }
+    let backups = backup_files(dir.path());
+    assert_eq!(
+        backups.len(),
+        1,
+        "Retried upgrades must not accumulate backups."
+    );
+    assert_eq!(snapshot(&backups[0]), before);
+}
+
+#[test]
+fn platform_compatibility_backup_removal_only_touches_the_named_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        "det-app.sqlite.platform-67d4ef3-backup-a1.sqlite",
+        "det-testnet.sqlite.platform-67d4ef3-backup-b2.sqlite",
+        "det-mainnet.sqlite.platform-67d4ef3-backup-c3.sqlite",
+        "det-testnet.sqlite",
+        "det-testnet-shielded.sqlite",
+    ];
+    for name in names {
+        std::fs::write(dir.path().join(name), b"x").unwrap();
+    }
+    remove_backups(&dir.path().join("det-testnet.sqlite")).unwrap();
+    let mut left = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            "det-app.sqlite.platform-67d4ef3-backup-a1.sqlite",
+            "det-mainnet.sqlite.platform-67d4ef3-backup-c3.sqlite",
+            "det-testnet-shielded.sqlite",
+            "det-testnet.sqlite",
+        ]
+    );
+    remove_backups(&dir.path().join("absent.sqlite")).unwrap();
+}
+
+fn sqlite_failure(code: std::ffi::c_int) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+}
+
+#[test]
+fn platform_compatibility_errors_name_their_actual_cause() {
+    let in_use = [
+        UpgradeError::from(sqlite_failure(rusqlite::ffi::SQLITE_BUSY)),
+        UpgradeError::from(sqlite_failure(rusqlite::ffi::SQLITE_LOCKED)),
+    ];
+    for error in &in_use {
+        assert!(matches!(error, UpgradeError::InUse(_)), "{error:?}");
+        assert!(error.is_retryable());
+        let text = error.to_string();
+        assert!(text.contains("another Dash Evo Tool"), "{text}");
+        assert!(!text.contains("disk"), "{text}");
+    }
+    let full = [
+        UpgradeError::from(sqlite_failure(rusqlite::ffi::SQLITE_FULL)),
+        UpgradeError::from(std::io::Error::from(std::io::ErrorKind::StorageFull)),
+    ];
+    for error in &full {
+        assert!(matches!(error, UpgradeError::StorageFull(_)), "{error:?}");
+        assert!(error.is_retryable());
+        assert!(error.to_string().contains("disk"));
+    }
+    let io = UpgradeError::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    assert!(matches!(io, UpgradeError::Io(_)) && io.is_retryable());
+    assert!(!io.to_string().contains("disk"), "{io}");
+
+    let generic = UpgradeError::from(sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT));
+    assert!(matches!(generic, UpgradeError::Sqlite(_)));
+    assert!(!generic.is_retryable());
+    assert!(!generic.to_string().contains("disk"), "{generic}");
+    for error in [
+        std::error::Error::source(&in_use[0]),
+        std::error::Error::source(&full[1]),
+        std::error::Error::source(&generic),
+    ] {
+        assert!(
+            error.is_some(),
+            "The technical cause must stay in the source chain."
+        );
+    }
+
+    for error in [
+        UpgradeError::Unrecognized,
+        UpgradeError::IdentityRoster { source: None },
+        UpgradeError::Verification,
+        UpgradeError::TypedValidation(Box::new(std::io::Error::other("fixture"))),
+    ] {
+        assert!(!error.is_retryable(), "{error:?}");
+    }
+}
+
+#[test]
+fn platform_compatibility_malformed_roster_reports_one_message() {
+    let (_dir, path, target) = fixture();
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("INSERT INTO meta_global VALUES ('det:identity_index:v1', X'01ff', 0)")
+        .unwrap();
+    let decode = upgrade(&path, &target, |_| Ok(())).unwrap_err();
+    assert!(
+        matches!(decode, UpgradeError::IdentityRoster { source: Some(_) }),
+        "{decode:?}"
+    );
+    assert_eq!(
+        decode.to_string(),
+        UpgradeError::IdentityRoster { source: None }.to_string()
+    );
 }
 
 #[test]
@@ -286,7 +421,7 @@ fn platform_compatibility_missing_roster_with_identity_sidecar_is_ambiguous() {
     let before = snapshot(&path);
     assert!(matches!(
         upgrade(&path, &target, |_| Ok(())),
-        Err(UpgradeError::IdentityRoster)
+        Err(UpgradeError::IdentityRoster { source: None })
     ));
     assert_eq!(snapshot(&path), before);
     assert!(backup_files(dir.path()).is_empty());

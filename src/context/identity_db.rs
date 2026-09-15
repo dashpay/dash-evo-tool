@@ -1737,6 +1737,13 @@ impl AppContext {
                 "Deleted identity still registered with the wallet store"
             );
         }
+        if let Err(error) = self.remove_upgrade_backups() {
+            tracing::warn!(
+                identity_id = %identifier,
+                ?error,
+                "Upgrade backups holding a deleted identity could not be removed"
+            );
+        }
         Ok(sidecar_cleanup)
     }
 

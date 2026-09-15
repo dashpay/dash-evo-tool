@@ -11,26 +11,35 @@ const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
 /// A compatibility upgrade stopped before committing changes to the original database.
 #[derive(Debug, thiserror::Error)]
 pub enum UpgradeError {
+    /// Another process holds the database (`SQLITE_BUSY` / `SQLITE_LOCKED`).
     #[error(
-        "Could not upgrade wallet data. Check available disk space and restart the application."
+        "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again."
     )]
-    Sqlite(#[from] rusqlite::Error),
+    InUse(#[source] rusqlite::Error),
     #[error(
-        "Could not back up wallet data. Check available disk space and restart the application."
+        "Could not upgrade wallet data because the disk is full. Free up disk space and try again."
     )]
-    Io(#[from] std::io::Error),
+    StorageFull(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
+        "Could not upgrade wallet data, and your data was not changed. Restart the application to try again, or keep your data folder and reopen the previous application version."
+    )]
+    Sqlite(#[source] rusqlite::Error),
+    #[error(
+        "Could not back up wallet data. Check that the app data folder can be written to and try again."
+    )]
+    Io(#[source] std::io::Error),
     #[error(
         "Wallet data does not match a supported upgrade. Keep your data folder and reopen the previous application version."
     )]
     Unrecognized,
+    /// The saved roster is missing, ambiguous, or does not decode.
     #[error(
         "The saved identity list could not be read. Keep your data folder and reopen the previous application version."
     )]
-    IdentityRoster,
-    #[error(
-        "The saved identity list could not be read. Keep your data folder and reopen the previous application version."
-    )]
-    IdentityRosterDecode(#[from] bincode::error::DecodeError),
+    IdentityRoster {
+        #[source]
+        source: Option<bincode::error::DecodeError>,
+    },
     #[error(
         "Wallet data verification failed. Keep your data folder and reopen the previous application version."
     )]
@@ -39,6 +48,44 @@ pub enum UpgradeError {
         "The updated application could not read your wallet data. Keep your data folder and reopen the previous application version."
     )]
     TypedValidation(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl UpgradeError {
+    /// Whether the user can clear the cause (close another instance, free space) and retry;
+    /// every other failure repeats identically on the same data.
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::InUse(_) | Self::StorageFull(_) | Self::Io(_))
+    }
+}
+
+impl From<rusqlite::Error> for UpgradeError {
+    fn from(error: rusqlite::Error) -> Self {
+        match error.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+                Self::InUse(error)
+            }
+            Some(rusqlite::ErrorCode::DiskFull) => Self::StorageFull(Box::new(error)),
+            _ => Self::Sqlite(error),
+        }
+    }
+}
+
+impl From<std::io::Error> for UpgradeError {
+    fn from(error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::StorageFull {
+            Self::StorageFull(Box::new(error))
+        } else {
+            Self::Io(error)
+        }
+    }
+}
+
+impl From<bincode::error::DecodeError> for UpgradeError {
+    fn from(source: bincode::error::DecodeError) -> Self {
+        Self::IdentityRoster {
+            source: Some(source),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -111,19 +158,19 @@ fn active_identities(conn: &Connection) -> Result<BTreeSet<Vec<u8>>, UpgradeErro
         .optional()?;
     let Some(value) = value else {
         if conn.prepare("SELECT 1 FROM identities i JOIN meta_identity m ON i.identity_id = m.identity_id WHERE i.tombstoned = 1 AND m.key = 'det:identity:v1'")?.exists([])? {
-            return Err(UpgradeError::IdentityRoster);
+            return Err(UpgradeError::IdentityRoster { source: None });
         }
         return Ok(BTreeSet::new());
     };
     let Some((&1, body)) = value.split_first() else {
-        return Err(UpgradeError::IdentityRoster);
+        return Err(UpgradeError::IdentityRoster { source: None });
     };
     let (ids, consumed): (Vec<[u8; 32]>, usize) = bincode::serde::decode_from_slice(
         body,
         bincode::config::standard().with_limit::<16777216>(),
     )?;
     if consumed != body.len() {
-        return Err(UpgradeError::IdentityRoster);
+        return Err(UpgradeError::IdentityRoster { source: None });
     }
     Ok(ids.into_iter().map(Vec::from).collect())
 }
@@ -163,10 +210,51 @@ fn selected_rows(table: &str) -> String {
         .unwrap_or_default()
 }
 
+fn backup_prefix(path: &Path) -> Option<String> {
+    Some(format!(
+        "{}.platform-67d4ef3-backup-",
+        path.file_name()?.to_string_lossy()
+    ))
+}
+
+/// Retained upgrade backups of the database at `path`.
+fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
+        return Ok(Vec::new());
+    };
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) && name.ends_with(".sqlite") {
+            found.push(entry.path());
+        }
+    }
+    Ok(found)
+}
+
+/// Delete every retained upgrade backup of the database at `path`.
+///
+/// Backups never contain vault secrets. Attempts every file and returns the first failure.
+pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
+    let mut first_error = None;
+    for backup in backups(path)? {
+        if let Err(error) = std::fs::remove_file(&backup) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
 fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
     let parent = path.parent().ok_or(UpgradeError::Unrecognized)?;
-    let filename = path.file_name().ok_or(UpgradeError::Unrecognized)?;
-    let prefix = format!("{}.platform-67d4ef3-backup-", filename.to_string_lossy());
+    let prefix = backup_prefix(path).ok_or(UpgradeError::Unrecognized)?;
     let file = tempfile::Builder::new()
         .prefix(&prefix)
         .suffix(".sqlite")
@@ -185,10 +273,16 @@ fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
     verify(&dest)?;
     drop(dest);
     file.as_file().sync_all()?;
-    let (_, path) = file.keep().map_err(|e| e.error)?;
+    let (_, kept) = file.keep().map_err(|e| e.error)?;
     #[cfg(unix)]
     std::fs::File::open(parent)?.sync_all()?;
-    Ok(path)
+    // Only an unconverted original reaches this point, so older backups are superseded snapshots.
+    for old in backups(path)?.into_iter().filter(|old| *old != kept) {
+        if let Err(error) = std::fs::remove_file(&old) {
+            tracing::warn!(backup = %old.display(), %error, "Could not remove a superseded wallet upgrade backup");
+        }
+    }
+    Ok(kept)
 }
 
 fn copy_rows(
@@ -316,7 +410,6 @@ fn upgrade_with_hook(
     }
     verify(&source)?;
     let retired = retired_identities(&source)?;
-    let backup = backup(path)?;
     let mut target = Connection::open_with_flags(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -396,6 +489,9 @@ fn upgrade_with_hook(
     target_tx.commit()?;
     drop(target);
     validate(target_path)?;
+    // The source transaction has written only temp tables, so a separate reader still
+    // sees the committed original; earlier failures roll back and need no backup.
+    let backup = backup(path)?;
     let target = Connection::open_with_flags(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,

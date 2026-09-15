@@ -1718,6 +1718,53 @@ async fn remove_wallet_wipes_seed_envelope() {
     backend.shutdown().await;
 }
 
+/// Upgrade backups copy whole wallet databases (xpubs, history, identities), so
+/// removing a wallet must not leave them behind.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_deletes_upgrade_backups() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xA7u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let databases = [
+        ctx.data_dir().join("det-app.sqlite"),
+        crate::wallet_backend::wallet_database_path(ctx.data_dir(), Network::Testnet),
+    ];
+    let backups = databases.each_ref().map(|database| {
+        let name = database.file_name().expect("database file name");
+        let backup = database.with_file_name(format!(
+            "{}.platform-67d4ef3-backup-fixture.sqlite",
+            name.to_string_lossy()
+        ));
+        std::fs::write(&backup, b"old wallet history").expect("write backup fixture");
+        backup
+    });
+
+    ctx.remove_wallet(&seed_hash).expect("remove wallet");
+
+    for backup in &backups {
+        assert!(
+            !backup.exists(),
+            "{} must be deleted together with the wallet",
+            backup.display()
+        );
+    }
+    for database in &databases {
+        assert!(database.exists(), "{} must be kept", database.display());
+    }
+
+    backend.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remove_wallet_warns_when_local_secret_wipe_fails() {
     let (ctx, sender, _tmp) = offline_testnet_context();
@@ -6091,8 +6138,8 @@ async fn an_exhausted_transient_persist_budget_keeps_memory_and_the_next_attempt
         .await
         .expect_err("an exhausted retry budget must surface as a typed error");
     assert!(
-        matches!(error, TaskError::IdentityFundingAccountPersistFailed { .. }),
-        "the persist failure must keep its dedicated variant, got {error:?}",
+        matches!(error, TaskError::IdentityFundingAccountPersistBusy { .. }),
+        "a still-retryable failure must use the busy variant, got {error:?}",
     );
 
     let view = backend
@@ -6363,6 +6410,11 @@ async fn a_constraint_registration_persist_failure_rolls_back_the_in_memory_acco
     assert!(
         matches!(error, TaskError::IdentityFundingAccountPersistFailed { .. }),
         "the persist failure must keep its dedicated variant, got {error:?}",
+    );
+    let text = error.to_string();
+    assert!(
+        !text.contains("disk") && !text.contains("account"),
+        "a constraint violation has nothing to do with disk space: {text}",
     );
     assert!(
         backend

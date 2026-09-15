@@ -2,6 +2,7 @@
 
 mod engine;
 pub use engine::UpgradeError;
+pub(crate) use engine::remove_backups;
 
 use platform_wallet::changeset::PlatformWalletPersistence;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
@@ -9,6 +10,9 @@ use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStor
 use crate::backend_task::error::TaskError;
 
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
+    // TODO: each failed open of an old-lineage database leaves another upstream
+    // `backups/auto/pre-migration-*` copy; bound them once a terminal open failure is
+    // remembered per process, or upstream offers per-database retention.
     let original = match SqlitePersister::open(config.clone()) {
         Ok(persister) => return Ok(persister),
         Err(error @ WalletStorageError::Migration(_)) => error,

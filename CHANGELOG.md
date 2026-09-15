@@ -125,6 +125,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - DPNS scheduled retries keep the selected choice, and simultaneous scheduled votes share fresh voting information without losing their due status. If a first vote becomes a vote change before submission, DET asks for another review. Unavailable voting information stays visible with a refresh action, successful mixed batches report both cast and scheduled votes, and contest refresh remains available when saved voting progress cannot be recovered.
 - DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
+
+- Cancelling a network switch takes priority over simultaneous startup and
+  reports chain sync as stopped after shutting down the new backend.
+
+- Profile saves stop when their picture cannot be downloaded, explain unsupported
+  signing keys, and retry failed display-timestamp storage on profile reads
+  without submitting another paid write.
+  Refreshing a profile preserves its saved dates, and pictures downloaded for
+  profile updates are cached for subsequent views.
+
+- DashPay profile writes use `platform-wallet`, enabling HIGH authentication
+  keys of type ECDSA_SECP256K1. HASH160 support remains an upstream limitation.
+  Writes require a wallet-linked identity; clearing existing profile fields
+  reports an explicit error because the upstream API preserves omitted fields.
+
 - The backend wallet lifecycle test reserves the withdrawal fee instead of
   attempting to withdraw the entire Platform address balance.
 

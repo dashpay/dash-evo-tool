@@ -681,31 +681,17 @@ pub enum TaskError {
     )]
     IdentityKeyAddedButIdentityUnloaded,
 
-    /// Fail-closed guard at the opt-in protect boundary: the task found
-    /// keys still resident as plaintext on disk after the eager load-path vault
-    /// migration, so the identity cannot be reported as fully protected. The
-    /// migration only leaves resident plaintext when its vault write failed or
-    /// was skipped; proceeding would let the seal step silently skip those keys
-    /// and emit a false-protected result. Refusing here keeps the user from
-    /// believing the identity is sealed when it is not. Fieldless: the load-path
-    /// migration outcome is logged where it happens; no secret or raw error
-    /// string is stored here.
+    /// Resident plaintext remains after startup migration was skipped or failed.
+    /// Protection must refuse it; storage preparation retries write failures,
+    /// while already-protected identities require explicit key recovery.
     #[error(
         "Some of this identity's keys are not fully protected yet. \
         Close and reopen the application, then try protecting this identity again."
     )]
     IdentityKeyProtectionIncomplete,
 
-    /// Fail-closed guard at the opt-in protect boundary: the identity
-    /// still carries one or more keys saved in the legacy on-disk format this
-    /// version can neither read nor migrate into the protected store. Unlike
-    /// resident plaintext — which the load-path migration finishes on the next
-    /// launch — there is NO automatic migration for these keys, so reopening the
-    /// application would loop on the same error. The only way forward is to add
-    /// the identity again from its recovery phrase or private key, which replaces
-    /// the legacy key entries with ones this version can protect. Fieldless: the
-    /// offending key's presence is logged at the guard; no secret or raw error
-    /// string is stored here.
+    /// Legacy encrypted keys cannot be converted by startup migration.
+    /// Reloading from recovery material is required; restarting cannot repair them.
     #[error(
         "Some of this identity's keys are saved in an older format that cannot be protected. \
         Load this identity again using its recovery phrase or private key, then try protecting it."

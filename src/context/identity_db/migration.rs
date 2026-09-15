@@ -18,12 +18,30 @@ impl AppContext {
             else {
                 continue;
             };
-            let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
-            migrate_keystore_to_vault(&self.secret_store, &id, &mut qi, |migrated| {
-                stored.qi_bytes = migrated.to_bytes();
-                kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
-                    .map_err(identity_err)
-            });
+            let mut qi = match decode_stored_identity(&stored.qi_bytes, self.network) {
+                Ok(qi) => qi,
+                Err(error) => {
+                    tracing::warn!(
+                        target = "context::identity_db",
+                        identity = %hex::encode(id),
+                        error = ?error,
+                        "Skipping an undecodable identity blob during key migration",
+                    );
+                    continue;
+                }
+            };
+            let retained_keys = self.retained_identity_import_keys(&Identifier::from(id))?;
+            migrate_keystore_to_vault(
+                &self.secret_store,
+                &id,
+                &mut qi,
+                retained_keys,
+                |migrated| {
+                    stored.qi_bytes = migrated.to_bytes();
+                    kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
+                        .map_err(identity_err)
+                },
+            )?;
         }
         Ok(())
     }
@@ -35,9 +53,6 @@ impl AppContext {
 pub(super) enum KeystoreMigration {
     /// No plaintext keys to migrate — `qi` was untouched.
     Nothing,
-    /// The vault write failed; `qi` was restored to its resident plaintext and
-    /// the blob was NOT persisted (next startup retries — no key loss).
-    VaultWriteFailed,
     /// `n` keys moved to the vault and `qi` rewritten to `InVault` placeholders.
     Migrated(usize),
     /// The identity is password-protected, so a resident plaintext key
@@ -53,25 +68,26 @@ pub(super) fn migrate_keystore_to_vault(
     secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
     id: &[u8; 32],
     qi: &mut QualifiedIdentity,
+    retained_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
     persist: impl FnOnce(&QualifiedIdentity) -> std::result::Result<(), TaskError>,
-) -> KeystoreMigration {
+) -> Result<KeystoreMigration, TaskError> {
     // Probe before cloning: the steady-state (already all-`InVault`) case must
     // not pay for a full `KeyStorage` clone — that clone exists only to restore
     // the resident plaintext on a vault-write failure.
     if !qi.private_keys.has_plaintext_for_vault() {
-        return KeystoreMigration::Nothing;
+        return Ok(KeystoreMigration::Nothing);
     }
     // Fail-closed: never migrate a protected identity's resident
     // plaintext to a KEYLESS vault entry — that would silently strip protection
     // off a new key. Leave it resident (it still signs this session) and persist
     // nothing; the add-key path seals new keys Tier-2 under the identity password.
-    if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
+    if find_protected_identity_key_scope(secret_store, id, qi, retained_keys)?.is_some() {
         tracing::warn!(
             target = "context::identity_db",
             identity = %hex::encode(id),
             "Skipped keyless migration of a resident key on a password-protected identity",
         );
-        return KeystoreMigration::ProtectedSkipped;
+        return Ok(KeystoreMigration::ProtectedSkipped);
     }
     let mut before = qi.private_keys.clone();
     let taken = qi.private_keys.take_plaintext_for_vault();
@@ -84,7 +100,7 @@ pub(super) fn migrate_keystore_to_vault(
             error = ?e,
             "Identity-key vault migration deferred (vault write failed)",
         );
-        return KeystoreMigration::VaultWriteFailed;
+        return Err(e);
     }
     let migrated = taken.len();
     // The migrated plaintext now lives only in the vault; drop the `taken` copy
@@ -94,20 +110,12 @@ pub(super) fn migrate_keystore_to_vault(
     // needed. Zeroize its plaintext bytes (Clear/AlwaysClear) before it drops
     // so no identity private key lingers in freed heap.
     let _ = before.take_plaintext_for_vault();
-    if let Err(e) = persist(qi) {
-        tracing::warn!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            error = ?e,
-            "Identity-key blob rewrite deferred after vault migration",
-        );
-    } else {
-        tracing::info!(
-            target = "context::identity_db",
-            identity = %hex::encode(id),
-            migrated,
-            "Migrated identity keys to the secret vault",
-        );
-    }
-    KeystoreMigration::Migrated(migrated)
+    persist(qi)?;
+    tracing::info!(
+        target = "context::identity_db",
+        identity = %hex::encode(id),
+        migrated,
+        "Migrated identity keys to the secret vault",
+    );
+    Ok(KeystoreMigration::Migrated(migrated))
 }

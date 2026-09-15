@@ -163,7 +163,9 @@ impl AppContext {
         // add_key_to_identity's verify-before-broadcast / seal-after order. The
         // verified password seals the merged plaintext keys just before insert.
         let merge_seal_password = match (&load_mode, existing_stored.as_ref()) {
-            (IdentityLoadMode::MergeIntoExisting, Some(existing)) => {
+            (IdentityLoadMode::MergeIntoExisting, Some(existing))
+                if encryption_password.is_none() =>
+            {
                 match self.protected_identity_verify_scope(existing)? {
                     Some(verify_scope) => Some(
                         self.wallet_backend()?
@@ -1201,6 +1203,50 @@ mod tests {
             assert_eq!(view.scheme(&target, key_id).unwrap(), SecretScheme::Absent);
         }
         backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_import_retained_key_requires_password_for_later_keys() {
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let (ctx, _dir) = protected_import_context().await;
+        let (qi, _) = masternode_shaped_qi();
+        let fault = WriteFault::arm(2);
+        assert!(
+            ctx.persist_loaded_identity(
+                &mut qi.clone(),
+                &None,
+                Some(&Secret::new("synthetic-password")),
+                IdentityLoadMode::RejectIfExists
+            )
+            .is_err()
+        );
+        drop(fault);
+        let mut watch_only = qi.clone();
+        watch_only.private_keys = KeyStorage::default();
+        ctx.persist_loaded_identity(
+            &mut watch_only,
+            &None,
+            None,
+            IdentityLoadMode::RejectIfExists,
+        )
+        .unwrap();
+        assert!(
+            ctx.protected_identity_verify_scope(&watch_only)
+                .unwrap()
+                .is_some(),
+            "retained protected entries must require password verification"
+        );
+        let fault = WriteFault::arm(0);
+        assert!(matches!(
+            ctx.update_local_qualified_identity(&qi),
+            Err(TaskError::IdentityKeyProtectionDowngrade)
+        ));
+        assert!(
+            fault.schemes().is_empty(),
+            "record writes must not downgrade retained protected keys"
+        );
+        drop(fault);
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

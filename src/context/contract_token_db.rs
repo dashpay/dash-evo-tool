@@ -14,7 +14,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::{
-    PlatformDeserializableWithPotentialValidationFromVersionedStructure,
+    PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted,
     PlatformSerializableWithPlatformVersion,
 };
 use dash_sdk::platform::{DataContract, Identifier};
@@ -184,7 +184,11 @@ impl AppContext {
         &self,
         stored: StoredContract,
     ) -> std::result::Result<QualifiedContract, TaskError> {
-        let contract = DataContract::versioned_deserialize(
+        // DET wrote these bytes, but the untrusted decoder accepts every valid
+        // stored contract under the same no-limit config and does not
+        // pre-allocate from length prefixes, so a corrupt local entry fails
+        // the decode instead of aborting on a huge allocation.
+        let contract = DataContract::versioned_deserialize_untrusted(
             &stored.contract_bytes,
             false,
             self.platform_version(),

@@ -17,7 +17,7 @@ rfd = "0.17.2"
 qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.36.2", features = ["persistence", "wgpu"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 # TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
 # dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml). Re-check when these pins move.
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "01d944795e3dc9776fd4d01959df9abc1ea98c87", features = [
@@ -67,11 +67,11 @@ tokio = { version = "1.46.1", features = ["full"] }
 bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 hex = { version = "0.4.3" }
 async-trait = "0.1.89"
-itertools = "0.14.0"
+itertools = "0.15.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
 tracing = "0.1.41"
-rand = "0.9"
+rand = "0.10"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"
@@ -89,7 +89,7 @@ rusqlite = { version = "0.38.0", features = [
     "fallible_uint",
     "backup",
 ] }
-dark-light = "2.0.0"
+dark-light = "3.0.0"
 image = { version = "0.25.6", default-features = false, features = [
     "png",
     "jpeg",
@@ -110,7 +110,7 @@ tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
-rmcp = { version = "1.2", optional = true, default-features = false }
+rmcp = { version = "3.3", optional = true, default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
 # Constant-time equality for `model::secret::Secret` (unconditional) and the
 # MCP API-key check. Not optional: `PartialEq for Secret` is always compiled.
@@ -136,7 +136,7 @@ headless = ["cli", "mcp"]
 [dev-dependencies]
 egui_kittest = { version = "0.36.2", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
-criterion = "0.5.1"
+criterion = "0.8.2"
 # Used only by error-mapping unit tests to construct a genuine divergent-version
 # `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
 # version already in the graph via `platform-wallet-storage`; the `rusqlite`

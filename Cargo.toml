@@ -77,8 +77,8 @@ dotenvy = "0.15.7"
 envy = "0.4.2"
 chrono = "0.4.41"
 chrono-humanize = "0.2.3"
-sha2 = "0.10.9"
-ed25519-dalek = "2.1"
+sha2 = "0.11.0"
+ed25519-dalek = "3.0.0"
 arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
@@ -100,9 +100,9 @@ bitflags = "2.10"
 rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
-argon2 = "0.5.3" # For Argon2 key derivation
-aes-gcm = "0.10.3" # For AES-256-GCM encryption
-cbc = "0.1.2" # For CBC mode encryption
+argon2 = { version = "0.6.0", features = ["zeroize"] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
+aes-gcm = "0.11.1" # For AES-256-GCM encryption
+cbc = "0.2.1" # For CBC mode encryption
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "8.0.0" }

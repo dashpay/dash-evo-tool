@@ -23,7 +23,9 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use crate::app::AppAction;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
-use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
+use crate::backend_task::{
+    BackendTask, BackendTaskContext, BackendTaskSuccessResult, DPNSVoteOutcome,
+};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -285,16 +287,19 @@ impl MasternodeDetailView {
         self.recovery.absorb_result(ctx, result)
     }
 
-    /// Re-read this node from the store and re-arm its recovery check.
+    /// Re-read everything this view derives from the stores — the node record,
+    /// its key-presence line, its DPNS contests — and re-arm its recovery check.
     ///
-    /// The view holds the identity it was opened with, and its key-presence
-    /// line and recovery offer are both derived from it. A restore run from a
-    /// pushed Key Info screen never reaches this view — that screen is on top,
-    /// so it receives the result — which leaves the node page still offering
-    /// keys that are already back, and still warning about a voting key it now
-    /// holds. Called on arrival, so returning from a pushed screen recomputes
-    /// both. Vote selections and any open prompt survive: they belong to the
-    /// user's session, not to the record.
+    /// The in-place alternative to re-opening the view, and the only one its
+    /// hosts may use: a rebuild would also reset the user's session state, and
+    /// results reach whichever screen is visible, so it would do that on results
+    /// this page never asked for. Vote selections and any open `Add voting key`
+    /// prompt therefore survive — they belong to the user's session, not to the
+    /// record.
+    ///
+    /// The recovery re-arm is what makes a restore run from a pushed Key Info
+    /// screen visible here: that screen is on top, so it receives the result,
+    /// leaving this page otherwise still offering keys that are already back.
     pub(crate) fn refresh_from_store(&mut self) {
         let node_id = self.identity.identity.id();
         if let Ok(identities) = self.app_context.load_local_masternode_identities()
@@ -305,7 +310,21 @@ impl MasternodeDetailView {
             self.key_presence = identity.masternode_key_presence();
             self.identity = identity;
         }
+        self.refresh_contests();
         self.recovery.completed();
+    }
+
+    /// Retire the selections a cast consumed, keeping the ones whose vote
+    /// failed so they can be corrected and sent again.
+    ///
+    /// Selections outlive a backend result, so a finished cast has to clear its
+    /// own — otherwise `Cast votes` stays armed on votes already on their way.
+    pub(crate) fn consume_cast_votes(&mut self, results: &[DPNSVoteOutcome]) {
+        for (contested_name, _, outcome) in results {
+            if outcome.is_ok() {
+                self.vote_selections.remove(contested_name);
+            }
+        }
     }
 
     /// End this view's recovery operation when the failure that arrived is that
@@ -1077,6 +1096,67 @@ mod tests {
         // The normalized label is shown bare elsewhere; the vote section spells
         // out the full `.dash` domain so the user knows it is a registration.
         assert_eq!(contest_display_name("det"), "det.dash");
+    }
+
+    /// A cast retires only the selections it actually delivered. The view now
+    /// outlives a backend result, so the votes already on their way must stop
+    /// re-arming `Cast votes`, while a contest whose vote failed keeps its
+    /// choice for a corrected retry.
+    #[test]
+    fn a_cast_retires_only_the_selections_it_delivered() {
+        use crate::backend_task::error::TaskError;
+        use crate::model::qualified_identity::IdentityStatus;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(temp_dir.path());
+        let identity = Identity::create_basic_identity(
+            Identifier::from([0x77; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        let mut view = MasternodeDetailView::new(&app_context, qi);
+        view.vote_selections
+            .insert("delivered".to_string(), ResourceVoteChoice::Abstain);
+        view.vote_selections
+            .insert("rejected".to_string(), ResourceVoteChoice::Lock);
+
+        view.consume_cast_votes(&[
+            ("delivered".to_string(), ResourceVoteChoice::Abstain, Ok(())),
+            (
+                "rejected".to_string(),
+                ResourceVoteChoice::Lock,
+                Err(Arc::new(TaskError::NoIdentitiesFound)),
+            ),
+        ]);
+
+        assert!(
+            !view.vote_selections.contains_key("delivered"),
+            "a vote already sent must not stay armed to be sent again",
+        );
+        assert_eq!(
+            view.vote_selections.get("rejected"),
+            Some(&ResourceVoteChoice::Lock),
+            "a vote that failed keeps its choice so it can be retried",
+        );
     }
 
     #[test]

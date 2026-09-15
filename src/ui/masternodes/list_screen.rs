@@ -650,6 +650,14 @@ impl ScreenLike for MasternodesScreen {
                 self.reload();
                 return;
             }
+            // The votes that went out are now on their way, so the open detail
+            // view must stop offering to send them again. The ones that failed
+            // keep their selection for a corrected retry.
+            BackendTaskSuccessResult::DPNSVoteResults(ref results) => {
+                if let MasternodesView::Detail(detail) = &mut self.view {
+                    detail.consume_cast_votes(results);
+                }
+            }
             _ => {}
         }
         self.reload();
@@ -658,13 +666,13 @@ impl ScreenLike for MasternodesScreen {
         // another screen's load result, so the gate must never turn on "a result
         // arrived" — only on this load's own reported outcome.
         self.reconcile_pending_load();
-        // if a detail view is open, its own backend task (voting, an
-        // Add-voting-key merge, a RefreshIdentity) just updated the store.
-        // Re-open the detail view for that node so the on-screen view reflects
-        // the fresh data instead of the stale clone captured at open time.
-        if let MasternodesView::Detail(detail) = &self.view {
-            let node_id = detail.node_id();
-            self.open_detail(node_id);
+        // An open detail view was built from records a finished task may have
+        // rewritten, so re-read it — in place. Re-opening it would rebuild it,
+        // and results reach whichever screen is visible: a result this page
+        // never asked for would then take away an `Add voting key` prompt the
+        // user is still typing into, along with the key in it.
+        if let MasternodesView::Detail(detail) = &mut self.view {
+            detail.refresh_from_store();
         }
     }
 

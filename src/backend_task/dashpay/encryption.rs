@@ -52,11 +52,10 @@ pub fn generate_ecdh_shared_key(
             hasher.update([prefix]);
             hasher.update(x);
 
-            // The digest is the shared key material; wrap it so the sha2
-            // output buffer is wiped on drop after the copy.
-            let result = Zeroizing::new(hasher.finalize());
+            // The digest is the shared key material; finalize it straight
+            // into the zeroizing buffer so no un-wiped copy is left behind.
             let mut shared_key = Zeroizing::new([0u8; 32]);
-            shared_key.copy_from_slice(&result);
+            hasher.finalize_into((&mut *shared_key).into());
 
             Ok(shared_key)
         }

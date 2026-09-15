@@ -597,7 +597,11 @@ As an everyday user, I want to open a Receive view for my identity so that anoth
 As a power user, I want to add a new key to my identity so that I can authorize additional operations or devices.
 
 - Select key type and purpose.
-- Key is added via state transition.
+- “Derive from wallet” is selected by default; choose a key index instead of entering a private key.
+- The first unused index is selected automatically. Used indices, including disabled keys and HASH160 equivalents, cannot be selected.
+- Derived secp256k1 and HASH160 keys retain their wallet path for signing and seed recovery. Indices stay within the recovery search range.
+- Uncheck derivation to enter or randomly generate a private key. Identities without a known wallet path and other key types use this manual option.
+- Key is added via state transition; stale or reused derived selections are rejected before submission.
 
 ### IDN-008: View identity keys and details [Implemented]
 **Persona:** Alex, Priya, Jordan

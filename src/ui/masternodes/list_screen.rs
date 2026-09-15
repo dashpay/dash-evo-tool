@@ -116,6 +116,14 @@ impl MasternodesScreen {
             .map(|node| card_heading(node.alias.as_deref(), &node.node_id_short))
             .collect()
     }
+
+    /// Return each card's rendered DPNS status line, in grid order.
+    pub(crate) fn dpns_status_lines_for_test(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .map(|node| crate::ui::masternodes::card::dpns_status_line(node.contest_summary))
+            .collect()
+    }
 }
 
 impl MasternodesScreen {
@@ -144,19 +152,36 @@ impl MasternodesScreen {
             .load_local_masternode_identities()
             .unwrap_or_default();
 
+        // Votes are published and cached under the node's own ProTxHash; the
+        // voter identity only supplies the key that signs them. Resolve every
+        // node's voter_id up front and fetch all their summaries in one call:
+        // the contest cache, derived vote-poll ids, operation journal and
+        // schedule dismissals depend on the contest set, not the node, so an
+        // operator with a large fleet must not pay for them once per card.
+        let voter_ids: Vec<Identifier> = identities
+            .iter()
+            .filter(|qi| qi.associated_voter_identity.is_some())
+            .map(|qi| qi.identity.id())
+            .collect();
+        let summaries = self
+            .app_context
+            .masternode_contest_summaries(&voter_ids)
+            .unwrap_or_default();
+
         self.nodes = identities
             .into_iter()
             .map(|qi| {
                 let node_id = qi.identity.id();
                 let node_id_short = shorten_id(&node_id.to_string(Encoding::Hex));
-                let voter_id = qi
-                    .associated_voter_identity
-                    .as_ref()
-                    .map(|(identity, _)| identity.id());
-                let contest_summary = self
-                    .app_context
-                    .masternode_contest_summary(voter_id)
-                    .unwrap_or_default();
+                let has_voter_id = qi.associated_voter_identity.is_some();
+                let contest_summary = if has_voter_id {
+                    summaries
+                        .get(&node_id)
+                        .copied()
+                        .unwrap_or_else(MasternodeContestSummary::unavailable)
+                } else {
+                    MasternodeContestSummary::default()
+                };
                 NodeCardData {
                     node_id,
                     node_id_short,
@@ -396,10 +421,17 @@ impl MasternodesScreen {
             .into_iter()
             .find(|qi| qi.identity.id() == node_id)
         {
-            self.view = MasternodesView::Detail(Box::new(MasternodeDetailView::new(
-                &self.app_context,
-                identity,
-            )));
+            // An Add-voting-key merge outstanding on this same node must keep
+            // gating Save across the rebuild; the fresh view cannot know of it.
+            let pending_voter_key_load = match &self.view {
+                MasternodesView::Detail(detail) if detail.node_id() == node_id => {
+                    detail.pending_voter_key_load()
+                }
+                _ => None,
+            };
+            let mut detail = Box::new(MasternodeDetailView::new(&self.app_context, identity));
+            detail.adopt_pending_voter_key_load(pending_voter_key_load);
+            self.view = MasternodesView::Detail(detail);
         }
     }
 
@@ -706,11 +738,13 @@ impl ScreenLike for MasternodesScreen {
 
         action |= island_central_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
+            let mut action = AppAction::None;
             match self.view {
-                MasternodesView::Load(_) => self.render_load_view(ui),
-                MasternodesView::Detail(_) => self.render_detail_view(ui, network_accent),
-                MasternodesView::List => self.render_list_view(ui, network_accent),
+                MasternodesView::Load(_) => action |= self.render_load_view(ui),
+                MasternodesView::Detail(_) => action |= self.render_detail_view(ui, network_accent),
+                MasternodesView::List => action |= self.render_list_view(ui, network_accent),
             }
+            action
         });
 
         action
@@ -732,6 +766,7 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
     use dash_sdk::platform::Identifier;
     use std::collections::BTreeMap;
 
@@ -785,6 +820,84 @@ mod tests {
         };
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("seed masternode");
+    }
+
+    /// Seed a masternode carrying an associated voter identity — the state that
+    /// lets it cast a DPNS vote. Returns the node's own id, which is also the
+    /// ProTxHash its votes are published and cached under.
+    fn seed_masternode_with_voter(ctx: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
+        let pv = PlatformVersion::latest();
+        let node_id = Identifier::from([byte; 32]);
+        let voter_identity =
+            Identity::create_basic_identity(Identifier::from([byte ^ 0xFF; 32]), pv)
+                .expect("voter identity");
+        let voter_key = dash_sdk::platform::IdentityPublicKey::random_key(1, Some(1), pv);
+        let qi = QualifiedIdentity {
+            identity: Identity::create_basic_identity(node_id, pv).expect("basic identity"),
+            associated_voter_identity: Some((voter_identity, voter_key)),
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: Some(alias.to_owned()),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        };
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("seed masternode with voter");
+        node_id
+    }
+
+    /// A vote a node cast resolves on that node's own card.
+    ///
+    /// The card reads the proved-vote cache, which is keyed by the id the vote
+    /// was published under — the node's ProTxHash, never the separate
+    /// `associated_voter_identity` record. The vote is written here through the
+    /// production writer, so this asserts reader/writer agreement rather than
+    /// restating either side: keying the read on anything else can only miss,
+    /// and a miss is reported as the permanent "Checking" line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cast_vote_resolves_on_the_card_of_the_node_that_cast_it() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let node_id = seed_masternode_with_voter(&ctx, 0x55, "voting-node");
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+        let poll_id = ctx.dpns_vote_poll_id("alpha").expect("DPNS vote poll id");
+        ctx.cache_confirmed_dpns_vote(node_id, poll_id, ResourceVoteChoice::Lock)
+            .expect("cache the confirmed vote");
+
+        let screen = MasternodesScreen::new(&ctx);
+
+        assert_eq!(
+            screen.dpns_status_lines_for_test(),
+            vec!["Votes cast in all active contests".to_string()],
+            "the card must report the vote this node cast, not stay on \"Checking\"",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A node with no voting key can vote in nothing, so its card carries the
+    /// empty summary instead of a contest count it could never act on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_node_without_a_voting_key_gets_the_empty_dpns_summary() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0x66, Some("read-only-node"));
+        ctx.seed_dpns_contest_for_test("alpha", None, false);
+
+        let screen = MasternodesScreen::new(&ctx);
+
+        assert_eq!(
+            screen.dpns_status_lines_for_test(),
+            vec!["No open contests".to_string()],
+            "a node that cannot vote must not be summarised against open contests",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1739,6 +1852,25 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn voting_ui_leaving_detail_clears_the_scoped_voting_key_prompt() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+        let mut detail = MasternodeDetailView::new(
+            &ctx,
+            masternode_identity(&ctx, Identifier::from([0x45; 32])),
+        );
+        detail.set_voter_key_prompt_for_test("unsubmitted-test-input");
+        assert!(detail.has_voter_key_prompt_for_test());
+        screen.view = MasternodesView::Detail(Box::new(detail));
+        screen.on_leave();
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("detail");
+        };
+        assert!(!detail.has_voter_key_prompt_for_test());
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
     /// SEC — the reported case: the user submits, navigates away while the load
     /// runs, and the load fails behind their back. The form is kept open for a
     /// corrected resubmit, so nothing else would ever drop its secrets. Leaving
@@ -1767,37 +1899,9 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
-    /// SEC — the detail view's in-place `Add voting key` prompt holds a plaintext
-    /// WIF too, and lives in the very same root screen. A prompt left filled but
-    /// unsubmitted must not survive the user leaving the tab.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn leaving_the_tab_discards_an_unsubmitted_voting_key() {
-        let (ctx, _tmp) = offline_ctx().await;
-        seed_masternode(&ctx, 0xc5, None);
-        let mut screen = MasternodesScreen::new(&ctx);
-        screen.open_detail(Identifier::from([0xc5; 32]));
-
-        let MasternodesView::Detail(detail) = &mut screen.view else {
-            panic!("the detail view must be open");
-        };
-        detail.set_voter_key_prompt_for_test("voter-wif");
-
-        screen.on_leave();
-
-        let MasternodesView::Detail(detail) = &screen.view else {
-            panic!("leaving must not discard the detail view");
-        };
-        assert!(
-            !detail.has_voter_key_prompt_for_test(),
-            "an unsubmitted voting key must not outlive the tab"
-        );
-
-        ctx.wallet_backend().expect("backend").shutdown().await;
-    }
-
-    /// A node with no detail view open and no nodes at all both resolve to "no
-    /// selection" — the pill falls back to its placeholder rather than naming a
-    /// node the page is not showing.
+    /// A screen with no node loaded and no detail view open has nothing to
+    /// select: the pill falls back to its placeholder rather than naming a node
+    /// the page is not showing.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn empty_page_offers_no_nodes_on_the_pill() {
         let (ctx, _tmp) = offline_ctx().await;

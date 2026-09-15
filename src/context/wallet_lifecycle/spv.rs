@@ -113,6 +113,11 @@ impl AppContext {
             failures.push(error);
         }
 
+        if let Err(error) = self.remove_upgrade_backups() {
+            tracing::warn!(?error, "Upgrade backup removal failed during clear");
+            failures.push(error);
+        }
+
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
         }

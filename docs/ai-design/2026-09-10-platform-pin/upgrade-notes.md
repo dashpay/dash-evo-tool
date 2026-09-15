@@ -60,7 +60,10 @@ typed identity rows remain in the backup, while their opaque local metadata is
 preserved. An ambiguous or malformed saved identity roster fails closed.
 The encrypted seed vault is not migrated or rewritten.
 
-Keep the retained backups. Downgrading does not automatically reverse the
+The bridge takes its backup only after the converted copy validates, just before
+the rebuild, and keeps at most one backup per database. Deleting a wallet or an
+identity, or clearing a network's data, also deletes these backups, because they
+copy wallet and identity history. Downgrading does not automatically reverse the
 database conversion; recovery requires the corresponding backup and the prior
 application version. Validation uses synthetic upstream fixtures, not a user's
 real profile.

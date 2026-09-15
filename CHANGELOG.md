@@ -23,6 +23,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Allowing 3.x needs an upstream change in `dashpay/rust-dashcore` first. A TODO
   in `Cargo.toml` marks the re-check.
 
+- **Safer guidance for wallet data this version cannot open**: the message no
+  longer tells you to remove your local wallet data, which could have deleted
+  the `secrets` folder along with keys no recovery phrase can restore. It now
+  asks you to write down your recovery phrases and imported keys in the version
+  you used before, then set aside only the `.sqlite` files and keep the
+  `secrets` folder.
+
+- **Upgrade backups no longer pile up or outlive deleted data**: a failed
+  database upgrade no longer leaves a new backup on every attempt. Each
+  database keeps at most one upgrade backup, and it is deleted when you remove
+  a wallet or identity or clear a network's data. An upgrade that can never
+  succeed now shows its message instead of being retried silently.
+
 ### Added
 
 - **Keys saved on this device but not on the identity's key lists are now

@@ -267,7 +267,13 @@ jobs:
           # does not enable, so Cargo builds no det-cli for the harness to find.
           DET_CLI_BIN: ${{ runner.temp }}/bin/det-cli
           MIGRATION_V093_WALLET_PASSWORD: ${{ secrets.MIGRATION_V093_WALLET_PASSWORD }}
-        run: cargo test --locked --test migration-matrix --features testing
+          MIGRATION_MATRIX_SKIP_PASSWORDS: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if [ "$MIGRATION_MATRIX_SKIP_PASSWORDS" = "true" ]; then
+            echo "::notice::Fork PR: password scenarios are skipped because repository secrets are unavailable. Password-free migration scenarios still run."
+            echo "Migration coverage: password-free scenarios only (fork PR)." >>"$GITHUB_STEP_SUMMARY"
+          fi
+          cargo test --locked --test migration-matrix --features testing -- --nocapture
 
       # The weekly profile once more, opened directly through the
       # platform_compatibility bridge instead of through a det-cli boot: the

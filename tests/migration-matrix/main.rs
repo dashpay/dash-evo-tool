@@ -26,6 +26,7 @@
 //! | `MIGRATION_FIXTURES_MANIFEST` | Manifest path, when it lives elsewhere. |
 //! | `MIGRATION_MATRIX_ONLY` | Comma-separated fixture ids to run. |
 //! | `MIGRATION_MATRIX_SKIP_NETWORK` | Skip the checks needing a synced chain. |
+//! | `MIGRATION_MATRIX_SKIP_PASSWORDS` | Explicitly skip secret-dependent scenarios (fork CI). |
 //! | `MIGRATION_MATRIX_BOOT_TIMEOUT_SECS` | Per-boot wall clock (default 300). |
 //! | `MIGRATION_MATRIX_NETWORK_TIMEOUT_SECS` | Chain-gated calls (default 900). |
 //! | `DET_CLI_BIN` | Binary under test, instead of the one Cargo just built. |
@@ -45,6 +46,7 @@ use manifest::{ExpectedWallet, Fixture, Scenario};
 const FIXTURES_DIR_ENV: &str = "MIGRATION_FIXTURES_DIR";
 const ONLY_ENV: &str = "MIGRATION_MATRIX_ONLY";
 const SKIP_NETWORK_ENV: &str = "MIGRATION_MATRIX_SKIP_NETWORK";
+const SKIP_PASSWORDS_ENV: &str = "MIGRATION_MATRIX_SKIP_PASSWORDS";
 const BOOT_TIMEOUT_ENV: &str = "MIGRATION_MATRIX_BOOT_TIMEOUT_SECS";
 const NETWORK_TIMEOUT_ENV: &str = "MIGRATION_MATRIX_NETWORK_TIMEOUT_SECS";
 
@@ -60,6 +62,7 @@ struct Options {
     boot_timeout: Duration,
     network_timeout: Duration,
     skip_network: bool,
+    skip_passwords: bool,
 }
 
 impl Options {
@@ -68,6 +71,7 @@ impl Options {
             boot_timeout: duration_from_env(BOOT_TIMEOUT_ENV, DEFAULT_BOOT_TIMEOUT),
             network_timeout: duration_from_env(NETWORK_TIMEOUT_ENV, DEFAULT_NETWORK_TIMEOUT),
             skip_network: flag(SKIP_NETWORK_ENV),
+            skip_passwords: flag(SKIP_PASSWORDS_ENV),
         }
     }
 }
@@ -165,8 +169,13 @@ fn select(fixtures: &[Fixture]) -> Vec<&Fixture> {
 /// then one per password run — each on a freshly staged copy, and reports
 /// every failing scenario rather than stopping at the first.
 fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Result<(), String> {
-    let failures: Vec<String> = fixture
-        .scenarios()?
+    if options.skip_passwords && !fixture.password_runs.is_empty() {
+        println!(
+            "  SKIPPED {} password scenario(s): explicitly disabled by {SKIP_PASSWORDS_ENV}",
+            fixture.password_runs.len()
+        );
+    }
+    let failures: Vec<String> = scenarios_for_run(fixture, options.skip_passwords)?
         .iter()
         .filter_map(|scenario| {
             println!("  scenario: {}", scenario.label);
@@ -179,6 +188,14 @@ fn run_fixture(fixtures_dir: &Path, fixture: &Fixture, options: &Options) -> Res
         true => Ok(()),
         false => Err(failures.join("\n\n")),
     }
+}
+
+fn scenarios_for_run(fixture: &Fixture, skip_passwords: bool) -> Result<Vec<Scenario>, String> {
+    Ok(fixture
+        .scenarios()?
+        .into_iter()
+        .filter(|scenario| !skip_passwords || scenario.password_env.is_none())
+        .collect())
 }
 
 /// Stages one fixture, boots it twice, and checks what the upgrade produced.
@@ -391,5 +408,24 @@ mod tests {
     #[test]
     fn an_absent_flag_is_off() {
         assert!(!flag("MIGRATION_MATRIX_FLAG_THAT_IS_UNSET"));
+    }
+
+    #[test]
+    fn password_scenarios_require_an_explicit_opt_out() {
+        let manifest: manifest::Manifest =
+            serde_json::from_str(include_str!("../migration-fixtures/manifest.json"))
+                .expect("manifest");
+        let fixture = manifest
+            .fixtures
+            .iter()
+            .find(|fixture| !fixture.password_runs.is_empty())
+            .expect("protected fixture");
+        let all = scenarios_for_run(fixture, false).expect("all scenarios");
+        assert!(all.iter().any(|scenario| scenario.password_env.is_some()));
+        let public = scenarios_for_run(fixture, true).expect("password-free scenarios");
+        assert_eq!(public.len(), 1);
+        assert!(public[0].password_env.is_none());
+        assert!(public[0].needs_desktop());
+        assert_eq!(public[0].listed_aliases, all[0].listed_aliases);
     }
 }

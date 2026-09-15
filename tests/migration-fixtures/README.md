@@ -277,4 +277,6 @@ leaves this list empty and names them in `expect.wallet_aliases`.
 
 Every wallet with a `password_env` must resolve to the same password: one supplied password opens them all, or the update fails and nothing is skipped. Supply the named variable from your secure store before running the matrix. A missing value fails the password scenario. The `app-storage-update` boot logs DET, det-cli and rmcp at `trace`, and the run fails if any command's output contains the password. The second boot gets no password: once the update has finished, a plain boot must need nothing more.
 
+For fork pull requests, CI sets `MIGRATION_MATRIX_SKIP_PASSWORDS=true` because repository secrets are unavailable. It explicitly reports the skipped password scenarios and still runs every password-free scenario, including the protected wallet's refusal to update without a password. Same-repository runs require the password scenarios to pass; a missing secret remains an error.
+
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

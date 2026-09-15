@@ -110,6 +110,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Storage preparation retries incomplete app-data imports when unreadable
+  identities are also present, and concurrent callers receive the migration error.
+
 - The backend wallet lifecycle test reserves the withdrawal fee instead of
   attempting to withdraw the entire Platform address balance.
 

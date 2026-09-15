@@ -19,7 +19,7 @@ use dash_evo_tool::backend_task::migration::finish_unwire::{
 };
 use dash_evo_tool::database::DEFAULT_DB_VERSION;
 use dash_sdk::dpp::dashcore::{Network, base58};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::cli::CliRun;
@@ -156,7 +156,13 @@ pub fn schema_snapshot(
             [],
             |row| row.get::<_, u16>(0),
         )
-        .ok();
+        .optional()
+        .map_err(|e| {
+            format!(
+                "could not read the schema version of {}: {e}",
+                data_db.display()
+            )
+        })?;
     let mut statement = conn
         .prepare("SELECT type, name, IFNULL(sql, '') FROM sqlite_master ORDER BY type, name")
         .map_err(|e| format!("could not read the schema of {}: {e}", data_db.display()))?;
@@ -268,8 +274,7 @@ pub fn check_network(expected: Network, run: &CliRun) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks every expected alias survived and returns the identifiers usable
-/// with `core-address-create` (alias when there is one, seed hash otherwise).
+/// Checks the complete wallet roster and returns aliases for `core-address-create`.
 pub fn check_wallets(expected_aliases: &[String], run: &CliRun) -> Result<Vec<String>, String> {
     let json = run.json()?;
     let wallets = json
@@ -285,20 +290,16 @@ pub fn check_wallets(expected_aliases: &[String], run: &CliRun) -> Result<Vec<St
     let mut aliases = BTreeSet::new();
     let mut identifiers = Vec::new();
     for wallet in wallets {
-        let alias = wallet.get("alias").and_then(Value::as_str);
-        let seed_hash = wallet.get("seed_hash").and_then(Value::as_str);
-        if let Some(alias) = alias {
-            aliases.insert(alias.to_string());
+        let alias = wallet.get("alias").and_then(Value::as_str).ok_or_else(|| {
+            format!(
+                "a listed wallet has no alias to match against the manifest\n{}",
+                run.report()
+            )
+        })?;
+        if !aliases.insert(alias.to_string()) {
+            return Err(format!("duplicate wallet alias after migration: {alias:?}"));
         }
-        match alias.or(seed_hash) {
-            Some(id) => identifiers.push(id.to_string()),
-            None => {
-                return Err(format!(
-                    "a listed wallet has neither alias nor seed hash\n{}",
-                    run.report()
-                ));
-            }
-        }
+        identifiers.push(alias.to_string());
     }
 
     let missing: Vec<&String> = expected_aliases
@@ -308,6 +309,15 @@ pub fn check_wallets(expected_aliases: &[String], run: &CliRun) -> Result<Vec<St
     if !missing.is_empty() {
         return Err(format!(
             "wallets missing after the migration: {missing:?} — the boot listed {aliases:?}"
+        ));
+    }
+    let extra: Vec<_> = aliases
+        .iter()
+        .filter(|alias| !expected_aliases.contains(alias))
+        .collect();
+    if !extra.is_empty() {
+        return Err(format!(
+            "wallets absent from the manifest were listed after migration: {extra:?}"
         ));
     }
     Ok(identifiers)
@@ -790,19 +800,40 @@ mod tests {
     }
 
     #[test]
-    fn wallet_identifiers_fall_back_to_the_seed_hash() {
+    fn wallet_list_rejects_unexpected_and_duplicate_wallets() {
+        for wallets in [
+            r#"[{"alias":"extra"}]"#,
+            r#"[{"alias":null,"seed_hash":"ab01"}]"#,
+            r#"[{"alias":"savings"},{"alias":"savings"}]"#,
+        ] {
+            let run = CliRun {
+                command: "core-wallets-list".to_string(),
+                exit_code: Some(0),
+                stdout: format!(r#"{{"wallets":{wallets}}}"#),
+                stderr: String::new(),
+                timed_out: false,
+            };
+            let expected = if wallets.contains("savings") {
+                vec!["savings".to_string()]
+            } else {
+                vec![]
+            };
+            assert!(check_wallets(&expected, &run).is_err(), "{wallets}");
+        }
+    }
+
+    #[test]
+    fn wallet_identifiers_match_the_expected_aliases() {
         let run = CliRun {
             command: "det-cli --standalone core-wallets-list".to_string(),
             exit_code: Some(0),
-            stdout: r#"{"wallets":[{"seed_hash":"ab01","alias":"savings"},
-                                   {"seed_hash":"cd02","alias":null}]}"#
-                .to_string(),
+            stdout: r#"{"wallets":[{"seed_hash":"ab01","alias":"savings"}]}"#.to_string(),
             stderr: String::new(),
             timed_out: false,
         };
 
         let ids = check_wallets(&["savings".to_string()], &run).expect("expected alias present");
-        assert_eq!(ids, ["savings", "cd02"]);
+        assert_eq!(ids, ["savings"]);
 
         let error =
             check_wallets(&["pension".to_string()], &run).expect_err("a missing wallet must fail");
@@ -1039,6 +1070,42 @@ mod tests {
             schema_snapshot(&dir.path().join("absent.db"), &scratch, "missing")
                 .expect("a missing file is not an error")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn schema_snapshot_rejects_malformed_settings() {
+        for sql in [
+            "CREATE TABLE other (id INTEGER);",
+            "CREATE TABLE settings (id INTEGER); INSERT INTO settings VALUES (1);",
+            "CREATE TABLE settings (id INTEGER, database_version); INSERT INTO settings VALUES (1, 'bad');",
+            "CREATE TABLE settings (id INTEGER, database_version); INSERT INTO settings VALUES (1, NULL);",
+            "CREATE TABLE settings (id INTEGER, database_version); INSERT INTO settings VALUES (1, -1);",
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let db = dir.path().join(DATA_DB);
+            Connection::open(&db).unwrap().execute_batch(sql).unwrap();
+            assert!(
+                schema_snapshot(&db, &dir.path().join("scratch"), "before").is_err(),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_snapshot_allows_an_absent_settings_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join(DATA_DB);
+        Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE settings (id INTEGER, database_version INTEGER);")
+            .unwrap();
+        assert_eq!(
+            schema_snapshot(&db, &dir.path().join("scratch"), "before")
+                .unwrap()
+                .unwrap()
+                .version,
+            None
         );
     }
 

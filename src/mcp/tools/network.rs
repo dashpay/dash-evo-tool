@@ -242,15 +242,20 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
                     spv_started,
                     ..
                 } => {
+                    if let Err(source) =
+                        context.update_app_settings(|settings| settings.network = target)
+                    {
+                        if let Ok(backend) = context.wallet_backend() {
+                            backend.shutdown().await;
+                        }
+                        return Err(McpToolError::TaskFailed(TaskError::AppSettingsWrite {
+                            source,
+                        }));
+                    }
                     if let Ok(backend) = outgoing_context.wallet_backend() {
                         backend.shutdown().await;
                     }
-                    switch_service.swap_context(Arc::clone(&context));
-                    context
-                        .update_app_settings(|settings| settings.network = target)
-                        .map_err(|source| {
-                            McpToolError::TaskFailed(TaskError::AppSettingsWrite { source })
-                        })?;
+                    switch_service.swap_context(context);
                     Ok(NetworkSwitchOutput {
                         active: network_display_name(target).to_owned(),
                         spv_started,
@@ -277,6 +282,36 @@ mod tests {
     use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
     use crate::wallet_backend::{IdentityKeyView, SecretPrompt};
     use platform_wallet_storage::secrets::SecretString;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_network_save_keeps_the_active_context() {
+        use crate::context::test_support::test_app_context_with_kv;
+        use crate::wallet_backend::DetKv;
+        use crate::wallet_backend::kv_test_support::FailingKv;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+        let service =
+            DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::from(Arc::clone(&ctx))));
+        store.fail_next_puts(usize::MAX);
+        let result = NetworkSwitch::invoke(
+            &service,
+            NetworkSwitchParams {
+                network: "mainnet".to_owned(),
+            },
+        )
+        .await;
+        let active = service.tool_ctx().await.unwrap();
+        service.shutdown_wallet_backend().await;
+        assert!(matches!(
+            result,
+            Err(McpToolError::TaskFailed(TaskError::AppSettingsWrite { .. }))
+        ));
+        assert!(
+            Arc::ptr_eq(&active, &ctx),
+            "a failed save must not replace the active context"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn review_regression_network_switch_persists_the_selected_network() {

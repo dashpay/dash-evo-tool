@@ -25,9 +25,12 @@ not permit initialization. Downloaded avatar bytes also populate the view cache.
 
 - DET accepts active HIGH or CRITICAL authentication keys of type
   ECDSA_SECP256K1 or ECDSA_HASH160. The existing signer supports both types.
-  Platform revision `7f809377dbb47ff60ea62054bf83346771d9140e` includes
-  [Platform #4653](https://github.com/dashpay/platform/pull/4653), which supports
-  both types for creation and replacement. Contact ECDH keys are unaffected.
+  Platform revision `f73f5d6098a739d29a1cebc2f7941e062ee8a517` includes
+  [Platform #4653](https://github.com/dashpay/platform/pull/4653) and the fix from
+  [Platform #4764](https://github.com/dashpay/platform/pull/4764), which select
+  the first eligible key in key-ID order that `QualifiedIdentity::can_sign_with`
+  reports available, for both creation and replacement. Actual signing errors
+  propagate without retrying other keys. Contact ECDH keys are unaffected.
 - An identity must be managed by a loaded wallet. An out-of-wallet identity
   cannot use this upstream API and receives an explicit error.
 - Upstream `ProfileUpdate` treats omitted fields as unchanged. Clearing an
@@ -62,3 +65,8 @@ Run the matching HASH160 case with the same flags and the filter
 `profile_create_and_replace_with_high_hash160_derived_key`. It registers HASH160
 MASTER and HIGH authentication keys, with no full-public-key signing alternative,
 then verifies both profile creation and replacement through the same backend path.
+
+The filter `profile_create_and_replace_skips_unavailable_hash160_key` exercises a
+partial import: an active HIGH HASH160 key at ID 1 remains registered but absent
+from DET's signer, while the HIGH secp256k1 key at ID 2 is available. Both creation
+and replacement must succeed with key 2. All three cases require live testnet.

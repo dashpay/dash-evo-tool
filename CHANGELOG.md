@@ -112,8 +112,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - DashPay profile writes use `platform-wallet`, enabling HIGH authentication
   keys of type ECDSA_SECP256K1 or ECDSA_HASH160 at HIGH or CRITICAL security.
-  Platform is pinned to `7f809377dbb47ff60ea62054bf83346771d9140e`, including
-  dashpay/platform#4653 for HASH160 profile creation and replacement.
+  Platform is pinned to `f73f5d6098a739d29a1cebc2f7941e062ee8a517`, including
+  dashpay/platform#4653 and #4764 for HASH160 profile creation and replacement
+  that skip eligible keys unavailable to the signer.
   The updated Platform API also uses checked shielded balance totals,
   versioned token reward calculations, and a terminal failed-withdrawal status.
   Writes require a wallet-linked identity; clearing existing profile fields

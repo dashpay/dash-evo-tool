@@ -20,7 +20,7 @@ eframe = { version = "0.35.0", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
 # TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
 # dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml). Re-check when these pins move.
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "7f809377dbb47ff60ea62054bf83346771d9140e", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "f73f5d6098a739d29a1cebc2f7941e062ee8a517", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -30,15 +30,15 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "7f809377dbb47ff
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "7f809377dbb47ff60ea62054bf83346771d9140e" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "7f809377dbb47ff60ea62054bf83346771d9140e", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "f73f5d6098a739d29a1cebc2f7941e062ee8a517" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "f73f5d6098a739d29a1cebc2f7941e062ee8a517", features = [
     "serde",
     "shielded",
 ] }
 # `serde` backs `model::secret::Secret`'s `Deserialize`: the upstream
 # visitor copies a borrowed `&str` straight into guarded memory instead of
 # routing through a transient `String`. Secret schemas are included by `secrets`.
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "7f809377dbb47ff60ea62054bf83346771d9140e", features = [
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "f73f5d6098a739d29a1cebc2f7941e062ee8a517", features = [
     "shielded",
     "serde",
 ] }

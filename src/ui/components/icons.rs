@@ -80,3 +80,20 @@ pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Opti
             Some(texture)
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The embedded Dash logo must parse and rasterize at every size the UI
+    /// requests (welcome screen, left panel). Guards resvg/usvg upgrades.
+    #[test]
+    fn dash_logo_svg_rasterizes_at_ui_sizes() {
+        let ctx = Context::default();
+        for (width, height) in [(200, 80), (100, 40)] {
+            let texture = load_svg_icon(&ctx, "dashlogo.svg", width, height)
+                .expect("dashlogo.svg must parse and rasterize");
+            assert_eq!(texture.size(), [width as usize, height as usize]);
+        }
+    }
+}

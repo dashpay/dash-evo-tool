@@ -52,11 +52,10 @@ pub fn generate_ecdh_shared_key(
             hasher.update([prefix]);
             hasher.update(x);
 
-            // The digest is the shared key material; wrap it so the sha2
-            // output buffer is wiped on drop after the copy.
-            let result = Zeroizing::new(hasher.finalize());
+            // The digest is the shared key material; finalize it straight
+            // into the zeroizing buffer so no un-wiped copy is left behind.
             let mut shared_key = Zeroizing::new([0u8; 32]);
-            shared_key.copy_from_slice(&result);
+            hasher.finalize_into((&mut *shared_key).into());
 
             Ok(shared_key)
         }
@@ -78,7 +77,7 @@ pub fn encrypt_extended_public_key(
     public_key: [u8; 33],
     shared_key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Create the extended public key data (69 bytes)
     let mut xpub_data = Vec::with_capacity(69);
@@ -100,7 +99,7 @@ pub fn encrypt_extended_public_key(
     buffer[..xpub_data.len()].copy_from_slice(&xpub_data);
 
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, xpub_data.len())
+        .encrypt_padded::<Pkcs7>(&mut buffer, xpub_data.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
     // Verify the ciphertext is exactly 80 bytes
@@ -128,7 +127,7 @@ pub fn encrypt_extended_public_key(
 /// - For 63 bytes: 1 + 63 = 64, PKCS7 adds 16 = 80 byte ciphertext = 96 total (exceeds limit)
 /// - For 62 bytes: 1 + 62 = 63, PKCS7 adds 1 = 64 byte ciphertext = 80 total (at limit)
 pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 
     let label_bytes = label.as_bytes();
 
@@ -178,7 +177,7 @@ pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u
 
     // Encrypt with PKCS7 padding
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, padded_label.len())
+        .encrypt_padded::<Pkcs7>(&mut buffer, padded_label.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
     // Combine IV and ciphertext
@@ -204,7 +203,7 @@ pub fn decrypt_extended_public_key(
     encrypted_data: &[u8],
     shared_key: &[u8; 32],
 ) -> Result<(Vec<u8>, [u8; 32], [u8; 33]), String> {
-    use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Expected format: IV (16 bytes) + Encrypted Data (80 bytes) = 96 bytes
     if encrypted_data.len() != 96 {
@@ -215,8 +214,9 @@ pub fn decrypt_extended_public_key(
     }
 
     // Extract IV and ciphertext
-    let iv = &encrypted_data[..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt using CBC-AES-256 with PKCS7 padding
     type Aes256CbcDec = cbc::Decryptor<Aes256>;
@@ -224,7 +224,7 @@ pub fn decrypt_extended_public_key(
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     // Should decrypt to exactly 69 bytes after removing padding
@@ -249,7 +249,7 @@ pub fn decrypt_account_label(
     encrypted_data: &[u8],
     shared_key: &[u8; 32],
 ) -> Result<String, String> {
-    use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Expected format: IV (16 bytes) + Encrypted Data (32-64 bytes) = 48-80 bytes
     if encrypted_data.len() < 48 || encrypted_data.len() > 80 {
@@ -260,8 +260,9 @@ pub fn decrypt_account_label(
     }
 
     // Extract IV and ciphertext
-    let iv = &encrypted_data[..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt using CBC-AES-256 with PKCS7 padding
     type Aes256CbcDec = cbc::Decryptor<Aes256>;
@@ -269,7 +270,7 @@ pub fn decrypt_account_label(
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     // Extract the actual label from our custom format: [len][label][padding...]
@@ -329,6 +330,47 @@ mod tests {
             data: public_key.serialize().to_vec().into(),
             disabled_at: None,
         })
+    }
+
+    /// DIP-15 CBC known-answer key/IV. The blobs below were generated
+    /// independently with Python `cryptography` 46 (OpenSSL) as
+    /// `IV ‖ AES-256-CBC-PKCS7(key = 00..1f, iv = 10..1f, pt)`, so they pin
+    /// interoperability with other DashPay clients across `cbc` / `aes` bumps.
+    const GOLDEN_CBC_KEY: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+
+    #[test]
+    fn decrypt_extended_public_key_opens_golden_blob() {
+        // Plaintext is 00..44 (69 bytes): fingerprint 00..03, chain code
+        // 04..23, public key 24..44.
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             9f3b7504926f8bd36e3118e903a4cd4a25c183f70fdb4812cc2453fa00b3d390\
+             fbd621f919e2d9a0cb10aa5647bee3a7038906cdf1b7b2f800aa3b55e1b639f8\
+             8f7e63058f429572f395a202317aa85d",
+        )
+        .expect("blob hex");
+        let (fingerprint, chain_code, public_key) =
+            decrypt_extended_public_key(&blob, &GOLDEN_CBC_KEY).expect("golden blob must decrypt");
+        let plaintext: Vec<u8> = (0u8..69).collect();
+        assert_eq!(fingerprint, plaintext[..4]);
+        assert_eq!(chain_code[..], plaintext[4..36]);
+        assert_eq!(public_key[..], plaintext[36..69]);
+    }
+
+    #[test]
+    fn decrypt_account_label_opens_golden_blob() {
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             1fc29550069dbbccc5ac76abcec951ea02fba84e7cea06406d5e66fa6fabe244",
+        )
+        .expect("blob hex");
+        let label =
+            decrypt_account_label(&blob, &GOLDEN_CBC_KEY).expect("golden blob must decrypt");
+        assert_eq!(label, "Savings");
     }
 
     /// Byte-identity guard for the DIP-15 ECDH derivation.

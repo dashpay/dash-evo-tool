@@ -417,9 +417,10 @@ mod tests {
             .require_confirmation_text("CONFIRM", "Type CONFIRM to confirm this action.");
         let mut status = None;
 
-        let _ = ctx.run_ui(raw, |ui| {
+        ctx.run_ui(raw, |ui| {
             status = dialog.show(ui).inner.dialog_response;
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert_eq!(status, None);
     }
@@ -443,9 +444,10 @@ mod tests {
         let mut dialog = ConfirmationDialog::new("Confirm", "Continue?");
         let mut status = None;
 
-        let _ = ctx.run_ui(raw, |ui| {
+        ctx.run_ui(raw, |ui| {
             status = dialog.show(ui).inner.dialog_response;
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert_eq!(
             status, None,

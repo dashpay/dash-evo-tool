@@ -10,16 +10,20 @@ rust-version = "1.98"
 tokio-util = { version = "0.7.15" }
 bip39 = { version = "2.2.0", features = ["all-languages", "rand", "zeroize"] }
 derive_more = "2.1.1"
-egui = "0.35.0"
-egui_extras = "0.35.0"
-egui_commonmark = "0.24.0"
+egui = "0.36.2"
+egui_extras = "0.36.2"
+egui_commonmark = "0.25.0"
 rfd = "0.17.2"
 qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
-eframe = { version = "0.35.0", features = ["persistence", "wgpu"] }
-base64 = "0.22.1"
+eframe = { version = "0.36.2", features = ["persistence", "wgpu"] }
+base64 = "0.23.1"
 # TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
-# dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml). Re-check when these pins move.
+# dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml: serde_with = "2.1.0"). Re-check
+# when these pins move. Verified 2026-09-16: rpc-json/src/lib.rs only uses serde_with's `Bytes`
+# and `DisplayFromStr` adapters — the vulnerable `KeyValueMap` serializer is never invoked in the
+# dependency chain, so the advisory is not exploitable here (Dependabot alert #41; dismissal as
+# `not_used` was attempted but requires manual GitHub action — see coordinator note).
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "01d944795e3dc9776fd4d01959df9abc1ea98c87", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
@@ -67,18 +71,18 @@ tokio = { version = "1.46.1", features = ["full"] }
 bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 hex = { version = "0.4.3" }
 async-trait = "0.1.89"
-itertools = "0.14.0"
+itertools = "0.15.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
 tracing = "0.1.41"
-rand = "0.9"
+rand = "0.10"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"
 chrono = "0.4.41"
 chrono-humanize = "0.2.3"
-sha2 = "0.10.9"
-ed25519-dalek = "2.1"
+sha2 = "0.11.0"
+ed25519-dalek = "3.0.0"
 arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
@@ -89,20 +93,20 @@ rusqlite = { version = "0.38.0", features = [
     "fallible_uint",
     "backup",
 ] }
-dark-light = "2.0.0"
+dark-light = "3.0.0"
 image = { version = "0.25.6", default-features = false, features = [
     "png",
     "jpeg",
 ] }
-resvg = "0.46"
+resvg = "0.48"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 bitflags = "2.10"
 rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
-argon2 = "0.5.3" # For Argon2 key derivation
-aes-gcm = "0.10.3" # For AES-256-GCM encryption
-cbc = "0.1.2" # For CBC mode encryption
+argon2 = { version = "0.6.0", features = ["zeroize"] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
+aes-gcm = "0.11.1" # For AES-256-GCM encryption
+cbc = "0.2.1" # For CBC mode encryption
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "8.0.0" }
@@ -110,7 +114,7 @@ tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
-rmcp = { version = "1.2", optional = true, default-features = false }
+rmcp = { version = "3.3", optional = true, default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
 # Constant-time equality for `model::secret::Secret` (unconditional) and the
 # MCP API-key check. Not optional: `PartialEq for Secret` is always compiled.
@@ -134,9 +138,9 @@ cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
-egui_kittest = { version = "0.35.0", features = ["eframe"] }
+egui_kittest = { version = "0.36.2", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
-criterion = "0.5.1"
+criterion = "0.8.2"
 # Used only by error-mapping unit tests to construct a genuine divergent-version
 # `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
 # version already in the graph via `platform-wallet-storage`; the `rusqlite`

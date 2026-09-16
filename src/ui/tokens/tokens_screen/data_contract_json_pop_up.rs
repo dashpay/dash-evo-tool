@@ -130,9 +130,10 @@ mod tests {
         let mut guard = ModalOpeningGuard::armed();
         let mut closed = true;
 
-        let _ = ctx.run_ui(raw, |ui| {
+        ctx.run_ui(raw, |ui| {
             closed = clicked_outside_window_after_open(ui.ctx(), window_rect, &mut guard);
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert!(!closed, "the JSON popup must survive its opening click");
     }

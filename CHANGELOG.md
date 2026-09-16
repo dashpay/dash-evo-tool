@@ -27,14 +27,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer tells you to remove your local wallet data, which could have deleted
   the `secrets` folder along with keys no recovery phrase can restore. It now
   asks you to write down your recovery phrases and imported keys in the version
-  you used before, then set aside only the `.sqlite` files and keep the
-  `secrets` folder.
+  you used before, close every running instance, then set aside the `.sqlite`
+  files together with their matching `-wal` and `-shm` files and keep the
+  `secrets` folder. Imported private keys are listed separately from recovery phrases.
 
 - **Upgrade backups no longer pile up or outlive deleted data**: a failed
   database upgrade no longer leaves a new backup on every attempt. Each
   database keeps at most one upgrade backup, and it is deleted when you remove
   a wallet or identity or clear a network's data. An upgrade that can never
   succeed now shows its message instead of being retried silently.
+  Retention and deletion cover upstream pre-migration snapshots too. Cleanup
+  rejects links and non-files, reports pruning failures, and retries incomplete
+  identity backup deletion at the next startup.
 
 ### Added
 

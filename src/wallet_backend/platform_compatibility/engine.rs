@@ -219,24 +219,124 @@ fn backup_prefix(path: &Path) -> Option<String> {
 
 /// Retained upgrade backups of the database at `path`.
 fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    backups_in(
+        path,
+        Some(&platform_wallet_storage::default_auto_backup_dir(path)),
+    )
+}
+
+fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
     let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
         return Ok(Vec::new());
     };
-    let entries = match std::fs::read_dir(parent) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
     let mut found = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with(&prefix) && name.ends_with(".sqlite") {
-            found.push(entry.path());
+    for directory in [Some(parent), auto_dir].into_iter().flatten() {
+        let metadata = match std::fs::symlink_metadata(directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.is_dir() {
+            return Err(std::io::Error::other(
+                "Backup directory is not a regular directory",
+            ));
+        }
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let bridge = directory == parent
+                && name
+                    .strip_prefix(&prefix)
+                    .and_then(|suffix| suffix.strip_suffix(".sqlite"))
+                    .is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
+                    });
+            let upstream = Some(directory) == auto_dir && upstream_backup_name(path, name);
+            if bridge || upstream {
+                validate_backup_file(&entry.path(), path)?;
+                found.push(entry.path());
+            }
         }
     }
+    found.sort();
+    found.dedup();
     Ok(found)
+}
+
+fn upstream_backup_name(path: &Path, name: &str) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    // DET database names are already valid upstream stems; reject lossy/ambiguous names.
+    if stem.is_empty()
+        || stem.len() > 32
+        || !stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return false;
+    }
+    let Some(suffix) = name
+        .strip_prefix(&format!("pre-migration-{stem}-"))
+        .and_then(|suffix| suffix.strip_suffix(".db"))
+    else {
+        return false;
+    };
+    let Some((versions, timestamp)) = suffix.rsplit_once('-') else {
+        return false;
+    };
+    let Some((from, to)) = versions.split_once("-to-") else {
+        return false;
+    };
+    from.parse::<u32>().is_ok()
+        && to.parse::<u32>().is_ok()
+        && chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%SZ").is_ok()
+}
+
+fn validate_backup_file(backup: &Path, database: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(backup)?;
+    if !metadata.is_file() || backup == database {
+        return Err(std::io::Error::other(
+            "Refusing to remove a non-regular backup file",
+        ));
+    }
+    if let Ok(live_path) = database.canonicalize()
+        && backup.canonicalize()? == live_path
+    {
+        return Err(std::io::Error::other(
+            "Refusing to remove the live database",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(std::io::Error::other(
+                "Refusing to remove a hard-linked backup file",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
+    validate_backup_file(backup, database)?;
+    std::fs::remove_file(backup)
+}
+
+/// Retain the newest snapshot across both upgrade-backup formats.
+pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
+    let mut snapshots = backups_in(path, auto_dir)?
+        .into_iter()
+        .map(|backup| Ok((std::fs::metadata(&backup)?.modified()?, backup)))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    snapshots.sort();
+    snapshots.pop();
+    for (_, backup) in snapshots {
+        remove_backup(&backup, path)?;
+    }
+    Ok(())
 }
 
 /// Delete every retained upgrade backup of the database at `path`.
@@ -245,7 +345,7 @@ fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
     let mut first_error = None;
     for backup in backups(path)? {
-        if let Err(error) = std::fs::remove_file(&backup) {
+        if let Err(error) = remove_backup(&backup, path) {
             first_error.get_or_insert(error);
         }
     }
@@ -257,7 +357,7 @@ fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
     let prefix = backup_prefix(path).ok_or(UpgradeError::Unrecognized)?;
     let file = tempfile::Builder::new()
         .prefix(&prefix)
-        .suffix(".sqlite")
+        .suffix(".pending")
         .tempfile_in(parent)?;
     let source = Connection::open_with_flags(
         path,
@@ -273,15 +373,14 @@ fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
     verify(&dest)?;
     drop(dest);
     file.as_file().sync_all()?;
-    let (_, kept) = file.keep().map_err(|e| e.error)?;
+    // A verified snapshot supersedes old backups only while the original is still untouched.
+    for old in backups(path)? {
+        remove_backup(&old, path)?;
+    }
+    let kept = file.path().with_extension("sqlite");
+    file.persist_noclobber(&kept).map_err(|e| e.error)?;
     #[cfg(unix)]
     std::fs::File::open(parent)?.sync_all()?;
-    // Only an unconverted original reaches this point, so older backups are superseded snapshots.
-    for old in backups(path)?.into_iter().filter(|old| *old != kept) {
-        if let Err(error) = std::fs::remove_file(&old) {
-            tracing::warn!(backup = %old.display(), %error, "Could not remove a superseded wallet upgrade backup");
-        }
-    }
     Ok(kept)
 }
 

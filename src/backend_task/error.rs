@@ -489,7 +489,7 @@ pub enum TaskError {
     /// user to keep the `secrets` folder: the vault holds imported and
     /// masternode keys that no recovery phrase can re-derive.
     #[error(
-        "Your wallet data was saved by an app version that this version cannot open, so it was left unchanged. Your recovery phrases and keys are still stored on this device. First open the app version you used before and write down the recovery phrase of every wallet and every key you imported. Then move the files ending in .sqlite out of the app data folder, leave the secrets folder where it is, and start this app again."
+        "Your wallet data was saved by an app version that this version cannot open, so it was left unchanged. Your recovery phrases and keys are still stored on this device. First open the app version you used before and write down the recovery phrase of every wallet. Separately, write down each imported private key. Close all Dash Evo Tool windows and command-line sessions. Then move each .sqlite file together with its matching .sqlite-wal and .sqlite-shm files, if present, out of the app data folder, leave the secrets folder where it is, and start this app again."
     )]
     WalletDataIncompatible {
         #[source]
@@ -1252,7 +1252,7 @@ pub enum TaskError {
     /// The identity and its private keys are gone, but at least one optional
     /// owner-scoped sidecar could not be removed.
     #[error(
-        "The identity was removed, but some DashPay or token-list data may still be stored on this device. The app will keep trying to clear this local data automatically."
+        "The identity was removed, but some local identity data or upgrade backups may still be stored on this device. The app will keep trying to clear this local data automatically."
     )]
     IdentitySidecarCleanupIncomplete,
 
@@ -5825,6 +5825,8 @@ mod tests {
         );
 
         let msg = err.to_string();
+        assert!(msg.contains(".sqlite-wal") && msg.contains(".sqlite-shm"));
+        assert!(msg.contains("Close all") && msg.contains("write down each imported private key"));
         assert!(
             msg.contains("write down the recovery phrase")
                 && msg.contains(".sqlite")

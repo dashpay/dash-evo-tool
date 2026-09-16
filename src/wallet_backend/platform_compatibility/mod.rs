@@ -10,20 +10,28 @@ use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStor
 use crate::backend_task::error::TaskError;
 
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
-    // TODO: each failed open of an old-lineage database leaves another upstream
-    // `backups/auto/pre-migration-*` copy; bound them once a terminal open failure is
-    // remembered per process, or upstream offers per-database retention.
+    let prune = || {
+        engine::retain_one_backup(&config.path, config.auto_backup_dir.as_deref())
+            .map_err(|source| TaskError::FileSystem { source })
+    };
+    // Check retention before another attempt can create a snapshot, including after a restart.
+    prune()?;
+    let result = open_inner(&config);
+    prune()?;
+    result
+}
+
+fn open_inner(config: &SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
     let original = match SqlitePersister::open(config.clone()) {
         Ok(persister) => return Ok(persister),
         Err(error @ WalletStorageError::Migration(_)) => error,
         Err(error) => return Err(TaskError::from_wallet_storage_open_error(error)),
     };
-    let result =
-        upgrade(&config).map_err(|source| TaskError::PlatformDatabaseUpgrade { source })?;
+    let result = upgrade(config).map_err(|source| TaskError::PlatformDatabaseUpgrade { source })?;
     if !result {
         return Err(TaskError::from_wallet_storage_open_error(original));
     }
-    SqlitePersister::open(config).map_err(TaskError::from_wallet_storage_open_error)
+    SqlitePersister::open(config.clone()).map_err(TaskError::from_wallet_storage_open_error)
 }
 
 fn upgrade(config: &SqlitePersisterConfig) -> Result<bool, UpgradeError> {
@@ -64,6 +72,39 @@ fn upgrade(config: &SqlitePersisterConfig) -> Result<bool, UpgradeError> {
 mod tests {
     use super::*;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+    #[test]
+    fn platform_compatibility_bounds_upstream_backups_after_failed_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(include_str!("fixtures/67d4ef3.sql"))
+            .unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("ALTER TABLE wallets ADD COLUMN unsupported INTEGER;")
+            .unwrap();
+        let auto = platform_wallet_storage::default_auto_backup_dir(&path);
+        std::fs::create_dir_all(&auto).unwrap();
+        for attempt in 1..=3 {
+            let old = auto.join(format!(
+                "pre-migration-wallet-1-to-2-20260915T12000{attempt}Z.db"
+            ));
+            std::fs::write(&old, b"snapshot from an earlier attempt").unwrap();
+            assert!(open(SqlitePersisterConfig::new(&path)).is_err());
+            assert_eq!(std::fs::read_dir(&auto).unwrap().count(), 1);
+            let retained = std::fs::read_dir(&auto)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            if retained != old {
+                std::fs::rename(retained, old).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn platform_compatibility_normal_open_upgrades_old_profile() {
@@ -116,5 +157,7 @@ mod tests {
         );
         drop(persister);
         open(SqlitePersisterConfig::new(&path)).unwrap();
+        let upstream = platform_wallet_storage::default_auto_backup_dir(&path);
+        assert_eq!(std::fs::read_dir(upstream).unwrap().count(), 0);
     }
 }

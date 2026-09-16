@@ -281,6 +281,62 @@ fn platform_compatibility_backup_removal_only_touches_the_named_database() {
     remove_backups(&dir.path().join("absent.sqlite")).unwrap();
 }
 
+#[test]
+fn platform_compatibility_removes_only_matching_upstream_backups() {
+    let dir = tempfile::tempdir().unwrap();
+    let auto = dir.path().join("backups/auto");
+    std::fs::create_dir_all(&auto).unwrap();
+    let removed = auto.join("pre-migration-det-testnet-1-to-2-20260915T120000Z.db");
+    let kept = auto.join("pre-migration-det-testnet-other-1-to-2-20260915T120000Z.db");
+    for path in [&removed, &kept] {
+        std::fs::write(path, b"backup").unwrap();
+    }
+    remove_backups(&dir.path().join("det-testnet.sqlite")).unwrap();
+    assert!(!removed.exists());
+    assert!(kept.exists());
+}
+
+#[test]
+fn platform_compatibility_prune_failure_preserves_original() {
+    let (dir, path, target) = fixture();
+    let before = snapshot(&path);
+    std::fs::create_dir(
+        dir.path()
+            .join("wallet.sqlite.platform-67d4ef3-backup-blocked.sqlite"),
+    )
+    .unwrap();
+    assert!(upgrade(&path, &target, |_| Ok(())).is_err());
+    assert_eq!(snapshot(&path), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn platform_compatibility_rejects_backup_links_to_live_databases() {
+    let (dir, path, target) = fixture();
+    let candidate = dir
+        .path()
+        .join("wallet.sqlite.platform-67d4ef3-backup-link.sqlite");
+    for live in [&path, &target] {
+        std::os::unix::fs::symlink(live, &candidate).unwrap();
+        assert!(remove_backups(&path).is_err());
+        assert!(live.exists());
+        assert!(candidate.symlink_metadata().is_ok());
+        std::fs::remove_file(&candidate).unwrap();
+        std::fs::hard_link(live, &candidate).unwrap();
+        assert!(remove_backups(&path).is_err());
+        assert!(live.exists());
+        std::fs::remove_file(&candidate).unwrap();
+    }
+    let live_alias = dir.path().join("alias.sqlite");
+    let live_target = dir
+        .path()
+        .join("alias.sqlite.platform-67d4ef3-backup-live.sqlite");
+    std::fs::write(&live_target, b"live database").unwrap();
+    std::os::unix::fs::symlink(&live_target, &live_alias).unwrap();
+    assert!(remove_backups(&live_alias).is_err());
+    assert!(live_target.exists());
+}
+
 fn sqlite_failure(code: std::ffi::c_int) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
 }

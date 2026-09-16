@@ -61,8 +61,13 @@ preserved. An ambiguous or malformed saved identity roster fails closed.
 The encrypted seed vault is not migrated or rewritten.
 
 The bridge takes its backup only after the converted copy validates, just before
-the rebuild, and keeps at most one backup per database. Deleting a wallet or an
-identity, or clearing a network's data, also deletes these backups, because they
+the rebuild, and keeps at most one backup per database. Retention includes upstream
+`backups/auto/pre-migration-<database>-*.db` snapshots and runs before and after
+storage opens, including failed opens. Pruning errors stop the operation; backup
+candidates must have the exact database-specific name format and be regular files,
+not symbolic links (or hard links on Unix). Identity cleanup retains its pending
+manifest until backup deletion succeeds, so startup retries incomplete cleanup.
+Deleting a wallet or an identity, or clearing a network's data, also deletes these backups, because they
 copy wallet and identity history. Downgrading does not automatically reverse the
 database conversion; recovery requires the corresponding backup and the prior
 application version. Validation uses synthetic upstream fixtures, not a user's

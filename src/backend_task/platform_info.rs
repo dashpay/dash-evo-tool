@@ -498,6 +498,7 @@ fn withdrawal_status_str(status: WithdrawalStatus) -> &'static str {
         WithdrawalStatus::BROADCASTED => "broadcasted",
         WithdrawalStatus::COMPLETE => "complete",
         WithdrawalStatus::EXPIRED => "expired",
+        WithdrawalStatus::FAILED => "failed",
     }
 }
 

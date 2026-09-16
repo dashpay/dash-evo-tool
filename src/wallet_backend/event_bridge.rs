@@ -572,7 +572,9 @@ fn summary_ok_balances(summary: &ShieldedSyncPassSummary) -> Vec<([u8; 32], u64)
         .wallet_results
         .iter()
         .filter_map(|(wallet_id, outcome)| match outcome {
-            WalletShieldedOutcome::Ok(sync) => Some((*wallet_id, sync.balance_total())),
+            WalletShieldedOutcome::Ok(sync) => {
+                sync.balance_total().ok().map(|total| (*wallet_id, total))
+            }
             WalletShieldedOutcome::Skipped | WalletShieldedOutcome::Err(_) => None,
         })
         .collect()

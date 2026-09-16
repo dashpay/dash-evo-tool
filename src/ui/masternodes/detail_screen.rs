@@ -246,6 +246,11 @@ impl MasternodeDetailView {
     pub(crate) fn is_restoring_for_test(&self) -> bool {
         self.recovery.is_restoring()
     }
+
+    /// Dispatch a recovery check only when no check or offer is outstanding.
+    pub(crate) fn start_recovery_check_for_test(&mut self) -> bool {
+        self.recovery.ensure_checked().is_some()
+    }
 }
 
 impl MasternodeDetailView {
@@ -287,19 +292,7 @@ impl MasternodeDetailView {
         self.recovery.absorb_result(ctx, result)
     }
 
-    /// Re-read everything this view derives from the stores — the node record,
-    /// its key-presence line, its DPNS contests — and re-arm its recovery check.
-    ///
-    /// The in-place alternative to re-opening the view, and the only one its
-    /// hosts may use: a rebuild would also reset the user's session state, and
-    /// results reach whichever screen is visible, so it would do that on results
-    /// this page never asked for. Vote selections and any open `Add voting key`
-    /// prompt therefore survive — they belong to the user's session, not to the
-    /// record.
-    ///
-    /// The recovery re-arm is what makes a restore run from a pushed Key Info
-    /// screen visible here: that screen is on top, so it receives the result,
-    /// leaving this page otherwise still offering keys that are already back.
+    /// Refresh stored data while preserving prompts, vote selections, and recovery state.
     pub(crate) fn refresh_from_store(&mut self) {
         let node_id = self.identity.identity.id();
         if let Ok(identities) = self.app_context.load_local_masternode_identities()
@@ -311,6 +304,11 @@ impl MasternodeDetailView {
             self.identity = identity;
         }
         self.refresh_contests();
+    }
+
+    /// Re-check recovery on arrival because a pushed Key Info screen may have restored keys.
+    pub(crate) fn refresh_on_arrival(&mut self) {
+        self.refresh_from_store();
         self.recovery.completed();
     }
 

@@ -551,14 +551,8 @@ impl ScreenLike for MasternodesScreen {
     fn refresh_on_arrival(&mut self) {
         self.reload();
         self.reconcile_pending_load();
-        // An open detail view was built from a record another screen may have
-        // written meanwhile — a restore run from the Key Info screen this view
-        // pushed is exactly that case, since the pushed screen receives the
-        // result and this one never hears about it. Re-read the node and re-arm
-        // its recovery check, so the page never keeps offering keys that are
-        // already back.
         if let MasternodesView::Detail(detail) = &mut self.view {
-            detail.refresh_from_store();
+            detail.refresh_on_arrival();
         }
     }
 
@@ -600,15 +594,7 @@ impl ScreenLike for MasternodesScreen {
                 }
                 return;
             }
-            // A restore did change the store. Confirm it, then fall through to
-            // the reload, whose tail re-opens the detail view for this node —
-            // rebuilding it re-arms the check, which now finds nothing stranded
-            // and retires the offer.
-            //
-            // A restore for an identity this page is not showing lands here
-            // whenever this screen happens to be the visible one, so it is
-            // dropped rather than reported: it changed nothing on screen, and
-            // its "your keys are back" belongs to whoever asked for it.
+            // Only this node's completed restore re-arms recovery and refreshes its data.
             BackendTaskSuccessResult::LegacyRecoveryCompleted {
                 identity_id,
                 ref applied,
@@ -617,11 +603,16 @@ impl ScreenLike for MasternodesScreen {
                 if !self.shows_node(identity_id) {
                     return;
                 }
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    completion_message(!applied.is_empty()),
-                    MessageType::Success,
-                );
+                let ctx = self.app_context.egui_ctx();
+                if let MasternodesView::Detail(detail) = &mut self.view {
+                    detail.absorb_recovery_result(ctx, &result);
+                } else {
+                    MessageBanner::set_global(
+                        ctx,
+                        completion_message(!applied.is_empty()),
+                        MessageType::Success,
+                    );
+                }
             }
             BackendTaskSuccessResult::RemovedIdentities {
                 network,
@@ -1246,6 +1237,69 @@ mod tests {
             detail.has_recovery_offer_for_test(),
             "another identity's completion must leave this node's offer alone",
         );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unrelated_success_preserves_recovery_offer_restore_and_check() {
+        use crate::model::legacy_recovery::{RecoveryItem, RecoveryItemDescriptor, RecoveryPlan};
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let node = Identifier::from([0x33; 32]);
+        seed_masternode(&ctx, 0x33, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(node);
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCandidates {
+            identity_id: node,
+            plan: RecoveryPlan {
+                items: vec![RecoveryItemDescriptor {
+                    item: RecoveryItem::VoterAssociation,
+                    purpose: None,
+                }],
+                excluded: vec![],
+            },
+        });
+
+        let progress = || BackendTaskSuccessResult::Progress {
+            message: "Searching identities".to_string(),
+            current: 1,
+            total: 2,
+        };
+        screen.display_task_result(progress());
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must remain open");
+        };
+        assert!(detail.has_recovery_offer_for_test());
+        assert!(!detail.start_recovery_check_for_test());
+        assert!(detail.start_recovery_restore_for_test());
+
+        screen.display_task_result(progress());
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must remain open");
+        };
+        assert!(detail.is_restoring_for_test());
+        assert!(!detail.start_recovery_restore_for_test());
+        assert!(!detail.start_recovery_check_for_test());
+
+        screen.display_task_result(BackendTaskSuccessResult::LegacyRecoveryCompleted {
+            identity_id: node,
+            applied: vec![],
+            skipped_stale: vec![],
+            excluded: vec![],
+        });
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must remain open");
+        };
+        assert!(!detail.is_restoring_for_test());
+        assert!(!detail.has_recovery_offer_for_test());
+        assert!(detail.start_recovery_check_for_test());
+
+        screen.display_task_result(progress());
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must remain open");
+        };
+        assert!(!detail.start_recovery_check_for_test());
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

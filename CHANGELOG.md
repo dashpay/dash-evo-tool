@@ -101,6 +101,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Background task results preserve the masternode voting-key prompt, vote
+  selections, removal dialog, and key-recovery offer or operation in progress.
+
 - Cancelling a network switch takes priority over simultaneous startup and
   reports chain sync as stopped after shutting down the new backend.
 

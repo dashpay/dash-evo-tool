@@ -19,7 +19,11 @@ nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.36.2", features = ["persistence", "wgpu"] }
 base64 = "0.23.1"
 # TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
-# dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml). Re-check when these pins move.
+# dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml: serde_with = "2.1.0"). Re-check
+# when these pins move. Verified 2026-09-16: rpc-json/src/lib.rs only uses serde_with's `Bytes`
+# and `DisplayFromStr` adapters — the vulnerable `KeyValueMap` serializer is never invoked in the
+# dependency chain, so the advisory is not exploitable here (Dependabot alert #41; dismissal as
+# `not_used` was attempted but requires manual GitHub action — see coordinator note).
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "01d944795e3dc9776fd4d01959df9abc1ea98c87", features = [
     "core_key_wallet",
     "core_key_wallet_manager",

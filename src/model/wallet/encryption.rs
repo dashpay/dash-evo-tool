@@ -1,5 +1,5 @@
 use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::{Aes256Gcm, KeyInit};
 use argon2::{self, Argon2};
 use bip39::rand::{RngCore, rngs::OsRng};
 use zeroize::Zeroizing;
@@ -76,7 +76,6 @@ pub fn derive_password_key(
 
 /// Encrypt `message` under `password` with AES-256-GCM, returning the
 /// [`EncryptedEnvelope`] (ciphertext, salt, nonce).
-#[allow(deprecated)]
 pub(crate) fn encrypt_message(
     message: &[u8],
     password: &str,
@@ -89,22 +88,21 @@ pub(crate) fn encrypt_message(
     let key = derive_password_key(password, &salt)?;
 
     // Generate a random nonce
-    let mut nonce = vec![0u8; NONCE_SIZE];
+    let mut nonce = [0u8; NONCE_SIZE];
     OsRng.fill_bytes(&mut nonce);
 
     // Create cipher instance
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| EncryptionError::Encryption)?;
 
     // Encrypt the seed
-    let nonce_arr = Nonce::from_slice(&nonce);
     let ciphertext = cipher
-        .encrypt(nonce_arr, message)
+        .encrypt((&nonce).into(), message)
         .map_err(|_| EncryptionError::Encryption)?;
 
     Ok(EncryptedEnvelope {
         ciphertext,
         salt,
-        nonce,
+        nonce: nonce.to_vec(),
     })
 }
 
@@ -178,8 +176,9 @@ pub(crate) fn decrypt_message(
         DecryptError::Malformed
     })?;
     // Checked nonce conversion: an envelope with the wrong nonce length is a
-    // corrupt at-rest blob, not a panic. `Nonce::from_slice` panics on a length
-    // mismatch, which would poison the long-lived secret-store mutex.
+    // corrupt at-rest blob, not a panic. An unchecked slice-to-nonce conversion
+    // panics on a length mismatch, which would poison the long-lived
+    // secret-store mutex.
     let nonce_bytes: &[u8; NONCE_SIZE] = nonce.try_into().map_err(|_| {
         tracing::warn!(
             target = "model::wallet::encryption",
@@ -190,7 +189,7 @@ pub(crate) fn decrypt_message(
         DecryptError::Malformed
     })?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .decrypt(nonce_bytes.into(), ciphertext)
         .map_err(|_| DecryptError::WrongPassword)?;
     Ok(Zeroizing::new(plaintext))
 }
@@ -350,6 +349,78 @@ mod tests {
         assert_eq!(
             item.decrypt_seed("pw").unwrap_err(),
             EncryptionError::Malformed
+        );
+    }
+
+    // ---- Known-answer (golden) vectors ------------------------------------
+    //
+    // Generated independently with Python `cryptography` 46 (OpenSSL), NOT with
+    // the Rust crates under test: Argon2id v0x13, m=19456 KiB, t=2, p=1, 32-byte
+    // output (the `argon2` crate's `Params::DEFAULT`), then AES-256-GCM with a
+    // 96-bit nonce and the 16-byte tag appended. They pin the at-rest envelope
+    // that existing `ClosedKeyItem` rows already hold on users' disks: a
+    // dependency bump that changes KDF defaults or AEAD layout still
+    // round-trips in-process, but fails these tests.
+
+    const KAT_PASSWORD: &str = "correct horse battery staple";
+    const KAT_SALT_HEX: &str = "000102030405060708090a0b0c0d0e0f";
+    const KAT_NONCE_HEX: &str = "000102030405060708090a0b";
+    const KAT_ARGON2ID_KEY_HEX: &str =
+        "818259b6310026a8e0dbac5d2e6927abcfdb07b32258fac4f61b18b80f929085";
+    /// AES-256-GCM(key = KAT_ARGON2ID_KEY, nonce = KAT_NONCE, pt = [0x2a; 64]).
+    const KAT_SEED_CIPHERTEXT_HEX: &str = "f59fe537a03e3b5fee7e797b785683e3247a7d508e15a572115c4988f021450a\
+         44e4f5f1fbb3ad82483a0290b41194806be4e031751d48d19590a7cd9f5ba180\
+         291312ccd8519a523e3911c8154680d8";
+
+    #[test]
+    fn argon2_default_key_matches_golden_vector() {
+        let salt = hex::decode(KAT_SALT_HEX).expect("salt hex");
+        let key = derive_password_key(KAT_PASSWORD, &salt).expect("derive key");
+        assert_eq!(
+            hex::encode(&*key),
+            KAT_ARGON2ID_KEY_HEX,
+            "Argon2::default() output changed: existing password-protected wallets would no longer unlock"
+        );
+    }
+
+    #[test]
+    fn aes_gcm_encrypt_matches_golden_vector() {
+        let key = hex::decode(KAT_ARGON2ID_KEY_HEX).expect("key hex");
+        let nonce: [u8; NONCE_SIZE] = hex::decode(KAT_NONCE_HEX)
+            .expect("nonce hex")
+            .try_into()
+            .expect("12-byte nonce");
+        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher init");
+        let ciphertext = cipher
+            .encrypt((&nonce).into(), [0x2au8; 64].as_slice())
+            .expect("encrypt");
+        assert_eq!(hex::encode(ciphertext), KAT_SEED_CIPHERTEXT_HEX);
+    }
+
+    #[test]
+    fn decrypt_seed_opens_golden_envelope() {
+        let seed = [0x2au8; 64];
+        let item = ClosedKeyItem {
+            seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
+            encrypted_seed: Zeroizing::new(
+                hex::decode(KAT_SEED_CIPHERTEXT_HEX).expect("ciphertext hex"),
+            ),
+            salt: hex::decode(KAT_SALT_HEX).expect("salt hex"),
+            nonce: hex::decode(KAT_NONCE_HEX).expect("nonce hex"),
+            password_hint: None,
+        };
+        let decrypted = item
+            .decrypt_seed(KAT_PASSWORD)
+            .expect("an envelope written by the previous crate versions must still decrypt");
+        assert_eq!(*decrypted, seed);
+    }
+
+    #[test]
+    fn compute_seed_hash_matches_golden_sha256_vector() {
+        // FIPS 180-2 SHA-256("abc").
+        assert_eq!(
+            hex::encode(ClosedKeyItem::compute_seed_hash(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 }

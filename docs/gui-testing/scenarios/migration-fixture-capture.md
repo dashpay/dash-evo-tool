@@ -163,12 +163,12 @@ app resolved a *different* directory — stop, do not continue, and check
     ```bash
     ls -la "$DATADIR"
     sqlite3 -readonly "$DATADIR/data.db" \
-      "PRAGMA user_version; \
+      "SELECT database_version FROM settings WHERE id = 1; \
        SELECT alias, is_main, uses_password, network FROM wallet; \
        SELECT hex(id), alias, identity_type, network, wallet IS NOT NULL FROM identity;"
     ```
 
-    Expect `user_version` = 11, two wallet rows (one with `uses_password` = 1,
+    Expect `settings.database_version` = 11, two wallet rows (one with `uses_password` = 1,
     one with 0), and exactly one identity row. Always `-readonly`: a plain open
     can checkpoint the WAL and mutate the very state being preserved.
 21. Blank `MCP_API_KEY`, network `core_rpc_user`, `core_rpc_password`, and
@@ -202,7 +202,7 @@ app resolved a *different* directory — stop, do not continue, and check
 
 The capture succeeded when all of the following hold:
 
-- `"$DATADIR"` contains `data.db` with `PRAGMA user_version` = **11**, and no
+- `"$DATADIR"` contains `data.db` with `settings.database_version` = **11**, and no
   `det-<network>.sqlite` and no `secrets/` directory — v0.9.3 predates both, and
   their presence means a newer binary opened the directory and already migrated
   it, destroying the fixture.

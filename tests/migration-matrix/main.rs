@@ -229,6 +229,7 @@ fn run_scenario(
     // Every boot path opens a pre-update data.db read-only, so its bytes are
     // part of the contract for every fixture that has one, not an opt-in.
     let before_bytes = assertions::file_bytes(&data_db)?;
+    let before_sentinels = assertions::migration_sentinels(&app_db, &scratch, "before")?;
 
     let cli = cli::DetCli::new(&staged)?;
 
@@ -283,6 +284,7 @@ fn run_scenario(
     )?;
 
     let sentinels = assertions::migration_sentinels(&app_db, &scratch, "after")?;
+    assertions::check_existing_sentinels(&before_sentinels, &sentinels)?;
     if needs_desktop {
         // An unfinished storage update must not claim completion.
         assertions::check_sentinel_absent(&sentinels, network)?;
@@ -367,13 +369,10 @@ fn check_wallet_outcomes(
     scratch: &Path,
     label: &str,
 ) -> Result<(), String> {
-    if wallets.is_empty() {
-        return Ok(());
-    }
     match assertions::legacy_wallet_registrations(data_db, network_db, scratch, label)? {
         Some(registered) => assertions::check_wallet_outcomes(wallets, &registered),
         None => {
-            println!("    per-wallet storage check skipped (no {DATA_DB} to name the wallets)");
+            println!("    per-wallet storage check skipped (no legacy wallet table)");
             Ok(())
         }
     }
@@ -382,6 +381,42 @@ fn check_wallet_outcomes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_regression_empty_manifest_cannot_hide_captured_wallets() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DATA_DB);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE wallet(alias TEXT, master_ecdsa_bip44_account_0_epk BLOB); INSERT INTO wallet VALUES ('omitted', x'01');").unwrap();
+        assert!(
+            check_wallet_outcomes(
+                &[],
+                &db,
+                &dir.path().join("missing.sqlite"),
+                &dir.path().join("scratch"),
+                "before"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn modern_profile_without_legacy_wallet_table_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DATA_DB);
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE settings(id INTEGER, database_version INTEGER);")
+            .unwrap();
+        check_wallet_outcomes(
+            &[],
+            &db,
+            &dir.path().join("missing.sqlite"),
+            &dir.path().join("scratch"),
+            "before",
+        )
+        .unwrap();
+    }
 
     fn fixture(id: &str) -> Fixture {
         serde_json::from_str(&format!(r#"{{ "id": "{id}", "network": "testnet" }}"#))

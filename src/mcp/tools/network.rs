@@ -7,6 +7,7 @@ use rmcp::model::ToolAnnotations;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::mcp::dispatch::{dispatch_task, dispatch_task_with};
 use crate::mcp::error::McpToolError;
@@ -174,7 +175,7 @@ impl ToolBase for NetworkSwitch {
 
     fn description() -> Option<Cow<'static, str>> {
         Some(
-            "Switch the active network. Creates the context if needed (may take \
+            "Switch and save the active network for subsequent startups. Creates the context if needed (may take \
              a few seconds). Requires that the target network has DAPI addresses \
              configured."
                 .into(),
@@ -214,8 +215,12 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
 
         let ctx = service.tool_ctx().await?;
 
-        // Already on the target network — no-op.
+        // A context can be selected without its network having been persisted.
         if ctx.network() == target {
+            ctx.update_app_settings(|settings| settings.network = target)
+                .map_err(|source| {
+                    McpToolError::TaskFailed(TaskError::AppSettingsWrite { source })
+                })?;
             let spv_running = ctx.connection_status().spv_status().is_active();
             return Ok(NetworkSwitchOutput {
                 active: network_display_name(target).to_owned(),
@@ -240,7 +245,12 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
                     if let Ok(backend) = outgoing_context.wallet_backend() {
                         backend.shutdown().await;
                     }
-                    switch_service.swap_context(context);
+                    switch_service.swap_context(Arc::clone(&context));
+                    context
+                        .update_app_settings(|settings| settings.network = target)
+                        .map_err(|source| {
+                            McpToolError::TaskFailed(TaskError::AppSettingsWrite { source })
+                        })?;
                     Ok(NetworkSwitchOutput {
                         active: network_display_name(target).to_owned(),
                         spv_started,
@@ -267,6 +277,41 @@ mod tests {
     use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
     use crate::wallet_backend::{IdentityKeyView, SecretPrompt};
     use platform_wallet_storage::secrets::SecretString;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn review_regression_network_switch_persists_the_selected_network() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        ctx.update_app_settings(|settings| {
+            settings.network = Network::Mainnet;
+            settings.onboarding_completed = true;
+        })
+        .unwrap();
+        let service = DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::from(ctx)));
+        // Even a switch to the current context must persist the chosen network.
+        for network in ["testnet", "mainnet", "testnet"] {
+            NetworkSwitch::invoke(
+                &service,
+                NetworkSwitchParams {
+                    network: network.to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+            let switched = service.tool_ctx().await.unwrap();
+            let settings = switched
+                .app_kv()
+                .get::<crate::model::settings::AppSettings>(
+                    crate::wallet_backend::DetScope::Global,
+                    crate::model::settings::AppSettings::KV_KEY,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(settings.network, parse_network(network).unwrap());
+            assert!(settings.onboarding_completed);
+        }
+        service.shutdown_wallet_backend().await;
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn network_switch_tool_preserves_secret_prompt_identity() {

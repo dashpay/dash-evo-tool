@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 
 - The CLI keeps MCP requests at the selected endpoint without following HTTP
-  redirects. Migration fixture packaging rejects configured credentials, and
+  redirects or using system/environment proxies. Migration fixture packaging rejects configured credentials, and
   CI requires verified archive checksums and a runtime fixture password.
 
 - **Dependency advisory GHSA-4w2j-m93h-cj5j cleared**: the `quinn-proto` entry in
@@ -109,6 +109,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- CLI network switches persist across restarts, including headless fixture capture.
+  Migration checks reject undeclared legacy wallets, changed captured completion
+  markers, and legacy row changes committed only to the SQLite WAL.
 
 - Storage preparation retries incomplete app-data imports when unreadable
   identities are also present, and concurrent callers receive the migration error.

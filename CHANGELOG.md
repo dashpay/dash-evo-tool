@@ -101,6 +101,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Wallet and key renames immediately update displayed names and password prompts,
+  including after concurrent imports or delayed task results.
+
 - Re-importing legacy private keys preserves their names, including duplicate-name
   suffixes. Concurrent imports and renames reserve names without blocking wallet-list
   reads during storage writes. Wallet names also strip Unicode default-ignorable

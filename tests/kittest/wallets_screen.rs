@@ -336,6 +336,8 @@ fn hd_rename_dispatches_exact_task_and_applies_success() {
             "outside clicks must not dismiss a rename while it is saving"
         );
 
+        // Simulate the backend update before the task result reaches the screen.
+        wallet.write().expect("wallet").alias = Some("Renamed HD".into());
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::WalletAliasRenamed {
@@ -438,6 +440,8 @@ fn single_key_rename_dispatches_exact_task_and_applies_success() {
             "the attempted alias must remain visible while saving"
         );
 
+        // Simulate the backend update before the task result reaches the screen.
+        wallet.write().expect("wallet").alias = Some("Renamed key".into());
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::SingleKeyAliasRenamed {
@@ -460,7 +464,7 @@ fn single_key_rename_dispatches_exact_task_and_applies_success() {
 
 #[test]
 #[cfg(feature = "testing")]
-fn hd_rename_success_updates_original_wallet_after_selection_change() {
+fn hd_rename_delayed_success_keeps_newer_alias_after_selection_change() {
     with_isolated_data_dir(|| {
         let (runtime, app_context) = fresh_app_context();
         let mut target_seed: [u8; 64] = rand::random();
@@ -519,6 +523,7 @@ fn hd_rename_success_updates_original_wallet_after_selection_change() {
         harness.get_by_label("HD: Other (0.0000 DASH)").click();
         harness.run();
 
+        target.write().expect("target").alias = Some("Newer name".into());
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::WalletAliasRenamed {
@@ -529,15 +534,15 @@ fn hd_rename_success_updates_original_wallet_after_selection_change() {
 
         assert_eq!(
             target.read().expect("target").alias.as_deref(),
-            Some("Target renamed"),
-            "the canonical target wallet must update independently of selection"
+            Some("Newer name"),
+            "a delayed result must not overwrite the current backend alias"
         );
     });
 }
 
 #[test]
 #[cfg(feature = "testing")]
-fn single_key_rename_success_updates_original_wallet_after_selection_change() {
+fn single_key_rename_delayed_success_keeps_newer_alias_after_selection_change() {
     with_isolated_data_dir(|| {
         let (runtime, app_context) = fresh_app_context();
         let (_target_imported, target) = app_context
@@ -589,6 +594,7 @@ fn single_key_rename_success_updates_original_wallet_after_selection_change() {
         harness.get_by_label("SK: Other key (0.0000 DASH)").click();
         harness.run();
 
+        target.write().expect("target").alias = Some("Newer name".into());
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::SingleKeyAliasRenamed {
@@ -599,8 +605,8 @@ fn single_key_rename_success_updates_original_wallet_after_selection_change() {
 
         assert_eq!(
             target.read().expect("target").alias.as_deref(),
-            Some("Target key renamed"),
-            "the canonical target key must update independently of selection"
+            Some("Newer name"),
+            "a delayed result must not overwrite the current backend alias"
         );
         assert_eq!(
             other.read().expect("other").alias.as_deref(),
@@ -1028,6 +1034,8 @@ fn hd_rename_to_blank_dispatches_and_applies_default_name() {
             }
         );
 
+        // Simulate the backend update before the task result reaches the screen.
+        wallet.write().expect("wallet").alias = Some("Wallet 1".into());
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::WalletAliasRenamed {
@@ -1087,6 +1095,8 @@ fn single_key_rename_to_blank_dispatches_and_applies_default_name() {
             }
         );
 
+        // Simulate the backend update before the task result reaches the screen.
+        wallet.write().expect("wallet").alias = Some("Key 1".into());
         harness.state_mut().display_backend_task_result(
             &dispatch.context,
             BackendTaskSuccessResult::SingleKeyAliasRenamed {

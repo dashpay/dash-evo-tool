@@ -473,8 +473,10 @@ struct Inner {
     /// the (non-enumerable) secret store. Seeded on cold boot from the
     /// k/v sidecar by `hydrate_context_wallets` (T-W-01b) and kept in
     /// sync by `SingleKeyView::import_wif` / `forget`.
-    single_key_index: std::sync::RwLock<
-        std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
+    single_key_index: Arc<
+        std::sync::RwLock<
+            std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
+        >,
     >,
     /// The just-in-time secret chokepoint. Constructed over the same
     /// [`Self::secret_store`] with the host-chosen [`SecretPrompt`]; seeded
@@ -612,7 +614,13 @@ impl WalletBackend {
         // host-chosen prompt (egui host in the GUI, `NullSecretPrompt`
         // headless). Wave C migrates consumers onto it; constructed now so
         // the prompt round-trips and the seam is live.
-        let secret_access = SecretAccess::new(Arc::clone(&secret_store), prompt, network);
+        let single_key_index = Arc::new(std::sync::RwLock::new(std::collections::BTreeMap::new()));
+        let secret_access = SecretAccess::new_with_single_key_index(
+            Arc::clone(&secret_store),
+            prompt,
+            network,
+            Arc::clone(&single_key_index),
+        );
 
         let backend = Self {
             inner: Arc::new(Inner {
@@ -655,7 +663,7 @@ impl WalletBackend {
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
                 single_key_alias_write_lock: std::sync::Mutex::new(()),
-                single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                single_key_index,
                 app_kv,
                 secret_access,
                 start_latch: StartLatch::default(),
@@ -701,7 +709,7 @@ impl WalletBackend {
         // prompt can show the wallet alias / password hint and the key
         // nickname / hint. Absent metadata degrades to a generic label, so
         // this is best-effort and runs even when no wallets reconstruct.
-        self.seed_secret_access_meta(&reconstructed);
+        self.seed_secret_access_meta();
 
         if reconstructed.is_empty() && single_key_wallets.is_empty() {
             return Ok(());
@@ -2102,30 +2110,25 @@ impl WalletBackend {
         self.inner.secret_access.forget_all();
     }
 
-    /// Seed the JIT chokepoint's prompt-copy metadata from the reconstructed
-    /// HD wallets and the rehydrated single-key index. Best-effort: missing
-    /// metadata degrades to a generic prompt label, never an error.
-    fn seed_secret_access_meta(
-        &self,
-        reconstructed: &[(WalletSeedHash, crate::model::wallet::Wallet)],
-    ) {
-        let wallet_meta: std::collections::BTreeMap<WalletSeedHash, PromptMeta> = reconstructed
-            .iter()
-            .map(|(seed_hash, wallet)| {
-                (
-                    *seed_hash,
-                    PromptMeta {
-                        alias: wallet.alias.clone(),
-                        password_hint: wallet.password_hint().clone(),
-                    },
-                )
-            })
-            .collect();
-        self.inner.secret_access.set_wallet_meta(wallet_meta);
-
-        if let Ok(index) = self.inner.single_key_index.read() {
-            self.inner.secret_access.set_single_key_index(index.clone());
-        }
+    /// Refresh HD prompt-copy metadata from the current sidecar under the
+    /// same writer lock as metadata writes. The single-key index is shared
+    /// directly. Missing metadata degrades to a generic prompt label.
+    fn seed_secret_access_meta(&self) {
+        self.inner.secret_access.refresh_wallet_meta(|| {
+            self.wallet_meta()
+                .list(self.inner.network)
+                .into_iter()
+                .map(|(seed_hash, meta)| {
+                    (
+                        seed_hash,
+                        PromptMeta {
+                            alias: (!meta.alias.is_empty()).then_some(meta.alias),
+                            password_hint: meta.password_hint,
+                        },
+                    )
+                })
+                .collect()
+        });
     }
 
     /// View over the single-key (imported WIF) operations. The view
@@ -2179,7 +2182,7 @@ impl WalletBackend {
     /// key schema. The view borrows a shared `Arc<DetKv>` handle, so
     /// callers may build one per operation rather than threading it.
     pub fn wallet_meta(&self) -> WalletMetaView<'_> {
-        WalletMetaView::new(&self.inner.app_kv)
+        WalletMetaView::with_prompt(&self.inner.app_kv, &self.inner.secret_access)
     }
 
     /// View over the DET-owned identity-metadata sidecar (the password hint for

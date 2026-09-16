@@ -65,7 +65,7 @@ impl AppContext {
         meta_view.set(self.network, &seed_hash, &meta)?;
         // Mirror the saved name in memory while the alias lock is still held,
         // so the next alias writer checks uniqueness against it rather than a
-        // stale name. The screen's result handler applies the same value.
+        // stale name.
         wallet.write()?.alias = Some(alias.clone());
 
         Ok(BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias })
@@ -90,7 +90,16 @@ impl AppContext {
         alias: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let backend = self.wallet_backend()?;
+        let _update_guard = self.lock_single_key_updates();
         let alias = backend.single_key().set_alias(&address, &alias)?;
+        let wallets = self.single_key_wallets.read()?;
+        for wallet in wallets.values() {
+            let mut wallet = wallet.write()?;
+            if wallet.address.to_string() == address {
+                wallet.alias = Some(alias.clone());
+                break;
+            }
+        }
         Ok(BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias })
     }
 }
@@ -625,11 +634,12 @@ mod tests {
         // Mint a deterministic throwaway key rather than committing a WIF.
         let sk = SecretKey::from_byte_array(&[0x11u8; 32]).expect("valid scalar");
         let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
-        let imported = backend
-            .single_key()
-            .import_wif(
+        let (imported, display_wallet) = f
+            .ctx
+            .import_single_key_wif(
                 &wif,
                 crate::model::wallet::alias::AliasSource::UserEntered("old name".into()),
+                Default::default(),
             )
             .expect("import");
         let address = imported.address.clone();
@@ -647,12 +657,88 @@ mod tests {
             "got {result:?}"
         );
 
+        assert_eq!(
+            display_wallet
+                .read()
+                .expect("display wallet")
+                .alias
+                .as_deref(),
+            Some("new name")
+        );
+
         let listed = backend.single_key().list();
         let entry = listed
             .iter()
             .find(|e| e.address == address)
             .expect("imported key present");
         assert_eq!(entry.alias.as_deref(), Some("new name"), "alias persisted");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_key_import_serializes_through_display_update() {
+        use crate::model::wallet::alias::AliasSource;
+
+        let f = fixture().await;
+        let backend = f.ctx.wallet_backend().expect("backend");
+        let key = SecretKey::from_byte_array(&[0x33; 32]).expect("valid scalar");
+        let wif = PrivateKey::new(key, Network::Testnet).to_wif();
+        let display_guard = f.ctx.single_key_wallets.read().expect("display map");
+        let first_ctx = f.ctx.clone();
+        let first_wif = wif.clone();
+        let first = std::thread::spawn(move || {
+            first_ctx.import_single_key_wif(
+                &first_wif,
+                AliasSource::UserEntered("First".into()),
+                Default::default(),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while backend.single_key().list().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first import persisted"
+            );
+            std::thread::yield_now();
+        }
+
+        let later_ctx = f.ctx.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let later = std::thread::spawn(move || {
+            started_tx.send(()).expect("started");
+            let result = later_ctx.import_single_key_wif(
+                &wif,
+                AliasSource::UserEntered("Second".into()),
+                Default::default(),
+            );
+            done_tx.send(()).expect("done");
+            result
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("later import started");
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        let alias_while_display_blocked = backend.single_key().list()[0].alias.clone();
+        drop(display_guard);
+        first.join().expect("first thread").expect("first import");
+        let (imported, displayed) = later.join().expect("later thread").expect("later import");
+        assert_eq!(alias_while_display_blocked.as_deref(), Some("First"));
+        assert_eq!(imported.alias.as_deref(), Some("Second"));
+        assert_eq!(
+            displayed.read().expect("displayed").alias.as_deref(),
+            Some("Second")
+        );
+        let map = f.ctx.single_key_wallets.read().expect("display map");
+        assert_eq!(
+            map.values()
+                .next()
+                .expect("key")
+                .read()
+                .expect("wallet")
+                .alias
+                .as_deref(),
+            Some("Second")
+        );
     }
 
     /// Renaming an address that was never imported surfaces the typed

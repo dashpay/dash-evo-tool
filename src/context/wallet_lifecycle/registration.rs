@@ -46,6 +46,7 @@ impl AppContext {
         TaskError,
     > {
         let backend = self.wallet_backend()?;
+        let _update_guard = self.lock_single_key_updates();
         let single_key = backend.single_key();
         let imported = single_key.import_wif_with_passphrase(wif, alias, passphrase)?;
 
@@ -60,10 +61,10 @@ impl AppContext {
         let key_hash = wallet.key_hash();
         let wallet_arc = Arc::new(RwLock::new(wallet));
 
-        if let Ok(mut single_key_wallets) = self.single_key_wallets.write() {
-            single_key_wallets.insert(key_hash, wallet_arc.clone());
-            self.has_wallet.store(true, Ordering::Relaxed);
-        }
+        self.single_key_wallets
+            .write()?
+            .insert(key_hash, wallet_arc.clone());
+        self.has_wallet.store(true, Ordering::Relaxed);
         Ok((imported, wallet_arc))
     }
 
@@ -342,7 +343,11 @@ impl AppContext {
             uses_password: wallet.uses_password,
             password_hint: wallet.password_hint().clone(),
         };
-        WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)
+        if let Ok(backend) = self.wallet_backend() {
+            backend.wallet_meta().set(self.network, &seed_hash, &meta)
+        } else {
+            WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)
+        }
     }
 
     /// Promote a known HD seed into the JIT chokepoint's session cache

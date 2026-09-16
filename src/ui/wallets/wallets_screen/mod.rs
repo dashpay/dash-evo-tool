@@ -940,6 +940,8 @@ impl WalletsBalancesScreen {
         address: String,
         alias: String,
     ) {
+        let app_context = self.app_context.clone();
+        let _update_guard = app_context.lock_single_key_updates();
         let outcome = match self.app_context.wallet_backend() {
             Ok(backend) => backend.single_key().forget(&address).err(),
             Err(error) => Some(error),
@@ -3008,29 +3010,6 @@ impl ScreenLike for WalletsBalancesScreen {
             }
             crate::ui::BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } => {
                 self.asset_lock_cache.store(seed_hash, locks);
-            }
-            crate::ui::BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias } => {
-                let wallet = self
-                    .app_context
-                    .wallets
-                    .read_recover()
-                    .get(&seed_hash)
-                    .cloned();
-                if let Some(wallet) = wallet {
-                    wallet.write_recover().alias = Some(alias);
-                }
-            }
-            crate::ui::BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias } => {
-                let wallet = self
-                    .app_context
-                    .single_key_wallets
-                    .read_recover()
-                    .values()
-                    .find(|wallet| wallet.read_recover().address.to_string() == address)
-                    .cloned();
-                if let Some(wallet) = wallet {
-                    wallet.write_recover().alias = Some(alias);
-                }
             }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
                 let is_selected = self

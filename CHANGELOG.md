@@ -13,7 +13,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preserve existing keys when a supplied password or key conflicts. A durable
   key inventory includes entries omitted on retry in password checks, protection
   detection, and removal. Imports with a supplied password avoid a redundant
-  password prompt when merging.
+  password prompt when merging. Resumed removal also deletes keys retained by
+  a later failed re-import before retiring their inventory.
 
 - Identity reads no longer migrate or rewrite stored keys. Storage preparation
   explicitly migrates legacy keys under each identity's record lock, propagates

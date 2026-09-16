@@ -1322,6 +1322,81 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_import_failed_reimport_keys_are_removed_by_pending_cleanup() {
+        let (ctx, dir) = protected_import_context().await;
+        let (qi, placements) = masternode_shaped_qi();
+        let id = qi.identity.id();
+        let password = Secret::new("synthetic-import-password");
+        let mut original = qi.clone();
+        original.private_keys = KeyStorage::default();
+        let first = placements[0].clone();
+        original.private_keys.insert_at(
+            first.clone(),
+            qi.private_keys.entry_at(&first).unwrap().clone(),
+        );
+        ctx.persist_loaded_identity(
+            &mut original,
+            &None,
+            Some(&password),
+            IdentityLoadMode::RejectIfExists,
+        )
+        .unwrap();
+        let conn = rusqlite::Connection::open(dir.path().join("det-testnet.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_inventory_cleanup BEFORE DELETE ON meta_global \
+             WHEN OLD.key LIKE 'det:identity_import_keys:v1:%' \
+             BEGIN SELECT RAISE(FAIL, 'injected inventory cleanup failure'); END;",
+        )
+        .unwrap();
+        assert!(ctx.delete_local_qualified_identity(&id).is_err());
+        assert!(!ctx.is_identity_listed(&id).unwrap());
+        conn.execute_batch(
+            "DROP TRIGGER fail_inventory_cleanup;
+             CREATE TRIGGER fail_reimport BEFORE INSERT ON meta_global
+             WHEN NEW.key = 'det:identity_index:v1'
+             BEGIN SELECT RAISE(FAIL, 'injected reimport failure'); END;",
+        )
+        .unwrap();
+        assert!(
+            ctx.persist_loaded_identity(
+                &mut qi.clone(),
+                &None,
+                Some(&password),
+                IdentityLoadMode::RejectIfExists,
+            )
+            .is_err()
+        );
+        assert!(!ctx.is_identity_listed(&id).unwrap());
+        assert!(ctx.stored_identity_blob(&id).unwrap().is_none());
+        let backend = ctx.wallet_backend().unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+        for (target, key_id) in &placements {
+            assert_eq!(
+                view.scheme(target, *key_id).unwrap(),
+                SecretScheme::Protected
+            );
+        }
+        assert_eq!(
+            ctx.retained_identity_import_keys(&id).unwrap().len(),
+            placements.len()
+        );
+        conn.execute_batch("DROP TRIGGER fail_reimport").unwrap();
+
+        ctx.resume_pending_vault_cleanups();
+
+        for (target, key_id) in &placements {
+            assert_eq!(
+                view.scheme(target, *key_id).unwrap(),
+                SecretScheme::Absent,
+                "resumed cleanup must include keys added after its manifest was saved"
+            );
+        }
+        assert!(ctx.retained_identity_import_keys(&id).unwrap().is_empty());
+        ctx.resume_pending_vault_cleanups();
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_import_persist_failure_keeps_recoverable_protected_keys() {
         for table in ["meta_global", "meta_identity"] {
             let (ctx, dir) = protected_import_context().await;

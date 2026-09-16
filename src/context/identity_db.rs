@@ -1658,9 +1658,13 @@ impl AppContext {
         id: &[u8; 32],
         vault_keys: impl IntoIterator<Item = (PrivateKeyTarget, KeyID)>,
     ) -> std::result::Result<IdentitySidecarCleanup, TaskError> {
+        let identifier = Identifier::from(*id);
+        // Both callers hold the record lock through inventory retirement.
+        // Failed re-imports can add keys after the removal manifest was saved.
+        let mut vault_keys: std::collections::BTreeSet<_> = vault_keys.into_iter().collect();
+        vault_keys.extend(self.retained_identity_import_keys(&identifier)?);
         crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id)
             .delete_all(vault_keys)?;
-        let identifier = Identifier::from(*id);
         self.forget_identity_import_keys(&identifier)?;
         // INTENTIONAL(late-owner-sidecar-writes): in-flight writers are not drained; coordinating
         // every backend task requires a wider owner-lifecycle protocol than this cleanup adds.

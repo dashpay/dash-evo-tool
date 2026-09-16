@@ -210,7 +210,17 @@ impl BoundedThemeDetector {
 /// The process-wide detector backed by `dark_light`, started on first use.
 fn system_theme_detector() -> &'static BoundedThemeDetector {
     static DETECTOR: OnceLock<BoundedThemeDetector> = OnceLock::new();
-    DETECTOR.get_or_init(|| BoundedThemeDetector::spawn(dark_light::detect, THEME_DETECTION_BUDGET))
+    DETECTOR.get_or_init(|| {
+        // `dark_light::detect` uses Foundation APIs (e.g. `NSUserDefaults`) on
+        // macOS that create autoreleased objects. This worker thread lives for
+        // the process lifetime and runs repeatedly while polling, so without a
+        // pool drained per call those allocations accumulate until exit.
+        #[cfg(target_os = "macos")]
+        let detect = || objc2::rc::autoreleasepool(|_| dark_light::detect());
+        #[cfg(not(target_os = "macos"))]
+        let detect = dark_light::detect;
+        BoundedThemeDetector::spawn(detect, THEME_DETECTION_BUDGET)
+    })
 }
 
 /// Detect system theme preference, waiting at most `THEME_DETECTION_BUDGET`.
@@ -230,10 +240,38 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
 /// `Unspecified` maps to Light (common on Linux where `dark_light` often
 /// can't determine the theme).
 pub fn try_detect_system_theme() -> Option<ThemeMode> {
+    match try_detect_system_theme_detailed() {
+        ThemeDetectionOutcome::Detected(mode) => Some(mode),
+        ThemeDetectionOutcome::Pending | ThemeDetectionOutcome::Failed => None,
+    }
+}
+
+/// Outcome of a system-theme detection attempt for callers that must react
+/// differently to "no answer yet" than to "detection failed" — e.g. an
+/// explicit preference change, where a still-pending answer (common on a cold
+/// Linux portal request) should not be reported as a failure: the next poll
+/// will pick up the late result once it arrives. Polling callers that only
+/// need a detected mode should use `try_detect_system_theme` instead, which
+/// intentionally treats both as "keep the previous theme".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeDetectionOutcome {
+    Detected(ThemeMode),
+    /// No answer within `THEME_DETECTION_BUDGET` yet; detection keeps running
+    /// in the background and a later poll may still resolve it.
+    Pending,
+    /// The OS could not report a theme (no portal, unsupported platform).
+    Failed,
+}
+
+/// Detect system theme, distinguishing `Pending` from `Failed`. See
+/// [`ThemeDetectionOutcome`] for when to prefer this over
+/// `try_detect_system_theme`.
+pub fn try_detect_system_theme_detailed() -> ThemeDetectionOutcome {
     match system_theme_detector().detect() {
-        Detection::Dark => Some(ThemeMode::Dark),
-        Detection::Light => Some(ThemeMode::Light),
-        Detection::Failed | Detection::Pending => None,
+        Detection::Dark => ThemeDetectionOutcome::Detected(ThemeMode::Dark),
+        Detection::Light => ThemeDetectionOutcome::Detected(ThemeMode::Light),
+        Detection::Failed => ThemeDetectionOutcome::Failed,
+        Detection::Pending => ThemeDetectionOutcome::Pending,
     }
 }
 

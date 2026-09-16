@@ -378,11 +378,12 @@ mod tests {
         let mut guard = ModalOpeningGuard::armed();
         let mut first_check = false;
         let mut second_check = false;
-        let _ = ctx.run_ui(raw, |ui| {
+        ctx.run_ui(raw, |ui| {
             let ctx = ui.ctx();
             first_check = clicked_outside_window_after_open(ctx, window_rect, &mut guard);
             second_check = clicked_outside_window_after_open(ctx, window_rect, &mut guard);
-        });
+        })
+        .drop_without_applying_deltas();
 
         assert!(
             !first_check,

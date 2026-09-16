@@ -80,29 +80,21 @@ async fn derive_contact_info_keys(
 ///
 /// These properties eliminate typical ECB vulnerabilities (pattern leakage).
 /// See: https://github.com/dashpay/dips/blob/master/dip-0015.md
-#[allow(deprecated)]
 fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
-    use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::aes::Aes256;
-    use aes_gcm::aes::cipher::{BlockDecrypt, KeyInit};
+    use aes_gcm::aes::cipher::{BlockCipherDecrypt, KeyInit};
 
-    if encrypted.len() != 32 {
-        return Err("Invalid encrypted user ID length".to_string());
+    let mut decrypted: [u8; 32] = encrypted
+        .try_into()
+        .map_err(|_| "Invalid encrypted user ID length".to_string())?;
+
+    let cipher = Aes256::new(key.into());
+
+    // The 32-byte ciphertext is exactly two 16-byte AES blocks; decrypt each in place (ECB).
+    let (blocks, _) = decrypted.as_chunks_mut::<16>();
+    for block in blocks {
+        cipher.decrypt_block(block.into());
     }
-
-    let cipher = Aes256::new(GenericArray::from_slice(key));
-
-    // Split the 32-byte encrypted data into two 16-byte blocks for ECB mode
-    let mut decrypted = [0u8; 32];
-
-    let mut block1 = GenericArray::clone_from_slice(&encrypted[0..16]);
-    let mut block2 = GenericArray::clone_from_slice(&encrypted[16..32]);
-
-    cipher.decrypt_block(&mut block1);
-    cipher.decrypt_block(&mut block2);
-
-    decrypted[0..16].copy_from_slice(&block1);
-    decrypted[16..32].copy_from_slice(&block2);
 
     Ok(decrypted)
 }
@@ -112,25 +104,22 @@ pub(super) fn decrypt_private_data(
     encrypted_data: &[u8],
     key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    use cbc::cipher::BlockDecryptMut;
+    use cbc::cipher::BlockModeDecrypt;
     use cbc::cipher::KeyIvInit;
     use cbc::cipher::block_padding::Pkcs7;
     type Aes256CbcDec = cbc::Decryptor<aes_gcm::aes::Aes256>;
 
-    if encrypted_data.len() < 16 {
-        return Err("Encrypted data too short (no IV)".to_string());
-    }
-
     // Extract IV and ciphertext
-    let iv = &encrypted_data[0..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt
     let cipher = Aes256CbcDec::new(key.into(), iv.into());
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     Ok(decrypted.to_vec())
@@ -556,5 +545,44 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
                 "Failed to cache contact profile for offline use"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Known-answer vectors generated independently with Python
+    /// `cryptography` 46 (OpenSSL). They pin DIP-15 interoperability with other
+    /// DashPay clients across `cbc` / `aes` / `aes-gcm` bumps.
+    const GOLDEN_KEY: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+
+    #[test]
+    fn decrypt_private_data_opens_golden_blob() {
+        // IV (10..1f) ‖ AES-256-CBC-PKCS7(GOLDEN_KEY, IV, "DashPay private data!").
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             faea994a146288d4cdeb1833de096de0dbc32bac4771e7d99338f76072f8700f",
+        )
+        .expect("blob hex");
+        let plaintext = decrypt_private_data(&blob, &GOLDEN_KEY).expect("golden blob must decrypt");
+        assert_eq!(plaintext, b"DashPay private data!");
+    }
+
+    #[test]
+    fn decrypt_to_user_id_opens_golden_ecb_vector() {
+        // AES-256-ECB(GOLDEN_KEY, 40..5f).
+        let encrypted =
+            hex::decode("a37edf3f975abaef937b62c78d5bb157974b412738e50f45c7f9db25413f274b")
+                .expect("ciphertext hex");
+        let expected: [u8; 32] = std::array::from_fn(|i| 0x40 + i as u8);
+        assert_eq!(
+            decrypt_to_user_id(&encrypted, &GOLDEN_KEY).expect("decrypt"),
+            expected
+        );
     }
 }

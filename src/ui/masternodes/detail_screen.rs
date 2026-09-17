@@ -252,9 +252,21 @@ impl MasternodeDetailView {
     pub(crate) fn start_recovery_check_for_test(&mut self) -> bool {
         self.recovery.ensure_checked().is_some()
     }
+
+    pub(crate) fn recovery_context_for_test(&self) -> BackendTaskContext {
+        self.recovery.pending_context_for_test()
+    }
 }
 
 impl MasternodeDetailView {
+    pub(crate) fn accepts_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.recovery.accepts_result(context, completed)
+    }
+
     pub fn new(app_context: &Arc<AppContext>, identity: QualifiedIdentity) -> Self {
         let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
         let node_id_short = shorten_id(&node_id_hex_full);
@@ -311,7 +323,7 @@ impl MasternodeDetailView {
     /// Re-check recovery on arrival because a pushed Key Info screen may have restored keys.
     pub(crate) fn refresh_on_arrival(&mut self) {
         self.refresh_from_store();
-        self.recovery.completed();
+        self.recovery.refresh_on_arrival();
     }
 
     fn cast_votes(&mut self, votes: Vec<(String, ResourceVoteChoice)>) -> AppAction {
@@ -493,9 +505,12 @@ impl MasternodeDetailView {
         // with a click made this frame: the click already owns the outcome, and
         // the check simply goes out on the next frame instead.
         if matches!(outcome, DetailOutcome::None)
-            && let Some(task) = self.recovery.ensure_checked()
+            && let Some((task, context)) = self.recovery.ensure_checked()
         {
-            outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTask(task)));
+            outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTaskWithContext {
+                task,
+                context,
+            }));
         }
 
         outcome
@@ -725,9 +740,9 @@ impl MasternodeDetailView {
         }
 
         if let Some(approved) = self.render_recovery_section(ui)
-            && let Some(task) = self.recovery.restore(approved)
+            && let Some((task, context)) = self.recovery.restore(approved)
         {
-            action = Some(AppAction::BackendTask(task));
+            action = Some(AppAction::BackendTaskWithContext { task, context });
         }
         action
     }

@@ -110,6 +110,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Migration CI runs for PR #983 through the regular pull-request workflow.
+
 - CLI network switches persist across restarts, including headless fixture capture.
   Migration checks reject undeclared legacy wallets, changed captured completion
   markers, and legacy row changes committed only to the SQLite WAL.

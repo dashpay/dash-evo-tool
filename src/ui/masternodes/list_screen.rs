@@ -581,6 +581,19 @@ impl ScreenLike for MasternodesScreen {
         }
     }
 
+    fn display_backend_task_result(
+        &mut self,
+        context: &crate::backend_task::BackendTaskContext,
+        result: BackendTaskSuccessResult,
+    ) {
+        if let BackendTaskSuccessResult::DPNSVoteResults(results) = &result
+            && let MasternodesView::Detail(detail) = &mut self.view
+        {
+            detail.consume_cast_votes(context, results);
+        }
+        self.display_task_result(result);
+    }
+
     fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
         match result {
             // A recovery preview changed nothing in the store, so it is routed
@@ -640,14 +653,6 @@ impl ScreenLike for MasternodesScreen {
                 }
                 self.reload();
                 return;
-            }
-            // The votes that went out are now on their way, so the open detail
-            // view must stop offering to send them again. The ones that failed
-            // keep their selection for a corrected retry.
-            BackendTaskSuccessResult::DPNSVoteResults(ref results) => {
-                if let MasternodesView::Detail(detail) = &mut self.view {
-                    detail.consume_cast_votes(results);
-                }
             }
             _ => {}
         }

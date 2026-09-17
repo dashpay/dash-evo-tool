@@ -192,6 +192,7 @@ pub struct MasternodeDetailView {
     open_contests: Vec<ContestedName>,
     /// Per-contest pending vote choice, keyed by normalized contested name.
     vote_selections: BTreeMap<String, ResourceVoteChoice>,
+    pending_cast: Option<BackendTaskContext>,
     /// The scoped, in-place "Add voting key" prompt (US-3 / §10.8) — distinct
     /// from FR-4's load form. `Some` while the prompt is open.
     voter_key_prompt: Option<PasswordInput>,
@@ -276,6 +277,7 @@ impl MasternodeDetailView {
             contest_summary,
             open_contests,
             vote_selections: BTreeMap::new(),
+            pending_cast: None,
             voter_key_prompt: None,
             remove_dialog: None,
             recovery,
@@ -312,14 +314,28 @@ impl MasternodeDetailView {
         self.recovery.completed();
     }
 
-    /// Retire the selections a cast consumed, keeping the ones whose vote
-    /// failed so they can be corrected and sent again.
-    ///
-    /// Selections outlive a backend result, so a finished cast has to clear its
-    /// own — otherwise `Cast votes` stays armed on votes already on their way.
-    pub(crate) fn consume_cast_votes(&mut self, results: &[DPNSVoteOutcome]) {
-        for (contested_name, _, outcome) in results {
-            if outcome.is_ok() {
+    fn cast_votes(&mut self, votes: Vec<(String, ResourceVoteChoice)>) -> AppAction {
+        let task = BackendTask::ContestedResourceTask(ContestedResourceTask::VoteOnDPNSNames(
+            votes,
+            vec![self.identity.clone()],
+        ));
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.pending_cast = Some(context.clone());
+        AppAction::BackendTaskWithContext { task, context }
+    }
+
+    /// Retire unchanged, successful selections from this view's latest cast.
+    pub(crate) fn consume_cast_votes(
+        &mut self,
+        context: &BackendTaskContext,
+        results: &[DPNSVoteOutcome],
+    ) {
+        if self.pending_cast.as_ref() != Some(context) {
+            return;
+        }
+        self.pending_cast = None;
+        for (contested_name, choice, outcome) in results {
+            if outcome.is_ok() && self.vote_selections.get(contested_name) == Some(choice) {
                 self.vote_selections.remove(contested_name);
             }
         }
@@ -996,9 +1012,7 @@ impl MasternodeDetailView {
             .on_disabled_hover_text(CAST_DISABLED_HINT)
             .clicked()
         {
-            action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::VoteOnDPNSNames(votes, vec![self.identity.clone()]),
-            )));
+            action = Some(self.cast_votes(votes));
         }
         action
     }
@@ -1136,25 +1150,66 @@ mod tests {
             .insert("delivered".to_string(), ResourceVoteChoice::Abstain);
         view.vote_selections
             .insert("rejected".to_string(), ResourceVoteChoice::Lock);
+        view.vote_selections
+            .insert("changed".to_string(), ResourceVoteChoice::Abstain);
 
-        view.consume_cast_votes(&[
+        let AppAction::BackendTaskWithContext { context, .. } = view.cast_votes(vec![
+            ("delivered".to_string(), ResourceVoteChoice::Abstain),
+            ("changed".to_string(), ResourceVoteChoice::Abstain),
+            ("rejected".to_string(), ResourceVoteChoice::Lock),
+        ]) else {
+            panic!("a cast must carry its dispatch context");
+        };
+        view.vote_selections
+            .insert("changed".to_string(), ResourceVoteChoice::Lock);
+        let results = [
             ("delivered".to_string(), ResourceVoteChoice::Abstain, Ok(())),
+            ("changed".to_string(), ResourceVoteChoice::Abstain, Ok(())),
             (
                 "rejected".to_string(),
                 ResourceVoteChoice::Lock,
                 Err(Arc::new(TaskError::NoIdentitiesFound)),
             ),
-        ]);
+        ];
+        view.consume_cast_votes(&BackendTaskContext::Other, &results);
+        let unrelated = BackendTaskContext::for_dispatch(&BackendTask::None);
+        view.consume_cast_votes(&unrelated, &results);
+        assert_eq!(
+            view.vote_selections.len(),
+            3,
+            "unrelated casts change nothing"
+        );
+        view.consume_cast_votes(&context, &results);
 
         assert!(
             !view.vote_selections.contains_key("delivered"),
             "a vote already sent must not stay armed to be sent again",
         );
         assert_eq!(
+            view.vote_selections.get("changed"),
+            Some(&ResourceVoteChoice::Lock),
+            "a result for an older choice must preserve the newer selection",
+        );
+        assert_eq!(
             view.vote_selections.get("rejected"),
             Some(&ResourceVoteChoice::Lock),
             "a vote that failed keeps its choice so it can be retried",
         );
+
+        view.vote_selections
+            .insert("delivered".to_string(), ResourceVoteChoice::Abstain);
+        let AppAction::BackendTaskWithContext { context: next, .. } =
+            view.cast_votes(vec![("delivered".to_string(), ResourceVoteChoice::Abstain)])
+        else {
+            panic!("a cast must carry its dispatch context");
+        };
+        view.consume_cast_votes(&context, &results);
+        assert!(
+            view.vote_selections.contains_key("delivered"),
+            "an older cast cannot retire a new cast's selection"
+        );
+        view.consume_cast_votes(&next, &results);
+        assert!(!view.vote_selections.contains_key("delivered"));
     }
 
     #[test]

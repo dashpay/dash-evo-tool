@@ -123,6 +123,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- DPNS vote confirmation now highlights the name and chosen vote in separate
+  blocks, explains Lock and Abstain, and separates the previous vote and timing.
+
 - DPNS scheduled retries keep the selected choice, and simultaneous scheduled votes share fresh voting information without losing their due status. If a first vote becomes a vote change before submission, DET asks for another review. Unavailable voting information stays visible with a refresh action, successful mixed batches report both cast and scheduled votes, and contest refresh remains available when saved voting progress cannot be recovered.
 - DPNS voting now explains missed automatic schedules and unreadable saved progress, with manual recovery actions. Completed scheduled and mixed voting history is bounded without discarding unresolved votes or restoring removed schedules. Adding another node's voting key gives a key-specific error.
 

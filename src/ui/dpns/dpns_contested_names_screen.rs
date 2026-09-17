@@ -414,16 +414,6 @@ fn review_headline(effective_count: usize, node_count: usize) -> String {
     format!("Votes to submit ({effective_count}) from your nodes ({node_count}).")
 }
 
-fn review_target_line(
-    node: &str,
-    name: &str,
-    requested: &str,
-    current: &str,
-    timing: &str,
-) -> String {
-    format!("• {node} → {name}.dash: {requested}. Current vote: {current}. {timing}.")
-}
-
 fn review_skipped_line(no_op_count: usize) -> String {
     match no_op_count {
         1 => "1 vote is already cast as requested and will be skipped.".to_owned(),
@@ -2049,13 +2039,29 @@ impl DPNSScreen {
                                 self.candidate_name(&entry.target.contested_name, choice)
                             }),
                         );
-                        ui.label(review_target_line(
-                            &entry.node_label(),
-                            &entry.target.contested_name,
-                            &requested,
-                            &current,
-                            &entry.timing_label,
-                        ));
+                        ui.group(|ui| {
+                            ui.set_width(ui.available_width());
+                            ui.heading(format!("{name}.dash", name = entry.target.contested_name));
+                            let decision = match entry.target.requested_choice {
+                                ResourceVoteChoice::Lock => "Your vote: Lock this name".to_owned(),
+                                ResourceVoteChoice::Abstain => "Your vote: Abstain".to_owned(),
+                                ResourceVoteChoice::TowardsIdentity(_) => format!("Your vote: {requested}"),
+                            };
+                            ui.label(RichText::new(decision).strong());
+                            match entry.target.requested_choice {
+                                ResourceVoteChoice::Lock => {
+                                    ui.label("You are voting to prevent any contestant from receiving this name.");
+                                }
+                                ResourceVoteChoice::Abstain => {
+                                    ui.label("You are voting without supporting a contestant or locking this name.");
+                                }
+                                ResourceVoteChoice::TowardsIdentity(_) => {}
+                            }
+                            ui.label(format!("Voting node: {node}", node = entry.node_label()));
+                            ui.label(format!("Previous vote: {current}"));
+                            ui.label(format!("When: {timing}", timing = entry.timing_label));
+                        });
+                        ui.add_space(8.0);
                     }
                     if plan.effective().any(|entry| entry.target.current_choice.is_some()) {
                         ui.colored_label(DashColors::warning_color(dark_mode),
@@ -3311,7 +3317,7 @@ mod tests {
             "the fixture must leave the candidate name uncached, or this proves nothing"
         );
         let expected = format!(
-            "• node-one → alpha.dash: Vote for {handle}. Current vote: Lock. Cast now.",
+            "Your vote: Vote for {handle}",
             handle = short_identifier(candidate_id),
         );
 
@@ -3323,6 +3329,17 @@ mod tests {
         harness.run();
 
         assert!(harness.query_by_label(&expected).is_some());
+        for label in [
+            "alpha.dash",
+            "Voting node: node-one",
+            "Previous vote: Lock",
+            "When: Cast now",
+        ] {
+            assert!(
+                harness.query_by_label(label).is_some(),
+                "Missing review detail: {label}"
+            );
+        }
     }
 
     /// Candidate labels are resolved once per refresh, so the render path does a
@@ -4513,13 +4530,7 @@ mod tests {
     }
 
     #[test]
-    fn review_lines_name_the_node_the_contest_the_choices_and_the_timing() {
-        let line = review_target_line("node-one", "alice", "Lock", "Not voted yet", "Cast now");
-
-        assert_eq!(
-            line,
-            "• node-one → alice.dash: Lock. Current vote: Not voted yet. Cast now."
-        );
+    fn review_summary_counts_votes_and_labels_previous_choices() {
         assert_eq!(
             review_headline(6, 3),
             "Votes to submit (6) from your nodes (3)."

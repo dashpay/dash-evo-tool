@@ -14,7 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   key inventory includes entries omitted on retry in password checks, protection
   detection, and removal. Imports with a supplied password avoid a redundant
   password prompt when merging. Resumed removal also deletes keys retained by
-  a later failed re-import before retiring their inventory.
+  a later failed re-import before retiring their inventory. Merges revalidate the
+  current password and record new key placements under the identity record lock
+  before sealing. Protection indicators include retained keys, and unpublished
+  import retries explain that the original import password is required.
 
 - Identity reads no longer migrate or rewrite stored keys. Storage preparation
   explicitly migrates legacy keys under each identity's record lock, propagates

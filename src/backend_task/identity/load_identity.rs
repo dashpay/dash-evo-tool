@@ -155,13 +155,7 @@ impl AppContext {
             _ => {}
         }
 
-        // An in-place merge into a password-protected (Tier-2) node must
-        // seal the newly-supplied key Tier-2, or the plaintext key would trip
-        // the insert's fail-closed guard. Verify the node's object password UP
-        // FRONT — before the network fetch — so a wrong or headless password
-        // fails closed with no wasted round-trip and no partial state, mirroring
-        // add_key_to_identity's verify-before-broadcast / seal-after order. The
-        // verified password seals the merged plaintext keys just before insert.
+        // Prompt before network work; revalidate against current protection under the record lock.
         let merge_seal_password = match (&load_mode, existing_stored.as_ref()) {
             (IdentityLoadMode::MergeIntoExisting, Some(existing))
                 if encryption_password.is_none() =>
@@ -485,34 +479,24 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
-        // §10.8: an in-place update (the "Add voting key" fix-up) merges the
-        // newly-supplied keys into the already-stored identity's keys instead of
-        // clobbering them — the new voting key is added while the existing
-        // Owner/Payout keys (which the update leaves blank) survive.
-        if load_mode == IdentityLoadMode::MergeIntoExisting
-            && let Some(existing) = existing_stored
-        {
-            merge_existing_keys_into(&mut qualified_identity, existing);
-        }
-
-        // A merge without a new import password keeps the existing verified protection path.
-        if encryption_password.is_none()
-            && let Some(password) = &merge_seal_password
-        {
-            self.seal_merged_plaintext_keys(&mut qualified_identity, password)?;
-        }
-
         let wallet_info = qualified_identity
             .determine_wallet_info()
             .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
-        // Insert qualified identity into the database
-        self.persist_loaded_identity(
-            &mut qualified_identity,
-            &wallet_info,
-            encryption_password.as_ref(),
-            load_mode,
-        )?;
+        if load_mode == IdentityLoadMode::MergeIntoExisting && encryption_password.is_none() {
+            self.persist_merged_identity(
+                &mut qualified_identity,
+                &wallet_info,
+                merge_seal_password.as_ref(),
+            )?;
+        } else {
+            self.persist_loaded_identity(
+                &mut qualified_identity,
+                &wallet_info,
+                encryption_password.as_ref(),
+                load_mode,
+            )?;
+        }
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
@@ -529,6 +513,55 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
+    fn persist_merged_identity(
+        &self,
+        qi: &mut QualifiedIdentity,
+        wallet_info: &Option<(WalletSeedHash, u32)>,
+        password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
+    ) -> Result<(), TaskError> {
+        let identity_id = qi.identity.id();
+        let lock = self.identity_record_lock(identity_id);
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let existing = self.get_local_qualified_identity(&identity_id)?;
+        let published = existing.is_some();
+        if let Some(existing) = existing {
+            merge_existing_keys_into(qi, existing);
+        }
+        if self.protected_identity_verify_scope(qi)?.is_some() {
+            let password = password.ok_or(if published {
+                TaskError::IdentityKeyProtectionDowngrade
+            } else {
+                TaskError::IdentityImportPasswordRequired
+            })?;
+            let backend = self.wallet_backend()?;
+            let access = backend.secret_access();
+            let view = crate::wallet_backend::IdentityKeyView::new(
+                backend.secret_store(),
+                identity_id.to_buffer(),
+            );
+            let mut placements = qi.private_keys.keys_set();
+            placements.extend(self.retained_identity_import_keys(&identity_id)?);
+            for (target, key_id) in &placements {
+                if view.scheme(target, *key_id)?
+                    == crate::wallet_backend::secret_seam::SecretScheme::Protected
+                {
+                    let scope = crate::wallet_backend::secret_prompt::SecretScope::IdentityKey {
+                        identity_id: identity_id.to_buffer(),
+                        target: target.clone(),
+                        key_id: *key_id,
+                    };
+                    if !access.identity_object_password_still_opens(&scope, password)? {
+                        return Err(TaskError::IdentityKeyPassphraseIncorrect);
+                    }
+                }
+            }
+            self.seal_merged_plaintext_keys(qi, password)?;
+        }
+        self.insert_local_qualified_identity_under_lock(qi, wallet_info)
+    }
+
     fn persist_loaded_identity(
         &self,
         qi: &mut QualifiedIdentity,
@@ -536,10 +569,9 @@ impl AppContext {
         password: Option<&crate::model::secret::Secret>,
         load_mode: IdentityLoadMode,
     ) -> Result<(), TaskError> {
-        let Some(password) = password else {
-            return self.insert_local_qualified_identity(qi, wallet_info);
-        };
-        validate_protection_password(password)?;
+        if let Some(password) = password {
+            validate_protection_password(password)?;
+        }
         let identity_id = qi.identity.id();
         let lock = self.identity_record_lock(identity_id);
         let _guard = lock
@@ -549,6 +581,15 @@ impl AppContext {
         if load_mode == IdentityLoadMode::RejectIfExists && existing.is_some() {
             return Err(TaskError::DuplicateProTxHash { identity_id });
         }
+        let Some(password) = password else {
+            if existing.is_none()
+                && qi.private_keys.has_plaintext_for_vault()
+                && self.protected_identity_verify_scope(qi)?.is_some()
+            {
+                return Err(TaskError::IdentityImportPasswordRequired);
+            }
+            return self.insert_local_qualified_identity_under_lock(qi, wallet_info);
+        };
         let mut relevant_keys = qi.private_keys.keys_set();
         relevant_keys.extend(self.retained_identity_import_keys(&identity_id)?);
         if let Some(existing) = existing {
@@ -619,13 +660,7 @@ impl AppContext {
         self.insert_local_qualified_identity_under_lock(qi, wallet_info)
     }
 
-    /// Seal every resident-plaintext key of `qi` Tier-2 under an
-    /// already-verified identity object `password`, marking each `InVault`.
-    /// Called on the in-place merge path when the target node is
-    /// password-protected, BEFORE the at-rest insert, so the fail-closed guard
-    /// (`encode_identity_blob_vault_first`) never sees a keyless key on a
-    /// protected identity. The one seal fallible write per new key is the
-    /// merge-path twin of `add_key_to_identity`'s post-broadcast seal.
+    /// Record placements and seal plaintext under the caller-held record lock and revalidated password.
     pub(super) fn seal_merged_plaintext_keys(
         &self,
         qi: &mut QualifiedIdentity,
@@ -634,6 +669,7 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let secret_access = backend.secret_access();
         let id = qi.identity.id().to_buffer();
+        self.record_identity_import_keys(&qi.identity.id(), &qi.private_keys.keys_set())?;
         // `take_plaintext_for_vault` flips each Clear/AlwaysClear key to `InVault`
         // and hands back its raw bytes; sealing each Tier-2 leaves the identity
         // fully protected with no keyless residue.
@@ -956,6 +992,13 @@ mod tests {
     }
 
     async fn open_protected_import_context(data_dir: &std::path::Path) -> Arc<AppContext> {
+        open_import_context(data_dir, None).await
+    }
+
+    async fn open_import_context(
+        data_dir: &std::path::Path,
+        prompt: Option<Arc<dyn crate::wallet_backend::secret_prompt::SecretPrompt>>,
+    ) -> Arc<AppContext> {
         let data_dir = data_dir.to_path_buf();
         ensure_env_file(&data_dir);
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
@@ -973,6 +1016,9 @@ mod tests {
             crate::model::user_role::UserRoleCell::default(),
         )
         .expect("offline testnet AppContext::new");
+        if let Some(prompt) = prompt {
+            ctx.install_secret_prompt(prompt);
+        }
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
         ctx.ensure_wallet_backend(sender)
@@ -993,6 +1039,139 @@ mod tests {
             std::fs::copy(dir.join(vault), snapshot.join(vault)).unwrap();
         }
         AppContext::open_secret_store(&snapshot).expect("reopen persisted vault snapshot")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_merge_retains_keys_after_failed_write_and_removal_cleans_them() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = open_import_context(
+            dir.path(),
+            Some(Arc::new(TestPrompt::new([ScriptedAnswer::once(
+                "synthetic-merge-password",
+            )]))),
+        )
+        .await;
+        let (mut original, _) = masternode_shaped_qi();
+        let id = original.identity.id();
+        let password = Secret::new("synthetic-merge-password");
+        ctx.persist_loaded_identity(
+            &mut original,
+            &None,
+            Some(&password),
+            IdentityLoadMode::RejectIfExists,
+        )
+        .unwrap();
+        let backend = ctx.wallet_backend().unwrap();
+        let scope = ctx
+            .protected_identity_verify_scope(&original)
+            .unwrap()
+            .unwrap();
+        let verified = backend
+            .secret_access()
+            .verify_identity_object_password(&scope)
+            .await
+            .unwrap();
+        let mut merged = original.clone();
+        for id in [8, 9] {
+            let key = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
+            merged.private_keys.insert_at(
+                (V, id),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    PrivateKeyData::Clear([id as u8; 32]),
+                ),
+            );
+        }
+        let fault = WriteFault::arm(2);
+        assert!(
+            ctx.persist_merged_identity(&mut merged, &None, Some(&verified))
+                .is_err()
+        );
+        assert_eq!(
+            fault.schemes(),
+            vec![SecretScheme::Protected, SecretScheme::Protected]
+        );
+        drop(fault);
+        let retained = ctx.retained_identity_import_keys(&id).unwrap();
+        assert!(
+            retained.contains(&(V, 8)) && retained.contains(&(V, 9)),
+            "every attempted merge placement must survive a failed seal"
+        );
+        let stored = ctx.get_local_qualified_identity(&id).unwrap().unwrap();
+        assert!(!stored.private_keys.has(&(V, 8)));
+        ctx.delete_local_qualified_identity(&id).unwrap();
+        let view = IdentityKeyView::new(backend.secret_store(), id.to_buffer());
+        assert_eq!(view.scheme(&V, 8).unwrap(), SecretScheme::Absent);
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_merge_rechecks_password_and_uses_current_protection() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::secret_seam::write_fault_test_support::WriteFault;
+        for reprotected in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let ctx = open_import_context(
+                dir.path(),
+                Some(Arc::new(TestPrompt::new([ScriptedAnswer::once(
+                    "synthetic-merge-password",
+                )]))),
+            )
+            .await;
+            let (mut original, _) = masternode_shaped_qi();
+            let id = original.identity.id();
+            let password = Secret::new("synthetic-merge-password");
+            ctx.persist_loaded_identity(
+                &mut original,
+                &None,
+                Some(&password),
+                IdentityLoadMode::RejectIfExists,
+            )
+            .unwrap();
+            let backend = ctx.wallet_backend().unwrap();
+            let scope = ctx
+                .protected_identity_verify_scope(&original)
+                .unwrap()
+                .unwrap();
+            let verified = backend
+                .secret_access()
+                .verify_identity_object_password(&scope)
+                .await
+                .unwrap();
+            ctx.unprotect_identity_keys(id, password).unwrap();
+            if reprotected {
+                ctx.protect_identity_keys(id, Secret::new("replacement-merge-password"), None)
+                    .unwrap();
+            }
+            let mut merged = original;
+            let key = IdentityPublicKey::random_key(9, Some(9), PlatformVersion::latest());
+            merged.private_keys.insert_at(
+                (V, 9),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    PrivateKeyData::Clear([9; 32]),
+                ),
+            );
+            let fault = WriteFault::arm(0);
+            let result = ctx.persist_merged_identity(&mut merged, &None, Some(&verified));
+            if reprotected {
+                assert!(matches!(
+                    result,
+                    Err(TaskError::IdentityKeyPassphraseIncorrect)
+                ));
+                assert!(
+                    fault.schemes().is_empty(),
+                    "stale password must fail before any secret write"
+                );
+            } else {
+                result.unwrap();
+                assert_eq!(fault.schemes(), vec![SecretScheme::Unprotected]);
+            }
+            drop(fault);
+            backend.shutdown().await;
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1067,6 +1246,18 @@ mod tests {
             .is_err()
         );
         drop(fault);
+        let error = ctx
+            .persist_loaded_identity(
+                &mut qi.clone(),
+                &None,
+                None,
+                IdentityLoadMode::RejectIfExists,
+            )
+            .expect_err("a retained protected import needs its original password");
+        assert_eq!(
+            error.to_string(),
+            "This import has password-protected keys saved from an earlier attempt. Retry the import with the password you chose for that attempt."
+        );
         let fault = WriteFault::arm(0);
         let result = ctx.persist_loaded_identity(
             &mut qi.clone(),
@@ -1861,14 +2052,7 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
-    /// Merge×Tier-2 (success path) — merging a new key into a password-protected
-    /// (Tier-2) node seals the new key Tier-2 *before* the at-rest insert, so
-    /// the fail-closed guard (`encode_identity_blob_vault_first`) never rejects
-    /// it. Drives the exact merge-seal step `load_identity` runs: seed a Tier-2
-    /// masternode, add a resident-plaintext voting key (as the merge produces),
-    /// verify the object password through the app prompt, then
-    /// `seal_merged_plaintext_keys`. The new key must flip to `InVault`, insert
-    /// cleanly (no `IdentityKeyProtectionDowngrade`), and read back `Protected`.
+    /// A protected merge persists its new key without creating any unprotected vault entry.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn merge_into_tier2_node_seals_new_key_and_insert_succeeds() {
         use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
@@ -1942,8 +2126,8 @@ mod tests {
             .verify_identity_object_password(&verify_scope)
             .await
             .expect("scripted password verifies");
-        ctx.seal_merged_plaintext_keys(&mut existing, &password)
-            .expect("seal merged plaintext key");
+        ctx.persist_merged_identity(&mut existing, &None, Some(&password))
+            .expect("persist merged protected key");
 
         // The new key flipped to InVault in the in-memory identity...
         assert!(
@@ -1953,10 +2137,6 @@ mod tests {
             ),
             "the merged voting key must be marked InVault after sealing",
         );
-
-        // ...the at-rest insert now passes the fail-closed guard...
-        ctx.insert_local_qualified_identity(&existing, &None)
-            .expect("insert of a Tier-2 node with a sealed new key must succeed");
 
         // ...and the new key reads back as a Tier-2 (Protected) sealed secret.
         let backend = ctx.wallet_backend().expect("backend wired");

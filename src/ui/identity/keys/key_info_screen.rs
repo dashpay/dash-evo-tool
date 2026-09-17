@@ -1398,7 +1398,13 @@ impl KeyInfoScreen {
         let id = self.identity.identity.id().to_buffer();
         let view = IdentityKeyView::new(backend.secret_store(), id);
         let (mut protected, mut unprotected) = (0usize, 0usize);
-        for (target, key_id) in self.identity.private_keys.keys_set() {
+        let mut placements = self.identity.private_keys.keys_set();
+        placements.extend(
+            self.app_context
+                .retained_identity_import_keys(&self.identity.identity.id())
+                .unwrap_or_default(),
+        );
+        for (target, key_id) in placements {
             match view.scheme(&target, key_id) {
                 Ok(SecretScheme::Protected) => protected += 1,
                 Ok(SecretScheme::Unprotected) => unprotected += 1,
@@ -1833,6 +1839,35 @@ mod tests {
             status: IdentityStatus::Active,
             network: dash_sdk::dpp::dashcore::Network::Testnet,
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protection_status_includes_retained_import_keys() {
+        let (ctx, _dir) = offline_ctx().await;
+        let key = public_key(9, Purpose::AUTHENTICATION);
+        let qi = identity_with(0x5C, &[]);
+        let id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None).unwrap();
+        let lock = ctx.identity_record_lock(id);
+        {
+            let _guard = lock.lock().unwrap();
+            ctx.record_identity_import_keys(&id, &[(MAIN, 9)].into_iter().collect())
+                .unwrap();
+            let backend = ctx.wallet_backend().unwrap();
+            IdentityKeyView::new(backend.secret_store(), id.to_buffer())
+                .store_protected(
+                    &MAIN,
+                    9,
+                    &[9; 32],
+                    &platform_wallet_storage::secrets::SecretString::new(
+                        "synthetic-protection-password",
+                    ),
+                )
+                .unwrap();
+        }
+        let screen = KeyInfoScreen::new(qi, key, None, &ctx);
+        assert!(screen.compute_protection_status() == IdentityProtectionStatus::Protected);
+        ctx.wallet_backend().unwrap().shutdown().await;
     }
 
     /// Removing this device's copy of one key must not touch a *different* key

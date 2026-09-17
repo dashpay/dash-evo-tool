@@ -649,6 +649,10 @@ pub enum TaskError {
     #[error("A different private key is already saved for this identity. Check the keys you are importing and try again.")]
     IdentityImportKeyConflict,
 
+    /// An unpublished import retained protected keys that need the original import password.
+    #[error("This import has password-protected keys saved from an earlier attempt. Retry the import with the password you chose for that attempt.")]
+    IdentityImportPasswordRequired,
+
     /// A keyless (unprotected) write was refused over a password-protected
     /// identity key, which would have silently stripped its protection. Raised
     /// by the protection-aware store guard so adding or changing a key on a

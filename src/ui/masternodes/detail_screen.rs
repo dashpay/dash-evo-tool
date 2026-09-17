@@ -392,7 +392,13 @@ impl MasternodeDetailView {
             self.identity.identity.id().to_buffer(),
         );
         let (mut protected, mut unprotected) = (0usize, 0usize);
-        for (target, key_id) in self.identity.private_keys.keys_set() {
+        let mut placements = self.identity.private_keys.keys_set();
+        placements.extend(
+            self.app_context
+                .retained_identity_import_keys(&self.identity.identity.id())
+                .unwrap_or_default(),
+        );
+        for (target, key_id) in placements {
             match view.scheme(&target, key_id) {
                 Ok(SecretScheme::Protected) => protected += 1,
                 Ok(SecretScheme::Unprotected) => unprotected += 1,
@@ -1240,7 +1246,7 @@ mod tests {
 
         // After sealing: the detail view reports Protected and stops offering
         // Add-protection. Rebuild the view to re-read the vault scheme.
-        let view = MasternodeDetailView::new(&ctx, qi);
+        let view = MasternodeDetailView::new(&ctx, qi.clone());
         assert_eq!(
             view.protection_tier(),
             ProtectionTier::Protected,
@@ -1249,6 +1255,21 @@ mod tests {
         assert!(
             !view.protection_tier().offers_add_protection(),
             "a sealed node must not re-offer Add-protection",
+        );
+
+        let mut retained_only = qi.clone();
+        let lock = ctx.identity_record_lock(identity_id);
+        {
+            let _guard = lock.lock().unwrap();
+            ctx.record_identity_import_keys(&identity_id, &qi.private_keys.keys_set())
+                .unwrap();
+        }
+        retained_only.private_keys = KeyStorage::default();
+        let retained_view = MasternodeDetailView::new(&ctx, retained_only);
+        assert_eq!(
+            retained_view.protection_tier(),
+            ProtectionTier::Protected,
+            "retained protected keys must determine the displayed tier"
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

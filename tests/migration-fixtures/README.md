@@ -9,9 +9,21 @@ the current build: it must come from the old binary itself, because the whole
 point is to exercise the on-disk shapes that binary actually wrote — schema
 version, table set, blob encodings, vault format, config keys.
 
-Nothing in this directory contains a fixture payload. The archives live outside
-git as GitHub Actions build artifacts; [`manifest.json`](manifest.json) is the
-only durable, version-controlled pointer to them.
+Wallet archives live outside git as GitHub Actions build artifacts;
+[`manifest.json`](manifest.json) indexes them. The additional
+[`v0.9.3-public-identities`](v0.9.3-public-identities/PROVENANCE.md) profile is a
+small, checked-in SQL snapshot containing only public explorer data, written
+using the actual v0.9.3 schema and serializer. It contains a user identity with
+DPNS and an Evonode identity with OWNER/TRANSFER public keys, without wallets
+or private keys. It was prepared programmatically, not captured through the GUI.
+
+`public_identity_fixture_migrates` restores this SQL and boots the real CLI twice.
+It checks aliases, types, status, balances, revisions, DPNS names and timestamps,
+and every public key including contract bounds against independent expected
+metadata, then verifies `identity-list`. It runs in the matrix CI job and with
+`--all-features`; a testing-only build needs `DET_CLI_BIN`. No live explorer
+access or fixture password is required. This covers public metadata preservation,
+not signing, voter/operator associations, or fetching proofs with the old SDK.
 
 ## Why this exists
 
@@ -252,6 +264,7 @@ uploaded:
 | Field | Meaning |
 |---|---|
 | `wallet_aliases` | Aliases `core-wallets-list` must report. Added to the aliases of every `migrated` wallet in `contents.wallets`. |
+| `public_identities` | Complete public-only identity metadata to verify in the source database, migrated storage, and CLI listing. |
 | `identity_ids` | Lowercase hex identity ids that must survive the migration. |
 | `starting_db_version` | The `data.db` schema version at capture. The boot fails if the staged file disagrees. |
 | `finish_unwire_sentinel` | Whether the boot must record the storage-update completion sentinel. Default `true`. |

@@ -731,7 +731,11 @@ pub fn check_identities(expected: &[String], found: &BTreeSet<String>) -> Result
 /// Opens a copy of a SQLite database, carrying its `-wal` / `-shm` siblings so
 /// uncheckpointed commits are visible. Returns `None` when the database does
 /// not exist.
-fn open_copy(db: &Path, scratch: &Path, label: &str) -> Result<Option<Connection>, String> {
+pub(crate) fn open_copy(
+    db: &Path,
+    scratch: &Path,
+    label: &str,
+) -> Result<Option<Connection>, String> {
     if !db.exists() {
         return Ok(None);
     }

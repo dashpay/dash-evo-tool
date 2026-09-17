@@ -7,7 +7,8 @@
 //! points `MIGRATION_FIXTURES_DIR` at an unpacked fixture set. Unset — the
 //! normal `cargo test --all-features --workspace` case — it reports the skip
 //! and passes, while the module-level unit tests below still exercise the
-//! harness's own logic.
+//! harness's own logic. The bundled public-only v0.9.3 profile also runs
+//! without downloaded archives whenever a CLI binary is available.
 //!
 //! What is deliberately *not* done here: booting `AppState` in-process. Under
 //! the `testing` feature `AppState::boot_inputs` substitutes an in-memory
@@ -34,6 +35,7 @@
 mod assertions;
 mod cli;
 mod manifest;
+mod public_identities;
 mod stage;
 
 use std::path::{Path, PathBuf};
@@ -151,6 +153,89 @@ fn fixtures_dir() -> Option<PathBuf> {
     }
 }
 
+fn bundled_public_fixture(root: &Path) -> Fixture {
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../migration-fixtures/v0.9.3-public-identities/expected.json"
+    ))
+    .expect("public fixture expectations");
+    let fixture: Fixture = serde_json::from_value(serde_json::json!({
+        "id": "v0.9.3-public-identities", "network": "testnet",
+        "git_tag": "v0.9.3", "det_version": "0.9.3",
+        "capture_method": "historical-writer+explorer", "profile": "public-identities-dpns",
+        "expect": {"derive_address": false, "starting_db_version": 11,
+            "public_identities": expected["identities"]}
+    }))
+    .expect("public fixture manifest");
+    let source = root.join(&fixture.id);
+    std::fs::create_dir_all(&source).unwrap();
+    let conn = rusqlite::Connection::open(source.join(DATA_DB)).unwrap();
+    // SQLite dumps can insert child rows before the referenced table exists.
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    conn.execute_batch(include_str!(
+        "../migration-fixtures/v0.9.3-public-identities/data.sql"
+    ))
+    .unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+    fixture
+}
+
+#[test]
+fn public_identity_fixture_contains_user_dpns_and_evonode_without_wallets() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = bundled_public_fixture(root.path());
+    let db = root.path().join(&fixture.id).join(DATA_DB);
+    let expected = &fixture.expect.public_identities;
+    assert_eq!(expected.len(), 2);
+    assert!(
+        expected
+            .iter()
+            .any(|id| id.identity_type == "User" && !id.dpns_names.is_empty())
+    );
+    assert!(expected.iter().any(|id| id.identity_type == "Evonode"
+        && id.public_keys.iter().any(|key| key.purpose == "OWNER")));
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM wallet", [], |row| row
+            .get::<_, u64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM identity", [], |row| row
+            .get::<_, u64>(0))
+            .unwrap(),
+        2
+    );
+    public_identities::check_source(expected, &db, &root.path().join("scratch")).unwrap();
+}
+
+#[test]
+fn public_identity_fixture_migrates() {
+    if !cfg!(feature = "cli")
+        && std::env::var_os(cli::BINARY_ENV).is_none()
+        && fixtures_dir().is_none()
+    {
+        println!("Skipping public identity CLI migration: enable cli or set DET_CLI_BIN");
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let fixture = bundled_public_fixture(root.path());
+    let options = Options {
+        skip_network: true,
+        ..Options::from_env()
+    };
+    run_fixture(root.path(), &fixture, &options).unwrap_or_else(|error| panic!("{error}"));
+}
+
 /// Applies the `MIGRATION_MATRIX_ONLY` filter, if any.
 fn select(fixtures: &[Fixture]) -> Vec<&Fixture> {
     let only = std::env::var(ONLY_ENV).unwrap_or_default();
@@ -230,6 +315,7 @@ fn run_scenario(
     // part of the contract for every fixture that has one, not an opt-in.
     let before_bytes = assertions::file_bytes(&data_db)?;
     let before_sentinels = assertions::migration_sentinels(&app_db, &scratch, "before")?;
+    public_identities::check_source(&fixture.expect.public_identities, &data_db, &scratch)?;
 
     let cli = cli::DetCli::new(&staged)?;
 
@@ -278,6 +364,14 @@ fn run_scenario(
         false => assertions::check_wallets(&scenario.listed_aliases, &first)?,
     };
     check_wallet_outcomes(&scenario.wallets, &data_db, &network_db, &scratch, "after")?;
+    public_identities::check_migrated(
+        &fixture.expect.public_identities,
+        &network_db,
+        &scratch,
+        "after",
+        &cli,
+        options.boot_timeout,
+    )?;
     assertions::check_identities(
         &fixture.expect.identity_ids,
         &assertions::identity_ids(&network_db, &scratch, "after")?,
@@ -309,6 +403,14 @@ fn run_scenario(
         "idempotent",
     )?;
     let second_schema = assertions::schema_snapshot(&data_db, &scratch, "idempotent")?;
+    public_identities::check_migrated(
+        &fixture.expect.public_identities,
+        &network_db,
+        &scratch,
+        "idempotent",
+        &cli,
+        options.boot_timeout,
+    )?;
     assertions::check_schema_outcome(before.as_ref(), second_schema.as_ref())?;
     if before_bytes.is_some() {
         assertions::check_bytes_unchanged(

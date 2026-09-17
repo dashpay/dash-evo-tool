@@ -29,6 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Migration tests also replay public user/DPNS and Evonode identities serialized
+  by v0.9.3, checking their metadata and every public key after repeated startup.
+
 - Historical-profile migration tests cover v0.9.3 and the September 8 weekly
   release, including protected wallets and repeat startup. CLI tools expose
   saved identity bindings, inspect storage without starting an upgrade, and

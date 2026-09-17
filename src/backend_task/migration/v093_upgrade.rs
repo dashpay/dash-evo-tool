@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 
-use rand::RngCore;
+use rand::Rng;
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

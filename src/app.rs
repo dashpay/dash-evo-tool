@@ -1328,9 +1328,15 @@ impl ThemeState {
         self.preference = new_theme;
         let mut detection_failed = false;
         self.resolved = if new_theme == ThemeMode::System {
-            match crate::ui::theme::try_detect_system_theme() {
-                Some(detected) => detected,
-                None => {
+            use crate::ui::theme::ThemeDetectionOutcome;
+            match crate::ui::theme::try_detect_system_theme_detailed() {
+                ThemeDetectionOutcome::Detected(detected) => detected,
+                // Keep the current theme silently: a cold portal request
+                // commonly exceeds the detection budget even though it will
+                // still resolve, and `poll_and_apply` picks up the late
+                // result on its next tick. This is not a failure.
+                ThemeDetectionOutcome::Pending => self.resolved,
+                ThemeDetectionOutcome::Failed => {
                     detection_failed = true;
                     self.resolved
                 }

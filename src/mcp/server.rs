@@ -327,18 +327,14 @@ impl ServerHandler for DashMcpService {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult {
-            tools: self.tool_router.list_all(),
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(ListToolsResult::with_all_items(self.tool_router.list_all()))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         let tcc = ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
     }

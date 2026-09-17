@@ -172,11 +172,11 @@ pub(super) fn print_help(tools: Option<&[Tool]>) {
 }
 
 pub(super) fn print_result(result: &rmcp::model::CallToolResult) {
-    use rmcp::model::RawContent;
+    use rmcp::model::ContentBlock;
 
     for content in &result.content {
-        match &content.raw {
-            RawContent::Text(text) => {
+        match content {
+            ContentBlock::Text(text) => {
                 println!("{}", text.text);
             }
             other => {

@@ -356,10 +356,11 @@ impl SecretAccess {
     /// rename, even if the sidecar read overlaps that rename.
     pub(crate) fn refresh_wallet_meta(
         &self,
-        load: impl FnOnce() -> BTreeMap<WalletSeedHash, PromptMeta>,
-    ) {
+        load: impl FnOnce() -> Result<BTreeMap<WalletSeedHash, PromptMeta>, TaskError>,
+    ) -> Result<(), TaskError> {
         let _write_guard = self.wallet_meta_write_guard();
-        self.replace_wallet_meta(load());
+        self.replace_wallet_meta(load()?);
+        Ok(())
     }
 
     fn replace_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, PromptMeta>) {

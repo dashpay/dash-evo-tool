@@ -140,10 +140,14 @@ mod tests {
 
     async fn fixture_with_app_kv(app_kv: Arc<DetKv>) -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
-        fixture_from_parts(dir, app_kv).await
+        fixture_from_parts(dir, app_kv, None).await
     }
 
-    async fn fixture_from_parts(dir: TempDir, app_kv: Arc<DetKv>) -> Fixture {
+    async fn fixture_from_parts(
+        dir: TempDir,
+        app_kv: Arc<DetKv>,
+        prompt: Option<Arc<dyn crate::wallet_backend::SecretPrompt>>,
+    ) -> Fixture {
         let data_dir = dir.path().to_path_buf();
         ensure_env_file(&data_dir);
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
@@ -160,6 +164,9 @@ mod tests {
             UserRoleCell::default(),
         )
         .expect("offline testnet AppContext");
+        if let Some(prompt) = prompt {
+            ctx.install_secret_prompt(prompt);
+        }
 
         let (tx, rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
@@ -185,12 +192,97 @@ mod tests {
     async fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let app_kv = AppContext::open_app_kv(dir.path()).expect("app kv");
-        fixture_from_parts(dir, app_kv).await
+        fixture_from_parts(dir, app_kv, None).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn legacy_envelope_hint_survives_hydration_and_rename() {
+        use crate::model::wallet::meta::WalletMetaV1;
+        use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
+        use crate::wallet_backend::SecretScope;
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app_kv = AppContext::open_app_kv(dir.path()).unwrap();
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::Cancel,
+            ScriptedAnswer::Cancel,
+            ScriptedAnswer::Cancel,
+        ]));
+        let f = fixture_from_parts(dir, app_kv, Some(prompt.clone())).await;
+        let backend = f.ctx.wallet_backend().expect("backend");
+        let meta = backend
+            .wallet_meta()
+            .get(f.ctx.network, &f.seed_hash)
+            .unwrap();
+        let key = crate::wallet_backend::wallet_meta::key_for(f.ctx.network, &f.seed_hash);
+        f.ctx
+            .app_kv()
+            .put(
+                DetScope::Global,
+                &key,
+                &WalletMetaV1 {
+                    alias: "Legacy".into(),
+                    xpub_encoded: meta.xpub_encoded.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let seeds = WalletSeedView::new(backend.secret_store());
+        seeds.delete_raw(&f.seed_hash).unwrap();
+        seeds
+            .set(
+                &f.seed_hash,
+                &StoredSeedEnvelope {
+                    encrypted_seed: zeroize::Zeroizing::new(vec![0; 80]),
+                    salt: vec![0; 16],
+                    nonce: vec![0; 12],
+                    password_hint: Some("Legacy hint".into()),
+                    uses_password: true,
+                    xpub_encoded: meta.xpub_encoded,
+                },
+            )
+            .unwrap();
+        f.ctx.wallets.write().unwrap().clear();
+        backend.hydrate_context_wallets(&f.ctx).unwrap();
+        let scope = SecretScope::HdSeed {
+            seed_hash: f.seed_hash,
+        };
+        for label in ["Legacy", "Renamed", "After unlock"] {
+            if label == "Renamed" {
+                f.ctx.rename_hd_wallet(f.seed_hash, label.into()).unwrap();
+                backend.hydrate_context_wallets(&f.ctx).unwrap();
+            }
+            if label == "After unlock" {
+                seeds
+                    .set_protected(
+                        &f.seed_hash,
+                        &[0x5A; 64],
+                        &platform_wallet_storage::secrets::SecretString::new("test-only-password"),
+                    )
+                    .unwrap();
+                seeds.delete(&f.seed_hash).unwrap();
+                f.ctx.rename_hd_wallet(f.seed_hash, label.into()).unwrap();
+                backend.hydrate_context_wallets(&f.ctx).unwrap();
+            }
+            assert!(
+                backend
+                    .secret_access()
+                    .with_secret(&scope, |_| Ok(()))
+                    .await
+                    .is_err()
+            );
+            let request = prompt.requests().pop().expect("password prompt");
+            assert_eq!(request.display_label, label);
+            assert_eq!(request.hint.as_deref(), Some("Legacy hint"));
+        }
     }
 
     #[derive(Default)]
     struct ReadGateState {
         armed: bool,
+        intercept_write: bool,
         intercepted: bool,
         released: bool,
     }
@@ -209,6 +301,11 @@ mod tests {
                 armed: true,
                 ..Default::default()
             };
+        }
+
+        fn arm_write(&self) {
+            self.arm();
+            self.state.lock().unwrap().intercept_write = true;
         }
 
         fn wait_until_intercepted(&self) {
@@ -234,7 +331,11 @@ mod tests {
         fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
             let value = self.inner.get(scope, key)?;
             let mut state = self.state.lock().expect("gate state");
-            if state.armed && !state.intercepted && key.contains(":wallet_meta:") {
+            if state.armed
+                && !state.intercept_write
+                && !state.intercepted
+                && key.contains(":wallet_meta:")
+            {
                 state.intercepted = true;
                 self.changed.notify_all();
                 state = self
@@ -247,6 +348,20 @@ mod tests {
         }
 
         fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let mut state = self.state.lock().unwrap();
+            if state.armed
+                && state.intercept_write
+                && !state.intercepted
+                && key.contains(":wallet_meta:")
+            {
+                state.intercepted = true;
+                self.changed.notify_all();
+                state = self
+                    .changed
+                    .wait_while(state, |state| !state.released)
+                    .unwrap();
+            }
+            drop(state);
             self.inner.put(scope, key, value)
         }
 
@@ -573,6 +688,94 @@ mod tests {
             alias, "later",
             "the later invocation must be the final persisted alias"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_hd_registrations_assign_distinct_default_names() {
+        let store = Arc::new(FirstWalletMetaReadGate::default());
+        let f = fixture_with_app_kv(Arc::new(DetKv::from_store(store.clone()))).await;
+        store.arm_write();
+        let register = |byte| {
+            let ctx = f.ctx.clone();
+            let runtime = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                let _runtime_guard = runtime.enter();
+                let seed = [byte; 64];
+                let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).unwrap();
+                ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            })
+        };
+        let first = register(0x61);
+        store.wait_until_intercepted();
+        let second = register(0x62);
+        std::thread::sleep(Duration::from_millis(200));
+        store.release();
+        let first = first.join().unwrap().unwrap();
+        let second = second.join().unwrap().unwrap();
+        let mut aliases = [first, second].map(|(hash, wallet)| {
+            let alias = wallet.read().unwrap().alias.clone().unwrap();
+            assert_eq!(
+                f.ctx
+                    .wallet_backend()
+                    .unwrap()
+                    .wallet_meta()
+                    .get(f.ctx.network, &hash)
+                    .unwrap()
+                    .alias,
+                alias
+            );
+            alias
+        });
+        aliases.sort();
+        assert_eq!(aliases, ["Wallet 2", "Wallet 3"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_racing_hd_rename_rejects_collision_without_seed_write() {
+        use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+
+        let store = Arc::new(FirstWalletMetaReadGate::default());
+        let f = fixture_with_app_kv(Arc::new(DetKv::from_store(store.clone()))).await;
+        store.arm();
+        let ctx = f.ctx.clone();
+        let hash = f.seed_hash;
+        let rename = std::thread::spawn(move || ctx.rename_hd_wallet(hash, "Savings".into()));
+        store.wait_until_intercepted();
+        let seed = [0x63; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("Savings".into()), None).unwrap();
+        let new_hash = wallet.seed_hash();
+        let ctx = f.ctx.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let registration = std::thread::spawn(move || {
+            let _runtime_guard = runtime.enter();
+            tx.send(ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh))
+                .unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_millis(200)).ok();
+        store.release();
+        rename.join().unwrap().unwrap();
+        let result = early.unwrap_or_else(|| rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        registration.join().unwrap();
+        assert!(matches!(
+            result,
+            Err(TaskError::WalletAliasAlreadyUsed { .. })
+        ));
+        let secrets = f.ctx.secret_store();
+        let seeds = WalletSeedView::new(&secrets);
+        assert!(seeds.get_raw(&new_hash).unwrap().is_none());
+        assert!(seeds.get(&new_hash).unwrap().is_none());
+        assert!(!f.ctx.wallets.read().unwrap().contains_key(&new_hash));
+        assert!(
+            f.ctx
+                .wallet_backend()
+                .unwrap()
+                .wallet_meta()
+                .get(f.ctx.network, &new_hash)
+                .is_none()
+        );
+        assert_eq!(persisted_alias(&f), "Savings");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

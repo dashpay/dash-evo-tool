@@ -101,6 +101,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Legacy wallet password hints survive hydration and renaming. Retried key
+  migrations refresh displayed names when duplicate names are disambiguated.
+
 - Wallet and key renames immediately update displayed names and password prompts,
   including after concurrent imports or delayed task results.
 

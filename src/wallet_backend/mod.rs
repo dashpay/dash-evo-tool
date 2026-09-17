@@ -708,11 +708,9 @@ impl WalletBackend {
         let single_key_wallets = view.hydrate_wallets();
         let reconstructed = self.hydrate_wallets_for_network(ctx.network)?;
 
-        // Seed the JIT chokepoint's prompt-copy metadata so a passphrase
-        // prompt can show the wallet alias / password hint and the key
-        // nickname / hint. Absent metadata degrades to a generic label, so
-        // this is best-effort and runs even when no wallets reconstruct.
-        self.seed_secret_access_meta();
+        // Preserve legacy password metadata before publishing prompt labels,
+        // including when no wallets reconstruct.
+        self.seed_secret_access_meta()?;
 
         if reconstructed.is_empty() && single_key_wallets.is_empty() {
             return Ok(());
@@ -2117,22 +2115,36 @@ impl WalletBackend {
     /// Refresh HD prompt-copy metadata from the current sidecar under the
     /// same writer lock as metadata writes. The single-key index is shared
     /// directly. Missing metadata degrades to a generic prompt label.
-    fn seed_secret_access_meta(&self) {
+    fn seed_secret_access_meta(&self) -> Result<(), TaskError> {
         self.inner.secret_access.refresh_wallet_meta(|| {
-            self.wallet_meta()
+            // This view shares the outer writer lock without acquiring it again.
+            let metadata = WalletMetaView::new(&self.inner.app_kv);
+            let seeds = self.wallet_seeds();
+            metadata
                 .list(self.inner.network)
                 .into_iter()
-                .map(|(seed_hash, meta)| {
-                    (
+                .map(|(seed_hash, mut meta)| {
+                    // V1 metadata omits password fields; preserve them before
+                    // the legacy envelope is removed by a successful unlock.
+                    if !meta.uses_password
+                        && seeds.scheme(&seed_hash)? == secret_seam::SecretScheme::Absent
+                        && let Some(envelope) = seeds.legacy_envelope_get(&seed_hash)?
+                        && envelope.uses_password
+                    {
+                        meta.uses_password = true;
+                        meta.password_hint = envelope.password_hint;
+                        metadata.set_migrated(self.inner.network, &seed_hash, &meta)?;
+                    }
+                    Ok((
                         seed_hash,
                         PromptMeta {
                             alias: (!meta.alias.is_empty()).then_some(meta.alias),
                             password_hint: meta.password_hint,
                         },
-                    )
+                    ))
                 })
                 .collect()
-        });
+        })
     }
 
     /// View over the single-key (imported WIF) operations. The view

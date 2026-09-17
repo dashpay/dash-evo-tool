@@ -313,19 +313,21 @@ fn platform_compatibility_prune_failure_preserves_original() {
 #[test]
 fn platform_compatibility_rejects_backup_links_to_live_databases() {
     let (dir, path, target) = fixture();
-    let candidate = dir
-        .path()
-        .join("wallet.sqlite.platform-67d4ef3-backup-link.sqlite");
-    for live in [&path, &target] {
-        std::os::unix::fs::symlink(live, &candidate).unwrap();
-        assert!(remove_backups(&path).is_err());
-        assert!(live.exists());
-        assert!(candidate.symlink_metadata().is_ok());
-        std::fs::remove_file(&candidate).unwrap();
-        std::fs::hard_link(live, &candidate).unwrap();
-        assert!(remove_backups(&path).is_err());
-        assert!(live.exists());
-        std::fs::remove_file(&candidate).unwrap();
+    for extension in ["sqlite", "pending"] {
+        let candidate = dir.path().join(format!(
+            "wallet.sqlite.platform-67d4ef3-backup-link.{extension}"
+        ));
+        for live in [&path, &target] {
+            std::os::unix::fs::symlink(live, &candidate).unwrap();
+            assert!(remove_backups(&path).is_err());
+            assert!(live.exists());
+            assert!(candidate.symlink_metadata().is_ok());
+            std::fs::remove_file(&candidate).unwrap();
+            std::fs::hard_link(live, &candidate).unwrap();
+            assert!(remove_backups(&path).is_err());
+            assert!(live.exists());
+            std::fs::remove_file(&candidate).unwrap();
+        }
     }
     let live_alias = dir.path().join("alias.sqlite");
     let live_target = dir
@@ -364,7 +366,7 @@ fn platform_compatibility_errors_name_their_actual_cause() {
         assert!(error.to_string().contains("disk"));
     }
     let io = UpgradeError::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
-    assert!(matches!(io, UpgradeError::Io(_)) && io.is_retryable());
+    assert!(matches!(io, UpgradeError::AccessDenied(_)) && !io.is_retryable());
     assert!(!io.to_string().contains("disk"), "{io}");
 
     let generic = UpgradeError::from(sqlite_failure(rusqlite::ffi::SQLITE_CORRUPT));
@@ -520,4 +522,78 @@ fn platform_compatibility_writer_exclusion_covers_staged_validation() {
         assert!(matches!(error, rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::DatabaseBusy));
         Ok(())
     }).unwrap();
+}
+
+#[test]
+fn platform_compatibility_pending_cleanup_preserves_published_snapshot() {
+    let (dir, path, _target) = fixture();
+    let published = backup(&path).unwrap();
+    let pending = dir
+        .path()
+        .join("wallet.sqlite.platform-67d4ef3-backup-crash.pending");
+    std::fs::copy(&path, &pending).unwrap();
+    retain_one_backup(&path, None).unwrap();
+    assert!(!pending.exists());
+    assert!(published.exists());
+    assert!(path.exists());
+}
+
+#[test]
+fn platform_compatibility_deletion_removes_pending_snapshots() {
+    let (dir, path, _target) = fixture();
+    let pending = dir
+        .path()
+        .join("wallet.sqlite.platform-67d4ef3-backup-crash.pending");
+    let unrelated = dir
+        .path()
+        .join("other.sqlite.platform-67d4ef3-backup-crash.pending");
+    std::fs::copy(&path, &pending).unwrap();
+    std::fs::copy(&path, &unrelated).unwrap();
+    remove_backups(&path).unwrap();
+    assert!(!pending.exists());
+    assert!(unrelated.exists());
+    assert!(path.exists());
+}
+
+#[test]
+fn platform_compatibility_transient_sqlite_errors_can_retry() {
+    for code in [rusqlite::ffi::SQLITE_IOERR, rusqlite::ffi::SQLITE_NOMEM] {
+        let source = UpgradeError::from(sqlite_failure(code));
+        assert!(source.is_retryable(), "{source:?}");
+        assert!(!crate::backend_task::is_terminal_storage_open_error(
+            &crate::backend_task::error::TaskError::PlatformDatabaseUpgrade { source }
+        ));
+    }
+}
+
+#[test]
+fn platform_compatibility_deterministic_io_errors_do_not_retry() {
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        std::io::ErrorKind::InvalidInput,
+    ] {
+        let source = UpgradeError::from(std::io::Error::from(kind));
+        assert!(!source.is_retryable(), "{source:?}");
+    }
+}
+
+#[test]
+fn platform_compatibility_transient_io_errors_preserve_causes() {
+    use std::io::ErrorKind;
+    for kind in [
+        ErrorKind::Interrupted,
+        ErrorKind::WouldBlock,
+        ErrorKind::TimedOut,
+        ErrorKind::ResourceBusy,
+        ErrorKind::StorageFull,
+        ErrorKind::OutOfMemory,
+    ] {
+        let error = UpgradeError::from(std::io::Error::from(kind));
+        assert!(error.is_retryable(), "{error:?}");
+        let cause = std::error::Error::source(&error).unwrap();
+        assert_eq!(cause.downcast_ref::<std::io::Error>().unwrap().kind(), kind);
+        if kind == ErrorKind::OutOfMemory {
+            assert!(error.to_string().contains("Close other applications"));
+        }
+    }
 }

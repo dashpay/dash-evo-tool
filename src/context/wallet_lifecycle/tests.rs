@@ -6907,3 +6907,55 @@ async fn reconcile_managed_identities_skips_identities_linked_to_another_wallet(
 
     backend.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_deletes_upgrade_backups_without_backend() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    assert!(ctx.wallet_backend().is_err());
+    let wallet =
+        crate::model::wallet::Wallet::new_from_seed([0xA7; 64], Network::Testnet, None, None)
+            .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.wallets
+        .write()
+        .unwrap()
+        .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+    let backups = [
+        "det-app.sqlite.platform-67d4ef3-backup-fixture.sqlite",
+        "det-testnet.sqlite.platform-67d4ef3-backup-fixture.pending",
+        "backups/auto/pre-migration-det-testnet-1-to-2-20260915T120001Z.db",
+    ]
+    .map(|name| ctx.data_dir().join(name));
+    std::fs::create_dir_all(backups[2].parent().unwrap()).unwrap();
+    for backup in &backups {
+        std::fs::write(backup, b"old wallet history").unwrap();
+    }
+    ctx.remove_wallet(&seed_hash).unwrap();
+    for backup in &backups {
+        assert!(!backup.exists(), "{}", backup.display());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_warns_when_backup_cleanup_fails_without_backend() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    assert!(ctx.wallet_backend().is_err());
+    let wallet =
+        crate::model::wallet::Wallet::new_from_seed([0xA7; 64], Network::Testnet, None, None)
+            .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.wallets
+        .write()
+        .unwrap()
+        .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+    let backup = ctx
+        .data_dir()
+        .join("det-app.sqlite.platform-67d4ef3-backup-blocked.pending");
+    std::fs::create_dir(&backup).unwrap();
+    crate::ui::components::MessageBanner::clear_all_global(ctx.egui_ctx());
+    ctx.remove_wallet(&seed_hash).unwrap();
+    assert!(backup.is_dir());
+    assert!(crate::ui::components::MessageBanner::has_global(
+        ctx.egui_ctx()
+    ));
+}

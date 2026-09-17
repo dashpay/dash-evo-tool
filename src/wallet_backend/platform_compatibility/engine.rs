@@ -21,6 +21,18 @@ pub enum UpgradeError {
     )]
     StorageFull(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error(
+        "Could not access wallet storage. Check that the drive is connected and available, then try again."
+    )]
+    StorageUnavailable(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
+        "Could not upgrade wallet data because memory is exhausted. Close other applications and try again."
+    )]
+    OutOfMemory(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
+        "Could not write wallet data. Allow write access to the app data folder, then restart the application."
+    )]
+    AccessDenied(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
         "Could not upgrade wallet data, and your data was not changed. Restart the application to try again, or keep your data folder and reopen the previous application version."
     )]
     Sqlite(#[source] rusqlite::Error),
@@ -51,10 +63,15 @@ pub enum UpgradeError {
 }
 
 impl UpgradeError {
-    /// Whether the user can clear the cause (close another instance, free space) and retry;
-    /// every other failure repeats identically on the same data.
+    /// Whether retrying can recover from contention or temporary resource exhaustion.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::InUse(_) | Self::StorageFull(_) | Self::Io(_))
+        matches!(
+            self,
+            Self::InUse(_)
+                | Self::StorageFull(_)
+                | Self::StorageUnavailable(_)
+                | Self::OutOfMemory(_)
+        )
     }
 }
 
@@ -65,6 +82,11 @@ impl From<rusqlite::Error> for UpgradeError {
                 Self::InUse(error)
             }
             Some(rusqlite::ErrorCode::DiskFull) => Self::StorageFull(Box::new(error)),
+            Some(rusqlite::ErrorCode::SystemIoFailure) => Self::StorageUnavailable(Box::new(error)),
+            Some(rusqlite::ErrorCode::OutOfMemory) => Self::OutOfMemory(Box::new(error)),
+            Some(rusqlite::ErrorCode::PermissionDenied | rusqlite::ErrorCode::ReadOnly) => {
+                Self::AccessDenied(Box::new(error))
+            }
             _ => Self::Sqlite(error),
         }
     }
@@ -72,10 +94,18 @@ impl From<rusqlite::Error> for UpgradeError {
 
 impl From<std::io::Error> for UpgradeError {
     fn from(error: std::io::Error) -> Self {
-        if error.kind() == std::io::ErrorKind::StorageFull {
-            Self::StorageFull(Box::new(error))
-        } else {
-            Self::Io(error)
+        use std::io::ErrorKind;
+        match error.kind() {
+            ErrorKind::StorageFull => Self::StorageFull(Box::new(error)),
+            ErrorKind::OutOfMemory => Self::OutOfMemory(Box::new(error)),
+            ErrorKind::Interrupted
+            | ErrorKind::WouldBlock
+            | ErrorKind::TimedOut
+            | ErrorKind::ResourceBusy => Self::StorageUnavailable(Box::new(error)),
+            ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => {
+                Self::AccessDenied(Box::new(error))
+            }
+            _ => Self::Io(error),
         }
     }
 }
@@ -248,7 +278,11 @@ fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathB
             let bridge = directory == parent
                 && name
                     .strip_prefix(&prefix)
-                    .and_then(|suffix| suffix.strip_suffix(".sqlite"))
+                    .and_then(|suffix| {
+                        suffix
+                            .strip_suffix(".sqlite")
+                            .or_else(|| suffix.strip_suffix(".pending"))
+                    })
                     .is_some_and(|suffix| {
                         !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
                     });
@@ -327,10 +361,18 @@ fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
 
 /// Retain the newest snapshot across both upgrade-backup formats.
 pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
-    let mut snapshots = backups_in(path, auto_dir)?
-        .into_iter()
-        .map(|backup| Ok((std::fs::metadata(&backup)?.modified()?, backup)))
-        .collect::<std::io::Result<Vec<_>>>()?;
+    let mut snapshots = Vec::new();
+    for backup in backups_in(path, auto_dir)? {
+        // Unpublished copies may be incomplete and must never supersede a recovery snapshot.
+        if backup
+            .extension()
+            .is_some_and(|extension| extension == "pending")
+        {
+            remove_backup(&backup, path)?;
+        } else {
+            snapshots.push((std::fs::metadata(&backup)?.modified()?, backup));
+        }
+    }
     snapshots.sort();
     snapshots.pop();
     for (_, backup) in snapshots {
@@ -375,7 +417,9 @@ fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
     file.as_file().sync_all()?;
     // A verified snapshot supersedes old backups only while the original is still untouched.
     for old in backups(path)? {
-        remove_backup(&old, path)?;
+        if old != file.path() {
+            remove_backup(&old, path)?;
+        }
     }
     let kept = file.path().with_extension("sqlite");
     file.persist_noclobber(&kept).map_err(|e| e.error)?;

@@ -39,6 +39,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Retention and deletion cover upstream pre-migration snapshots too. Cleanup
   rejects links and non-files, reports pruning failures, and retries incomplete
   identity backup deletion at the next startup.
+  Cleanup also removes unfinished snapshots left by a crash and runs when
+  removing a wallet without an available backend. Temporary storage and memory
+  failures remain retryable; permission and invalid-input failures surface directly.
 
 ### Added
 

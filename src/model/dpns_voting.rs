@@ -10,7 +10,6 @@ use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
 use dash_sdk::platform::Identifier;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -73,9 +72,7 @@ pub struct DpnsVoteOperationId([u8; 16]);
 impl DpnsVoteOperationId {
     /// Generate a random operation identifier without adding a UUID dependency.
     pub fn random() -> Self {
-        let mut bytes = [0; 16];
-        rand::rng().fill_bytes(&mut bytes);
-        Self(bytes)
+        Self(rand::random())
     }
 
     /// Return the stable persisted byte representation.
@@ -446,6 +443,17 @@ mod tests {
         assert!(dpns_schedule_is_overdue(1_000, 121_001));
         assert!(!dpns_schedule_is_overdue(1_000, 999));
         assert!(!dpns_schedule_is_overdue(u64::MAX, u64::MAX));
+    }
+
+    #[test]
+    fn operation_ids_are_random_and_distinct() {
+        let ids: std::collections::BTreeSet<_> =
+            (0..64).map(|_| DpnsVoteOperationId::random()).collect();
+        assert_eq!(ids.len(), 64, "identifiers must not repeat");
+        assert!(
+            !ids.contains(&DpnsVoteOperationId::from_bytes([0; 16])),
+            "identifiers must not be all-zero"
+        );
     }
 
     fn target(

@@ -28,7 +28,7 @@ pub struct QueryWithdrawals;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
 pub struct QueryWithdrawalsParams {
-    /// Which withdrawals to query: "queued" (default) or "completed".
+    /// Which withdrawals to query: "queued" (default) or "completed" (complete, expired, or failed).
     #[serde(default = "default_queued")]
     pub status: String,
     /// Maximum number of withdrawals to return (1–100). Defaults to 50.
@@ -110,7 +110,7 @@ impl ToolBase for QueryWithdrawals {
             "Query withdrawal documents from Platform. \
              Pass status=\"queued\" (default) for in-queue withdrawals \
              (queued, pooled, or broadcasted) or status=\"completed\" for \
-             finished ones (complete or expired). \
+             finished ones (complete, expired, or failed). \
              Use limit and start_after for pagination."
                 .into(),
         )

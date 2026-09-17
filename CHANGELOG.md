@@ -115,8 +115,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Platform is pinned to `f73f5d6098a739d29a1cebc2f7941e062ee8a517`, including
   dashpay/platform#4653 and #4764 for HASH160 profile creation and replacement
   that skip eligible keys unavailable to the signer.
+  Identities without an eligible key available locally receive the specific
+  profile-key error before publication.
   The updated Platform API also uses checked shielded balance totals,
   versioned token reward calculations, and a terminal failed-withdrawal status.
+  Withdrawal history labels and tool descriptions include all terminal statuses.
   Writes require a wallet-linked identity; clearing existing profile fields
   reports an explicit error because the upstream API preserves omitted fields.
 

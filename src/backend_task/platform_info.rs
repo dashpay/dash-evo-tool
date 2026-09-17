@@ -823,7 +823,7 @@ impl AppContext {
                 if withdrawal_docs.is_empty() {
                     Ok(BackendTaskSuccessResult::PlatformInfo(
                         PlatformInfoTaskResult::TextResult(
-                            "No recently completed withdrawals found.".to_string(),
+                            "No recent withdrawal history found.".to_string(),
                         ),
                     ))
                 } else {
@@ -845,7 +845,7 @@ impl AppContext {
                         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
                     let formatted = format!(
-                        "Recently Completed Withdrawals:\n\n\
+                        "Recent Withdrawal History:\n\n\
                          Total Amount: {:.8} Dash\n\
                          Count: {} withdrawals\n\n\
                          Recent Transactions:\n    {}",

@@ -896,19 +896,33 @@ fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
 // WalletBackend integration
 // ---------------------------------------------------------------------------
 
-/// Require an active HIGH or CRITICAL ECDSA authentication key for profile writes.
-fn ensure_profile_signing_key(identity: &dash_sdk::platform::Identity) -> Result<(), TaskError> {
+/// Require an active HIGH or CRITICAL ECDSA authentication key available to the signer.
+fn ensure_profile_signing_key(
+    identity: &dash_sdk::platform::Identity,
+    signer: &crate::model::qualified_identity::QualifiedIdentity,
+) -> Result<(), TaskError> {
     use crate::backend_task::dashpay::errors::DashPayError;
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::identity::signer::Signer;
     use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 
     identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            [SecurityLevel::HIGH, SecurityLevel::CRITICAL].into(),
-            [KeyType::ECDSA_SECP256K1, KeyType::ECDSA_HASH160].into(),
-            false,
-        )
+        .public_keys()
+        .values()
+        .find(|key| {
+            key.purpose() == Purpose::AUTHENTICATION
+                && matches!(
+                    key.security_level(),
+                    SecurityLevel::HIGH | SecurityLevel::CRITICAL
+                )
+                && matches!(
+                    key.key_type(),
+                    KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
+                )
+                && !key.is_disabled()
+                && signer.can_sign_with(key)
+        })
         .ok_or(DashPayError::ProfileSigningKeyUnsupported)?;
     Ok(())
 }
@@ -936,7 +950,7 @@ impl WalletBackend {
                 .identity_manager
                 .managed_identity(&owner)
                 .ok_or(DashPayError::ProfileWalletRequired)?;
-            ensure_profile_signing_key(&managed.identity)?;
+            ensure_profile_signing_key(&managed.identity, identity)?;
         }
         let identity_wallet = wallet.identity();
         let dashpay = identity_wallet.dashpay();
@@ -1974,6 +1988,96 @@ mod tests {
         assert_eq!(det.display_name.as_deref(), Some("Friend"));
     }
 
+    fn profile_signer(
+        identity: &dash_sdk::platform::Identity,
+        available_ids: &[u32],
+    ) -> crate::model::qualified_identity::QualifiedIdentity {
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::{
+            IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+        };
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+
+        let mut signer = QualifiedIdentity {
+            identity: identity.clone(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        for &id in available_ids {
+            let key = identity.public_keys().get(&id).unwrap().clone();
+            signer.private_keys.insert_at(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
+                (key.into(), PrivateKeyData::InVault),
+            );
+        }
+        signer
+    }
+
+    #[test]
+    fn profile_signing_key_requires_an_available_eligible_key() {
+        use crate::backend_task::dashpay::errors::DashPayError;
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{IdentityPublicKey, KeyType, Purpose, SecurityLevel};
+
+        let mut identity = dash_sdk::platform::Identity::default_versioned(
+            dash_sdk::dpp::version::LATEST_PLATFORM_VERSION,
+        )
+        .unwrap();
+        identity.set_public_keys(
+            [
+                (0, KeyType::ECDSA_HASH160, SecurityLevel::HIGH),
+                (1, KeyType::ECDSA_SECP256K1, SecurityLevel::CRITICAL),
+                (2, KeyType::ECDSA_SECP256K1, SecurityLevel::MEDIUM),
+            ]
+            .into_iter()
+            .map(|(id, key_type, security_level)| {
+                (
+                    id,
+                    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                        id,
+                        purpose: Purpose::AUTHENTICATION,
+                        security_level,
+                        contract_bounds: None,
+                        key_type,
+                        read_only: false,
+                        data: vec![0; key_type.default_size()].into(),
+                        disabled_at: None,
+                    }),
+                )
+            })
+            .collect(),
+        );
+
+        for available_ids in [&[][..], &[2][..]] {
+            let signer = profile_signer(&identity, available_ids);
+            assert!(
+                matches!(
+                    ensure_profile_signing_key(&identity, &signer),
+                    Err(TaskError::DashPay(
+                        DashPayError::ProfileSigningKeyUnsupported
+                    ))
+                ),
+                "available key IDs: {available_ids:?}"
+            );
+        }
+        for available_ids in [&[0][..], &[1][..], &[0, 1][..]] {
+            let signer = profile_signer(&identity, available_ids);
+            assert!(ensure_profile_signing_key(&identity, &signer).is_ok());
+        }
+    }
+
     #[test]
     fn profile_signing_key_policy_accepts_supported_authentication_keys() {
         use crate::backend_task::dashpay::errors::DashPayError;
@@ -1986,7 +2090,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            ensure_profile_signing_key(&identity),
+            ensure_profile_signing_key(&identity, &profile_signer(&identity, &[])),
             Err(TaskError::DashPay(
                 DashPayError::ProfileSigningKeyUnsupported
             ))
@@ -2108,7 +2212,7 @@ mod tests {
                 .into(),
             );
             assert_eq!(
-                ensure_profile_signing_key(&identity).is_ok(),
+                ensure_profile_signing_key(&identity, &profile_signer(&identity, &[0])).is_ok(),
                 supported,
                 "{key_type:?} {purpose:?} {level:?} disabled={disabled}"
             );

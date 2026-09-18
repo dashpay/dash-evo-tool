@@ -276,6 +276,7 @@ fn platform_compatibility_backup_removal_only_touches_the_named_database() {
             "det-mainnet.sqlite.platform-67d4ef3-backup-c3.sqlite",
             "det-testnet-shielded.sqlite",
             "det-testnet.sqlite",
+            "det-testnet.sqlite.platform-upgrade.lock",
         ]
     );
     remove_backups(&dir.path().join("absent.sqlite")).unwrap();
@@ -595,5 +596,72 @@ fn platform_compatibility_transient_io_errors_preserve_causes() {
         if kind == ErrorKind::OutOfMemory {
             assert!(error.to_string().contains("Close other applications"));
         }
+    }
+}
+
+#[test]
+fn platform_compatibility_active_snapshot_survives_concurrent_cleanup() {
+    use std::io::{BufRead, Read, Write};
+    const CHILD_DIR: &str = "DET_PLATFORM_COMPAT_ACTIVE_FIXTURE_DIR";
+    if let Some(dir) = std::env::var_os(CHILD_DIR) {
+        let path = PathBuf::from(dir).join("wallet.sqlite");
+        backup_with_hook(&path, |pending| {
+            // Pause the real writer after creation, before it copies the database.
+            println!("PENDING:{}", pending.display());
+            std::io::stdout().flush()?;
+            std::io::stdin().read_exact(&mut [0])?;
+            Ok(())
+        })
+        .unwrap();
+        return;
+    }
+    for crash in [false, true] {
+        let (dir, path, _target) = fixture();
+        let test_name = std::thread::current().name().unwrap().to_owned();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test_name, "--nocapture"])
+            .env(CHILD_DIR, dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        let pending = loop {
+            let mut line = String::new();
+            assert_ne!(
+                reader.read_line(&mut line).unwrap(),
+                0,
+                "Writer exited before creating a snapshot"
+            );
+            if let Some((_, path)) = line.trim().split_once("PENDING:") {
+                break PathBuf::from(path);
+            }
+        };
+        let retained = retain_one_backup(&path, None);
+        let removed = remove_backups(&path);
+        let exists = pending.exists();
+        if crash {
+            child.kill().unwrap();
+        } else {
+            child.stdin.take().unwrap().write_all(&[1]).unwrap();
+        }
+        let status = child.wait().unwrap();
+        assert!(exists, "Cleanup deleted another process's active snapshot");
+        assert_eq!(retained.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        assert_eq!(removed.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        if crash {
+            assert!(!status.success());
+            assert!(pending.exists());
+            retain_one_backup(&path, None).unwrap();
+            assert!(!pending.exists());
+            continue;
+        }
+        assert!(status.success());
+        let published = pending.with_extension("sqlite");
+        assert_eq!(snapshot(&published), snapshot(&path));
+        retain_one_backup(&path, None).unwrap();
+        assert!(published.exists());
+        remove_backups(&path).unwrap();
+        assert!(!published.exists());
     }
 }

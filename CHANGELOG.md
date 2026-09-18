@@ -42,6 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Cleanup also removes unfinished snapshots left by a crash and runs when
   removing a wallet without an available backend. Temporary storage and memory
   failures remain retryable; permission and invalid-input failures surface directly.
+  Concurrent sessions now protect active snapshots from cleanup, and staged
+  validation preserves retry options and guidance for temporary resource failures.
 
 ### Added
 

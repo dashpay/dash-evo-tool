@@ -15,7 +15,7 @@ pub enum UpgradeError {
     #[error(
         "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again."
     )]
-    InUse(#[source] rusqlite::Error),
+    InUse(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error(
         "Could not upgrade wallet data because the disk is full. Free up disk space and try again."
     )]
@@ -79,7 +79,7 @@ impl From<rusqlite::Error> for UpgradeError {
     fn from(error: rusqlite::Error) -> Self {
         match error.sqlite_error_code() {
             Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
-                Self::InUse(error)
+                Self::InUse(Box::new(error))
             }
             Some(rusqlite::ErrorCode::DiskFull) => Self::StorageFull(Box::new(error)),
             Some(rusqlite::ErrorCode::SystemIoFailure) => Self::StorageUnavailable(Box::new(error)),
@@ -359,8 +359,42 @@ fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
     std::fs::remove_file(backup)
 }
 
+fn backup_lock(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let Some(name) = path.file_name() else {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    };
+    let mut lock_name = name.to_os_string();
+    lock_name.push(".platform-upgrade.lock");
+    let lock_path = path.with_file_name(lock_name);
+    let mut options = std::fs::File::options();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = match options.open(&lock_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_backup_file(&lock_path, path)?;
+            std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(&lock_path)?
+        }
+        // A missing parent has no snapshots to clean up.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    validate_backup_file(&lock_path, path)?;
+    file.try_lock().map_err(std::io::Error::from)?;
+    // Keep the pathname stable: unlinking it could let contenders lock different files.
+    Ok(Some(file))
+}
+
 /// Retain the newest snapshot across both upgrade-backup formats.
 pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
+    let _guard = backup_lock(path)?;
     let mut snapshots = Vec::new();
     for backup in backups_in(path, auto_dir)? {
         // Unpublished copies may be incomplete and must never supersede a recovery snapshot.
@@ -385,6 +419,7 @@ pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io
 ///
 /// Backups never contain vault secrets. Attempts every file and returns the first failure.
 pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
+    let _guard = backup_lock(path)?;
     let mut first_error = None;
     for backup in backups(path)? {
         if let Err(error) = remove_backup(&backup, path) {
@@ -395,12 +430,21 @@ pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
 }
 
 fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
+    backup_with_hook(path, |_| Ok(()))
+}
+
+fn backup_with_hook(
+    path: &Path,
+    pending_created: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+) -> Result<PathBuf, UpgradeError> {
+    let _guard = backup_lock(path)?;
     let parent = path.parent().ok_or(UpgradeError::Unrecognized)?;
     let prefix = backup_prefix(path).ok_or(UpgradeError::Unrecognized)?;
     let file = tempfile::Builder::new()
         .prefix(&prefix)
         .suffix(".pending")
         .tempfile_in(parent)?;
+    pending_created(file.path())?;
     let source = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,

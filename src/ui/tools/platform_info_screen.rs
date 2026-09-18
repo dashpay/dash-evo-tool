@@ -83,7 +83,7 @@ impl PlatformInfoScreen {
             ),
             (
                 "recent_withdrawals",
-                "Fetch Recently Completed Withdrawals",
+                "Fetch Recent Withdrawal History",
                 PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals,
             ),
             (
@@ -279,7 +279,7 @@ impl ScreenLike for PlatformInfoScreen {
                         ("version_voting", "Protocol Version Voting State"),
                         ("validator_set", "Current Validator Set Information"),
                         ("withdrawals_queue", "Current Withdrawals in Queue"),
-                        ("recent_withdrawals", "Recently Completed Withdrawals"),
+                        ("recent_withdrawals", "Recent Withdrawal History"),
                         ("shielded_pool", "Shielded Pool State"),
                     ];
 

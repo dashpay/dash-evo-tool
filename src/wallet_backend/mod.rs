@@ -195,7 +195,7 @@ use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
 use platform_wallet::error::PlatformWalletError;
 use platform_wallet::manager::PlatformWalletManager;
-use platform_wallet_storage::secrets::SecretStore;
+use platform_wallet_storage::secrets::{SecretStore, SecretStoreError};
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
 use crate::app::TaskResult;
@@ -2120,30 +2120,42 @@ impl WalletBackend {
             // This view shares the outer writer lock without acquiring it again.
             let metadata = WalletMetaView::new(&self.inner.app_kv);
             let seeds = self.wallet_seeds();
-            metadata
-                .list(self.inner.network)
-                .into_iter()
-                .map(|(seed_hash, mut meta)| {
-                    // V1 metadata omits password fields; preserve them before
-                    // the legacy envelope is removed by a successful unlock.
-                    if !meta.uses_password
-                        && seeds.scheme(&seed_hash)? == secret_seam::SecretScheme::Absent
-                        && let Some(envelope) = seeds.legacy_envelope_get(&seed_hash)?
-                        && envelope.uses_password
-                    {
-                        meta.uses_password = true;
-                        meta.password_hint = envelope.password_hint;
-                        metadata.set_migrated(self.inner.network, &seed_hash, &meta)?;
+            let mut prompts = std::collections::BTreeMap::new();
+            for (seed_hash, mut meta) in metadata.list(self.inner.network) {
+                // V1 metadata omits password fields; preserve them before
+                // the legacy envelope is removed by a successful unlock.
+                if !meta.uses_password
+                    && seeds.scheme(&seed_hash)? == secret_seam::SecretScheme::Absent
+                {
+                    match seeds.legacy_envelope_get(&seed_hash) {
+                        Ok(Some(envelope)) if envelope.uses_password => {
+                            meta.uses_password = true;
+                            meta.password_hint = envelope.password_hint;
+                            metadata.set_migrated(self.inner.network, &seed_hash, &meta)?;
+                        }
+                        Ok(_) => {}
+                        Err(TaskError::WalletSeedStorage { source })
+                            if matches!(source.as_ref(), SecretStoreError::MalformedVault) =>
+                        {
+                            tracing::warn!(
+                                seed_hash = %hex::encode(seed_hash),
+                                error = ?source,
+                                "Malformed legacy wallet envelope; skipping password prompt metadata",
+                            );
+                            continue;
+                        }
+                        Err(error) => return Err(error),
                     }
-                    Ok((
-                        seed_hash,
-                        PromptMeta {
-                            alias: (!meta.alias.is_empty()).then_some(meta.alias),
-                            password_hint: meta.password_hint,
-                        },
-                    ))
-                })
-                .collect()
+                }
+                prompts.insert(
+                    seed_hash,
+                    PromptMeta {
+                        alias: (!meta.alias.is_empty()).then_some(meta.alias),
+                        password_hint: meta.password_hint,
+                    },
+                );
+            }
+            Ok(prompts)
         })
     }
 

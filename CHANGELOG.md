@@ -101,6 +101,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A damaged legacy wallet no longer prevents healthy wallets and imported keys
+  from loading at startup.
+
 - Legacy wallet password hints survive hydration and renaming. Retried key
   migrations refresh displayed names when duplicate names are disambiguated.
 

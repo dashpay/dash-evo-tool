@@ -2756,6 +2756,104 @@ fn legacy_master_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
     crate::database::test_helpers::legacy_master_epk_bytes(seed, Network::Testnet)
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_legacy_envelope_does_not_block_healthy_wallet_hydration() {
+    use crate::model::wallet::alias::AliasSource;
+    use crate::model::wallet::meta::{WalletMeta, WalletMetaV1};
+    use crate::wallet_backend::single_key::SingleKeyView;
+    use crate::wallet_backend::{DetScope, wallet_meta};
+    use platform_wallet_storage::secrets::{SecretBytes, WalletId};
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    let store = ctx.secret_store();
+    let seeds = WalletSeedView::new(&store);
+    let seed = std::array::from_fn(|_| rand::random::<u8>());
+    let healthy_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let xpub_encoded = legacy_master_epk_bytes(&seed);
+    seeds.set_raw(&healthy_hash, &seed).unwrap();
+    WalletMetaView::new(&ctx.app_kv())
+        .set_migrated(
+            ctx.network,
+            &healthy_hash,
+            &WalletMeta {
+                alias: "Healthy HD".into(),
+                xpub_encoded: xpub_encoded.clone(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let malformed_hash = rand::random::<[u8; 32]>();
+    ctx.app_kv()
+        .put(
+            DetScope::Global,
+            &wallet_meta::key_for(ctx.network, &malformed_hash),
+            &WalletMetaV1 {
+                alias: "Damaged legacy wallet".into(),
+                xpub_encoded,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store
+        .set(
+            &WalletId::from(malformed_hash),
+            crate::wallet_backend::wallet_seed_store::ENVELOPE_LABEL,
+            &SecretBytes::from_slice(&[1]),
+        )
+        .unwrap();
+    assert!(seeds.legacy_envelope_get(&malformed_hash).is_err());
+
+    let alias_lock = std::sync::Mutex::new(());
+    let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+    let key = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
+        &rand::random::<[u8; 32]>(),
+        ctx.network,
+    )
+    .unwrap();
+    let imported = SingleKeyView::from_views(
+        &store,
+        &alias_lock,
+        &index,
+        ctx.network,
+        Some(&ctx.app_kv()),
+    )
+    .import_wif(
+        &key.to_wif(),
+        AliasSource::UserEntered("Healthy key".into()),
+    )
+    .unwrap();
+    assert!(ctx.wallets.read().unwrap().is_empty());
+    assert!(ctx.single_key_wallets.read().unwrap().is_empty());
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("one malformed legacy envelope must not prevent backend initialization");
+    {
+        let wallets = ctx.wallets.read().unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert!(wallets.contains_key(&healthy_hash));
+        assert!(!wallets.contains_key(&malformed_hash));
+    }
+    {
+        let wallets = ctx.single_key_wallets.read().unwrap();
+        assert_eq!(wallets.len(), 1);
+        assert_eq!(
+            wallets
+                .values()
+                .next()
+                .unwrap()
+                .read()
+                .unwrap()
+                .address
+                .to_string(),
+            imported.address,
+        );
+    }
+    assert!(ctx.has_wallet.load(Ordering::Relaxed));
+    ctx.wallet_backend().unwrap().shutdown().await;
+}
+
 /// F140 — a wallet migrated from legacy `data.db` must be visible right
 /// after the migration completes, NOT only after a second restart. The bug:
 /// `WalletBackend::new` runs `hydrate_context_wallets` against the still-

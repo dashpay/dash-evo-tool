@@ -665,3 +665,16 @@ fn platform_compatibility_active_snapshot_survives_concurrent_cleanup() {
         assert!(!published.exists());
     }
 }
+
+#[test]
+fn platform_compatibility_one_guard_covers_retention_and_upgrade() {
+    let (_dir, path, target) = fixture();
+    let before = snapshot(&path);
+    let guard = backup_lock(&path).unwrap();
+    retain_one_backup_locked(&guard, None).unwrap();
+    let backup = upgrade_locked(&guard, &target, |_| Ok(()))
+        .unwrap()
+        .unwrap();
+    retain_one_backup_locked(&guard, None).unwrap();
+    assert_eq!(snapshot(&backup), before);
+}

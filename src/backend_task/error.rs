@@ -435,6 +435,15 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// Another process currently owns the wallet database write lock.
+    #[error(
+        "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again."
+    )]
+    WalletStorageInUse {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// A pinned-PR wallet database could not be upgraded without losing data.
     #[error(transparent)]
     PlatformDatabaseUpgrade {
@@ -2831,7 +2840,7 @@ impl TaskError {
 
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
-    /// Three storage failures get honest, distinct copy; everything else keeps
+    /// Four storage failures get honest, distinct copy; everything else keeps
     /// the generic disk/IO message:
     ///
     /// - A forward-version database (written by a newer build, schema beyond
@@ -2844,12 +2853,16 @@ impl TaskError {
     ///   the banner tells the user to back up keys and set the databases aside
     ///   while keeping the vault — freeing disk space or restarting never
     ///   resolves a structural mismatch.
+    /// - A migration blocked by another SQLite writer is surfaced as
+    ///   [`Self::WalletStorageInUse`] so the user can close the competing
+    ///   process and retry instead of following incompatible-data recovery.
     /// - Every other storage failure keeps the generic disk/IO copy via
     ///   [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration`), never on its `Display` text.
+    /// `WalletStorageError::Migration`) and the typed migration source chain,
+    /// never on `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -2861,11 +2874,38 @@ impl TaskError {
                 found,
                 max_supported,
             },
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_in_use(&other) =>
+            {
+                Self::WalletStorageInUse { source: other }
+            }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
             }
             other => Self::WalletStorage { source: other },
         }
+    }
+
+    fn wallet_storage_error_is_in_use(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(source);
+        while let Some(error) = cause {
+            if error
+                .downcast_ref::<rusqlite::Error>()
+                .and_then(rusqlite::Error::sqlite_error_code)
+                .is_some_and(|code| {
+                    matches!(
+                        code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    )
+                })
+            {
+                return true;
+            }
+            cause = error.source();
+        }
+        false
     }
 
     /// Returns `true` when this is a [`Self::SecretStore`] open failure caused
@@ -5808,6 +5848,41 @@ mod tests {
             .set_abort_divergent(true)
             .run(&mut conn)
             .expect_err("divergent checksum must abort")
+    }
+
+    fn busy_migration_error() -> refinery::Error {
+        use refinery::{Migration, Runner};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("wallet.sqlite");
+        let writer = rusqlite::Connection::open(&path).expect("writer connection");
+        writer
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE held (id INTEGER);")
+            .expect("hold write lock");
+        let mut contender = rusqlite::Connection::open(&path).expect("contender connection");
+        contender
+            .busy_timeout(std::time::Duration::from_millis(1))
+            .expect("short deterministic timeout");
+        let migration = Migration::unapplied("V1__init", "CREATE TABLE data (id INTEGER);")
+            .expect("valid migration");
+        Runner::new(&[migration])
+            .run(&mut contender)
+            .expect_err("held writer must make the migration busy")
+    }
+
+    #[test]
+    fn busy_migration_error_maps_to_retryable_wallet_storage_message() {
+        let upstream =
+            platform_wallet_storage::WalletStorageError::Migration(busy_migration_error());
+        let err = TaskError::from_wallet_storage_open_error(upstream);
+        assert!(
+            matches!(err, TaskError::WalletStorageInUse { .. }),
+            "Expected WalletStorageInUse, got: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("Close") && message.contains("try again"));
+        assert!(!message.contains("incompatible"));
+        assert!(std::error::Error::source(&err).is_some());
     }
 
     /// A divergent migration history (database written under an

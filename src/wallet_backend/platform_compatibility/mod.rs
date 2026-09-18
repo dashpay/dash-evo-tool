@@ -10,31 +10,39 @@ use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStor
 use crate::backend_task::error::TaskError;
 
 pub(crate) fn open(config: SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
+    let guard = engine::backup_lock(&config.path).map_err(lock_error)?;
     let prune = || {
-        engine::retain_one_backup(&config.path, config.auto_backup_dir.as_deref())
-            .map_err(|source| TaskError::FileSystem { source })
+        engine::retain_one_backup_locked(&guard, config.auto_backup_dir.as_deref())
+            .map_err(lock_error)
     };
     // Check retention before another attempt can create a snapshot, including after a restart.
     prune()?;
-    let result = open_inner(&config);
+    let result = open_inner(&config, &guard);
     prune()?;
     result
 }
 
-fn open_inner(config: &SqlitePersisterConfig) -> Result<SqlitePersister, TaskError> {
+fn open_inner(
+    config: &SqlitePersisterConfig,
+    guard: &engine::BackupGuard,
+) -> Result<SqlitePersister, TaskError> {
     let original = match SqlitePersister::open(config.clone()) {
         Ok(persister) => return Ok(persister),
         Err(error @ WalletStorageError::Migration(_)) => error,
         Err(error) => return Err(TaskError::from_wallet_storage_open_error(error)),
     };
-    let result = upgrade(config).map_err(|source| TaskError::PlatformDatabaseUpgrade { source })?;
+    let result =
+        upgrade(config, guard).map_err(|source| TaskError::PlatformDatabaseUpgrade { source })?;
     if !result {
         return Err(TaskError::from_wallet_storage_open_error(original));
     }
     SqlitePersister::open(config.clone()).map_err(TaskError::from_wallet_storage_open_error)
 }
 
-fn upgrade(config: &SqlitePersisterConfig) -> Result<bool, UpgradeError> {
+fn upgrade(
+    config: &SqlitePersisterConfig,
+    guard: &engine::BackupGuard,
+) -> Result<bool, UpgradeError> {
     let parent = config.path.parent().ok_or(UpgradeError::Unrecognized)?;
     let mut builder = tempfile::Builder::new();
     builder.prefix("platform-upgrade-");
@@ -46,7 +54,7 @@ fn upgrade(config: &SqlitePersisterConfig) -> Result<bool, UpgradeError> {
     let stage_dir = builder.tempdir_in(parent)?;
     let stage_path = stage_dir.path().join("wallet.sqlite");
     drop(SqlitePersister::open(SqlitePersisterConfig::new(&stage_path)).map_err(validation_error)?);
-    let backup = engine::upgrade(&config.path, &stage_path, |path| {
+    let backup = engine::upgrade_locked(guard, &stage_path, |path| {
         let staged =
             SqlitePersister::open(SqlitePersisterConfig::new(path)).map_err(validation_error)?;
         staged.load().map_err(validation_error)?;
@@ -58,6 +66,14 @@ fn upgrade(config: &SqlitePersisterConfig) -> Result<bool, UpgradeError> {
         Ok(true)
     } else {
         Ok(false)
+    }
+}
+
+fn lock_error(source: std::io::Error) -> TaskError {
+    if source.kind() == std::io::ErrorKind::WouldBlock {
+        TaskError::WalletStorageNotReady
+    } else {
+        TaskError::FileSystem { source }
     }
 }
 
@@ -153,6 +169,20 @@ mod tests {
                 std::fs::rename(retained, old).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn platform_compatibility_open_reports_lifecycle_lock_as_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.sqlite");
+        rusqlite::Connection::open(&path).unwrap();
+        let _guard = engine::backup_lock(&path).unwrap();
+        let error = match open(SqlitePersisterConfig::new(&path)) {
+            Ok(_) => panic!("open unexpectedly acquired the held lifecycle lock"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, TaskError::WalletStorageNotReady));
+        assert!(error.to_string().contains("try again"));
     }
 
     #[test]

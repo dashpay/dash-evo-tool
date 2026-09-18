@@ -30,6 +30,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   you used before, close every running instance, then set aside the `.sqlite`
   files together with their matching `-wal` and `-shm` files and keep the
   `secrets` folder. Imported private keys are listed separately from recovery phrases.
+  A database temporarily held by another session now asks you to close that
+  session and try again instead of reporting incompatible data.
 
 - **Upgrade backups no longer pile up or outlive deleted data**: a failed
   database upgrade no longer leaves a new backup on every attempt. Each
@@ -44,6 +46,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   failures remain retryable; permission and invalid-input failures surface directly.
   Concurrent sessions now protect active snapshots from cleanup, and staged
   validation preserves retry options and guidance for temporary resource failures.
+  One lock now covers the complete open, upgrade, backup, and retention cycle.
 
 ### Added
 

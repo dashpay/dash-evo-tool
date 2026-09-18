@@ -359,7 +359,12 @@ fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
     std::fs::remove_file(backup)
 }
 
-fn backup_lock(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+pub(super) struct BackupGuard {
+    path: PathBuf,
+    _file: Option<std::fs::File>,
+}
+
+pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
     let Some(name) = path.file_name() else {
         return Err(std::io::ErrorKind::InvalidInput.into());
     };
@@ -383,18 +388,35 @@ fn backup_lock(path: &Path) -> std::io::Result<Option<std::fs::File>> {
                 .open(&lock_path)?
         }
         // A missing parent has no snapshots to clean up.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BackupGuard {
+                path: path.to_owned(),
+                _file: None,
+            });
+        }
         Err(error) => return Err(error),
     };
     validate_backup_file(&lock_path, path)?;
     file.try_lock().map_err(std::io::Error::from)?;
     // Keep the pathname stable: unlinking it could let contenders lock different files.
-    Ok(Some(file))
+    Ok(BackupGuard {
+        path: path.to_owned(),
+        _file: Some(file),
+    })
 }
 
 /// Retain the newest snapshot across both upgrade-backup formats.
+#[cfg(test)]
 pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
-    let _guard = backup_lock(path)?;
+    let guard = backup_lock(path)?;
+    retain_one_backup_locked(&guard, auto_dir)
+}
+
+pub(super) fn retain_one_backup_locked(
+    guard: &BackupGuard,
+    auto_dir: Option<&Path>,
+) -> std::io::Result<()> {
+    let path = &guard.path;
     let mut snapshots = Vec::new();
     for backup in backups_in(path, auto_dir)? {
         // Unpublished copies may be incomplete and must never supersede a recovery snapshot.
@@ -429,15 +451,25 @@ pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
     first_error.map_or(Ok(()), Err)
 }
 
+#[cfg(test)]
 fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
     backup_with_hook(path, |_| Ok(()))
 }
 
+#[cfg(test)]
 fn backup_with_hook(
     path: &Path,
     pending_created: impl FnOnce(&Path) -> Result<(), UpgradeError>,
 ) -> Result<PathBuf, UpgradeError> {
-    let _guard = backup_lock(path)?;
+    let guard = backup_lock(path)?;
+    backup_with_hook_locked(&guard, pending_created)
+}
+
+fn backup_with_hook_locked(
+    guard: &BackupGuard,
+    pending_created: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+) -> Result<PathBuf, UpgradeError> {
+    let path = &guard.path;
     let parent = path.parent().ok_or(UpgradeError::Unrecognized)?;
     let prefix = backup_prefix(path).ok_or(UpgradeError::Unrecognized)?;
     let file = tempfile::Builder::new()
@@ -559,20 +591,42 @@ fn allowed_columns(
 }
 
 /// Translate only the exact pinned PR schema, preserving the original in a durable backup.
+#[cfg(test)]
 pub(super) fn upgrade(
     path: &Path,
     target_path: &Path,
     validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
 ) -> Result<Option<PathBuf>, UpgradeError> {
-    upgrade_with_hook(path, target_path, validate, || Ok(()))
+    let guard = backup_lock(path)?;
+    upgrade_locked(&guard, target_path, validate)
 }
 
+pub(super) fn upgrade_locked(
+    guard: &BackupGuard,
+    target_path: &Path,
+    validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+) -> Result<Option<PathBuf>, UpgradeError> {
+    upgrade_with_hook_locked(guard, target_path, validate, || Ok(()))
+}
+
+#[cfg(test)]
 fn upgrade_with_hook(
     path: &Path,
     target_path: &Path,
     validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
     before_commit: impl FnOnce() -> Result<(), UpgradeError>,
 ) -> Result<Option<PathBuf>, UpgradeError> {
+    let guard = backup_lock(path)?;
+    upgrade_with_hook_locked(&guard, target_path, validate, before_commit)
+}
+
+fn upgrade_with_hook_locked(
+    guard: &BackupGuard,
+    target_path: &Path,
+    validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+    before_commit: impl FnOnce() -> Result<(), UpgradeError>,
+) -> Result<Option<PathBuf>, UpgradeError> {
+    let path = &guard.path;
     let old = old_reference()?;
     let reference = target_reference()?;
     let mut source = Connection::open_with_flags(
@@ -678,7 +732,7 @@ fn upgrade_with_hook(
     validate(target_path)?;
     // The source transaction has written only temp tables, so a separate reader still
     // sees the committed original; earlier failures roll back and need no backup.
-    let backup = backup(path)?;
+    let backup = backup_with_hook_locked(guard, |_| Ok(()))?;
     let target = Connection::open_with_flags(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,

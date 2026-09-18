@@ -479,24 +479,16 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
-        let wallet_info = qualified_identity
-            .determine_wallet_info()
-            .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
-
-        if load_mode == IdentityLoadMode::MergeIntoExisting && encryption_password.is_none() {
-            self.persist_merged_identity(
-                &mut qualified_identity,
-                &wallet_info,
-                merge_seal_password.as_ref(),
-            )?;
-        } else {
-            self.persist_loaded_identity(
-                &mut qualified_identity,
-                &wallet_info,
-                encryption_password.as_ref(),
-                load_mode,
-            )?;
-        }
+        let wallet_info =
+            if load_mode == IdentityLoadMode::MergeIntoExisting && encryption_password.is_none() {
+                self.persist_merged_identity(&mut qualified_identity, merge_seal_password.as_ref())?
+            } else {
+                self.persist_loaded_identity(
+                    &mut qualified_identity,
+                    encryption_password.as_ref(),
+                    load_mode,
+                )?
+            };
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
@@ -516,9 +508,8 @@ impl AppContext {
     fn persist_merged_identity(
         &self,
         qi: &mut QualifiedIdentity,
-        wallet_info: &Option<(WalletSeedHash, u32)>,
         password: Option<&crate::wallet_backend::VerifiedIdentityPassword>,
-    ) -> Result<(), TaskError> {
+    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
         let identity_id = qi.identity.id();
         let lock = self.identity_record_lock(identity_id);
         let _guard = lock
@@ -559,16 +550,19 @@ impl AppContext {
             }
             self.seal_merged_plaintext_keys(qi, password)?;
         }
-        self.insert_local_qualified_identity_under_lock(qi, wallet_info)
+        let wallet_info = qi
+            .determine_wallet_info()
+            .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
+        self.insert_local_qualified_identity_under_lock(qi, &wallet_info)?;
+        Ok(wallet_info)
     }
 
     fn persist_loaded_identity(
         &self,
         qi: &mut QualifiedIdentity,
-        wallet_info: &Option<(WalletSeedHash, u32)>,
         password: Option<&crate::model::secret::Secret>,
         load_mode: IdentityLoadMode,
-    ) -> Result<(), TaskError> {
+    ) -> Result<Option<(WalletSeedHash, u32)>, TaskError> {
         if let Some(password) = password {
             validate_protection_password(password)?;
         }
@@ -588,7 +582,11 @@ impl AppContext {
             {
                 return Err(TaskError::IdentityImportPasswordRequired);
             }
-            return self.insert_local_qualified_identity_under_lock(qi, wallet_info);
+            let wallet_info = qi
+                .determine_wallet_info()
+                .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
+            self.insert_local_qualified_identity_under_lock(qi, &wallet_info)?;
+            return Ok(wallet_info);
         };
         let mut relevant_keys = qi.private_keys.keys_set();
         relevant_keys.extend(self.retained_identity_import_keys(&identity_id)?);
@@ -657,7 +655,11 @@ impl AppContext {
             view.store_protected(&target, key_id, &raw, &password)?;
         }
         drop(qi.private_keys.take_plaintext_for_vault());
-        self.insert_local_qualified_identity_under_lock(qi, wallet_info)
+        let wallet_info = qi
+            .determine_wallet_info()
+            .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
+        self.insert_local_qualified_identity_under_lock(qi, &wallet_info)?;
+        Ok(wallet_info)
     }
 
     /// Record placements and seal plaintext under the caller-held record lock and revalidated password.
@@ -1058,7 +1060,6 @@ mod tests {
         let password = Secret::new("synthetic-merge-password");
         ctx.persist_loaded_identity(
             &mut original,
-            &None,
             Some(&password),
             IdentityLoadMode::RejectIfExists,
         )
@@ -1086,7 +1087,7 @@ mod tests {
         }
         let fault = WriteFault::arm(2);
         assert!(
-            ctx.persist_merged_identity(&mut merged, &None, Some(&verified))
+            ctx.persist_merged_identity(&mut merged, Some(&verified))
                 .is_err()
         );
         assert_eq!(
@@ -1125,7 +1126,6 @@ mod tests {
             let password = Secret::new("synthetic-merge-password");
             ctx.persist_loaded_identity(
                 &mut original,
-                &None,
                 Some(&password),
                 IdentityLoadMode::RejectIfExists,
             )
@@ -1155,7 +1155,7 @@ mod tests {
                 ),
             );
             let fault = WriteFault::arm(0);
-            let result = ctx.persist_merged_identity(&mut merged, &None, Some(&verified));
+            let result = ctx.persist_merged_identity(&mut merged, Some(&verified));
             if reprotected {
                 assert!(matches!(
                     result,
@@ -1184,7 +1184,6 @@ mod tests {
             let fault = WriteFault::arm(fail_at);
             let result = ctx.persist_loaded_identity(
                 &mut qi,
-                &None,
                 Some(&Secret::new("synthetic-import-password")),
                 IdentityLoadMode::RejectIfExists,
             );
@@ -1239,7 +1238,6 @@ mod tests {
         assert!(
             ctx.persist_loaded_identity(
                 &mut qi.clone(),
-                &None,
                 Some(&password),
                 IdentityLoadMode::RejectIfExists
             )
@@ -1247,12 +1245,7 @@ mod tests {
         );
         drop(fault);
         let error = ctx
-            .persist_loaded_identity(
-                &mut qi.clone(),
-                &None,
-                None,
-                IdentityLoadMode::RejectIfExists,
-            )
+            .persist_loaded_identity(&mut qi.clone(), None, IdentityLoadMode::RejectIfExists)
             .expect_err("a retained protected import needs its original password");
         assert_eq!(
             error.to_string(),
@@ -1261,7 +1254,6 @@ mod tests {
         let fault = WriteFault::arm(0);
         let result = ctx.persist_loaded_identity(
             &mut qi.clone(),
-            &None,
             Some(&Secret::new("different-synthetic-password")),
             IdentityLoadMode::RejectIfExists,
         );
@@ -1277,7 +1269,6 @@ mod tests {
         let mut retry = qi;
         ctx.persist_loaded_identity(
             &mut retry,
-            &None,
             Some(&password),
             IdentityLoadMode::RejectIfExists,
         )
@@ -1299,7 +1290,6 @@ mod tests {
         assert!(
             ctx.persist_loaded_identity(
                 &mut qi.clone(),
-                &None,
                 Some(&password),
                 IdentityLoadMode::RejectIfExists,
             )
@@ -1337,7 +1327,6 @@ mod tests {
         assert!(matches!(
             ctx.persist_loaded_identity(
                 &mut retry,
-                &None,
                 Some(&Secret::new("different-import-password")),
                 IdentityLoadMode::RejectIfExists,
             ),
@@ -1348,7 +1337,6 @@ mod tests {
 
         ctx.persist_loaded_identity(
             &mut retry,
-            &None,
             Some(&password),
             IdentityLoadMode::RejectIfExists,
         )
@@ -1406,7 +1394,6 @@ mod tests {
         assert!(
             ctx.persist_loaded_identity(
                 &mut qi.clone(),
-                &None,
                 Some(&Secret::new("synthetic-password")),
                 IdentityLoadMode::RejectIfExists
             )
@@ -1415,13 +1402,8 @@ mod tests {
         drop(fault);
         let mut watch_only = qi.clone();
         watch_only.private_keys = KeyStorage::default();
-        ctx.persist_loaded_identity(
-            &mut watch_only,
-            &None,
-            None,
-            IdentityLoadMode::RejectIfExists,
-        )
-        .unwrap();
+        ctx.persist_loaded_identity(&mut watch_only, None, IdentityLoadMode::RejectIfExists)
+            .unwrap();
         assert!(
             ctx.protected_identity_verify_scope(&watch_only)
                 .unwrap()
@@ -1457,7 +1439,6 @@ mod tests {
         assert!(
             ctx.persist_loaded_identity(
                 &mut qi,
-                &None,
                 Some(&Secret::new("synthetic-import-password")),
                 IdentityLoadMode::RejectIfExists,
             )
@@ -1485,7 +1466,6 @@ mod tests {
         let id = qi.identity.id();
         ctx.persist_loaded_identity(
             &mut qi,
-            &None,
             Some(&Secret::new("synthetic-import-password")),
             IdentityLoadMode::RejectIfExists,
         )
@@ -1527,7 +1507,6 @@ mod tests {
         );
         ctx.persist_loaded_identity(
             &mut original,
-            &None,
             Some(&password),
             IdentityLoadMode::RejectIfExists,
         )
@@ -1551,7 +1530,6 @@ mod tests {
         assert!(
             ctx.persist_loaded_identity(
                 &mut qi.clone(),
-                &None,
                 Some(&password),
                 IdentityLoadMode::RejectIfExists,
             )
@@ -1617,7 +1595,6 @@ mod tests {
             assert!(
                 ctx.persist_loaded_identity(
                     &mut qi,
-                    &None,
                     Some(&password),
                     IdentityLoadMode::RejectIfExists
                 )
@@ -1649,13 +1626,8 @@ mod tests {
                 );
             }
             conn.execute_batch("DROP TRIGGER fail_import").unwrap();
-            ctx.persist_loaded_identity(
-                &mut qi,
-                &None,
-                Some(&password),
-                IdentityLoadMode::RejectIfExists,
-            )
-            .expect("retry the saved protected keys");
+            ctx.persist_loaded_identity(&mut qi, Some(&password), IdentityLoadMode::RejectIfExists)
+                .expect("retry the saved protected keys");
             let stored = ctx
                 .stored_identity_blob(&qi.identity.id())
                 .unwrap()
@@ -1692,7 +1664,6 @@ mod tests {
             let fault = WriteFault::arm(0);
             let result = ctx.persist_loaded_identity(
                 &mut qi,
-                &None,
                 Some(&password),
                 IdentityLoadMode::RejectIfExists,
             );
@@ -1745,12 +1716,7 @@ mod tests {
         }
         let fault = WriteFault::arm(0);
         assert!(matches!(
-            ctx.persist_loaded_identity(
-                &mut qi,
-                &None,
-                Some(&password),
-                IdentityLoadMode::RejectIfExists
-            ),
+            ctx.persist_loaded_identity(&mut qi, Some(&password), IdentityLoadMode::RejectIfExists),
             Err(TaskError::IdentityKeyPassphraseIncorrect)
         ));
         assert!(fault.schemes().is_empty());
@@ -1767,7 +1733,6 @@ mod tests {
         let password = Secret::new("synthetic-import-password");
         ctx.persist_loaded_identity(
             &mut existing,
-            &None,
             Some(&password),
             IdentityLoadMode::RejectIfExists,
         )
@@ -1788,7 +1753,6 @@ mod tests {
         assert!(matches!(
             ctx.persist_loaded_identity(
                 &mut incoming,
-                &None,
                 Some(&Secret::new("different-synthetic-password")),
                 IdentityLoadMode::Overwrite
             ),
@@ -1803,7 +1767,6 @@ mod tests {
         assert!(
             ctx.persist_loaded_identity(
                 &mut incoming,
-                &None,
                 Some(&password),
                 IdentityLoadMode::MergeIntoExisting
             )
@@ -1813,7 +1776,6 @@ mod tests {
         assert_eq!(ctx.stored_identity_blob(&identity_id).unwrap(), before);
         ctx.persist_loaded_identity(
             &mut incoming,
-            &None,
             Some(&password),
             IdentityLoadMode::MergeIntoExisting,
         )
@@ -1840,13 +1802,79 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn merge_preserves_wallet_link_when_only_voting_key_is_supplied_without_password() {
+        assert_merge_preserves_wallet_link(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn merge_preserves_wallet_link_when_only_voting_key_is_supplied_with_password() {
+        assert_merge_preserves_wallet_link(true).await;
+    }
+
+    async fn assert_merge_preserves_wallet_link(with_password: bool) {
+        let (ctx, _dir) = protected_import_context().await;
+        let (mut existing, _) = masternode_shaped_qi();
+        let wallet_link = Some(([0x77; 32], 7));
+        let path = WalletDerivationPath {
+            wallet_seed_hash: [0x77; 32],
+            derivation_path: "m/9'/7'/0'".parse().unwrap(),
+        };
+        let owner = IdentityPublicKey::random_key(10, Some(10), PlatformVersion::latest());
+        existing.private_keys.insert_at(
+            (M, owner.id()),
+            (
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    owner,
+                    Some(path.clone()),
+                ),
+                PrivateKeyData::AtWalletDerivationPath(path),
+            ),
+        );
+        ctx.insert_local_qualified_identity(&existing, &wallet_link)
+            .unwrap();
+        let mut merged = existing.clone();
+        merged.private_keys = KeyStorage::default();
+        let voter = IdentityPublicKey::random_key(11, Some(11), PlatformVersion::latest());
+        merged.private_keys.insert_at(
+            (V, voter.id()),
+            (
+                QualifiedIdentityPublicKey::from(voter),
+                PrivateKeyData::Clear(rand::random()),
+            ),
+        );
+        assert_eq!(merged.determine_wallet_info().unwrap(), None);
+        let persisted_link = if with_password {
+            ctx.persist_loaded_identity(
+                &mut merged,
+                Some(&Secret::new(hex::encode(rand::random::<[u8; 32]>()))),
+                IdentityLoadMode::MergeIntoExisting,
+            )
+            .unwrap()
+        } else {
+            ctx.persist_merged_identity(&mut merged, None).unwrap()
+        };
+        assert_eq!(persisted_link, wallet_link);
+        assert_eq!(
+            ctx.stored_identity_wallet_link(&existing.identity.id())
+                .unwrap(),
+            wallet_link
+        );
+        assert_eq!(
+            ctx.load_local_qualified_identities_for_wallet(&[0x77; 32])
+                .unwrap()
+                .len(),
+            1
+        );
+        ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn protected_import_preserves_wallet_derived_keys_without_storing_them() {
         let (ctx, _dir) = protected_import_context().await;
         let mut qi =
             crate::context::test_staging::qi_with_plaintext_and_derived([0x91; 32], [0x92; 32]);
         ctx.persist_loaded_identity(
             &mut qi,
-            &None,
             Some(&Secret::new("synthetic-import-password")),
             IdentityLoadMode::RejectIfExists,
         )
@@ -1882,13 +1910,8 @@ mod tests {
         let saved = [0x93; 32];
         view.store(&derived.0, derived.1, &saved).unwrap();
         let password = Secret::new("synthetic-import-password");
-        ctx.persist_loaded_identity(
-            &mut qi,
-            &None,
-            Some(&password),
-            IdentityLoadMode::RejectIfExists,
-        )
-        .unwrap();
+        ctx.persist_loaded_identity(&mut qi, Some(&password), IdentityLoadMode::RejectIfExists)
+            .unwrap();
         assert!(matches!(
             qi.private_keys.entry_at(&derived).unwrap().1,
             PrivateKeyData::AtWalletDerivationPath(_)
@@ -1911,7 +1934,7 @@ mod tests {
     async fn load_without_password_keeps_keys_unprotected() {
         let (ctx, _dir) = protected_import_context().await;
         let (mut qi, triple) = masternode_shaped_qi();
-        ctx.persist_loaded_identity(&mut qi, &None, None, IdentityLoadMode::RejectIfExists)
+        ctx.persist_loaded_identity(&mut qi, None, IdentityLoadMode::RejectIfExists)
             .unwrap();
         let backend = ctx.wallet_backend().unwrap();
         let view = IdentityKeyView::new(backend.secret_store(), qi.identity.id().to_buffer());
@@ -2126,7 +2149,7 @@ mod tests {
             .verify_identity_object_password(&verify_scope)
             .await
             .expect("scripted password verifies");
-        ctx.persist_merged_identity(&mut existing, &None, Some(&password))
+        ctx.persist_merged_identity(&mut existing, Some(&password))
             .expect("persist merged protected key");
 
         // The new key flipped to InVault in the in-memory identity...

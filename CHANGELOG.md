@@ -17,7 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a later failed re-import before retiring their inventory. Merges revalidate the
   current password and record new key placements under the identity record lock
   before sealing. Protection indicators include retained keys, and unpublished
-  import retries explain that the original import password is required.
+  import retries explain that the original import password is required. Protection
+  indicators report unavailable status when the full key inventory cannot be read.
 
 - Identity reads no longer migrate or rewrite stored keys. Storage preparation
   explicitly migrates legacy keys under each identity's record lock, propagates
@@ -115,6 +116,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   follow-up.
 
 ### Fixed
+
+- Adding a voting key preserves the identity's wallet association when its only
+  wallet-linked key comes from the existing identity, including password-protected
+  imports.
 
 - Cancelling a network switch takes priority over simultaneous startup and
   reports chain sync as stopped after shutting down the new backend.

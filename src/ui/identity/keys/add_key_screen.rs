@@ -1,7 +1,11 @@
 use crate::app::AppAction;
 use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::derived_identity_key::{
+    derivation_index_limit, derivation_wallet, first_free_index, occupied_indices,
+};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -43,6 +47,9 @@ pub struct AddKeyScreen {
     pub identity: QualifiedIdentity,
     pub app_context: Arc<AppContext>,
     private_key_input: PasswordInput,
+    derived: bool,
+    derivation_index: Option<u32>,
+    derivation_warming: bool,
     key_type: KeyType,
     purpose: Purpose,
     security_level: SecurityLevel,
@@ -74,6 +81,9 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
+            derived: true,
+            derivation_index: None,
+            derivation_warming: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
@@ -118,6 +128,9 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
+            derived: true,
+            derivation_index: None,
+            derivation_warming: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
@@ -162,6 +175,9 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
+            derived: true,
+            derivation_index: None,
+            derivation_warming: false,
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
                 .with_char_limit(64)
@@ -183,6 +199,58 @@ impl AddKeyScreen {
 
     fn validate_and_add_key(&mut self) -> AppAction {
         let mut app_action = AppAction::None;
+        // Handle contract bounds if enabled
+        let contract_bounds = if self.enable_contract_bounds && !self.contract_id_input.is_empty() {
+            match Identifier::from_string(&self.contract_id_input, Encoding::Base58) {
+                Ok(contract_id) => {
+                    if self.document_type_input.is_empty() {
+                        Some(ContractBounds::SingleContract { id: contract_id })
+                    } else {
+                        Some(ContractBounds::SingleContractDocumentType {
+                            id: contract_id,
+                            document_type_name: self.document_type_input.clone(),
+                        })
+                    }
+                }
+                Err(error) => {
+                    self.add_key_status = AddKeyStatus::Error;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "The contract ID is not valid. Check the ID and try again.",
+                        MessageType::Error,
+                    )
+                    .with_details(error);
+                    return app_action;
+                }
+            }
+        } else {
+            None
+        };
+
+        if self.derived {
+            let Some(index) = self.derivation_index else {
+                return app_action;
+            };
+            let new_key = IdentityPublicKeyV0 {
+                id: 0,
+                key_type: self.key_type,
+                purpose: self.purpose,
+                security_level: self.security_level,
+                data: Vec::new().into(),
+                read_only: false,
+                disabled_at: None,
+                contract_bounds,
+            };
+            return AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::AddDerivedKeyToIdentity(
+                    self.identity.clone(),
+                    QualifiedIdentityPublicKey::from(dash_sdk::platform::IdentityPublicKey::from(
+                        new_key,
+                    )),
+                    index,
+                ),
+            ));
+        }
         // Convert the input string to bytes (hex decoding)
         match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
@@ -202,36 +270,6 @@ impl AddKeyScreen {
                     )
                     .with_details(error);
                 } else {
-                    // Handle contract bounds if enabled
-                    let contract_bounds = if self.enable_contract_bounds
-                        && !self.contract_id_input.is_empty()
-                    {
-                        match Identifier::from_string(&self.contract_id_input, Encoding::Base58) {
-                            Ok(contract_id) => {
-                                if self.document_type_input.is_empty() {
-                                    Some(ContractBounds::SingleContract { id: contract_id })
-                                } else {
-                                    Some(ContractBounds::SingleContractDocumentType {
-                                        id: contract_id,
-                                        document_type_name: self.document_type_input.clone(),
-                                    })
-                                }
-                            }
-                            Err(error) => {
-                                self.add_key_status = AddKeyStatus::Error;
-                                MessageBanner::set_global(
-                                    self.app_context.egui_ctx(),
-                                    "The contract ID is not valid. Check the ID and try again.",
-                                    MessageType::Error,
-                                )
-                                .with_details(error);
-                                return app_action;
-                            }
-                        }
-                    } else {
-                        None
-                    };
-
                     let new_key = IdentityPublicKeyV0 {
                         id: self.identity.identity.get_public_key_max_id() + 1,
                         key_type: self.key_type,
@@ -300,6 +338,130 @@ impl AddKeyScreen {
         app_action
     }
 
+    fn show_key_source(&mut self, ui: &mut Ui) -> AppAction {
+        ui.label("Key source:");
+        if ui
+            .checkbox(&mut self.derived, "Derive from wallet")
+            .changed()
+        {
+            self.private_key_input.clear();
+        }
+        ui.end_row();
+        if self.derived {
+            return self.show_derivation_index(ui);
+        } else {
+            ui.label("Private Key:");
+            ui.horizontal(|ui| {
+                self.private_key_input.show(ui);
+                if ui.button("Generate Random").clicked() {
+                    self.generate_random_private_key();
+                }
+            });
+            ui.end_row();
+        }
+
+        AppAction::None
+    }
+
+    fn show_derivation_index(&mut self, ui: &mut Ui) -> AppAction {
+        ui.label("Key index:");
+        let Some((seed_hash, identity_index)) =
+            derivation_wallet(&self.identity, self.app_context.network)
+        else {
+            self.derivation_index = None;
+            ui.label(
+                "Load this identity from its wallet, or uncheck derivation to enter a private key.",
+            );
+            ui.end_row();
+            return AppAction::None;
+        };
+        if !matches!(
+            self.key_type,
+            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
+        ) {
+            self.derivation_index = None;
+            ui.label("Choose secp256k1 or HASH160, or uncheck derivation to enter a private key.");
+            ui.end_row();
+            return AppAction::None;
+        }
+        let Ok(backend) = self.app_context.wallet_backend() else {
+            self.derivation_index = None;
+            ui.label("The wallet is unavailable. Reopen the wallet and try again.");
+            ui.end_row();
+            return AppAction::None;
+        };
+        let cache = backend
+            .auth_pubkey_cache()
+            .get(self.app_context.network, &seed_hash);
+        let limit = derivation_index_limit(self.identity.identity.get_public_key_max_id());
+        if (0..limit).any(|index| {
+            cache
+                .get(self.app_context.network, identity_index, index)
+                .is_none()
+        }) {
+            self.derivation_index = None;
+            if self.derivation_warming && self.add_key_status == AddKeyStatus::Error {
+                if crate::ui::components::styled::StyledButton::new("Retry loading indices")
+                    .show(ui)
+                    .clicked()
+                {
+                    self.derivation_warming = false;
+                    self.add_key_status = AddKeyStatus::NotStarted;
+                }
+            } else {
+                ui.label("Loading available indices…");
+            }
+            ui.end_row();
+            if !self.derivation_warming {
+                self.derivation_warming = true;
+                return AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::WarmIdentityAuthPubkeys {
+                        seed_hash,
+                        identity_index,
+                        key_count: limit,
+                    },
+                ));
+            }
+            return AppAction::None;
+        }
+        let occupied = occupied_indices(
+            &self.identity,
+            self.app_context.network,
+            seed_hash,
+            identity_index,
+            &cache,
+        );
+        if self
+            .derivation_index
+            .is_none_or(|index| index >= limit || occupied.contains(&index))
+        {
+            self.derivation_index = first_free_index(limit, &occupied);
+        }
+        egui::ComboBox::from_id_salt("derived_key_index")
+            .selected_text(
+                self.derivation_index
+                    .map_or_else(|| "No free indices".to_string(), |index| index.to_string()),
+            )
+            .show_ui(ui, |ui| {
+                for index in 0..limit {
+                    let used = occupied.contains(&index);
+                    ui.add_enabled_ui(!used, |ui| {
+                        ui.selectable_value(
+                            &mut self.derivation_index,
+                            Some(index),
+                            if used {
+                                format!("{index} (used)")
+                            } else {
+                                index.to_string()
+                            },
+                        );
+                    });
+                }
+            });
+        ui.end_row();
+        AppAction::None
+    }
+
     fn generate_random_private_key(&mut self) {
         // Create a new random number generator
         let mut rng = StdRng::from_entropy();
@@ -343,6 +505,8 @@ impl AddKeyScreen {
             && s == "add_another"
         {
             self.private_key_input.clear();
+            self.derivation_index = None;
+            self.derivation_warming = false;
             self.contract_id_input = String::new();
             self.document_type_input = String::new();
             self.enable_contract_bounds = false;
@@ -369,6 +533,8 @@ impl ScreenLike for AddKeyScreen {
             .find(|identity| identity.identity.id() == self.identity.identity.id())
         {
             self.identity = refreshed_identity.clone();
+            self.derivation_index = None;
+            self.derivation_warming = false;
         }
     }
 
@@ -386,6 +552,9 @@ impl ScreenLike for AddKeyScreen {
                 self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.add_key_status = AddKeyStatus::Complete;
+            }
+            BackendTaskSuccessResult::IdentityAuthPubkeysWarmed { .. } => {
+                self.derivation_warming = false;
             }
             BackendTaskSuccessResult::RefreshedIdentity(_) => {
                 self.refresh();
@@ -621,13 +790,7 @@ impl ScreenLike for AddKeyScreen {
                         });
                     ui.end_row();
 
-                    // Private Key Input
-                    ui.label("Private Key:");
-                    self.private_key_input.show(ui);
-                    if ui.button("Generate Random").clicked() {
-                        self.generate_random_private_key();
-                    }
-                    ui.end_row();
+                    inner_action |= self.show_key_source(ui);
 
                     // Contract Bounds Toggle
                     ui.label("Enable Contract Bounds:");
@@ -695,7 +858,15 @@ impl ScreenLike for AddKeyScreen {
                 .fill(DashColors::DASH_BLUE)
                 .frame(true)
                 .corner_radius(3.0);
-            if ui.add(button).clicked() {
+            let can_add = self.add_key_status != AddKeyStatus::WaitingForResult
+                && (!self.derived
+                    || (self.derivation_index.is_some()
+                        && !self.derivation_warming
+                        && matches!(
+                            self.key_type,
+                            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
+                        )));
+            if ui.add_enabled(can_add, button).clicked() {
                 let validation_action = self.validate_and_add_key();
                 if matches!(&validation_action, AppAction::BackendTask(_)) {
                     self.add_key_status = AddKeyStatus::WaitingForResult;
@@ -724,5 +895,106 @@ impl ScreenLike for AddKeyScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod derived_key_tests {
+    use super::*;
+    use crate::context::test_staging::stage_identity_with_vaulted_keys;
+    use crate::model::derived_identity_key::test_support::fixture;
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_checkbox_defaults_on_and_switches_private_input() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let (identity, cache, seed_hash, _) = fixture();
+        staged
+            .ctx
+            .wallet_backend()
+            .unwrap()
+            .auth_pubkey_cache()
+            .put(staged.ctx.network, &seed_hash, &cache)
+            .unwrap();
+        let screen = AddKeyScreen::new(identity, &staged.ctx);
+        assert!(screen.derived);
+        let mut harness = Harness::builder().with_max_steps(30).build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                egui::Grid::new("source").show(ui, |ui| {
+                    screen.show_key_source(ui);
+                });
+            },
+            screen,
+        );
+        harness.run();
+        assert_eq!(harness.state().derivation_index, Some(1));
+        assert!(harness.query_by_label("Private Key:").is_none());
+        harness.get_by_label("Derive from wallet").click();
+        harness.run();
+        assert!(!harness.state().derived);
+        assert!(harness.query_by_label("Private Key:").is_some());
+        assert!(harness.query_by_label("Key index:").is_none());
+        harness
+            .state_mut()
+            .private_key_input
+            .set_text("sensitive input".to_string());
+        harness.get_by_label("Derive from wallet").click();
+        harness.run();
+        assert!(harness.state().private_key_input.text().is_empty());
+        assert_eq!(harness.state().derivation_index, Some(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_occupied_index_cannot_be_selected_and_submit_carries_only_index() {
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let (identity, cache, seed_hash, _) = fixture();
+        staged
+            .ctx
+            .wallet_backend()
+            .unwrap()
+            .auth_pubkey_cache()
+            .put(staged.ctx.network, &seed_hash, &cache)
+            .unwrap();
+        let screen = AddKeyScreen::new(identity, &staged.ctx);
+        let mut harness = Harness::builder().with_max_steps(30).build_ui_state(
+            |ui, screen: &mut AddKeyScreen| {
+                egui::Grid::new("source").show(ui, |ui| {
+                    screen.show_key_source(ui);
+                });
+            },
+            screen,
+        );
+        harness.run();
+        harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+        harness.run();
+        assert!(
+            harness
+                .get_by_label("0 (used)")
+                .accesskit_node()
+                .is_disabled()
+        );
+        harness.get_by_label("0 (used)").click();
+        harness.run();
+        assert_eq!(harness.state().derivation_index, Some(1));
+        if harness.query_by_label("2").is_none() {
+            harness.get_by_role(egui::accesskit::Role::ComboBox).click();
+            harness.run();
+        }
+        harness.get_by_label("2").click();
+        harness.run();
+        assert_eq!(harness.state().derivation_index, Some(2));
+        let AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::AddDerivedKeyToIdentity(_, key, index),
+        )) = harness.state_mut().validate_and_add_key()
+        else {
+            panic!("derived submission must use the derived backend task");
+        };
+        assert_eq!(index, 2);
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+        assert!(key.identity_public_key.data().is_empty());
+        assert!(key.in_wallet_at_derivation_path.is_none());
     }
 }

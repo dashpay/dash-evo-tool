@@ -306,5 +306,6 @@ contract](#ab-build-comparison-contract) above applied in each file's own
 | [`platform-shielded-availability-after-sync.md`](scenarios/platform-shielded-availability-after-sync.md) | Shielded features correctly activate right after SPV/platform sync instead of silently staying disabled (#936, #938) |
 | [`dapi-budget-resilience-after-resync.md`](scenarios/dapi-budget-resilience-after-resync.md) | Repeated SPV `Syncing`↔`Synced` transitions no longer exhaust the shared DAPI request budget and break unrelated actions like identity top-up (#950) |
 | [`startup-storage-gate-and-sync-cancel.md`](scenarios/startup-storage-gate-and-sync-cancel.md) | Cold-boot storage preparation raises exactly one blocking gate that always releases before chain sync starts, and cancelling the SPV overlay is a two-step choice no single keypress can turn into a disconnect (#970) |
+| [`migration-fixture-capture.md`](scenarios/migration-fixture-capture.md) | **Not an A/B comparison** (see its own "Deviation from the A/B contract" note) — the one-time recipe for capturing a real, GUI-produced data directory as a cross-version migration-test fixture (`tests/migration-fixtures/`) |
 
 <sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>

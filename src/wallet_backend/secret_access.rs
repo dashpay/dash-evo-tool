@@ -1185,7 +1185,7 @@ fn handle_lazy_tier2_rewrap_result(result: Result<(), TaskError>) -> Result<(), 
 
 /// Whether `e` is the "wrong passphrase" condition that the re-ask loop
 /// catches and re-prompts on (rather than aborting).
-fn is_wrong_passphrase(e: &TaskError) -> bool {
+pub(crate) fn is_wrong_passphrase(e: &TaskError) -> bool {
     match e {
         TaskError::SingleKeyPassphraseIncorrect
         | TaskError::HdPassphraseIncorrect

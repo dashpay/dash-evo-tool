@@ -23,7 +23,9 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use crate::app::AppAction;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
-use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
+use crate::backend_task::{
+    BackendTask, BackendTaskContext, BackendTaskSuccessResult, DPNSVoteOutcome,
+};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::fee_estimation::format_credits_as_dash;
@@ -190,6 +192,7 @@ pub struct MasternodeDetailView {
     open_contests: Vec<ContestedName>,
     /// Per-contest pending vote choice, keyed by normalized contested name.
     vote_selections: BTreeMap<String, ResourceVoteChoice>,
+    pending_cast: Option<BackendTaskContext>,
     /// The scoped, in-place "Add voting key" prompt (US-3 / §10.8) — distinct
     /// from FR-4's load form. `Some` while the prompt is open.
     voter_key_prompt: Option<PasswordInput>,
@@ -244,9 +247,26 @@ impl MasternodeDetailView {
     pub(crate) fn is_restoring_for_test(&self) -> bool {
         self.recovery.is_restoring()
     }
+
+    /// Dispatch a recovery check only when no check or offer is outstanding.
+    pub(crate) fn start_recovery_check_for_test(&mut self) -> bool {
+        self.recovery.ensure_checked().is_some()
+    }
+
+    pub(crate) fn recovery_context_for_test(&self) -> BackendTaskContext {
+        self.recovery.pending_context_for_test()
+    }
 }
 
 impl MasternodeDetailView {
+    pub(crate) fn accepts_recovery_result(
+        &self,
+        context: &BackendTaskContext,
+        completed: bool,
+    ) -> bool {
+        self.recovery.accepts_result(context, completed)
+    }
+
     pub fn new(app_context: &Arc<AppContext>, identity: QualifiedIdentity) -> Self {
         let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
         let node_id_short = shorten_id(&node_id_hex_full);
@@ -269,6 +289,7 @@ impl MasternodeDetailView {
             contest_summary,
             open_contests,
             vote_selections: BTreeMap::new(),
+            pending_cast: None,
             voter_key_prompt: None,
             remove_dialog: None,
             recovery,
@@ -285,16 +306,7 @@ impl MasternodeDetailView {
         self.recovery.absorb_result(ctx, result)
     }
 
-    /// Re-read this node from the store and re-arm its recovery check.
-    ///
-    /// The view holds the identity it was opened with, and its key-presence
-    /// line and recovery offer are both derived from it. A restore run from a
-    /// pushed Key Info screen never reaches this view — that screen is on top,
-    /// so it receives the result — which leaves the node page still offering
-    /// keys that are already back, and still warning about a voting key it now
-    /// holds. Called on arrival, so returning from a pushed screen recomputes
-    /// both. Vote selections and any open prompt survive: they belong to the
-    /// user's session, not to the record.
+    /// Refresh stored data while preserving prompts, vote selections, and recovery state.
     pub(crate) fn refresh_from_store(&mut self) {
         let node_id = self.identity.identity.id();
         if let Ok(identities) = self.app_context.load_local_masternode_identities()
@@ -305,7 +317,40 @@ impl MasternodeDetailView {
             self.key_presence = identity.masternode_key_presence();
             self.identity = identity;
         }
-        self.recovery.completed();
+        self.refresh_contests();
+    }
+
+    /// Re-check recovery on arrival because a pushed Key Info screen may have restored keys.
+    pub(crate) fn refresh_on_arrival(&mut self) {
+        self.refresh_from_store();
+        self.recovery.refresh_on_arrival();
+    }
+
+    fn cast_votes(&mut self, votes: Vec<(String, ResourceVoteChoice)>) -> AppAction {
+        let task = BackendTask::ContestedResourceTask(ContestedResourceTask::VoteOnDPNSNames(
+            votes,
+            vec![self.identity.clone()],
+        ));
+        let context = BackendTaskContext::for_dispatch(&task);
+        self.pending_cast = Some(context.clone());
+        AppAction::BackendTaskWithContext { task, context }
+    }
+
+    /// Retire unchanged, successful selections from this view's latest cast.
+    pub(crate) fn consume_cast_votes(
+        &mut self,
+        context: &BackendTaskContext,
+        results: &[DPNSVoteOutcome],
+    ) {
+        if self.pending_cast.as_ref() != Some(context) {
+            return;
+        }
+        self.pending_cast = None;
+        for (contested_name, choice, outcome) in results {
+            if outcome.is_ok() && self.vote_selections.get(contested_name) == Some(choice) {
+                self.vote_selections.remove(contested_name);
+            }
+        }
     }
 
     /// End this view's recovery operation when the failure that arrived is that
@@ -460,9 +505,12 @@ impl MasternodeDetailView {
         // with a click made this frame: the click already owns the outcome, and
         // the check simply goes out on the next frame instead.
         if matches!(outcome, DetailOutcome::None)
-            && let Some(task) = self.recovery.ensure_checked()
+            && let Some((task, context)) = self.recovery.ensure_checked()
         {
-            outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTask(task)));
+            outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTaskWithContext {
+                task,
+                context,
+            }));
         }
 
         outcome
@@ -692,9 +740,9 @@ impl MasternodeDetailView {
         }
 
         if let Some(approved) = self.render_recovery_section(ui)
-            && let Some(task) = self.recovery.restore(approved)
+            && let Some((task, context)) = self.recovery.restore(approved)
         {
-            action = Some(AppAction::BackendTask(task));
+            action = Some(AppAction::BackendTaskWithContext { task, context });
         }
         action
     }
@@ -979,9 +1027,7 @@ impl MasternodeDetailView {
             .on_disabled_hover_text(CAST_DISABLED_HINT)
             .clicked()
         {
-            action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::VoteOnDPNSNames(votes, vec![self.identity.clone()]),
-            )));
+            action = Some(self.cast_votes(votes));
         }
         action
     }
@@ -1077,6 +1123,108 @@ mod tests {
         // The normalized label is shown bare elsewhere; the vote section spells
         // out the full `.dash` domain so the user knows it is a registration.
         assert_eq!(contest_display_name("det"), "det.dash");
+    }
+
+    /// A cast retires only the selections it actually delivered. The view now
+    /// outlives a backend result, so the votes already on their way must stop
+    /// re-arming `Cast votes`, while a contest whose vote failed keeps its
+    /// choice for a corrected retry.
+    #[test]
+    fn a_cast_retires_only_the_selections_it_delivered() {
+        use crate::backend_task::error::TaskError;
+        use crate::model::qualified_identity::IdentityStatus;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let app_context = crate::context::test_support::test_app_context(temp_dir.path());
+        let identity = Identity::create_basic_identity(
+            Identifier::from([0x77; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        let mut view = MasternodeDetailView::new(&app_context, qi);
+        view.vote_selections
+            .insert("delivered".to_string(), ResourceVoteChoice::Abstain);
+        view.vote_selections
+            .insert("rejected".to_string(), ResourceVoteChoice::Lock);
+        view.vote_selections
+            .insert("changed".to_string(), ResourceVoteChoice::Abstain);
+
+        let AppAction::BackendTaskWithContext { context, .. } = view.cast_votes(vec![
+            ("delivered".to_string(), ResourceVoteChoice::Abstain),
+            ("changed".to_string(), ResourceVoteChoice::Abstain),
+            ("rejected".to_string(), ResourceVoteChoice::Lock),
+        ]) else {
+            panic!("a cast must carry its dispatch context");
+        };
+        view.vote_selections
+            .insert("changed".to_string(), ResourceVoteChoice::Lock);
+        let results = [
+            ("delivered".to_string(), ResourceVoteChoice::Abstain, Ok(())),
+            ("changed".to_string(), ResourceVoteChoice::Abstain, Ok(())),
+            (
+                "rejected".to_string(),
+                ResourceVoteChoice::Lock,
+                Err(Arc::new(TaskError::NoIdentitiesFound)),
+            ),
+        ];
+        view.consume_cast_votes(&BackendTaskContext::Other, &results);
+        let unrelated = BackendTaskContext::for_dispatch(&BackendTask::None);
+        view.consume_cast_votes(&unrelated, &results);
+        assert_eq!(
+            view.vote_selections.len(),
+            3,
+            "unrelated casts change nothing"
+        );
+        view.consume_cast_votes(&context, &results);
+
+        assert!(
+            !view.vote_selections.contains_key("delivered"),
+            "a vote already sent must not stay armed to be sent again",
+        );
+        assert_eq!(
+            view.vote_selections.get("changed"),
+            Some(&ResourceVoteChoice::Lock),
+            "a result for an older choice must preserve the newer selection",
+        );
+        assert_eq!(
+            view.vote_selections.get("rejected"),
+            Some(&ResourceVoteChoice::Lock),
+            "a vote that failed keeps its choice so it can be retried",
+        );
+
+        view.vote_selections
+            .insert("delivered".to_string(), ResourceVoteChoice::Abstain);
+        let AppAction::BackendTaskWithContext { context: next, .. } =
+            view.cast_votes(vec![("delivered".to_string(), ResourceVoteChoice::Abstain)])
+        else {
+            panic!("a cast must carry its dispatch context");
+        };
+        view.consume_cast_votes(&context, &results);
+        assert!(
+            view.vote_selections.contains_key("delivered"),
+            "an older cast cannot retire a new cast's selection"
+        );
+        view.consume_cast_votes(&next, &results);
+        assert!(!view.vote_selections.contains_key("delivered"));
     }
 
     #[test]

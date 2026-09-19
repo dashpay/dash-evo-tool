@@ -182,17 +182,33 @@ fn harness_for(mut screen: KeysScreen) -> (Harness<'static>, Rc<RefCell<AppActio
 }
 
 /// Drive `screen` while keeping a handle on it, so a test can deliver the
-/// results and messages `AppState` would between frames.
-fn harness_keeping_screen(screen: KeysScreen) -> (Harness<'static>, Rc<RefCell<KeysScreen>>) {
+/// results and messages `AppState` would between frames. Also captures the
+/// last non-`None` action the screen returned, so a test can recover the
+/// exact `BackendTaskContext` a click dispatched — the screen wraps it
+/// (dispatch id, network) before handing it to the backend, so a test cannot
+/// reconstruct it by hand and get a value `==` to what the screen actually
+/// used.
+fn harness_keeping_screen(
+    screen: KeysScreen,
+) -> (
+    Harness<'static>,
+    Rc<RefCell<KeysScreen>>,
+    Rc<RefCell<AppAction>>,
+) {
     let screen = Rc::new(RefCell::new(screen));
     let rendered = screen.clone();
+    let action = Rc::new(RefCell::new(AppAction::None));
+    let capture = action.clone();
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 800.0))
         .build_ui(move |ui| {
-            rendered.borrow_mut().ui(ui);
+            let act = rendered.borrow_mut().ui(ui);
+            if act != AppAction::None {
+                *capture.borrow_mut() = act;
+            }
         });
     harness.run_steps(3);
-    (harness, screen)
+    (harness, screen, action)
 }
 
 /// Drive `screen` with `banner` already set on the harness's own context, the
@@ -311,13 +327,25 @@ fn a_failed_restore_leaves_the_offer_in_place_to_retry() {
             plan: plan(),
         });
 
-        let (mut harness, screen) = harness_keeping_screen(screen);
+        let (mut harness, screen, action) = harness_keeping_screen(screen);
         harness.get_by_label(RESTORE).click();
         harness.run_steps(2);
         assert!(
             harness.query_by_label(RESTORE).is_none(),
             "the premise: a restore in flight shows progress, not another Restore"
         );
+
+        // The screen wraps the dispatched context (dispatch id, network)
+        // before handing it to the backend, so only the exact value the click
+        // produced — not a hand-rolled `LegacyRecoveryRestore(identity_id)` —
+        // is `==` to what a real failure would echo back.
+        let dispatched = std::mem::replace(&mut *action.borrow_mut(), AppAction::None);
+        let own_context = match dispatched {
+            AppAction::BackendTaskWithContext { context, .. } => context,
+            other => {
+                panic!("expected the restore click to dispatch a task with context, got {other:?}")
+            }
+        };
 
         // An unrelated task failing while the restore runs must not re-arm it.
         // Errors are not screen-affine — any task's failure reaches whichever
@@ -339,10 +367,9 @@ fn a_failed_restore_leaves_the_offer_in_place_to_retry() {
 
         // The restore's own failure does end it, so a mistyped identity password
         // can be corrected and Restore pressed again.
-        screen.borrow_mut().display_backend_task_error(
-            &BackendTaskContext::LegacyRecoveryRestore(identity_id),
-            &TaskError::LegacyRecoveryIdentityChanged,
-        );
+        screen
+            .borrow_mut()
+            .display_backend_task_error(&own_context, &TaskError::LegacyRecoveryIdentityChanged);
         harness.run_steps(2);
         assert!(
             harness.query_by_label(RESTORE).is_some(),

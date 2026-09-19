@@ -15,16 +15,25 @@ impl AppContext {
     /// row seeds a fresh entry, carrying the wallet's xpub so the cold-boot
     /// picker can still render the wallet without unlocking the seed.
     ///
+    /// `alias` is the raw user input. It is resolved through
+    /// [`AppContext::resolve_hd_wallet_alias`]: a blank alias resets the wallet
+    /// to the smallest unused "Wallet N", and a name another HD wallet already
+    /// uses is rejected. The returned result carries the alias actually saved.
+    ///
     /// # Errors
     ///
     /// - [`TaskError::WalletNotFound`] when `seed_hash` matches no loaded wallet.
     /// - [`TaskError::KvSidecarStorage`] when the sidecar cannot be read or written.
-    /// - [`TaskError::InvalidWalletAliasLength`] when `alias` exceeds the limit.
+    /// - [`TaskError::InvalidWalletAliasLength`] when the cleaned alias exceeds the limit.
+    /// - [`TaskError::WalletAliasAlreadyUsed`] when another HD wallet uses the alias.
     pub(crate) fn rename_hd_wallet(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
         alias: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // Lock order: alias writers → per-wallet rename lock → `wallets` map →
+        // inner wallet (see `AppContext::lock_hd_wallet_aliases`).
+        let _alias_guard = self.lock_hd_wallet_aliases();
         let rename_lock = self.hd_wallet_rename_lock(seed_hash);
         let _rename_guard = rename_lock
             .lock()
@@ -34,6 +43,7 @@ impl AppContext {
         // relative to wallet removal. The inner wallet guard is disk-I/O-free.
         let wallets = self.wallets.read()?;
         let wallet = wallets.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
+        let alias = Self::resolve_hd_wallet_alias(&wallets, &alias, &seed_hash)?;
         let xpub_encoded = wallet
             .read()?
             .master_bip44_ecdsa_extended_public_key
@@ -53,6 +63,10 @@ impl AppContext {
             meta.xpub_encoded = xpub_encoded;
         }
         meta_view.set(self.network, &seed_hash, &meta)?;
+        // Mirror the saved name in memory while the alias lock is still held,
+        // so the next alias writer checks uniqueness against it rather than a
+        // stale name.
+        wallet.write()?.alias = Some(alias.clone());
 
         Ok(BackendTaskSuccessResult::WalletAliasRenamed { seed_hash, alias })
     }
@@ -60,22 +74,32 @@ impl AppContext {
     /// Persist a new alias for an imported single-key wallet to the single-key
     /// sidecar, delegating to the typed
     /// [`SingleKeyView::set_alias`](crate::wallet_backend::single_key::SingleKeyView::set_alias)
-    /// chokepoint (which validates the alias and refreshes the in-memory index).
+    /// chokepoint (which resolves the alias and refreshes the in-memory index).
+    /// A blank alias resets the key to the smallest unused "Key N"; the result
+    /// carries the alias actually saved.
     ///
     /// # Errors
     ///
     /// - [`TaskError::ImportedKeyNotFound`] when `address` was never imported.
     /// - [`TaskError::SingleKeyMetaStorage`] when the sidecar cannot be written.
-    /// - [`TaskError::InvalidWalletAliasLength`] when `alias` exceeds the limit.
+    /// - [`TaskError::InvalidWalletAliasLength`] when the cleaned alias exceeds the limit.
+    /// - [`TaskError::WalletAliasAlreadyUsed`] when another imported key uses the alias.
     pub(crate) fn rename_single_key_wallet(
         self: &Arc<Self>,
         address: String,
         alias: String,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let backend = self.wallet_backend()?;
-        backend
-            .single_key()
-            .set_alias(&address, Some(alias.clone()))?;
+        let _update_guard = self.lock_single_key_updates();
+        let alias = backend.single_key().set_alias(&address, &alias)?;
+        let wallets = self.single_key_wallets.read()?;
+        for wallet in wallets.values() {
+            let mut wallet = wallet.write()?;
+            if wallet.address.to_string() == address {
+                wallet.alias = Some(alias.clone());
+                break;
+            }
+        }
         Ok(BackendTaskSuccessResult::SingleKeyAliasRenamed { address, alias })
     }
 }
@@ -116,10 +140,14 @@ mod tests {
 
     async fn fixture_with_app_kv(app_kv: Arc<DetKv>) -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
-        fixture_from_parts(dir, app_kv).await
+        fixture_from_parts(dir, app_kv, None).await
     }
 
-    async fn fixture_from_parts(dir: TempDir, app_kv: Arc<DetKv>) -> Fixture {
+    async fn fixture_from_parts(
+        dir: TempDir,
+        app_kv: Arc<DetKv>,
+        prompt: Option<Arc<dyn crate::wallet_backend::SecretPrompt>>,
+    ) -> Fixture {
         let data_dir = dir.path().to_path_buf();
         ensure_env_file(&data_dir);
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
@@ -136,6 +164,9 @@ mod tests {
             UserRoleCell::default(),
         )
         .expect("offline testnet AppContext");
+        if let Some(prompt) = prompt {
+            ctx.install_secret_prompt(prompt);
+        }
 
         let (tx, rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
@@ -161,12 +192,97 @@ mod tests {
     async fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let app_kv = AppContext::open_app_kv(dir.path()).expect("app kv");
-        fixture_from_parts(dir, app_kv).await
+        fixture_from_parts(dir, app_kv, None).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn legacy_envelope_hint_survives_hydration_and_rename() {
+        use crate::model::wallet::meta::WalletMetaV1;
+        use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
+        use crate::wallet_backend::SecretScope;
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app_kv = AppContext::open_app_kv(dir.path()).unwrap();
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::Cancel,
+            ScriptedAnswer::Cancel,
+            ScriptedAnswer::Cancel,
+        ]));
+        let f = fixture_from_parts(dir, app_kv, Some(prompt.clone())).await;
+        let backend = f.ctx.wallet_backend().expect("backend");
+        let meta = backend
+            .wallet_meta()
+            .get(f.ctx.network, &f.seed_hash)
+            .unwrap();
+        let key = crate::wallet_backend::wallet_meta::key_for(f.ctx.network, &f.seed_hash);
+        f.ctx
+            .app_kv()
+            .put(
+                DetScope::Global,
+                &key,
+                &WalletMetaV1 {
+                    alias: "Legacy".into(),
+                    xpub_encoded: meta.xpub_encoded.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let seeds = WalletSeedView::new(backend.secret_store());
+        seeds.delete_raw(&f.seed_hash).unwrap();
+        seeds
+            .set(
+                &f.seed_hash,
+                &StoredSeedEnvelope {
+                    encrypted_seed: zeroize::Zeroizing::new(vec![0; 80]),
+                    salt: vec![0; 16],
+                    nonce: vec![0; 12],
+                    password_hint: Some("Legacy hint".into()),
+                    uses_password: true,
+                    xpub_encoded: meta.xpub_encoded,
+                },
+            )
+            .unwrap();
+        f.ctx.wallets.write().unwrap().clear();
+        backend.hydrate_context_wallets(&f.ctx).unwrap();
+        let scope = SecretScope::HdSeed {
+            seed_hash: f.seed_hash,
+        };
+        for label in ["Legacy", "Renamed", "After unlock"] {
+            if label == "Renamed" {
+                f.ctx.rename_hd_wallet(f.seed_hash, label.into()).unwrap();
+                backend.hydrate_context_wallets(&f.ctx).unwrap();
+            }
+            if label == "After unlock" {
+                seeds
+                    .set_protected(
+                        &f.seed_hash,
+                        &[0x5A; 64],
+                        &platform_wallet_storage::secrets::SecretString::new("test-only-password"),
+                    )
+                    .unwrap();
+                seeds.delete(&f.seed_hash).unwrap();
+                f.ctx.rename_hd_wallet(f.seed_hash, label.into()).unwrap();
+                backend.hydrate_context_wallets(&f.ctx).unwrap();
+            }
+            assert!(
+                backend
+                    .secret_access()
+                    .with_secret(&scope, |_| Ok(()))
+                    .await
+                    .is_err()
+            );
+            let request = prompt.requests().pop().expect("password prompt");
+            assert_eq!(request.display_label, label);
+            assert_eq!(request.hint.as_deref(), Some("Legacy hint"));
+        }
     }
 
     #[derive(Default)]
     struct ReadGateState {
         armed: bool,
+        intercept_write: bool,
         intercepted: bool,
         released: bool,
     }
@@ -185,6 +301,11 @@ mod tests {
                 armed: true,
                 ..Default::default()
             };
+        }
+
+        fn arm_write(&self) {
+            self.arm();
+            self.state.lock().unwrap().intercept_write = true;
         }
 
         fn wait_until_intercepted(&self) {
@@ -210,7 +331,11 @@ mod tests {
         fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
             let value = self.inner.get(scope, key)?;
             let mut state = self.state.lock().expect("gate state");
-            if state.armed && !state.intercepted && key.contains(":wallet_meta:") {
+            if state.armed
+                && !state.intercept_write
+                && !state.intercepted
+                && key.contains(":wallet_meta:")
+            {
                 state.intercepted = true;
                 self.changed.notify_all();
                 state = self
@@ -223,6 +348,20 @@ mod tests {
         }
 
         fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let mut state = self.state.lock().unwrap();
+            if state.armed
+                && state.intercept_write
+                && !state.intercepted
+                && key.contains(":wallet_meta:")
+            {
+                state.intercepted = true;
+                self.changed.notify_all();
+                state = self
+                    .changed
+                    .wait_while(state, |state| !state.released)
+                    .unwrap();
+            }
+            drop(state);
             self.inner.put(scope, key, value)
         }
 
@@ -389,6 +528,119 @@ mod tests {
         assert!(matches!(err, TaskError::WalletNotFound), "got {err:?}");
     }
 
+    /// Register a second HD wallet named `alias` in the fixture context.
+    fn register_other_wallet(f: &Fixture, alias: &str) -> WalletSeedHash {
+        let seed = [0x6Bu8; 64];
+        let wallet = Wallet::new_from_seed(seed, Network::Testnet, Some(alias.into()), None)
+            .expect("build other wallet");
+        f.ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register other wallet")
+            .0
+    }
+
+    fn in_memory_alias(f: &Fixture) -> Option<String> {
+        f.ctx
+            .wallet_arc(&f.seed_hash)
+            .expect("wallet")
+            .read()
+            .expect("read")
+            .alias
+            .clone()
+    }
+
+    fn persisted_alias(f: &Fixture) -> String {
+        f.ctx
+            .wallet_backend()
+            .expect("backend")
+            .wallet_meta()
+            .get(f.ctx.network, &f.seed_hash)
+            .expect("meta present")
+            .alias
+    }
+
+    /// Renaming to a blank name is supported: it resets the wallet to the
+    /// smallest unused default name, in memory and on disk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_blank_alias_resets_to_default_name() {
+        let f = fixture().await;
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Custom".into())
+            .expect("rename to a custom name");
+        register_other_wallet(&f, "Wallet 1");
+
+        let result = f
+            .ctx
+            .rename_hd_wallet(f.seed_hash, " \u{200B} ".into())
+            .expect("a blank rename resets to the default name");
+
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::WalletAliasRenamed { alias, .. } if alias == "Wallet 2"
+            ),
+            "got {result:?}"
+        );
+        assert_eq!(persisted_alias(&f), "Wallet 2");
+        assert_eq!(in_memory_alias(&f).as_deref(), Some("Wallet 2"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_cleans_alias_and_updates_memory() {
+        let f = fixture().await;
+
+        let result = f
+            .ctx
+            .rename_hd_wallet(f.seed_hash, "  \u{202E}Spending ".into())
+            .expect("rename");
+
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::WalletAliasRenamed { alias, .. } if alias == "Spending"
+            ),
+            "got {result:?}"
+        );
+        assert_eq!(persisted_alias(&f), "Spending");
+        assert_eq!(in_memory_alias(&f).as_deref(), Some("Spending"));
+    }
+
+    /// A wallet never collides with itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_to_its_own_alias_succeeds() {
+        let f = fixture().await;
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Savings".into())
+            .expect("first rename");
+
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Savings".into())
+            .expect("renaming to the current name succeeds");
+
+        assert_eq!(persisted_alias(&f), "Savings");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_hd_to_another_wallets_alias_is_rejected_without_writing() {
+        let f = fixture().await;
+        f.ctx
+            .rename_hd_wallet(f.seed_hash, "Spending".into())
+            .expect("first rename");
+        register_other_wallet(&f, "Savings");
+
+        let err = f
+            .ctx
+            .rename_hd_wallet(f.seed_hash, "Savings".into())
+            .expect_err("the name belongs to another wallet");
+
+        assert!(
+            matches!(err, TaskError::WalletAliasAlreadyUsed { .. }),
+            "got {err:?}"
+        );
+        assert_eq!(persisted_alias(&f), "Spending");
+        assert_eq!(in_memory_alias(&f).as_deref(), Some("Spending"));
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn overlapping_hd_renames_serialize_so_later_invocation_wins() {
         let store = Arc::new(FirstWalletMetaReadGate::default());
@@ -436,6 +688,94 @@ mod tests {
             alias, "later",
             "the later invocation must be the final persisted alias"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_hd_registrations_assign_distinct_default_names() {
+        let store = Arc::new(FirstWalletMetaReadGate::default());
+        let f = fixture_with_app_kv(Arc::new(DetKv::from_store(store.clone()))).await;
+        store.arm_write();
+        let register = |byte| {
+            let ctx = f.ctx.clone();
+            let runtime = tokio::runtime::Handle::current();
+            std::thread::spawn(move || {
+                let _runtime_guard = runtime.enter();
+                let seed = [byte; 64];
+                let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None).unwrap();
+                ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            })
+        };
+        let first = register(0x61);
+        store.wait_until_intercepted();
+        let second = register(0x62);
+        std::thread::sleep(Duration::from_millis(200));
+        store.release();
+        let first = first.join().unwrap().unwrap();
+        let second = second.join().unwrap().unwrap();
+        let mut aliases = [first, second].map(|(hash, wallet)| {
+            let alias = wallet.read().unwrap().alias.clone().unwrap();
+            assert_eq!(
+                f.ctx
+                    .wallet_backend()
+                    .unwrap()
+                    .wallet_meta()
+                    .get(f.ctx.network, &hash)
+                    .unwrap()
+                    .alias,
+                alias
+            );
+            alias
+        });
+        aliases.sort();
+        assert_eq!(aliases, ["Wallet 2", "Wallet 3"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_racing_hd_rename_rejects_collision_without_seed_write() {
+        use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+
+        let store = Arc::new(FirstWalletMetaReadGate::default());
+        let f = fixture_with_app_kv(Arc::new(DetKv::from_store(store.clone()))).await;
+        store.arm();
+        let ctx = f.ctx.clone();
+        let hash = f.seed_hash;
+        let rename = std::thread::spawn(move || ctx.rename_hd_wallet(hash, "Savings".into()));
+        store.wait_until_intercepted();
+        let seed = [0x63; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, Some("Savings".into()), None).unwrap();
+        let new_hash = wallet.seed_hash();
+        let ctx = f.ctx.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let registration = std::thread::spawn(move || {
+            let _runtime_guard = runtime.enter();
+            tx.send(ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh))
+                .unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_millis(200)).ok();
+        store.release();
+        rename.join().unwrap().unwrap();
+        let result = early.unwrap_or_else(|| rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        registration.join().unwrap();
+        assert!(matches!(
+            result,
+            Err(TaskError::WalletAliasAlreadyUsed { .. })
+        ));
+        let secrets = f.ctx.secret_store();
+        let seeds = WalletSeedView::new(&secrets);
+        assert!(seeds.get_raw(&new_hash).unwrap().is_none());
+        assert!(seeds.get(&new_hash).unwrap().is_none());
+        assert!(!f.ctx.wallets.read().unwrap().contains_key(&new_hash));
+        assert!(
+            f.ctx
+                .wallet_backend()
+                .unwrap()
+                .wallet_meta()
+                .get(f.ctx.network, &new_hash)
+                .is_none()
+        );
+        assert_eq!(persisted_alias(&f), "Savings");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -497,9 +837,13 @@ mod tests {
         // Mint a deterministic throwaway key rather than committing a WIF.
         let sk = SecretKey::from_byte_array(&[0x11u8; 32]).expect("valid scalar");
         let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
-        let imported = backend
-            .single_key()
-            .import_wif(&wif, Some("old name".into()))
+        let (imported, display_wallet) = f
+            .ctx
+            .import_single_key_wif(
+                &wif,
+                crate::model::wallet::alias::AliasSource::UserEntered("old name".into()),
+                Default::default(),
+            )
             .expect("import");
         let address = imported.address.clone();
 
@@ -516,12 +860,88 @@ mod tests {
             "got {result:?}"
         );
 
+        assert_eq!(
+            display_wallet
+                .read()
+                .expect("display wallet")
+                .alias
+                .as_deref(),
+            Some("new name")
+        );
+
         let listed = backend.single_key().list();
         let entry = listed
             .iter()
             .find(|e| e.address == address)
             .expect("imported key present");
         assert_eq!(entry.alias.as_deref(), Some("new name"), "alias persisted");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_key_import_serializes_through_display_update() {
+        use crate::model::wallet::alias::AliasSource;
+
+        let f = fixture().await;
+        let backend = f.ctx.wallet_backend().expect("backend");
+        let key = SecretKey::from_byte_array(&[0x33; 32]).expect("valid scalar");
+        let wif = PrivateKey::new(key, Network::Testnet).to_wif();
+        let display_guard = f.ctx.single_key_wallets.read().expect("display map");
+        let first_ctx = f.ctx.clone();
+        let first_wif = wif.clone();
+        let first = std::thread::spawn(move || {
+            first_ctx.import_single_key_wif(
+                &first_wif,
+                AliasSource::UserEntered("First".into()),
+                Default::default(),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while backend.single_key().list().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "first import persisted"
+            );
+            std::thread::yield_now();
+        }
+
+        let later_ctx = f.ctx.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let later = std::thread::spawn(move || {
+            started_tx.send(()).expect("started");
+            let result = later_ctx.import_single_key_wif(
+                &wif,
+                AliasSource::UserEntered("Second".into()),
+                Default::default(),
+            );
+            done_tx.send(()).expect("done");
+            result
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("later import started");
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        let alias_while_display_blocked = backend.single_key().list()[0].alias.clone();
+        drop(display_guard);
+        first.join().expect("first thread").expect("first import");
+        let (imported, displayed) = later.join().expect("later thread").expect("later import");
+        assert_eq!(alias_while_display_blocked.as_deref(), Some("First"));
+        assert_eq!(imported.alias.as_deref(), Some("Second"));
+        assert_eq!(
+            displayed.read().expect("displayed").alias.as_deref(),
+            Some("Second")
+        );
+        let map = f.ctx.single_key_wallets.read().expect("display map");
+        assert_eq!(
+            map.values()
+                .next()
+                .expect("key")
+                .read()
+                .expect("wallet")
+                .alias
+                .as_deref(),
+            Some("Second")
+        );
     }
 
     /// Renaming an address that was never imported surfaces the typed
@@ -534,5 +954,42 @@ mod tests {
             .rename_single_key_wallet("yNeverImported".into(), "x".into())
             .expect_err("an unknown address must fail");
         assert!(matches!(err, TaskError::ImportedKeyNotFound), "got {err:?}");
+    }
+
+    /// Renaming a key to a blank name resets it to the smallest unused
+    /// "Key N" and the result carries that name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rename_single_key_blank_alias_resets_to_default_name() {
+        let f = fixture().await;
+        let backend = f.ctx.wallet_backend().expect("backend");
+        let sk = SecretKey::from_byte_array(&[0x22u8; 32]).expect("valid scalar");
+        let wif = PrivateKey::new(sk, Network::Testnet).to_wif();
+        let address = backend
+            .single_key()
+            .import_wif(
+                &wif,
+                crate::model::wallet::alias::AliasSource::UserEntered("Custom".into()),
+            )
+            .expect("import")
+            .address;
+
+        let result = f
+            .ctx
+            .rename_single_key_wallet(address.clone(), String::new())
+            .expect("a blank rename resets to the default name");
+
+        assert!(
+            matches!(
+                &result,
+                BackendTaskSuccessResult::SingleKeyAliasRenamed { alias, .. } if alias == "Key 1"
+            ),
+            "got {result:?}"
+        );
+        let listed = backend.single_key().list();
+        let entry = listed
+            .iter()
+            .find(|e| e.address == address)
+            .expect("imported key present");
+        assert_eq!(entry.alias.as_deref(), Some("Key 1"));
     }
 }

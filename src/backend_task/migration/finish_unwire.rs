@@ -1984,7 +1984,7 @@ struct SingleKeyMigrationOutcome {
 /// `single_key_priv.<addr>` label. Idempotent. Password-protected rows
 /// are skipped and reported separately, not as failures.
 async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
-    let backend = app_context
+    app_context
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;
 
@@ -1997,10 +1997,17 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
     }
     let conn = open_legacy_read_only(&path)?;
 
-    let view = backend.single_key();
     let outcome = migrate_single_key_rows_from_conn(
         &conn,
-        |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+        |wif, alias| {
+            app_context
+                .import_single_key_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                    Default::default(),
+                )
+                .map(|_| ())
+        },
         app_context.network,
     )?;
     tracing::info!(
@@ -4074,6 +4081,7 @@ mod tests {
 
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -4082,7 +4090,13 @@ mod tests {
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("migrate");
@@ -4147,6 +4161,7 @@ mod tests {
 
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -4155,13 +4170,25 @@ mod tests {
 
         let first = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("first pass");
         let second = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("second pass");
@@ -4238,6 +4265,7 @@ mod tests {
 
         let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
         let view = SingleKeyView {
+            alias_write_lock: &std::sync::Mutex::new(()),
             secret_store: &store,
             index: &index,
             network,
@@ -4246,7 +4274,13 @@ mod tests {
 
         let outcome = migrate_single_key_rows_from_conn(
             &conn,
-            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            |wif, alias| {
+                view.import_wif(
+                    wif,
+                    crate::model::wallet::alias::AliasSource::Preserved(alias),
+                )
+                .map(|_| ())
+            },
             Network::Testnet,
         )
         .expect("partial failure must not abort the loop");
@@ -5724,6 +5758,67 @@ mod tests {
             .ensure_wallet_backend(sender)
             .await
             .expect("wallet backend must wire offline");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn migration_retry_refreshes_hydrated_duplicate_key_names() {
+        use crate::model::wallet::alias::AliasSource;
+        use dash_sdk::dpp::dashcore::PrivateKey;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = fresh_app_context(tmp.path());
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().unwrap();
+        let conn = Connection::open(ctx.db.db_file_path().unwrap()).unwrap();
+        for byte in [0x31, 0x32] {
+            let raw = [byte; 32];
+            let key = PrivateKey::from_byte_array(&raw, ctx.network).unwrap();
+            let mut imported = backend
+                .single_key()
+                .import_wif(&key.to_wif(), AliasSource::Preserved(Some("Dup".into())))
+                .unwrap();
+            imported.alias = Some("Dup".into());
+            ctx.app_kv()
+                .put(
+                    DetScope::Global,
+                    &format!("{}:single_key_meta:{}", ctx.network, imported.address),
+                    &imported,
+                )
+                .unwrap();
+            seed_legacy_row(
+                &conn,
+                &[byte; 32],
+                &raw,
+                &[],
+                &[],
+                &imported.address,
+                Some("Dup"),
+                false,
+                ctx.network,
+            );
+        }
+        backend.hydrate_context_wallets(&ctx).unwrap();
+        assert!(
+            ctx.single_key_wallets
+                .read()
+                .unwrap()
+                .values()
+                .all(|wallet| wallet.read().unwrap().alias.as_deref() == Some("Dup"))
+        );
+
+        migrate_single_key_rows(&ctx).await.unwrap();
+        backend.hydrate_context_wallets(&ctx).unwrap();
+        let listed = backend.single_key().list();
+        assert_eq!(listed.len(), 2);
+        assert_ne!(listed[0].alias, listed[1].alias);
+        for wallet in ctx.single_key_wallets.read().unwrap().values() {
+            let wallet = wallet.read().unwrap();
+            let stored = listed
+                .iter()
+                .find(|key| key.address == wallet.address.to_string())
+                .unwrap();
+            assert_eq!(wallet.alias, stored.alias);
+        }
     }
 
     /// Stage the v0.10-dev vote queue: the legacy table plus the rows given as

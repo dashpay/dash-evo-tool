@@ -17,6 +17,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | `AddressInput` | `address_input.rs` | `ValidatedAddress` | Unified address with autocomplete, type detection (Core/Platform/Shielded/Identity), DPNS resolution. GitHub-style tag search (`type:core\|platform\|…`, `wallet:name`; unrecognized tokens are free text). Rows render `[wallet pill] address (name) [type pill] balance`; when no explicit hint is set the placeholder is a live `type:…|… wallet:…|…` legend |
 | `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop. NOT ComponentResponse |
 | `IdentitySelector` | `identity_selector.rs` | N/A (Widget) | ComboBox dropdown for identity selection |
+| `UtcScheduleInput` | `utc_schedule_input.rs` | `u64` (Unix ms) | Labelled ISO date field + hour/minute spinners read as UTC. Parses only — reports whether the entry is a real instant; range rules ("in the future", "before the deadline") stay with the caller. Builders: `with_label`, `with_time`. Used by the DPNS review-and-cast sheet and the scheduled-vote editor |
 
 ## Breadcrumb Components
 

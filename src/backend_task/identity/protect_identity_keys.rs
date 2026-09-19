@@ -68,7 +68,8 @@ impl AppContext {
     /// [`Self::protect_identity_keys`] so the fail-closed guard, the seal, and
     /// the success result are exercised on a real `qi` as the task runs them —
     /// proving the guard is wired into the protect path, not merely callable.
-    fn protect_loaded_identity_keys(
+    /// The caller must hold this identity's record guard through the seal.
+    pub(super) fn protect_loaded_identity_keys(
         &self,
         qi: &QualifiedIdentity,
         password: &Secret,

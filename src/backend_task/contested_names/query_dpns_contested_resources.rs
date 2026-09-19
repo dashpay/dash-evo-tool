@@ -221,6 +221,12 @@ impl AppContext {
             }
         }
 
+        // Publish contests and every loaded node's proved current votes as one
+        // completed refresh snapshot. Per-node failures are stored explicitly
+        // as unavailable instead of being mistaken for "Not voted".
+        if let Err(error) = self.refresh_dpns_vote_states(sdk).await {
+            tracing::warn!(?error, "Could not refresh DPNS current votes with contests");
+        }
         self.refresh_pending_dpns_usernames()?;
 
         sender

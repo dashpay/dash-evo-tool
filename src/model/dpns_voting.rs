@@ -1,0 +1,627 @@
+use crate::backend_task::error::TaskError;
+use crate::utils::time::now_ms;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::data_contract::DataContract;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
+use dash_sdk::platform::Identifier;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Grace period for admitting a scheduled vote to automatic execution.
+pub const SCHEDULED_VOTE_MAX_LATENESS_MS: u64 = 120_000;
+
+/// Whether the normal automatic admission window has passed.
+pub fn dpns_schedule_is_overdue(scheduled_at_ms: u64, now_ms: u64) -> bool {
+    scheduled_at_ms.saturating_add(SCHEDULED_VOTE_MAX_LATENESS_MS) < now_ms
+}
+
+/// Proved current vote state for one node × poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsCurrentVoteState {
+    Checking,
+    Available(Option<ResourceVoteChoice>),
+    Unavailable,
+}
+
+/// Whether a vote poll can still accept a submitted transition.
+///
+/// Reconciliation needs a terminal negative verdict, and a current choice that
+/// merely differs from the requested one never supplies it — the submitted
+/// transition may still be waiting to apply. A closed poll does supply it: no
+/// transition can apply to a decided contest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsVotePollAvailability {
+    /// The poll is open, or DET has no proof that it closed. Absence of
+    /// evidence must never be read as closure, so unknown polls land here.
+    MayAccept,
+    /// The contest is decided or its deadline has passed.
+    ProvedClosed,
+}
+
+/// Classify a poll from its cached contest, if DET has one.
+///
+/// `now_ms` is the current wall clock in Unix milliseconds, matched against the
+/// contest deadline. Returns [`DpnsVotePollAvailability::MayAccept`] for a
+/// contest DET has never cached.
+pub fn dpns_vote_poll_availability(
+    contest: Option<&crate::model::contested_name::ContestedName>,
+    now_ms: u64,
+) -> DpnsVotePollAvailability {
+    let Some(contest) = contest else {
+        return DpnsVotePollAvailability::MayAccept;
+    };
+    let decided = !contest.is_votable();
+    let expired = contest.end_time.is_some_and(|end| end <= now_ms);
+    if decided || expired {
+        DpnsVotePollAvailability::ProvedClosed
+    } else {
+        DpnsVotePollAvailability::MayAccept
+    }
+}
+
+/// Durable identity of one submitted voting batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct DpnsVoteOperationId([u8; 16]);
+
+impl DpnsVoteOperationId {
+    /// Generate a random operation identifier without adding a UUID dependency.
+    pub fn random() -> Self {
+        Self(rand::random())
+    }
+
+    /// Return the stable persisted byte representation.
+    pub fn to_bytes(self) -> [u8; 16] {
+        self.0
+    }
+
+    /// Restore an identifier from its persisted byte representation.
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+}
+
+impl fmt::Display for DpnsVoteOperationId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Exact network + node + poll lock identity for one vote target.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct DpnsVoteTargetKey {
+    pub network: Network,
+    /// The masternode ProTxHash used by Platform's proved vote query.
+    pub voter_id: Identifier,
+    pub vote_poll_id: Identifier,
+}
+
+/// Compare-and-set request for one scheduled target; the voter and poll cannot change.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DpnsScheduledVoteEdit {
+    pub operation_id: Option<DpnsVoteOperationId>,
+    pub key: DpnsVoteTargetKey,
+    pub expected_choice: ResourceVoteChoice,
+    pub expected_timestamp: u64,
+    pub choice: ResourceVoteChoice,
+    pub unix_timestamp: u64,
+}
+
+/// Reason a schedule edit cannot be applied to the selected contest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsScheduleEditValidationError {
+    Time,
+    Choice,
+    Contest,
+}
+
+/// Validate a future voting time against the contest deadline, when known.
+pub fn validate_dpns_schedule_time(
+    unix_timestamp: u64,
+    now_ms: u64,
+    end_time: Option<u64>,
+) -> Result<(), DpnsScheduleEditValidationError> {
+    if unix_timestamp <= now_ms || end_time.is_some_and(|end| unix_timestamp >= end) {
+        return Err(DpnsScheduleEditValidationError::Time);
+    }
+    Ok(())
+}
+
+/// Validate the new schedule against the current time and the selected contest.
+pub fn validate_dpns_schedule_edit(
+    choice: ResourceVoteChoice,
+    unix_timestamp: u64,
+    now_ms: u64,
+    contest: &crate::model::contested_name::ContestedName,
+) -> Result<(), DpnsScheduleEditValidationError> {
+    if !contest.is_votable() {
+        return Err(DpnsScheduleEditValidationError::Contest);
+    }
+    validate_dpns_schedule_time(unix_timestamp, now_ms, contest.end_time)?;
+    if let ResourceVoteChoice::TowardsIdentity(id) = choice
+        && !contest
+            .contestants
+            .as_ref()
+            .is_some_and(|contenders| contenders.iter().any(|contender| contender.id == id))
+    {
+        return Err(DpnsScheduleEditValidationError::Choice);
+    }
+    Ok(())
+}
+
+/// Durable identity of one scheduled-vote compatibility mirror row.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DpnsScheduledVoteKey {
+    pub network: Network,
+    pub voter_id: Identifier,
+    pub contested_name: String,
+}
+
+/// Result of clearing one scheduled target from the compatibility mirror.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsScheduledVoteClearDisposition {
+    Cleared,
+    InFlight(DpnsVoteTargetStatus),
+}
+
+/// Typed Clear All result for one scheduled target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpnsScheduledVoteClearOutcome {
+    pub operation_id: Option<DpnsVoteOperationId>,
+    pub key: DpnsScheduledVoteKey,
+    pub disposition: DpnsScheduledVoteClearDisposition,
+}
+
+/// When a target should enter the shared executor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VoteTiming {
+    Now,
+    Scheduled(TimestampMillis),
+}
+
+pub(crate) fn unavailable_preflight_outcome(
+    timing: VoteTiming,
+) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>) {
+    let status = match timing {
+        VoteTiming::Scheduled(_) => DpnsVoteTargetStatus::Scheduled,
+        VoteTiming::Now => DpnsVoteTargetStatus::FailedBeforeSubmission,
+    };
+    (status, Some(DpnsVoteFailure::CurrentVoteUnavailable))
+}
+
+pub(crate) fn failed_before_broadcast_outcome(
+    timing: VoteTiming,
+) -> (DpnsVoteTargetStatus, Option<DpnsVoteFailure>) {
+    let status = match timing {
+        VoteTiming::Scheduled(_) => DpnsVoteTargetStatus::Scheduled,
+        VoteTiming::Now => DpnsVoteTargetStatus::FailedBeforeSubmission,
+    };
+    (status, Some(DpnsVoteFailure::SubmissionFailed))
+}
+
+/// One reviewed node × contest action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DpnsVoteTarget {
+    pub key: DpnsVoteTargetKey,
+    pub voter_alias: Option<String>,
+    pub contested_name: String,
+    pub requested_choice: ResourceVoteChoice,
+    pub current_choice: Option<ResourceVoteChoice>,
+    pub timing: VoteTiming,
+}
+
+impl DpnsVoteTarget {
+    /// Whether submitting this target would change nothing on Platform.
+    ///
+    /// The single definition of no-op suppression: the review step filters on
+    /// it before the operator commits, and [`DpnsVoteOperation::new`] applies
+    /// it again when the batch is built.
+    pub fn is_no_op(&self) -> bool {
+        self.current_choice == Some(self.requested_choice)
+    }
+}
+
+/// Persistable, user-meaningful failure category without task diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DpnsVoteFailure {
+    PlatformRejected,
+    SubmissionFailed,
+    CurrentVoteUnavailable,
+    ResultUnconfirmed,
+}
+
+/// Lifecycle of one target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DpnsVoteTargetStatus {
+    Scheduled,
+    Queued,
+    Submitting,
+    Confirming,
+    Confirmed,
+    Unconfirmed,
+    Rejected,
+    FailedBeforeSubmission,
+    /// Reconciliation proved that a submitted vote was not applied.
+    NotApplied,
+    /// The user cancelled a scheduled vote before it was submitted.
+    Cancelled,
+}
+
+impl DpnsVoteTargetStatus {
+    /// Whether another operation must remain blocked for the same target.
+    pub fn holds_lock(self) -> bool {
+        matches!(
+            self,
+            Self::Scheduled
+                | Self::Queued
+                | Self::Submitting
+                | Self::Confirming
+                | Self::Unconfirmed
+        )
+    }
+}
+
+/// Durable result and progress for one operation target.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DpnsVoteOutcome {
+    pub operation_id: DpnsVoteOperationId,
+    pub target: DpnsVoteTarget,
+    pub status: DpnsVoteTargetStatus,
+    pub transition_hash: Option<[u8; 32]>,
+    pub failure: Option<DpnsVoteFailure>,
+}
+
+/// Reviewed voting batch stored before its first broadcast.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DpnsVoteOperation {
+    pub id: DpnsVoteOperationId,
+    pub created_at: TimestampMillis,
+    pub targets: Vec<DpnsVoteOutcome>,
+    pub no_op_count: usize,
+}
+
+impl DpnsVoteOperation {
+    /// Build an operation while removing targets that match proved current state.
+    pub fn new(targets: Vec<DpnsVoteTarget>) -> Self {
+        let id = DpnsVoteOperationId::random();
+        let created_at = now_ms();
+        let original_len = targets.len();
+        let targets = targets
+            .into_iter()
+            .filter(|target| !target.is_no_op())
+            .map(|target| {
+                let status = match target.timing {
+                    VoteTiming::Now => DpnsVoteTargetStatus::Queued,
+                    VoteTiming::Scheduled(_) => DpnsVoteTargetStatus::Scheduled,
+                };
+                DpnsVoteOutcome {
+                    operation_id: id,
+                    target,
+                    status,
+                    transition_hash: None,
+                    failure: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let no_op_count = original_len.saturating_sub(targets.len());
+        Self {
+            id,
+            created_at,
+            targets,
+            no_op_count,
+        }
+    }
+
+    /// Find one outcome by its exact target key.
+    pub fn outcome(&self, key: &DpnsVoteTargetKey) -> Option<&DpnsVoteOutcome> {
+        self.targets
+            .iter()
+            .find(|outcome| &outcome.target.key == key)
+    }
+
+    /// Whether all targets have reached a lock-releasing state.
+    pub fn is_complete(&self) -> bool {
+        self.targets
+            .iter()
+            .all(|outcome| !outcome.status.holds_lock())
+    }
+}
+
+/// Build `[Value::from("dash"), Value::Text(normalized_label.to_owned())]` for a DPNS vote poll.
+///
+/// Caller must pre-normalize the label via `convert_to_homograph_safe_chars`
+/// (`alice` → `a11ce`); Platform indexes polls under the normalized form.
+fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
+    vec![
+        Value::from("dash"),
+        Value::Text(normalized_label.to_owned()),
+    ]
+}
+
+/// The exact Platform vote poll for one DPNS label under `dpns_contract`.
+///
+/// Normalizes `name` itself, so callers pass the label as the user typed it.
+/// This is the only construction of the poll: its `unique_id()` keys every
+/// target lock and journal record, while the poll itself is what gets voted on,
+/// so a second spelling would let DET lock one poll and submit another.
+///
+/// # Errors
+///
+/// [`TaskError::DataContractNotFound`] when the contract carries no `domain`
+/// document type, and [`TaskError::ContractSchemaMismatch`] when that document
+/// type declares no contested index.
+pub fn dpns_vote_poll(
+    dpns_contract: &DataContract,
+    name: &str,
+) -> Result<ContestedDocumentResourceVotePoll, TaskError> {
+    let document_type = dpns_contract
+        .document_type_for_name("domain")
+        .map_err(|_| TaskError::DataContractNotFound)?;
+    let Some(contested_index) = document_type.find_contested_index() else {
+        return Err(TaskError::ContractSchemaMismatch {
+            detail: "DPNS domain document type has no contested index",
+        });
+    };
+    Ok(ContestedDocumentResourceVotePoll {
+        index_name: contested_index.name.clone(),
+        index_values: dpns_vote_poll_index_values(&convert_to_homograph_safe_chars(name)),
+        document_type_name: document_type.name().to_owned(),
+        contract_id: dpns_contract.id(),
+    })
+}
+
+/// Ordering that decides which operation currently speaks for one target.
+pub type DpnsVoteAuthorityRank = (bool, TimestampMillis, DpnsVoteOperationId);
+
+/// Rank one operation's outcome for a target: a lock holder outranks history,
+/// then the newest `(created_at, operation id)` wins.
+///
+/// The operation id is part of the rank, not a fallback: `created_at` comes from
+/// a millisecond clock, so a bulk review commits several operations under one
+/// timestamp and ties are routinely reachable. Every site that asks "which
+/// operation speaks for this target" must order by this rank, or the Scheduled
+/// Votes screen, the node cards and the cast/cancel paths can each name a
+/// different operation for the same journal.
+pub fn dpns_vote_authority_rank(
+    created_at: TimestampMillis,
+    operation_id: DpnsVoteOperationId,
+    status: DpnsVoteTargetStatus,
+) -> DpnsVoteAuthorityRank {
+    (status.holds_lock(), created_at, operation_id)
+}
+
+/// The outcome that currently speaks for `key`, by [`dpns_vote_authority_rank`].
+///
+/// Returns `None` when no operation in `operations` targets `key`.
+pub fn authoritative_dpns_vote_outcome<'a>(
+    operations: &'a [DpnsVoteOperation],
+    key: &DpnsVoteTargetKey,
+) -> Option<&'a DpnsVoteOutcome> {
+    operations
+        .iter()
+        .filter_map(|operation| {
+            operation
+                .outcome(key)
+                .map(|outcome| (operation.created_at, outcome))
+        })
+        .max_by_key(|(created_at, outcome)| {
+            dpns_vote_authority_rank(*created_at, outcome.operation_id, outcome.status)
+        })
+        .map(|(_, outcome)| outcome)
+}
+
+/// Operations still holding the target lock for `key`; more than one is a conflict.
+pub fn dpns_vote_lock_holders<'a>(
+    operations: &'a [DpnsVoteOperation],
+    key: &'a DpnsVoteTargetKey,
+) -> impl Iterator<Item = &'a DpnsVoteOperation> {
+    operations.iter().filter(move |operation| {
+        operation
+            .outcome(key)
+            .is_some_and(|outcome| outcome.status.holds_lock())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+    use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn automatic_window_boundary_and_overflow() {
+        assert!(!dpns_schedule_is_overdue(1_000, 121_000));
+        assert!(dpns_schedule_is_overdue(1_000, 121_001));
+        assert!(!dpns_schedule_is_overdue(1_000, 999));
+        assert!(!dpns_schedule_is_overdue(u64::MAX, u64::MAX));
+    }
+
+    #[test]
+    fn operation_ids_are_random_and_distinct() {
+        let ids: std::collections::BTreeSet<_> =
+            (0..64).map(|_| DpnsVoteOperationId::random()).collect();
+        assert_eq!(ids.len(), 64, "identifiers must not repeat");
+        assert!(
+            !ids.contains(&DpnsVoteOperationId::from_bytes([0; 16])),
+            "identifiers must not be all-zero"
+        );
+    }
+
+    fn target(
+        voter: u8,
+        poll: u8,
+        current: Option<ResourceVoteChoice>,
+        requested: ResourceVoteChoice,
+    ) -> DpnsVoteTarget {
+        DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: Network::Testnet,
+                voter_id: Identifier::from([voter; 32]),
+                vote_poll_id: Identifier::from([poll; 32]),
+            },
+            voter_alias: Some(format!("node-{voter}")),
+            contested_name: format!("contest-{poll}"),
+            requested_choice: requested,
+            current_choice: current,
+            timing: VoteTiming::Now,
+        }
+    }
+
+    #[test]
+    fn index_values_uses_the_given_normalized_label() {
+        // Given: a pre-normalized DPNS label (homographs already substituted).
+        let normalized = "a11ce";
+
+        // When: constructing the vote poll index values.
+        let values = dpns_vote_poll_index_values(normalized);
+
+        // Then: first element is the `"dash"` parent, second is the label as-given.
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0], Value::from("dash"));
+        assert_eq!(values[1], Value::Text("a11ce".to_owned()));
+    }
+
+    #[test]
+    fn index_values_do_not_renormalize_the_label() {
+        // Given: a label that still contains homograph characters.
+        let not_yet_normalized = "alice";
+
+        // When: passing it directly to the helper (violating the contract).
+        let values = dpns_vote_poll_index_values(not_yet_normalized);
+
+        // Then: the helper does NOT renormalize — the raw label is returned as-is.
+        // (Caller is responsible for normalizing before calling.)
+        assert_eq!(values[1], Value::Text("alice".to_owned()));
+    }
+
+    /// VOTE-TC-003: choosing the proved current vote cannot create a target.
+    #[test]
+    fn operation_suppresses_exact_no_ops() {
+        let operation = DpnsVoteOperation::new(vec![
+            target(
+                1,
+                1,
+                Some(ResourceVoteChoice::Lock),
+                ResourceVoteChoice::Lock,
+            ),
+            target(1, 2, None, ResourceVoteChoice::Abstain),
+        ]);
+
+        assert_eq!(operation.targets.len(), 1);
+        assert_eq!(operation.no_op_count, 1);
+        assert_eq!(
+            operation.targets[0].target.key.vote_poll_id,
+            Identifier::from([2; 32])
+        );
+    }
+
+    /// VOTE-TC-032: outcomes retain the exact voter × contest target.
+    #[test]
+    fn outcomes_retain_target_correlation() {
+        let operation =
+            DpnsVoteOperation::new(vec![target(7, 9, None, ResourceVoteChoice::Abstain)]);
+        let outcome = &operation.targets[0];
+
+        assert_eq!(outcome.operation_id, operation.id);
+        assert_eq!(outcome.target.key.voter_id, Identifier::from([7; 32]));
+        assert_eq!(outcome.target.contested_name, "contest-9");
+    }
+
+    /// VOTE-TC-040/044: unresolved states keep the target lock across restart.
+    #[test]
+    fn unresolved_statuses_hold_target_locks() {
+        for status in [
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Queued,
+            DpnsVoteTargetStatus::Submitting,
+            DpnsVoteTargetStatus::Confirming,
+            DpnsVoteTargetStatus::Unconfirmed,
+        ] {
+            assert!(status.holds_lock(), "{status:?} must hold its lock");
+        }
+        for status in [
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::Cancelled,
+            DpnsVoteTargetStatus::NotApplied,
+        ] {
+            assert!(!status.holds_lock(), "{status:?} must release its lock");
+        }
+    }
+
+    /// VOTE-TC-072: the network is part of target identity.
+    #[test]
+    fn target_keys_are_network_scoped() {
+        let testnet = DpnsVoteTargetKey {
+            network: Network::Testnet,
+            voter_id: Identifier::from([1; 32]),
+            vote_poll_id: Identifier::from([2; 32]),
+        };
+        let mainnet = DpnsVoteTargetKey {
+            network: Network::Mainnet,
+            ..testnet.clone()
+        };
+
+        assert_ne!(testnet, mainnet);
+    }
+
+    /// VOTE-TC-073: the durable operation shape contains no signing material.
+    #[test]
+    fn serialized_operation_contains_identifiers_and_choices_only() {
+        let operation = DpnsVoteOperation::new(vec![target(4, 5, None, ResourceVoteChoice::Lock)]);
+        let serialized = serde_json::to_string(&operation).expect("serialize operation");
+
+        assert!(!serialized.contains("private"));
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("wif"));
+    }
+
+    #[test]
+    fn scheduled_edit_validation_rejects_past_deadline_and_unknown_contender() {
+        let mut contest = crate::model::contested_name::ContestedName {
+            normalized_contested_name: "name".to_owned(),
+            contestants: Some(vec![]),
+            locked_votes: None,
+            abstain_votes: None,
+            awarded_to: None,
+            end_time: Some(200),
+            state: crate::model::contested_name::ContestState::Ongoing,
+            last_updated: None,
+            my_votes: Default::default(),
+        };
+        assert_eq!(
+            validate_dpns_schedule_edit(ResourceVoteChoice::Lock, 101, 100, &contest),
+            Ok(())
+        );
+        for time in [0, 100, 200, u64::MAX] {
+            assert_eq!(
+                validate_dpns_schedule_edit(ResourceVoteChoice::Lock, time, 100, &contest),
+                Err(DpnsScheduleEditValidationError::Time)
+            );
+        }
+        assert_eq!(
+            validate_dpns_schedule_edit(
+                ResourceVoteChoice::TowardsIdentity(Identifier::from([1; 32])),
+                101,
+                100,
+                &contest
+            ),
+            Err(DpnsScheduleEditValidationError::Choice)
+        );
+        contest.state = crate::model::contested_name::ContestState::Locked;
+        assert_eq!(
+            validate_dpns_schedule_edit(ResourceVoteChoice::Abstain, 101, 100, &contest),
+            Err(DpnsScheduleEditValidationError::Contest)
+        );
+    }
+}

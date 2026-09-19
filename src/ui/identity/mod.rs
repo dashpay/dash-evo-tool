@@ -106,18 +106,18 @@ pub const IDENTITY_REMOVED_VOTER_LEFT_AND_CLEANUP_PENDING: &str = "The identity 
 
 /// Shown when the identity and its keys are gone but secondary local data
 /// could not be fully cleared.
-pub const IDENTITY_REMOVED_LOCAL_DATA_CLEANUP_FAILED: &str = "The identity and its private keys were removed, but some DashPay or token-list data may still be stored on this device. The app will keep trying to clear this local data automatically.";
+pub const IDENTITY_REMOVED_LOCAL_DATA_CLEANUP_FAILED: &str = "The identity and its private keys were removed, but some local identity data or upgrade backups may still be stored on this device. The app will keep trying to clear this local data automatically.";
 
 /// Shown when the voter identity remains and secondary local data cleanup also
 /// failed for at least one identity.
-pub const IDENTITY_REMOVED_VOTER_LEFT_AND_LOCAL_DATA_CLEANUP_FAILED: &str = "The identity was removed, but its associated voter identity could not be removed. Some DashPay or token-list data may also remain on this device. Retry the voter removal after restarting the app. The app will keep trying to clear this local data automatically.";
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_LOCAL_DATA_CLEANUP_FAILED: &str = "The identity was removed, but its associated voter identity could not be removed. Some local identity data or upgrade backups may also remain on this device. Retry the voter removal after restarting the app. The app will keep trying to clear this local data automatically.";
 
 /// Shown when both vault cleanup and secondary local-data cleanup are
 /// incomplete for an identity that is already delisted.
-pub const IDENTITY_REMOVED_ALL_CLEANUP_PENDING: &str = "The identity was removed, but its private keys may still be stored here, and some DashPay or token-list data may remain. The app will keep trying to clear the keys automatically. Until then, treat this device as if it still holds them. The app will keep trying to clear this local data automatically.";
+pub const IDENTITY_REMOVED_ALL_CLEANUP_PENDING: &str = "The identity was removed, but its private keys may still be stored here, and some local identity data or upgrade backups may remain. The app will keep trying to clear the keys automatically. Until then, treat this device as if it still holds them. The app will keep trying to clear this local data automatically.";
 
 /// Shown when the voter remains and both cleanup categories are incomplete.
-pub const IDENTITY_REMOVED_VOTER_LEFT_AND_ALL_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed. Private keys for one or both identities may still be stored here, and some DashPay or token-list data may remain. The app will keep trying to clear the keys automatically. Until then, treat this device as if it still holds them. Retry the voter removal after restarting the app. The app will keep trying to clear this local data automatically.";
+pub const IDENTITY_REMOVED_VOTER_LEFT_AND_ALL_CLEANUP_PENDING: &str = "The identity was removed, but its associated voter identity could not be removed. Private keys for one or both identities may still be stored here, and some local identity data or upgrade backups may remain. The app will keep trying to clear the keys automatically. Until then, treat this device as if it still holds them. Retry the voter removal after restarting the app. The app will keep trying to clear this local data automatically.";
 
 /// Shown when a removal is refused because the storage update is still running.
 pub const IDENTITY_REMOVAL_BLOCKED_BY_STORAGE_UPDATE: &str =
@@ -345,7 +345,7 @@ mod tests {
     fn removed_identities_banner_reports_incomplete_local_data_cleanup() {
         let (message, message_type) = removed_identities_banner(false, false, true);
         assert_eq!(message, IDENTITY_REMOVED_LOCAL_DATA_CLEANUP_FAILED);
-        assert!(message.contains("DashPay or token-list data"));
+        assert!(message.contains("local identity data or upgrade backups"));
         assert!(message.contains("keep trying to clear this local data automatically"));
         assert_eq!(message_type, MessageType::Warning);
     }
@@ -355,7 +355,7 @@ mod tests {
         let (message, message_type) = removed_identities_banner(false, true, true);
         assert_eq!(message, IDENTITY_REMOVED_ALL_CLEANUP_PENDING);
         assert!(message.contains("private keys"));
-        assert!(message.contains("DashPay or token-list data"));
+        assert!(message.contains("local identity data or upgrade backups"));
         assert_eq!(message_type, MessageType::Warning);
     }
 

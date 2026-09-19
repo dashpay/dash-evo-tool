@@ -188,11 +188,23 @@ pub enum TaskError {
     /// An identity-funding account was derived but could not be saved. Saving
     /// it is what lets a restart find the account again, so the operation is
     /// stopped rather than left able to strand a funding lock the app could no
-    /// longer spend. The technical cause lives in `Debug` and the logs.
+    /// longer spend. Covers non-retryable store failures (constraint, fatal);
+    /// retryable ones use [`Self::IdentityFundingAccountPersistBusy`].
     #[error(
-        "Your wallet could not save the account this payment needs. Check that your disk is not full, then try again."
+        "Your wallet could not save the information it needs for this payment. Restart the application and try again."
     )]
     IdentityFundingAccountPersistFailed {
+        #[source]
+        source: Box<platform_wallet::changeset::PersistenceError>,
+    },
+
+    /// Like [`Self::IdentityFundingAccountPersistFailed`], but the store kept
+    /// reporting a retryable condition until the retry budget ran out. Upstream
+    /// classifies a busy database and a full disk alike, so the copy names both.
+    #[error(
+        "Your wallet could not save the information it needs for this payment because its data is busy or the disk is full. Close any other copy of Dash Evo Tool, make sure there is free disk space, and try again."
+    )]
+    IdentityFundingAccountPersistBusy {
         #[source]
         source: Box<platform_wallet::changeset::PersistenceError>,
     },
@@ -423,6 +435,15 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// Another process currently owns the wallet database write lock.
+    #[error(
+        "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again."
+    )]
+    WalletStorageInUse {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// A pinned-PR wallet database could not be upgraded without losing data.
     #[error(transparent)]
     PlatformDatabaseUpgrade {
@@ -473,11 +494,11 @@ pub enum TaskError {
     ///
     /// The migration diagnostic is preserved through the `#[source]` chain for
     /// logs and the `Debug` view; it is kept out of the user-facing `Display`
-    /// copy. On the active development branch the storage layout changed in an
-    /// incompatible way, so the practical action is to remove the local wallet
-    /// data and let the app recreate it (see `docs/kv-keys.md`).
+    /// copy. The copy names only the rebuildable `.sqlite` stores and tells the
+    /// user to keep the `secrets` folder: the vault holds imported and
+    /// masternode keys that no recovery phrase can re-derive.
     #[error(
-        "Your wallet data is not compatible with this version of the app and cannot be opened. Remove the local wallet data so the app can create it fresh, then restart."
+        "Your wallet data was saved by an app version that this version cannot open, so it was left unchanged. Your recovery phrases and keys are still stored on this device. First open the app version you used before and write down the recovery phrase of every wallet. Separately, write down each imported private key. Close all Dash Evo Tool windows and command-line sessions. Then move each .sqlite file together with its matching .sqlite-wal and .sqlite-shm files, if present, out of the app data folder, leave the secrets folder where it is, and start this app again."
     )]
     WalletDataIncompatible {
         #[source]
@@ -1240,7 +1261,7 @@ pub enum TaskError {
     /// The identity and its private keys are gone, but at least one optional
     /// owner-scoped sidecar could not be removed.
     #[error(
-        "The identity was removed, but some DashPay or token-list data may still be stored on this device. The app will keep trying to clear this local data automatically."
+        "The identity was removed, but some local identity data or upgrade backups may still be stored on this device. The app will keep trying to clear this local data automatically."
     )]
     IdentitySidecarCleanupIncomplete,
 
@@ -2819,7 +2840,7 @@ impl TaskError {
 
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
-    /// Three storage failures get honest, distinct copy; everything else keeps
+    /// Four storage failures get honest, distinct copy; everything else keeps
     /// the generic disk/IO message:
     ///
     /// - A forward-version database (written by a newer build, schema beyond
@@ -2829,14 +2850,19 @@ impl TaskError {
     /// - A divergent migration history (e.g. a database written under an
     ///   earlier, incompatible storage layout that this build's migrations
     ///   cannot reconcile) is surfaced as [`Self::WalletDataIncompatible`] so
-    ///   the banner tells the user to remove the local wallet data — freeing
-    ///   disk space or restarting never resolves a structural mismatch.
+    ///   the banner tells the user to back up keys and set the databases aside
+    ///   while keeping the vault — freeing disk space or restarting never
+    ///   resolves a structural mismatch.
+    /// - A migration blocked by another SQLite writer is surfaced as
+    ///   [`Self::WalletStorageInUse`] so the user can close the competing
+    ///   process and retry instead of following incompatible-data recovery.
     /// - Every other storage failure keeps the generic disk/IO copy via
     ///   [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration`), never on its `Display` text.
+    /// `WalletStorageError::Migration`) and the typed migration source chain,
+    /// never on `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -2848,11 +2874,38 @@ impl TaskError {
                 found,
                 max_supported,
             },
+            other @ platform_wallet_storage::WalletStorageError::Migration(_)
+                if Self::wallet_storage_error_is_in_use(&other) =>
+            {
+                Self::WalletStorageInUse { source: other }
+            }
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
             }
             other => Self::WalletStorage { source: other },
         }
+    }
+
+    fn wallet_storage_error_is_in_use(
+        source: &platform_wallet_storage::WalletStorageError,
+    ) -> bool {
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(source);
+        while let Some(error) = cause {
+            if error
+                .downcast_ref::<rusqlite::Error>()
+                .and_then(rusqlite::Error::sqlite_error_code)
+                .is_some_and(|code| {
+                    matches!(
+                        code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    )
+                })
+            {
+                return true;
+            }
+            cause = error.source();
+        }
+        false
     }
 
     /// Returns `true` when this is a [`Self::SecretStore`] open failure caused
@@ -5797,10 +5850,45 @@ mod tests {
             .expect_err("divergent checksum must abort")
     }
 
+    fn busy_migration_error() -> refinery::Error {
+        use refinery::{Migration, Runner};
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("wallet.sqlite");
+        let writer = rusqlite::Connection::open(&path).expect("writer connection");
+        writer
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE held (id INTEGER);")
+            .expect("hold write lock");
+        let mut contender = rusqlite::Connection::open(&path).expect("contender connection");
+        contender
+            .busy_timeout(std::time::Duration::from_millis(1))
+            .expect("short deterministic timeout");
+        let migration = Migration::unapplied("V1__init", "CREATE TABLE data (id INTEGER);")
+            .expect("valid migration");
+        Runner::new(&[migration])
+            .run(&mut contender)
+            .expect_err("held writer must make the migration busy")
+    }
+
+    #[test]
+    fn busy_migration_error_maps_to_retryable_wallet_storage_message() {
+        let upstream =
+            platform_wallet_storage::WalletStorageError::Migration(busy_migration_error());
+        let err = TaskError::from_wallet_storage_open_error(upstream);
+        assert!(
+            matches!(err, TaskError::WalletStorageInUse { .. }),
+            "Expected WalletStorageInUse, got: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("Close") && message.contains("try again"));
+        assert!(!message.contains("incompatible"));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
     /// A divergent migration history (database written under an
     /// incompatible storage layout) maps to the dedicated
-    /// `WalletDataIncompatible` variant. Its `Display` tells the user to
-    /// remove the local wallet data, NOT the misleading "free disk space" copy.
+    /// `WalletDataIncompatible` variant. Its `Display` must never lead the user
+    /// to destroy the secrets vault, and must not blame disk space.
     #[test]
     fn migration_error_maps_to_wallet_data_incompatible() {
         let upstream =
@@ -5812,9 +5900,18 @@ mod tests {
         );
 
         let msg = err.to_string();
+        assert!(msg.contains(".sqlite-wal") && msg.contains(".sqlite-shm"));
+        assert!(msg.contains("Close all") && msg.contains("write down each imported private key"));
         assert!(
-            msg.contains("not compatible") && msg.contains("Remove"),
-            "Expected incompatibility guidance, got: {msg}"
+            msg.contains("write down the recovery phrase")
+                && msg.contains(".sqlite")
+                && msg.contains("leave the secrets folder where it is"),
+            "Expected scoped, vault-preserving guidance, got: {msg}"
+        );
+        let lower = msg.to_lowercase();
+        assert!(
+            !lower.contains("remove") && !lower.contains("delete"),
+            "Incompatible-data guidance must not tell the user to delete anything, got: {msg}"
         );
         assert!(
             !msg.contains("disk space"),

@@ -11,26 +11,47 @@ const IDENTITY_INDEX_KEY: &str = "det:identity_index:v1";
 /// A compatibility upgrade stopped before committing changes to the original database.
 #[derive(Debug, thiserror::Error)]
 pub enum UpgradeError {
+    /// Another process holds the database (`SQLITE_BUSY` / `SQLITE_LOCKED`).
     #[error(
-        "Could not upgrade wallet data. Check available disk space and restart the application."
+        "Your wallet data is open in another Dash Evo Tool window or command-line session. Close it and try again."
     )]
-    Sqlite(#[from] rusqlite::Error),
+    InUse(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error(
-        "Could not back up wallet data. Check available disk space and restart the application."
+        "Could not upgrade wallet data because the disk is full. Free up disk space and try again."
     )]
-    Io(#[from] std::io::Error),
+    StorageFull(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
+        "Could not access wallet storage. Check that the drive is connected and available, then try again."
+    )]
+    StorageUnavailable(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
+        "Could not upgrade wallet data because memory is exhausted. Close other applications and try again."
+    )]
+    OutOfMemory(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
+        "Could not write wallet data. Allow write access to the app data folder, then restart the application."
+    )]
+    AccessDenied(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error(
+        "Could not upgrade wallet data, and your data was not changed. Restart the application to try again, or keep your data folder and reopen the previous application version."
+    )]
+    Sqlite(#[source] rusqlite::Error),
+    #[error(
+        "Could not back up wallet data. Check that the app data folder can be written to and try again."
+    )]
+    Io(#[source] std::io::Error),
     #[error(
         "Wallet data does not match a supported upgrade. Keep your data folder and reopen the previous application version."
     )]
     Unrecognized,
+    /// The saved roster is missing, ambiguous, or does not decode.
     #[error(
         "The saved identity list could not be read. Keep your data folder and reopen the previous application version."
     )]
-    IdentityRoster,
-    #[error(
-        "The saved identity list could not be read. Keep your data folder and reopen the previous application version."
-    )]
-    IdentityRosterDecode(#[from] bincode::error::DecodeError),
+    IdentityRoster {
+        #[source]
+        source: Option<bincode::error::DecodeError>,
+    },
     #[error(
         "Wallet data verification failed. Keep your data folder and reopen the previous application version."
     )]
@@ -39,6 +60,62 @@ pub enum UpgradeError {
         "The updated application could not read your wallet data. Keep your data folder and reopen the previous application version."
     )]
     TypedValidation(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl UpgradeError {
+    /// Whether retrying can recover from contention or temporary resource exhaustion.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::InUse(_)
+                | Self::StorageFull(_)
+                | Self::StorageUnavailable(_)
+                | Self::OutOfMemory(_)
+        )
+    }
+}
+
+impl From<rusqlite::Error> for UpgradeError {
+    fn from(error: rusqlite::Error) -> Self {
+        match error.sqlite_error_code() {
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+                Self::InUse(Box::new(error))
+            }
+            Some(rusqlite::ErrorCode::DiskFull) => Self::StorageFull(Box::new(error)),
+            Some(rusqlite::ErrorCode::SystemIoFailure) => Self::StorageUnavailable(Box::new(error)),
+            Some(rusqlite::ErrorCode::OutOfMemory) => Self::OutOfMemory(Box::new(error)),
+            Some(rusqlite::ErrorCode::PermissionDenied | rusqlite::ErrorCode::ReadOnly) => {
+                Self::AccessDenied(Box::new(error))
+            }
+            _ => Self::Sqlite(error),
+        }
+    }
+}
+
+impl From<std::io::Error> for UpgradeError {
+    fn from(error: std::io::Error) -> Self {
+        use std::io::ErrorKind;
+        match error.kind() {
+            ErrorKind::StorageFull => Self::StorageFull(Box::new(error)),
+            ErrorKind::OutOfMemory => Self::OutOfMemory(Box::new(error)),
+            ErrorKind::Interrupted
+            | ErrorKind::WouldBlock
+            | ErrorKind::TimedOut
+            | ErrorKind::ResourceBusy => Self::StorageUnavailable(Box::new(error)),
+            ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => {
+                Self::AccessDenied(Box::new(error))
+            }
+            _ => Self::Io(error),
+        }
+    }
+}
+
+impl From<bincode::error::DecodeError> for UpgradeError {
+    fn from(source: bincode::error::DecodeError) -> Self {
+        Self::IdentityRoster {
+            source: Some(source),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -111,19 +188,19 @@ fn active_identities(conn: &Connection) -> Result<BTreeSet<Vec<u8>>, UpgradeErro
         .optional()?;
     let Some(value) = value else {
         if conn.prepare("SELECT 1 FROM identities i JOIN meta_identity m ON i.identity_id = m.identity_id WHERE i.tombstoned = 1 AND m.key = 'det:identity:v1'")?.exists([])? {
-            return Err(UpgradeError::IdentityRoster);
+            return Err(UpgradeError::IdentityRoster { source: None });
         }
         return Ok(BTreeSet::new());
     };
     let Some((&1, body)) = value.split_first() else {
-        return Err(UpgradeError::IdentityRoster);
+        return Err(UpgradeError::IdentityRoster { source: None });
     };
     let (ids, consumed): (Vec<[u8; 32]>, usize) = bincode::serde::decode_from_slice(
         body,
         bincode::config::standard().with_limit::<16777216>(),
     )?;
     if consumed != body.len() {
-        return Err(UpgradeError::IdentityRoster);
+        return Err(UpgradeError::IdentityRoster { source: None });
     }
     Ok(ids.into_iter().map(Vec::from).collect())
 }
@@ -163,14 +240,243 @@ fn selected_rows(table: &str) -> String {
         .unwrap_or_default()
 }
 
+fn backup_prefix(path: &Path) -> Option<String> {
+    Some(format!(
+        "{}.platform-67d4ef3-backup-",
+        path.file_name()?.to_string_lossy()
+    ))
+}
+
+/// Retained upgrade backups of the database at `path`.
+fn backups(path: &Path) -> std::io::Result<Vec<PathBuf>> {
+    backups_in(
+        path,
+        Some(&platform_wallet_storage::default_auto_backup_dir(path)),
+    )
+}
+
+fn backups_in(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<Vec<PathBuf>> {
+    let (Some(parent), Some(prefix)) = (path.parent(), backup_prefix(path)) else {
+        return Ok(Vec::new());
+    };
+    let mut found = Vec::new();
+    for directory in [Some(parent), auto_dir].into_iter().flatten() {
+        let metadata = match std::fs::symlink_metadata(directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.is_dir() {
+            return Err(std::io::Error::other(
+                "Backup directory is not a regular directory",
+            ));
+        }
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let bridge = directory == parent
+                && name
+                    .strip_prefix(&prefix)
+                    .and_then(|suffix| {
+                        suffix
+                            .strip_suffix(".sqlite")
+                            .or_else(|| suffix.strip_suffix(".pending"))
+                    })
+                    .is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_alphanumeric())
+                    });
+            let upstream = Some(directory) == auto_dir && upstream_backup_name(path, name);
+            if bridge || upstream {
+                validate_backup_file(&entry.path(), path)?;
+                found.push(entry.path());
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+fn upstream_backup_name(path: &Path, name: &str) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    // DET database names are already valid upstream stems; reject lossy/ambiguous names.
+    if stem.is_empty()
+        || stem.len() > 32
+        || !stem
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return false;
+    }
+    let Some(suffix) = name
+        .strip_prefix(&format!("pre-migration-{stem}-"))
+        .and_then(|suffix| suffix.strip_suffix(".db"))
+    else {
+        return false;
+    };
+    let Some((versions, timestamp)) = suffix.rsplit_once('-') else {
+        return false;
+    };
+    let Some((from, to)) = versions.split_once("-to-") else {
+        return false;
+    };
+    from.parse::<u32>().is_ok()
+        && to.parse::<u32>().is_ok()
+        && chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%SZ").is_ok()
+}
+
+fn validate_backup_file(backup: &Path, database: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(backup)?;
+    if !metadata.is_file() || backup == database {
+        return Err(std::io::Error::other(
+            "Refusing to remove a non-regular backup file",
+        ));
+    }
+    if let Ok(live_path) = database.canonicalize()
+        && backup.canonicalize()? == live_path
+    {
+        return Err(std::io::Error::other(
+            "Refusing to remove the live database",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            return Err(std::io::Error::other(
+                "Refusing to remove a hard-linked backup file",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn remove_backup(backup: &Path, database: &Path) -> std::io::Result<()> {
+    validate_backup_file(backup, database)?;
+    std::fs::remove_file(backup)
+}
+
+pub(super) struct BackupGuard {
+    path: PathBuf,
+    _file: Option<std::fs::File>,
+}
+
+pub(super) fn backup_lock(path: &Path) -> std::io::Result<BackupGuard> {
+    let Some(name) = path.file_name() else {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    };
+    let mut lock_name = name.to_os_string();
+    lock_name.push(".platform-upgrade.lock");
+    let lock_path = path.with_file_name(lock_name);
+    let mut options = std::fs::File::options();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = match options.open(&lock_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            validate_backup_file(&lock_path, path)?;
+            std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(&lock_path)?
+        }
+        // A missing parent has no snapshots to clean up.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BackupGuard {
+                path: path.to_owned(),
+                _file: None,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    validate_backup_file(&lock_path, path)?;
+    file.try_lock().map_err(std::io::Error::from)?;
+    // Keep the pathname stable: unlinking it could let contenders lock different files.
+    Ok(BackupGuard {
+        path: path.to_owned(),
+        _file: Some(file),
+    })
+}
+
+/// Retain the newest snapshot across both upgrade-backup formats.
+#[cfg(test)]
+pub(super) fn retain_one_backup(path: &Path, auto_dir: Option<&Path>) -> std::io::Result<()> {
+    let guard = backup_lock(path)?;
+    retain_one_backup_locked(&guard, auto_dir)
+}
+
+pub(super) fn retain_one_backup_locked(
+    guard: &BackupGuard,
+    auto_dir: Option<&Path>,
+) -> std::io::Result<()> {
+    let path = &guard.path;
+    let mut snapshots = Vec::new();
+    for backup in backups_in(path, auto_dir)? {
+        // Unpublished copies may be incomplete and must never supersede a recovery snapshot.
+        if backup
+            .extension()
+            .is_some_and(|extension| extension == "pending")
+        {
+            remove_backup(&backup, path)?;
+        } else {
+            snapshots.push((std::fs::metadata(&backup)?.modified()?, backup));
+        }
+    }
+    snapshots.sort();
+    snapshots.pop();
+    for (_, backup) in snapshots {
+        remove_backup(&backup, path)?;
+    }
+    Ok(())
+}
+
+/// Delete every retained upgrade backup of the database at `path`.
+///
+/// Backups never contain vault secrets. Attempts every file and returns the first failure.
+pub(crate) fn remove_backups(path: &Path) -> std::io::Result<()> {
+    let _guard = backup_lock(path)?;
+    let mut first_error = None;
+    for backup in backups(path)? {
+        if let Err(error) = remove_backup(&backup, path) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+#[cfg(test)]
 fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
+    backup_with_hook(path, |_| Ok(()))
+}
+
+#[cfg(test)]
+fn backup_with_hook(
+    path: &Path,
+    pending_created: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+) -> Result<PathBuf, UpgradeError> {
+    let guard = backup_lock(path)?;
+    backup_with_hook_locked(&guard, pending_created)
+}
+
+fn backup_with_hook_locked(
+    guard: &BackupGuard,
+    pending_created: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+) -> Result<PathBuf, UpgradeError> {
+    let path = &guard.path;
     let parent = path.parent().ok_or(UpgradeError::Unrecognized)?;
-    let filename = path.file_name().ok_or(UpgradeError::Unrecognized)?;
-    let prefix = format!("{}.platform-67d4ef3-backup-", filename.to_string_lossy());
+    let prefix = backup_prefix(path).ok_or(UpgradeError::Unrecognized)?;
     let file = tempfile::Builder::new()
         .prefix(&prefix)
-        .suffix(".sqlite")
+        .suffix(".pending")
         .tempfile_in(parent)?;
+    pending_created(file.path())?;
     let source = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -185,10 +491,17 @@ fn backup(path: &Path) -> Result<PathBuf, UpgradeError> {
     verify(&dest)?;
     drop(dest);
     file.as_file().sync_all()?;
-    let (_, path) = file.keep().map_err(|e| e.error)?;
+    // A verified snapshot supersedes old backups only while the original is still untouched.
+    for old in backups(path)? {
+        if old != file.path() {
+            remove_backup(&old, path)?;
+        }
+    }
+    let kept = file.path().with_extension("sqlite");
+    file.persist_noclobber(&kept).map_err(|e| e.error)?;
     #[cfg(unix)]
     std::fs::File::open(parent)?.sync_all()?;
-    Ok(path)
+    Ok(kept)
 }
 
 fn copy_rows(
@@ -278,20 +591,42 @@ fn allowed_columns(
 }
 
 /// Translate only the exact pinned PR schema, preserving the original in a durable backup.
+#[cfg(test)]
 pub(super) fn upgrade(
     path: &Path,
     target_path: &Path,
     validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
 ) -> Result<Option<PathBuf>, UpgradeError> {
-    upgrade_with_hook(path, target_path, validate, || Ok(()))
+    let guard = backup_lock(path)?;
+    upgrade_locked(&guard, target_path, validate)
 }
 
+pub(super) fn upgrade_locked(
+    guard: &BackupGuard,
+    target_path: &Path,
+    validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+) -> Result<Option<PathBuf>, UpgradeError> {
+    upgrade_with_hook_locked(guard, target_path, validate, || Ok(()))
+}
+
+#[cfg(test)]
 fn upgrade_with_hook(
     path: &Path,
     target_path: &Path,
     validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
     before_commit: impl FnOnce() -> Result<(), UpgradeError>,
 ) -> Result<Option<PathBuf>, UpgradeError> {
+    let guard = backup_lock(path)?;
+    upgrade_with_hook_locked(&guard, target_path, validate, before_commit)
+}
+
+fn upgrade_with_hook_locked(
+    guard: &BackupGuard,
+    target_path: &Path,
+    validate: impl FnOnce(&Path) -> Result<(), UpgradeError>,
+    before_commit: impl FnOnce() -> Result<(), UpgradeError>,
+) -> Result<Option<PathBuf>, UpgradeError> {
+    let path = &guard.path;
     let old = old_reference()?;
     let reference = target_reference()?;
     let mut source = Connection::open_with_flags(
@@ -316,7 +651,6 @@ fn upgrade_with_hook(
     }
     verify(&source)?;
     let retired = retired_identities(&source)?;
-    let backup = backup(path)?;
     let mut target = Connection::open_with_flags(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -396,6 +730,9 @@ fn upgrade_with_hook(
     target_tx.commit()?;
     drop(target);
     validate(target_path)?;
+    // The source transaction has written only temp tables, so a separate reader still
+    // sees the committed original; earlier failures roll back and need no backup.
+    let backup = backup_with_hook_locked(guard, |_| Ok(()))?;
     let target = Connection::open_with_flags(
         target_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,

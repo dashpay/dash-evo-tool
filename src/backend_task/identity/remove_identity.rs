@@ -149,6 +149,32 @@ mod tests {
             .any(|key_id| view.get(&MAIN, *key_id).unwrap().is_some())
     }
 
+    /// Upgrade backups copy the network database with every identity in it, so a
+    /// removed identity must not survive in them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removing_an_identity_deletes_upgrade_backups() {
+        let staged = stage_identity_with_vaulted_keys(HIGH, MEDIUM).await;
+        let database = crate::wallet_backend::wallet_database_path(
+            staged.ctx.data_dir(),
+            staged.ctx.network(),
+        );
+        let backup = database.with_file_name(format!(
+            "{}.platform-67d4ef3-backup-fixture.sqlite",
+            database.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(&backup, b"old identity rows").unwrap();
+
+        staged
+            .ctx
+            .remove_identity(staged.id)
+            .expect("the identity must be removed");
+
+        assert!(
+            !backup.exists(),
+            "the upgrade backup must be deleted together with the identity"
+        );
+    }
+
     /// A removal that fails before the identity is delisted did not happen:
     /// the identity is still on every screen, its keys are still on the
     /// device, and the button that started this still works. Reporting it as a

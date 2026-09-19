@@ -83,7 +83,31 @@ impl AppContext {
             }
         }
 
+        if let Err(error) = self.remove_upgrade_backups() {
+            tracing::warn!(?error, "Failed to delete wallet upgrade backups on removal");
+            show_wallet_data_removal_warning(self.egui_ctx(), error);
+        }
+
         Ok(())
+    }
+
+    /// Delete the retained compatibility-upgrade backups of the app and this network's
+    /// wallet databases, which copy wallet and identity history a deletion must not leave behind.
+    ///
+    /// Filesystem cleanup is available even when the wallet backend could not be opened.
+    pub(crate) fn remove_upgrade_backups(&self) -> Result<(), TaskError> {
+        let mut first_error = None;
+        for database in [
+            self.data_dir().join("det-app.sqlite"),
+            crate::wallet_backend::wallet_database_path(self.data_dir(), self.network),
+        ] {
+            if let Err(source) =
+                crate::wallet_backend::platform_compatibility::remove_backups(&database)
+            {
+                first_error.get_or_insert(TaskError::FileSystem { source });
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 }
 

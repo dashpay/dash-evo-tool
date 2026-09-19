@@ -1737,6 +1737,7 @@ impl AppContext {
                 "Deleted identity still registered with the wallet store"
             );
         }
+
         Ok(sidecar_cleanup)
     }
 
@@ -1755,7 +1756,12 @@ impl AppContext {
             .wallet_backend()
             .and_then(|backend| backend.dashpay_clear_owner_overlays(&identifier));
         let token_cleanup = super::contract_token_db::forget_identity_token_state(kv, &identifier);
-        let sidecar_cleanup = sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
+        let mut sidecar_cleanup =
+            sidecar_cleanup_outcome(dashpay_cleanup, token_cleanup, &identifier);
+        if let Err(error) = self.remove_upgrade_backups() {
+            sidecar_cleanup = IdentitySidecarCleanup::Incomplete;
+            tracing::warn!(identity_id = %identifier, ?error, "Upgrade backup removal remains pending after identity deletion");
+        }
         if !sidecar_cleanup.is_incomplete() {
             clear_vault_cleanup_manifest(kv, id);
         }
@@ -5358,6 +5364,37 @@ mod tests {
         );
         kv.delete(DetScope::Global, "det:token_order:v1").unwrap();
         staged.ctx.resume_pending_vault_cleanups();
+        assert!(
+            kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        staged.ctx.wallet_backend().unwrap().shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn removal_recovery_retains_manifest_until_backups_are_removed() {
+        let staged = stage_identity_with_vaulted_keys([0x33; 32], [0x44; 32]).await;
+        let kv = staged.ctx.det_kv().unwrap();
+        let blocked = staged
+            .ctx
+            .data_dir()
+            .join("det-app.sqlite.platform-67d4ef3-backup-blocked.sqlite");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(matches!(
+            staged.ctx.delete_local_qualified_identity(&staged.id),
+            Err(TaskError::IdentitySidecarCleanupIncomplete)
+        ));
+        staged.ctx.resume_pending_vault_cleanups();
+        assert!(
+            !kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir(&blocked).unwrap();
+        std::fs::write(&blocked, b"backup").unwrap();
+        staged.ctx.resume_pending_vault_cleanups();
+        assert!(!blocked.exists());
         assert!(
             kv.list(DetScope::Global, Some(VAULT_CLEANUP_PENDING_PREFIX))
                 .unwrap()

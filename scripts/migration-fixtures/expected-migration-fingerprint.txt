@@ -1,0 +1,11 @@
+# Fingerprint of the platform-wallet-storage migration sources at the pinned rev.
+#
+# Regenerate ONLY as a deliberate part of a repin, and read the resulting diff:
+#   scripts/migration-fixtures/check-pin-ancestry.sh --update
+#
+# fingerprint = sha256 of the LC_ALL=C-sorted "<sha256>  <path>" listing of every
+# file under packages/rs-platform-wallet-storage/migrations at that rev.
+pin=63cf57f40d0000bf3b2b26026c8fa1c71162852d
+target_branch=v4.2-dev
+migration_count=18
+fingerprint=1c6a683d1b781045f4528048b49b1e945f4da6caeb71e72d8de7429904399b99

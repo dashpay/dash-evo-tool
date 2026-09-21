@@ -2135,9 +2135,9 @@ impl AppContext {
     /// it back afterwards, because its decision is re-taken here rather than
     /// carried in from the caller.
     ///
-    /// The alias carry-over lives here for the same reason. Reading it in the
-    /// caller and writing it here spans an unguarded gap, so a concurrent alias
-    /// edit would be written away.
+    /// The alias and key carry-over live here for the same reason. Reading
+    /// them in the caller and writing here spans an unguarded gap, so a
+    /// concurrent alias edit or key save would be written away.
     pub(crate) fn store_discovered_identity(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -2178,10 +2178,18 @@ impl AppContext {
             .map_err(identity_err)?;
         match existing {
             // A record on file: refresh it, keeping the user's own alias, which
-            // a freshly built identity never carries.
+            // a freshly built identity never carries, and every key the
+            // wallet-only rebuild did not recreate (SEC-102). A delisted
+            // record is a removal that stopped part-way — its vault keys may
+            // already be gone — so it is replaced, not merged.
             Some(stored) => {
-                qualified_identity.alias =
-                    decode_stored_identity(&stored.qi_bytes, self.network)?.alias;
+                let stored = decode_stored_identity(&stored.qi_bytes, self.network)?;
+                qualified_identity.alias = stored.alias;
+                if identity_is_listed(&kv, &id)? {
+                    qualified_identity
+                        .private_keys
+                        .retain_local_keys_from(stored.private_keys);
+                }
                 self.write_local_qualified_identity_locked(qualified_identity)?;
             }
             None => self.insert_local_qualified_identity_locked(qualified_identity, wallet)?,

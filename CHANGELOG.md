@@ -113,6 +113,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Identity keys added by hand no longer disappear**: unlocking a wallet,
+  starting the app or loading an identity from a wallet refreshed the identity
+  with only the keys the wallet can recreate, so keys you had pasted or
+  generated — including password-protected ones — vanished from the identity
+  and could no longer be used here. Those refreshes now keep every key already
+  saved for the identity, with its password protection unchanged. Adding a key
+  also no longer erases a key, name or protection change saved for the same
+  identity while the new key was being sent to the network.
+
+- **A new key that could not be saved here is no longer lost**: when a key was
+  added to the identity on the network but saving it on this device failed,
+  most failures showed a generic storage message, and a randomly generated
+  private key could be lost for good. Every such failure now says the key is
+  already on the network, and the Add Key screen keeps its private key
+  available to copy.
+
 - Cancelling a network switch takes priority over simultaneous startup and
   reports chain sync as stopped after shutting down the new backend.
 

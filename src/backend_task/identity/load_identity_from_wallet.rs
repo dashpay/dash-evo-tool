@@ -249,17 +249,15 @@ impl AppContext {
         qualified_identity.status = IdentityStatus::Active;
         qualified_identity.network = self.network;
 
-        // Carry the user-assigned alias from any existing record so a re-load
-        // refreshes keys/DPNS without wiping DET-only metadata.
-        if let Some(existing) = self.get_identity_by_id(&identity_id)? {
-            qualified_identity.alias = existing.alias;
-            self.update_local_qualified_identity(&qualified_identity)?;
-        } else {
-            self.insert_local_qualified_identity(
-                &qualified_identity,
-                &Some((wallet_seed_hash, identity_index)),
-            )?;
-        }
+        // Insert, or refresh an existing record under its record lock while
+        // keeping the user's alias and every key this wallet-only rebuild did
+        // not recreate (manual and password-protected keys). The user asked
+        // for this identity, so an earlier unload is lifted.
+        self.store_discovered_identity(
+            &mut qualified_identity,
+            &Some((wallet_seed_hash, identity_index)),
+            crate::model::identity_discovery::DiscoveryIntent::UserRequested,
+        )?;
 
         {
             let mut wallet = wallet_arc_ref.wallet.write()?;

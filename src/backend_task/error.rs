@@ -706,15 +706,18 @@ pub enum TaskError {
     )]
     IdentityKeyProtectionDowngrade,
 
-    /// A new key was accepted onto the identity ON-CHAIN, but sealing it into
-    /// the local secret vault afterward failed, so it is not yet saved on this
-    /// device. The on-chain broadcast and the local persist cannot be atomic, so
-    /// this is the unavoidable post-broadcast gap — surfaced as a loud, typed,
-    /// actionable error rather than a silent loss. It never falls back to a
-    /// keyless write (the protected invariant holds). The upstream seal
-    /// failure is preserved through `#[source]` for logs and the details panel.
+    /// A new key was accepted onto the identity ON-CHAIN, but saving it on this
+    /// device afterward failed — any post-broadcast step: the roster or record
+    /// read, an occupied slot, the vault seal or write, the record write, or a
+    /// protection-downgrade refusal. The on-chain broadcast and the local
+    /// persist cannot be atomic, so this is the unavoidable post-broadcast gap —
+    /// surfaced as a loud, typed, actionable error rather than a silent loss.
+    /// The add-key screen keeps the private key available to copy. It never
+    /// falls back to a keyless write (the protected invariant holds). The
+    /// upstream failure is preserved through `#[source]` for logs and the
+    /// details panel.
     #[error(
-        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Check available disk space, then try adding a key again."
+        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Copy the new private key now and keep it somewhere safe. Then refresh the identity, open the new key and enter its private key to save it here."
     )]
     IdentityKeyAddedButNotSaved {
         #[source]
@@ -728,10 +731,10 @@ pub enum TaskError {
     /// private key material on a device that reports it holds none, referenced
     /// by no record and reachable by no cleanup.
     ///
-    /// No loss beyond the on-chain slot: the private key was supplied by the
-    /// user on the add-key screen, so they still hold it.
+    /// The private key may have been generated on the add-key screen and exist
+    /// nowhere else, so that screen keeps it available to copy.
     #[error(
-        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Load the identity again, then add the key again."
+        "The new key was added to your identity on the network, but this identity was removed from this device before the key could be saved here. Copy the new private key now and keep it somewhere safe. To use this key here, load the identity again with that private key."
     )]
     IdentityKeyAddedButIdentityUnloaded,
 

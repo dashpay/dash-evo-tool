@@ -642,6 +642,31 @@ impl KeyStorage {
         self.private_keys.entry(key).or_insert(value);
     }
 
+    /// Fold a stored record's keys into this freshly rebuilt, wallet-only key
+    /// set, so a rebuild never drops a key it did not recreate.
+    ///
+    /// A wallet rescan (discovery, "load from wallet") only knows the keys it
+    /// can derive; everything else on the stored record — a pasted or
+    /// generated key, a Tier-1 or password-protected Tier-2 vault key — would
+    /// vanish if the rebuild replaced the record, orphaning its vault secret.
+    ///
+    /// Per placement:
+    /// - absent from the rebuild → the stored entry is kept;
+    /// - present in both → the stored entry wins, unless it is itself only a
+    ///   wallet derivation path, which the rebuild refreshes. A held private
+    ///   half (`Clear`, `AlwaysClear`, `Encrypted`, `InVault`) is therefore
+    ///   never replaced by a derivation path: no protection downgrade, and the
+    ///   vault secret stays referenced.
+    pub(crate) fn retain_local_keys_from(&mut self, stored: KeyStorage) {
+        for (placement, entry) in stored.private_keys {
+            let rebuild_refreshes_it = self.private_keys.contains_key(&placement)
+                && matches!(entry.1, PrivateKeyData::AtWalletDerivationPath(_));
+            if !rebuild_refreshes_it {
+                self.private_keys.insert(placement, entry);
+            }
+        }
+    }
+
     /// Consume the store, yielding every entry with its placement.
     pub fn into_entries(
         self,
@@ -706,6 +731,40 @@ impl KeyStorage {
         };
         self.private_keys.insert(key, (public_key, data));
         Ok(())
+    }
+
+    /// File a wallet-derived key at `key` as
+    /// [`PrivateKeyData::AtWalletDerivationPath`] — no private bytes.
+    ///
+    /// Refuses with [`TaskError::IdentityKeySlotOccupied`] when the slot holds
+    /// a *different* key, like [`insert_non_encrypted`](Self::insert_non_encrypted).
+    /// When it already holds this same key (e.g. a wallet rescan filed it
+    /// meanwhile) the stored entry is kept: it may hold the private half, and
+    /// a derivation path must never replace one.
+    pub fn insert_wallet_derived(
+        &mut self,
+        key: (PrivateKeyTarget, KeyID),
+        public_key: QualifiedIdentityPublicKey,
+        path: WalletDerivationPath,
+    ) -> Result<(), TaskError> {
+        match self.private_keys.get(&key) {
+            Some((occupant, _))
+                if !same_key(
+                    &occupant.identity_public_key,
+                    &public_key.identity_public_key,
+                ) =>
+            {
+                Err(TaskError::IdentityKeySlotOccupied)
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.private_keys.insert(
+                    key,
+                    (public_key, PrivateKeyData::AtWalletDerivationPath(path)),
+                );
+                Ok(())
+            }
+        }
     }
 
     /// Mark `key` as a vault placeholder ([`PrivateKeyData::InVault`]), wiping
@@ -1255,5 +1314,101 @@ mod tests {
             }
         }
         assert_eq!(in_vault_count, 2);
+    }
+
+    /// SEC-102: a wallet-only rebuild must not drop a stored key it did not
+    /// recreate, nor replace a held private half with a derivation path.
+    #[test]
+    fn a_wallet_rebuild_keeps_every_stored_key_it_did_not_recreate() {
+        let pv = PlatformVersion::latest();
+        let pasted = IdentityPublicKey::random_key(9, Some(9), pv);
+        let sealed = IdentityPublicKey::random_key(4, Some(4), pv);
+        let derived = IdentityPublicKey::random_key(0, Some(10), pv);
+        let fresh_wallet_key = IdentityPublicKey::random_key(5, Some(5), pv);
+        let entry = |key: &IdentityPublicKey, data: PrivateKeyData| {
+            (QualifiedIdentityPublicKey::from(key.clone()), data)
+        };
+
+        let mut stored = KeyStorage::default();
+        stored.insert_at((MAIN, 9), entry(&pasted, PrivateKeyData::Clear([0x19; 32])));
+        // Held in the vault AND derivable from the wallet: the vault copy wins.
+        stored.insert_at((MAIN, 4), entry(&sealed, PrivateKeyData::InVault));
+        stored.insert_at(
+            (MAIN, 0),
+            entry(
+                &derived,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x01)),
+            ),
+        );
+
+        let mut rebuilt = KeyStorage::default();
+        rebuilt.insert_at(
+            (MAIN, 4),
+            entry(
+                &sealed,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            ),
+        );
+        rebuilt.insert_at(
+            (MAIN, 0),
+            entry(
+                &derived,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            ),
+        );
+        rebuilt.insert_at(
+            (MAIN, 5),
+            entry(
+                &fresh_wallet_key,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            ),
+        );
+
+        rebuilt.retain_local_keys_from(stored);
+
+        assert_eq!(
+            rebuilt.keys_set(),
+            [(MAIN, 0), (MAIN, 4), (MAIN, 5), (MAIN, 9)].into(),
+            "every stored and every rediscovered key survives"
+        );
+        assert!(
+            matches!(
+                rebuilt.entry_at(&(MAIN, 9)),
+                Some((_, PrivateKeyData::Clear(bytes))) if *bytes == [0x19; 32]
+            ),
+            "a pasted key the wallet cannot derive is kept"
+        );
+        assert!(
+            rebuilt.is_in_vault(&(MAIN, 4)),
+            "a vault-held key is not downgraded to a derivation path"
+        );
+        assert!(
+            matches!(
+                rebuilt.entry_at(&(MAIN, 0)),
+                Some((_, PrivateKeyData::AtWalletDerivationPath(path)))
+                    if path.wallet_seed_hash == [0x02; 32]
+            ),
+            "a stored derivation path is refreshed by the rebuild"
+        );
+    }
+
+    /// A stored derivation path never displaces a private half the rebuild
+    /// itself holds.
+    #[test]
+    fn a_stored_derivation_path_does_not_displace_a_rebuilt_private_key() {
+        let pv = PlatformVersion::latest();
+        let key = IdentityPublicKey::random_key(2, Some(2), pv);
+        let stored = filed_under(
+            &key,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x01)),
+            )],
+        );
+        let mut rebuilt = filed_under(&key, &[(MAIN, PrivateKeyData::InVault)]);
+
+        rebuilt.retain_local_keys_from(stored);
+
+        assert!(rebuilt.is_in_vault(&(MAIN, 2)));
     }
 }

@@ -38,7 +38,21 @@ pub enum AddKeyStatus {
     NotStarted,
     WaitingForResult,
     Error,
+    /// The key was added on the network but could not be saved on this
+    /// device; the screen keeps its private key on hand to copy.
+    KeyOnNetworkNotSaved,
     Complete,
+}
+
+/// Whether `error` means the new key is already on the network but was not
+/// saved on this device — the case where the private key in the form may be
+/// the only copy there is.
+fn key_is_on_network_but_not_saved(error: &TaskError) -> bool {
+    matches!(
+        error,
+        TaskError::IdentityKeyAddedButNotSaved { .. }
+            | TaskError::IdentityKeyAddedButIdentityUnloaded
+    )
 }
 
 pub struct AddKeyScreen {
@@ -552,6 +566,47 @@ impl AddKeyScreen {
         }
     }
 
+    /// The key is on the network but not saved here: keep its private key
+    /// available so the user can copy it before leaving the screen.
+    fn show_key_not_saved(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.heading("Save your new private key");
+        ui.add_space(10.0);
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        "The new key is already on your identity on the network, but it is not saved on this device. Copy its private key now and keep it somewhere safe. It will be gone when you leave this screen.",
+                    )
+                    .color(DashColors::warning_color(dark_mode)),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Private Key:");
+                    self.private_key_input.show(ui);
+                });
+                ui.add_space(8.0);
+                if ui.button("Copy private key").clicked() {
+                    ui.ctx()
+                        .copy_text(self.private_key_input.text().to_string());
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "The private key was copied to the clipboard.",
+                        MessageType::Info,
+                    );
+                }
+            });
+        ui.add_space(20.0);
+        if ui.button("Back to Identities Screen").clicked() {
+            action = AppAction::PopScreenAndRefresh;
+        }
+        action
+    }
+
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
@@ -605,7 +660,11 @@ impl ScreenLike for AddKeyScreen {
                 return;
             }
             self.refresh_banner.take_and_clear();
-            self.add_key_status = AddKeyStatus::Error;
+            // Keep the "save your private key" state that
+            // `display_task_error` set for this same error.
+            if self.add_key_status != AddKeyStatus::KeyOnNetworkNotSaved {
+                self.add_key_status = AddKeyStatus::Error;
+            }
         }
     }
 
@@ -625,6 +684,15 @@ impl ScreenLike for AddKeyScreen {
             TaskError::DerivedKeySeedMismatch => self.derivation.key_unconfirmed(),
             _ => {}
         }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if key_is_on_network_but_not_saved(error) {
+            self.refresh_banner.take_and_clear();
+            self.add_key_status = AddKeyStatus::KeyOnNetworkNotSaved;
+        }
+        // The global banner still reports the error.
+        false
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -675,6 +743,10 @@ impl ScreenLike for AddKeyScreen {
             // Show the success screen if the key was added successfully
             if self.add_key_status == AddKeyStatus::Complete {
                 inner_action |= self.show_success(ui);
+                return inner_action;
+            }
+            if self.add_key_status == AddKeyStatus::KeyOnNetworkNotSaved {
+                inner_action |= self.show_key_not_saved(ui);
                 return inner_action;
             }
 
@@ -1325,5 +1397,30 @@ mod derived_key_tests {
             !screen.derivation.is_occupied(1),
             "a key-id change does not mark the slot used"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SEC-104: both "on the network, not saved here" outcomes switch the
+    /// screen to keeping the private key on hand; ordinary failures do not.
+    #[test]
+    fn only_post_broadcast_save_failures_keep_the_private_key_on_screen() {
+        assert!(key_is_on_network_but_not_saved(
+            &TaskError::IdentityKeyAddedButNotSaved {
+                source: Box::new(TaskError::IdentityKeyProtectionDowngrade),
+            }
+        ));
+        assert!(key_is_on_network_but_not_saved(
+            &TaskError::IdentityKeyAddedButIdentityUnloaded
+        ));
+        assert!(!key_is_on_network_but_not_saved(
+            &TaskError::MasterKeyNotFound
+        ));
+        assert!(!key_is_on_network_but_not_saved(
+            &TaskError::IdentityKeyProtectionDowngrade
+        ));
     }
 }

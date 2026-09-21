@@ -643,6 +643,16 @@ pub enum TaskError {
     )]
     DerivedKeyIndexUnavailable,
 
+    /// The identity's network record gained a key since the Add Key screen
+    /// loaded it, so the new wallet key would get a different key id than the
+    /// one its slot was chosen against. Nothing was broadcast. The screen
+    /// reloads the identity and selects the slot again. Fieldless: no
+    /// upstream error.
+    #[error(
+        "This identity changed on the network since you opened this screen, possibly because a key was added on another device. Check the selected wallet key slot and add the key again."
+    )]
+    DerivedKeyIdChanged,
+
     /// The public key cached for the selected wallet key slot does not match
     /// the key the wallet's recovery phrase derives there (a stale, corrupt or
     /// tampered cache entry). Checked before broadcast because a HASH160 key

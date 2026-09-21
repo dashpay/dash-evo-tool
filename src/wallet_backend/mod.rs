@@ -454,6 +454,12 @@ struct Inner {
     /// dispatch is user-initiated and rare relative to lock acquisition
     /// cost.
     dashpay_address_index_lock: std::sync::Mutex<()>,
+    /// Serialises read-modify-writes of this network's identity-auth
+    /// public-key cache blobs (see [`AuthPubkeyCacheView::update`]). This
+    /// backend's views are the only writers of its network's entries, so a
+    /// per-backend lock covers every writer. Held only for a synchronous
+    /// KV read/write — never across an `.await`.
+    auth_pubkey_cache_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
     /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
@@ -654,6 +660,7 @@ impl WalletBackend {
                 spv_storage_dir,
                 wallet_database_path,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
+                auth_pubkey_cache_lock: std::sync::Mutex::new(()),
                 secret_store,
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
@@ -2228,7 +2235,7 @@ impl WalletBackend {
     /// key schema. The cache memoises the hardened-path identity-auth
     /// pubkeys so the steady-state read is seed-free.
     pub fn auth_pubkey_cache(&self) -> AuthPubkeyCacheView<'_> {
-        AuthPubkeyCacheView::new(&self.inner.app_kv)
+        AuthPubkeyCacheView::new(&self.inner.app_kv, &self.inner.auth_pubkey_cache_lock)
     }
 
     /// View over the DET-owned avatar image cache. Backed by the

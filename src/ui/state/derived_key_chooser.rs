@@ -238,6 +238,15 @@ impl DerivedKeyChooser {
         self.request_identity_refresh();
     }
 
+    /// The identity gained a key on the network since it was loaded, so the
+    /// key id the selection was made against is stale. Drop the selection and
+    /// reload the identity; the default slot and the key-id hint are then
+    /// recomputed from the fresh record. The slot itself is not marked used.
+    pub fn key_id_changed(&mut self) {
+        self.index = None;
+        self.request_identity_refresh();
+    }
+
     /// The backend could not confirm the selected slot's key and repaired its
     /// cache entry. Re-read slots after an identity reload.
     pub fn key_unconfirmed(&mut self) {
@@ -336,6 +345,13 @@ impl DerivedKeyChooser {
 
     pub fn is_occupied(&self, index: u32) -> bool {
         self.occupied.contains(&index)
+    }
+
+    /// The key id the next added key gets according to the local record — the
+    /// id the default slot and [`Self::suggested_index`] are computed against.
+    /// Sent with the add so the backend can refuse if the network disagrees.
+    pub fn expected_key_id(&self) -> u32 {
+        self.max_key_id.saturating_add(1)
     }
 
     /// The slot matching the next key id, when it is free and differs from the

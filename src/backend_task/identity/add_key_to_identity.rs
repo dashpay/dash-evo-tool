@@ -42,7 +42,7 @@ impl AppContext {
             sdk,
             qualified_identity,
             public_key_to_add,
-            Some(private_key),
+            NewKeyMaterial::Private(private_key),
         )
         .await
     }
@@ -56,17 +56,29 @@ impl AppContext {
     /// must match the cached key the chooser worked from; a mismatch repairs
     /// the cache entry and fails with [`TaskError::DerivedKeySeedMismatch`]
     /// before anything is broadcast.
+    ///
+    /// `expected_key_id` is the key id the screen showed the slot choice
+    /// against. If the network record assigns a different one, the add fails
+    /// with [`TaskError::DerivedKeyIdChanged`] before broadcast, so a slot
+    /// picked to match the key id never silently lands at another id.
     pub(super) async fn add_derived_key_to_identity(
         &self,
         sdk: &Sdk,
         identity: QualifiedIdentity,
         key: QualifiedIdentityPublicKey,
         index: u32,
+        expected_key_id: KeyID,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let (identity, key) = self
             .prepare_derived_identity_key(&identity.identity.id(), key, index)
             .await?;
-        self.add_identity_key(sdk, identity, key, None).await
+        self.add_identity_key(
+            sdk,
+            identity,
+            key,
+            NewKeyMaterial::Derived { expected_key_id },
+        )
+        .await
     }
 
     /// Everything [`Self::add_derived_key_to_identity`] checks before it
@@ -98,20 +110,24 @@ impl AppContext {
         // for this index against the seed before trusting it (SEC-001).
         let backend = self.wallet_backend()?;
         let cache_view = backend.auth_pubkey_cache();
-        let mut cache = cache_view.get(self.network, &seed_hash);
-        let cached = cache.get(self.network, identity_index, index);
-        if cached != Some(public_key) {
-            cache.insert(self.network, identity_index, index, &public_key);
-            cache_view.put(self.network, &seed_hash, &cache)?;
-            if cached.is_some() {
-                tracing::warn!(
-                    target = "backend_task::identity",
-                    identity_index,
-                    key_index = index,
-                    "Cached identity-auth public key disagrees with the seed; repaired the entry and refused the add",
-                );
-                return Err(TaskError::DerivedKeySeedMismatch);
-            }
+        let network = self.network;
+        // Check and repair in one serialised update, so a concurrent writer's
+        // stale snapshot cannot put the bad entry back (SEC-106).
+        let (cached, cache) = cache_view.update(network, &seed_hash, |cache| {
+            let cached = cache.get(network, identity_index, index);
+            cache.insert(network, identity_index, index, &public_key);
+            (cached, cache.clone())
+        })?;
+        // A cold entry was just filled; a different cached key was repaired
+        // and the add is refused.
+        if cached.is_some_and(|cached| cached != public_key) {
+            tracing::warn!(
+                target = "backend_task::identity",
+                identity_index,
+                key_index = index,
+                "Cached identity-auth public key disagrees with the seed; repaired the entry and refused the add",
+            );
+            return Err(TaskError::DerivedKeySeedMismatch);
         }
         // Register the key's address on the wallet, as the load flows do. The
         // entry was verified above, so this is a cache hit with no seed access.
@@ -154,7 +170,7 @@ impl AppContext {
         sdk: &Sdk,
         mut qualified_identity: QualifiedIdentity,
         mut public_key_to_add: QualifiedIdentityPublicKey,
-        private_key: Option<[u8; 32]>,
+        material: NewKeyMaterial,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // O-2: enforce the protected-identity precondition BEFORE any
         // on-chain side effect. If this identity is password-protected, prompt
@@ -163,7 +179,15 @@ impl AppContext {
         // below is never built or broadcast for a protected identity we cannot
         // seal — no on-chain/local divergence. A keyless identity yields `None`
         // and the existing broadcast-then-keyless-persist path is unchanged.
-        let verify_scope = self.protected_identity_verify_scope(&qualified_identity)?;
+        //
+        // A wallet-derived key has no private bytes to seal (it stays
+        // protected by its wallet), so it needs no identity password (SEC-105).
+        let verify_scope = match material {
+            NewKeyMaterial::Private(_) => {
+                self.protected_identity_verify_scope(&qualified_identity)?
+            }
+            NewKeyMaterial::Derived { .. } => None,
+        };
         let verified_password = verify_protected_identity_precondition(
             &self.wallet_backend()?.secret_access(),
             verify_scope,
@@ -182,9 +206,13 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
+        let assigned_key_id = qualified_identity.identity.get_public_key_max_id() + 1;
+        if let NewKeyMaterial::Derived { expected_key_id } = material {
+            check_derived_key_id(assigned_key_id, expected_key_id)?;
+        }
         public_key_to_add
             .identity_public_key
-            .set_id(qualified_identity.identity.get_public_key_max_id() + 1);
+            .set_id(assigned_key_id);
         // `max_id` comes from the freshly published record, but the slot is
         // checked against the LOCAL store: an entry saved here but never
         // broadcast (e.g. restored from an old blob) can hold `max_id + 1`,
@@ -194,13 +222,18 @@ impl AppContext {
             PrivateKeyOnMainIdentity,
             public_key_to_add.identity_public_key.id(),
         );
-        if let Some(private_key) = private_key {
-            qualified_identity
-                .private_keys
-                .insert_non_encrypted(placement, (public_key_to_add.clone(), private_key))?;
-        } else {
-            insert_derived_key(&mut qualified_identity, &public_key_to_add)?;
-        }
+        let private_key = match material {
+            NewKeyMaterial::Private(private_key) => {
+                qualified_identity
+                    .private_keys
+                    .insert_non_encrypted(placement, (public_key_to_add.clone(), private_key))?;
+                Some(private_key)
+            }
+            NewKeyMaterial::Derived { .. } => {
+                insert_derived_key(&mut qualified_identity, &public_key_to_add)?;
+                None
+            }
+        };
         // Track balance before operation for fee calculation
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = self.fee_estimator().estimate_identity_update();
@@ -389,6 +422,30 @@ impl AppContext {
         }
 
         self.write_local_qualified_identity_locked(qualified_identity)
+    }
+}
+
+/// Where the private half of a key being added comes from.
+#[derive(Clone, Copy)]
+enum NewKeyMaterial {
+    /// Entered by the user; sealed under the identity password when the
+    /// identity is password-protected.
+    Private([u8; 32]),
+    /// Derived from the identity's wallet: no private bytes are stored.
+    /// `expected_key_id` is the key id the user chose the slot against.
+    Derived { expected_key_id: KeyID },
+}
+
+/// Refuse a wallet-derived key whose on-chain key id differs from the one the
+/// user chose its slot against: the identity gained a key elsewhere since the
+/// screen loaded, so a slot picked to match the key id would silently land at
+/// another id and be restorable only in DET (SEC-103). A slot deliberately
+/// picked off the key id is unaffected — only the id is compared.
+fn check_derived_key_id(assigned: KeyID, expected: KeyID) -> Result<(), TaskError> {
+    if assigned == expected {
+        Ok(())
+    } else {
+        Err(TaskError::DerivedKeyIdChanged)
     }
 }
 
@@ -656,8 +713,179 @@ mod tests {
         stage
             .staged
             .ctx
-            .add_derived_key_to_identity(&sdk, identity, derived_request(key_type), index)
+            .add_derived_key_to_identity(&sdk, identity, derived_request(key_type), index, 1)
             .await
+    }
+
+    /// An offline SDK that answers the add flow's nonce and identity fetches,
+    /// returning `network` as the identity's published record.
+    async fn mock_network(network: Identity) -> Sdk {
+        use dash_sdk::query_types::IdentityNonceFetcher;
+        let mut sdk = Sdk::new_mock();
+        let id = network.id();
+        sdk.mock()
+            .expect_fetch::<IdentityNonceFetcher, _>(id, Some(IdentityNonceFetcher(1)))
+            .await
+            .expect("mock the nonce fetch");
+        sdk.mock()
+            .expect_fetch::<Identity, _>(id, Some(network))
+            .await
+            .expect("mock the identity fetch");
+        sdk
+    }
+
+    /// The stage's identity as published after another device added a key
+    /// (not from this wallet) at key id 1.
+    fn network_record_with_foreign_key(stage: &DerivedStage) -> Identity {
+        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        let mut record = stage.identity.identity.clone();
+        let mut foreign = record.public_keys()[&0].clone();
+        foreign.set_id(1);
+        foreign.set_security_level(dash_sdk::dpp::identity::SecurityLevel::HIGH);
+        let secret = SecretKey::from_slice(&[9; 32]).unwrap();
+        foreign.set_data(
+            PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+                .serialize()
+                .to_vec()
+                .into(),
+        );
+        record.add_public_key(foreign);
+        record
+    }
+
+    async fn add_derived_against(
+        stage: &DerivedStage,
+        network: Identity,
+        index: u32,
+        expected_key_id: KeyID,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let sdk = mock_network(network).await;
+        stage
+            .staged
+            .ctx
+            .add_derived_key_to_identity(
+                &sdk,
+                stage.identity.clone(),
+                derived_request(KeyType::ECDSA_SECP256K1),
+                index,
+                expected_key_id,
+            )
+            .await
+    }
+
+    /// SEC-103: the local record says the next key id is 1 (the id the slot
+    /// was chosen against), but the network already holds key 1, so the key
+    /// would land at id 2. Refused before anything is signed or broadcast.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_refuses_when_the_network_assigns_another_key_id() {
+        let stage = stage_derivation(true).await;
+        let network = network_record_with_foreign_key(&stage);
+        let result = add_derived_against(&stage, network, 1, 1).await;
+        assert!(
+            matches!(result, Err(TaskError::DerivedKeyIdChanged)),
+            "expected DerivedKeyIdChanged, got {result:?}",
+        );
+        let stored = stage
+            .staged
+            .ctx
+            .get_local_qualified_identity(&stage.staged.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            stored
+                .private_keys
+                .get_cloned_private_key_data_and_wallet_info(&(PrivateKeyOnMainIdentity, 2))
+                .is_none(),
+            "nothing was saved for the refused key",
+        );
+    }
+
+    /// SEC-103: with no drift, a slot deliberately picked off the key id is
+    /// still allowed — the check compares key ids only, so the flow moves on
+    /// past it (to the unmocked broadcast, which fails differently).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_allows_an_off_id_slot_when_the_key_id_is_unchanged() {
+        let stage = stage_derivation(true).await;
+        let network = stage.identity.identity.clone();
+        let result = add_derived_against(&stage, network, 3, 1).await;
+        assert!(
+            !matches!(
+                result,
+                Err(TaskError::DerivedKeyIdChanged | TaskError::DerivedKeyIndexUnavailable)
+            ),
+            "an unchanged key id must pass the drift check, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn derived_key_id_check_compares_ids_only() {
+        assert!(check_derived_key_id(4, 4).is_ok());
+        assert!(matches!(
+            check_derived_key_id(5, 4),
+            Err(TaskError::DerivedKeyIdChanged)
+        ));
+    }
+
+    /// Make the stage's identity password-protected: seal a Tier-2 vault
+    /// entry for its master key placement.
+    fn protect_stage_identity(stage: &DerivedStage) {
+        store_protected_identity_key(
+            &stage.staged.store,
+            stage.staged.id.to_buffer(),
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x17; 32],
+            "identity-object-passwordpw",
+        );
+        let scope = stage
+            .staged
+            .ctx
+            .protected_identity_verify_scope(&stage.identity)
+            .unwrap();
+        assert!(scope.is_some(), "the stage identity is now protected");
+    }
+
+    /// SEC-105: a derived key has no private bytes to seal, so a protected
+    /// identity is not asked for its password. On this headless stage a
+    /// prompt would fail with `SecretPromptUnavailable` before the network
+    /// fetch; reaching the key-id check proves no prompt was attempted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_to_a_protected_identity_does_not_ask_for_its_password() {
+        let stage = stage_derivation(true).await;
+        protect_stage_identity(&stage);
+        let network = network_record_with_foreign_key(&stage);
+        let result = add_derived_against(&stage, network, 1, 1).await;
+        assert!(
+            matches!(result, Err(TaskError::DerivedKeyIdChanged)),
+            "expected the flow to reach the key-id check without a prompt, got {result:?}",
+        );
+    }
+
+    /// SEC-105 scope: a manually entered key for a protected identity still
+    /// requires the identity password (it is sealed under it); headless, that
+    /// fails closed before any network call.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn manual_add_to_a_protected_identity_still_requires_its_password() {
+        let stage = stage_derivation(true).await;
+        protect_stage_identity(&stage);
+        let mut key = derived_request(KeyType::ECDSA_SECP256K1);
+        key.identity_public_key.set_data(
+            stage
+                .cache
+                .get(Network::Testnet, 0, 4)
+                .unwrap()
+                .to_bytes()
+                .into(),
+        );
+        let result = stage
+            .staged
+            .ctx
+            .add_key_to_identity(&Sdk::new_mock(), stage.identity.clone(), key, [0x42; 32])
+            .await;
+        assert!(
+            matches!(result, Err(TaskError::SecretPromptUnavailable)),
+            "expected SecretPromptUnavailable, got {result:?}",
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -21,6 +21,14 @@ slot; when the selection differs from the matching free slot, the screen
 recommends the matching one. After an add or a rejected slot, the chooser waits
 for the identity to reload from the network before offering slots again.
 
+The add carries the key id the chooser worked from (`expected_key_id`, local
+max key id + 1). The backend assigns `network max key id + 1` after a fresh
+fetch; if that differs (a key was added elsewhere since the local copy was
+loaded), it fails with `DerivedKeyIdChanged` before broadcasting, and the
+chooser drops its selection and reloads the identity so the default and the
+hint follow the fresh record. Only the key id is compared, so a slot
+deliberately picked off the key id stays allowed.
+
 ## Derivation and storage
 
 - Support ECDSA_SECP256K1 and ECDSA_HASH160 using the existing canonical ECDSA
@@ -56,6 +64,12 @@ for the identity to reload from the network before offering slots again.
   Protected imported keys retain their current password preflight and sealing.
   A key created from the wallet for a password-protected identity is protected
   by the wallet, not the identity password (mixed state); the screen says so.
+  With no private bytes to seal, the derived add does not ask for the identity
+  password.
+- Public-key cache writes (warm, cold fill, bootstrap warm, mismatch repair)
+  are read-modify-writes of one per-wallet blob; they go through
+  `AuthPubkeyCacheView::update`, serialised on a per-backend lock held only for
+  the synchronous KV read/write, so a stale snapshot cannot undo a repair.
 - Keep contract bounds, key purpose, security level, fees and the existing master
   key authorization flow. Derivation does not itself add HASH160 support to
   platform-wallet's DashPay profile API.
@@ -68,7 +82,9 @@ aliases, wallet/network/index mismatch, derivation-path serialization, signing
 after persistence/reload, stale network duplicates, occupied local slots, every
 backend guard of the derived add (unsupported type, unknown identity, index at
 or over the limit, occupied index, missing or ambiguous wallet, cached key the
-seed does not derive, cold cache fill), checkbox default and manual fallback,
+seed does not derive, cold cache fill, key id changed on the network, no
+identity-password prompt), cache writes merging into the fresh blob under
+concurrency, checkbox default and manual fallback,
 slot-load failure and retry apart from submission, no warm loop, rejected-slot
 recovery, disabled slot selection, and submission without private-key bytes.
 

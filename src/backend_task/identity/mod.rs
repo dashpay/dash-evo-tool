@@ -473,7 +473,16 @@ pub enum IdentityTask {
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     /// Add a key from the identity's wallet at the selected derivation index.
-    AddDerivedKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, u32),
+    AddDerivedKeyToIdentity {
+        identity: QualifiedIdentity,
+        key: QualifiedIdentityPublicKey,
+        /// Wallet derivation index of the new key.
+        index: u32,
+        /// Key id the screen showed the slot choice against (the local
+        /// record's highest key id + 1). The add is refused if the network
+        /// assigns a different one.
+        expected_key_id: KeyID,
+    },
     /// Opt-in: seal every keyless (Tier-1) vault-stored key of this
     /// identity under ONE per-identity object `password` (Tier-2), and store
     /// `hint` for the sign-time prompt copy. Idempotent (an already-protected
@@ -885,8 +894,13 @@ impl AppContext {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
                     .await
             }
-            IdentityTask::AddDerivedKeyToIdentity(identity, key, index) => {
-                self.add_derived_key_to_identity(sdk, identity, key, index)
+            IdentityTask::AddDerivedKeyToIdentity {
+                identity,
+                key,
+                index,
+                expected_key_id,
+            } => {
+                self.add_derived_key_to_identity(sdk, identity, key, index, expected_key_id)
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {

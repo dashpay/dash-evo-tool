@@ -252,13 +252,14 @@ impl AddKeyScreen {
                 contract_bounds,
             };
             return AppAction::BackendTask(BackendTask::IdentityTask(
-                IdentityTask::AddDerivedKeyToIdentity(
-                    self.identity.clone(),
-                    QualifiedIdentityPublicKey::from(dash_sdk::platform::IdentityPublicKey::from(
-                        new_key,
-                    )),
+                IdentityTask::AddDerivedKeyToIdentity {
+                    identity: self.identity.clone(),
+                    key: QualifiedIdentityPublicKey::from(
+                        dash_sdk::platform::IdentityPublicKey::from(new_key),
+                    ),
                     index,
-                ),
+                    expected_key_id: self.derivation.expected_key_id(),
+                },
             ));
         }
         // Convert the input string to bytes (hex decoding)
@@ -620,6 +621,7 @@ impl ScreenLike for AddKeyScreen {
         }
         match error {
             TaskError::DerivedKeyIndexUnavailable => self.derivation.slot_rejected(),
+            TaskError::DerivedKeyIdChanged => self.derivation.key_id_changed(),
             TaskError::DerivedKeySeedMismatch => self.derivation.key_unconfirmed(),
             _ => {}
         }
@@ -1088,12 +1090,20 @@ mod derived_key_tests {
         harness.run();
         assert_eq!(harness.state().derivation.selected_index(), Some(2));
         let AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::AddDerivedKeyToIdentity(_, key, index),
+            IdentityTask::AddDerivedKeyToIdentity {
+                key,
+                index,
+                expected_key_id,
+                ..
+            },
         )) = harness.state_mut().validate_and_add_key()
         else {
             panic!("derived submission must use the derived backend task");
         };
         assert_eq!(index, 2);
+        // SEC-103: the key id the slot was chosen against travels with the
+        // add, even when the user picked a slot off it.
+        assert_eq!(expected_key_id, 1);
         assert!(key.identity_public_key.data().is_empty());
         assert!(key.in_wallet_at_derivation_path.is_none());
     }
@@ -1250,5 +1260,70 @@ mod derived_key_tests {
         assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
         assert_eq!(screen.derivation.selected_index(), Some(2));
         assert!(screen.derivation.is_occupied(1));
+    }
+
+    /// SEC-103: when the network assigned a different key id than the one the
+    /// slot was chosen against, the selection is dropped (not blacklisted),
+    /// the identity is reloaded, and the default slot and expected key id
+    /// follow the fresh record.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_key_id_change_refreshes_and_reselects_the_matching_slot() {
+        use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+
+        let (staged, mut identity) = staged_screen_parts(true).await;
+        identity.identity.set_id(staged.id);
+        staged
+            .ctx
+            .wallets
+            .write()
+            .unwrap()
+            .extend(identity.associated_wallets.clone());
+        staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .unwrap();
+        let mut screen = AddKeyScreen::new(identity.clone(), &staged.ctx);
+        assert_eq!(screen.derivation.selected_index(), Some(1));
+        assert_eq!(screen.derivation.expected_key_id(), 1);
+
+        screen.add_key_status = AddKeyStatus::WaitingForResult;
+        screen.display_backend_task_error(
+            &BackendTaskContext::Other,
+            &TaskError::DerivedKeyIdChanged,
+        );
+        screen.display_message("changed", MessageType::Error);
+        assert_eq!(
+            screen.derivation.status(),
+            ChooserStatus::RefreshingIdentity
+        );
+        assert!(screen.derivation.take_identity_refresh());
+
+        // Another device added a key (not from this wallet) at id 1.
+        let mut refreshed = identity.clone();
+        let mut foreign = identity.identity.public_keys()[&0].clone();
+        foreign.set_id(1);
+        let secret = SecretKey::from_slice(&[9; 32]).unwrap();
+        foreign.set_data(
+            PublicKey::from_secret_key(&Secp256k1::new(), &secret)
+                .serialize()
+                .to_vec()
+                .into(),
+        );
+        refreshed.identity.add_public_key(foreign);
+        staged
+            .ctx
+            .update_local_qualified_identity(&refreshed)
+            .unwrap();
+        screen.display_task_result(BackendTaskSuccessResult::RefreshedIdentity(refreshed));
+
+        assert_eq!(screen.derivation.status(), ChooserStatus::Ready);
+        assert_eq!(screen.derivation.expected_key_id(), 2);
+        assert_eq!(screen.derivation.selected_index(), Some(2));
+        assert!(
+            !screen.derivation.is_occupied(1),
+            "a key-id change does not mark the slot used"
+        );
     }
 }

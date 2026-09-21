@@ -22,7 +22,7 @@
 //! self-heals via one just-in-time seed derivation that repopulates it.
 //! Correctness never depends on the cache being present.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use dash_sdk::dpp::dashcore::Network;
 
@@ -54,17 +54,30 @@ impl SidecarValue for AuthPubkeyCache {}
 /// already resolved the wallet's seed, so the entry cascades on wallet removal.
 /// The cache is an optimisation — a missing or unreadable blob degrades to a
 /// cold [`AuthPubkeyCache::default`] that the read path self-heals.
-pub struct AuthPubkeyCacheView<'a>(SidecarView<'a, AuthPubkeyCache>);
+///
+/// Every write is a read-modify-write of the whole per-wallet blob, so writers
+/// go through [`Self::update`], which serialises them on `write_lock`.
+pub struct AuthPubkeyCacheView<'a> {
+    sidecar: SidecarView<'a, AuthPubkeyCache>,
+    /// Serialises read-modify-writes of the blobs this view writes. Owned by
+    /// the wallet backend, whose views are the only writers of its network's
+    /// entries.
+    write_lock: &'a Mutex<()>,
+}
 
 impl<'a> AuthPubkeyCacheView<'a> {
-    /// Borrow a [`DetKv`] handle as a typed auth-pubkey-cache view.
-    pub fn new(kv: &'a Arc<DetKv>) -> Self {
-        Self(SidecarView::new(
-            kv,
-            KEY_INFIX,
-            SidecarScope::WalletById,
-            map_kv_error_to_task_error,
-        ))
+    /// Borrow a [`DetKv`] handle as a typed auth-pubkey-cache view whose
+    /// writes serialise on `write_lock`.
+    pub fn new(kv: &'a Arc<DetKv>, write_lock: &'a Mutex<()>) -> Self {
+        Self {
+            sidecar: SidecarView::new(
+                kv,
+                KEY_INFIX,
+                SidecarScope::WalletById,
+                map_kv_error_to_task_error,
+            ),
+            write_lock,
+        }
     }
 
     /// Load the cache for one wallet.
@@ -73,20 +86,55 @@ impl<'a> AuthPubkeyCacheView<'a> {
     /// or the blob fails to decode (logged) — the read path self-heals,
     /// so a corrupt blob must never block identity load/discovery.
     pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> AuthPubkeyCache {
-        self.0.get(network, seed_hash).unwrap_or_default()
+        self.sidecar.get(network, seed_hash).unwrap_or_default()
     }
 
-    /// Whole-blob upsert of the cache for one wallet. The map is tiny
-    /// (a handful of identities x a few keys) and writes only happen on
-    /// cold-cache first-touch, so a whole-blob write matches the
-    /// `WalletMeta` discipline — no need for row-granular storage.
+    /// Apply `edit` to the freshly read cache for one wallet and write the
+    /// blob back if it changed; returns `edit`'s result.
+    ///
+    /// The read, `edit` and write run under the view's write lock, so a
+    /// writer holding an older snapshot can never overwrite a newer entry
+    /// (for example undo a repaired entry). The lock is a `std` mutex held
+    /// only for this synchronous call — never across an `.await` — and
+    /// `edit` must only touch the cache it is given: taking another lock or
+    /// prompting inside it could deadlock.
+    ///
+    /// The map is tiny (a handful of identities x a few keys), so a
+    /// whole-blob write matches the `WalletMeta` discipline — no need for
+    /// row-granular storage.
+    pub fn update<R>(
+        &self,
+        network: Network,
+        seed_hash: &WalletSeedHash,
+        edit: impl FnOnce(&mut AuthPubkeyCache) -> R,
+    ) -> Result<R, TaskError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut cache = self.get(network, seed_hash);
+        let before = cache.clone();
+        let result = edit(&mut cache);
+        if cache != before {
+            self.sidecar.set(network, seed_hash, &cache)?;
+        }
+        Ok(result)
+    }
+
+    /// Whole-blob overwrite of the cache for one wallet, bypassing
+    /// [`Self::update`]'s merge. Test seeding only.
+    #[cfg(test)]
     pub fn put(
         &self,
         network: Network,
         seed_hash: &WalletSeedHash,
         cache: &AuthPubkeyCache,
     ) -> Result<(), TaskError> {
-        self.0.set(network, seed_hash, cache)
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        self.sidecar.set(network, seed_hash, cache)
     }
 
     /// Delete the cache for one wallet. Idempotent — a missing key
@@ -94,7 +142,7 @@ impl<'a> AuthPubkeyCacheView<'a> {
     /// mechanism in production; this direct delete exists for tests.
     #[cfg(test)]
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        self.0.delete(network, seed_hash)
+        self.sidecar.delete(network, seed_hash)
     }
 }
 
@@ -134,7 +182,8 @@ mod tests {
     #[test]
     fn put_then_get_round_trips() {
         let kv = kv();
-        let view = AuthPubkeyCacheView::new(&kv);
+        let lock = Mutex::new(());
+        let view = AuthPubkeyCacheView::new(&kv, &lock);
         let seed: WalletSeedHash = [0x11; 32];
         let mut cache = AuthPubkeyCache::default();
         cache.insert(Network::Testnet, 0, 0, &pubkey(5));
@@ -150,7 +199,8 @@ mod tests {
     #[test]
     fn get_missing_returns_cold_default() {
         let kv = kv();
-        let view = AuthPubkeyCacheView::new(&kv);
+        let lock = Mutex::new(());
+        let view = AuthPubkeyCacheView::new(&kv, &lock);
         let seed: WalletSeedHash = [0x66; 32];
         let got = view.get(Network::Devnet, &seed);
         assert!(got.is_empty());
@@ -162,7 +212,8 @@ mod tests {
     #[test]
     fn get_partitions_by_network() {
         let kv = kv();
-        let view = AuthPubkeyCacheView::new(&kv);
+        let lock = Mutex::new(());
+        let view = AuthPubkeyCacheView::new(&kv, &lock);
         let seed: WalletSeedHash = [0x33; 32];
         let mut mainnet = AuthPubkeyCache::default();
         mainnet.insert(Network::Mainnet, 0, 0, &pubkey(11));
@@ -179,7 +230,8 @@ mod tests {
     #[test]
     fn put_upserts() {
         let kv = kv();
-        let view = AuthPubkeyCacheView::new(&kv);
+        let lock = Mutex::new(());
+        let view = AuthPubkeyCacheView::new(&kv, &lock);
         let seed: WalletSeedHash = [0x22; 32];
         let mut first = AuthPubkeyCache::default();
         first.insert(Network::Mainnet, 0, 0, &pubkey(1));
@@ -194,7 +246,8 @@ mod tests {
     #[test]
     fn delete_is_idempotent() {
         let kv = kv();
-        let view = AuthPubkeyCacheView::new(&kv);
+        let lock = Mutex::new(());
+        let view = AuthPubkeyCacheView::new(&kv, &lock);
         let seed: WalletSeedHash = [0x55; 32];
         view.delete(Network::Testnet, &seed).expect("delete absent");
         let mut cache = AuthPubkeyCache::default();
@@ -203,6 +256,87 @@ mod tests {
         view.delete(Network::Testnet, &seed).expect("first delete");
         view.delete(Network::Testnet, &seed).expect("second delete");
         assert!(view.get(Network::Testnet, &seed).is_empty());
+    }
+
+    /// AUTH-CACHE-VIEW-008 (SEC-106) — `update` edits the freshest blob, so a
+    /// writer that read its snapshot before a repair cannot write the repaired
+    /// entry back to its old value.
+    #[test]
+    fn update_merges_into_the_fresh_blob_instead_of_a_stale_snapshot() {
+        let kv = kv();
+        let lock = Mutex::new(());
+        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let seed: WalletSeedHash = [0x77; 32];
+        let (bad, genuine, other) = (pubkey(1), pubkey(2), pubkey(3));
+        let mut poisoned = AuthPubkeyCache::default();
+        poisoned.insert(Network::Testnet, 0, 1, &bad);
+        view.put(Network::Testnet, &seed, &poisoned).unwrap();
+
+        // A warm reads its snapshot (still poisoned) and decides what is missing.
+        let stale = view.get(Network::Testnet, &seed);
+        let missing: Vec<u32> = (0..3)
+            .filter(|&i| stale.get(Network::Testnet, 0, i).is_none())
+            .collect();
+        // The repair lands in between.
+        let previous = view
+            .update(Network::Testnet, &seed, |cache| {
+                let previous = cache.get(Network::Testnet, 0, 1);
+                cache.insert(Network::Testnet, 0, 1, &genuine);
+                previous
+            })
+            .unwrap();
+        assert_eq!(previous, Some(bad));
+        // The warm then writes only what it derived.
+        let changed = view
+            .update(Network::Testnet, &seed, |cache| {
+                missing.iter().fold(false, |changed, &i| {
+                    cache.insert(Network::Testnet, 0, i, &other) | changed
+                })
+            })
+            .unwrap();
+        assert!(changed);
+
+        let got = view.get(Network::Testnet, &seed);
+        assert_eq!(got.get(Network::Testnet, 0, 1), Some(genuine));
+        assert_eq!(got.get(Network::Testnet, 0, 0), Some(other));
+        assert_eq!(got.get(Network::Testnet, 0, 2), Some(other));
+    }
+
+    /// AUTH-CACHE-VIEW-009 (SEC-106) — concurrent writers through views
+    /// sharing one write lock never lose each other's entries.
+    #[test]
+    fn concurrent_updates_keep_every_entry() {
+        const THREADS: u32 = 8;
+        const PER_THREAD: u32 = 25;
+        let kv = kv();
+        let lock = Mutex::new(());
+        let seed: WalletSeedHash = [0x88; 32];
+        let key = pubkey(4);
+        std::thread::scope(|scope| {
+            for thread in 0..THREADS {
+                let (kv, lock) = (&kv, &lock);
+                scope.spawn(move || {
+                    let view = AuthPubkeyCacheView::new(kv, lock);
+                    for i in 0..PER_THREAD {
+                        view.update(Network::Testnet, &seed, |cache| {
+                            cache.insert(Network::Testnet, thread, i, &key)
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        let view = AuthPubkeyCacheView::new(&kv, &lock);
+        let got = view.get(Network::Testnet, &seed);
+        for thread in 0..THREADS {
+            for i in 0..PER_THREAD {
+                assert_eq!(
+                    got.get(Network::Testnet, thread, i),
+                    Some(key),
+                    "entry ({thread}, {i}) was lost",
+                );
+            }
+        }
     }
 
     /// AUTH-CACHE-VIEW-006 — the canonical key shape uses the

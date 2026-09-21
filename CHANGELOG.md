@@ -32,6 +32,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   number is selected by default, so other wallet apps can restore the key too;
   used slots cannot be chosen. Other identities open on manual private-key
   entry, with an explanation. The wallet's key is verified before it is added.
+  If the identity gained a key on another device in the meantime, the add is
+  stopped before anything is sent and the screen reloads the identity so the
+  slot can be chosen again. Adding a wallet key does not ask for the identity's
+  password, because the key stays protected by the wallet.
 
 - **Keys saved on this device but not on the identity's key lists are now
   listed**: a key can be saved here while appearing on none of the identity's

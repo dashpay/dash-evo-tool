@@ -86,12 +86,11 @@ impl AppContext {
                         TaskError::WalletAddressDerivationFailed
                     })?;
 
-                let mut cache = cache;
-                if cache.insert(network, identity_index, key_index, &public_key) {
-                    backend
-                        .auth_pubkey_cache()
-                        .put(network, &seed_hash, &cache)?;
-                }
+                backend
+                    .auth_pubkey_cache()
+                    .update(network, &seed_hash, |cache| {
+                        cache.insert(network, identity_index, key_index, &public_key)
+                    })?;
                 Ok(public_key)
             })
             .await
@@ -224,16 +223,11 @@ impl AppContext {
                 public_key_hash_map.extend(miss_hash_map);
 
                 if !derived.is_empty() {
-                    let mut cache = cache;
-                    let mut changed = false;
-                    for (key_index, public_key) in &derived {
-                        changed |= cache.insert(network, identity_index, *key_index, public_key);
-                    }
-                    if changed {
-                        backend
-                            .auth_pubkey_cache()
-                            .put(network, &seed_hash, &cache)?;
-                    }
+                    backend.auth_pubkey_cache().update(network, &seed_hash, |cache| {
+                        for (key_index, public_key) in &derived {
+                            cache.insert(network, identity_index, *key_index, public_key);
+                        }
+                    })?;
                 }
                 Ok((public_key_map, public_key_hash_map))
             })

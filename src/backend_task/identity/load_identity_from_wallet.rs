@@ -2,6 +2,7 @@ use super::{BackendTaskSuccessResult, IdentityIndex};
 use crate::app::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::derived_identity_key::recovery_scan_bound;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
@@ -156,9 +157,7 @@ impl AppContext {
             .max()
             .unwrap_or(matching_identity_key_id);
 
-        let mut top_bound = highest_identity_key_id.saturating_add(1);
-        top_bound = top_bound.max(queried_wallet_key_index.saturating_add(1));
-        top_bound = top_bound.saturating_add(5);
+        let top_bound = wallet_key_scan_bound(highest_identity_key_id, queried_wallet_key_index);
 
         let wallet_seed_hash = wallet_arc_ref.wallet.read()?.seed_hash();
         let (public_key_result_map, public_key_hash_result_map) = self
@@ -303,4 +302,14 @@ impl AppContext {
             count: summary.found,
         })
     }
+}
+
+/// Exclusive key-index bound of the load-from-wallet scan: the shared
+/// seed-recovery window past whichever is higher, the identity's highest key id
+/// or the wallet key index the user queried.
+pub(super) fn wallet_key_scan_bound(
+    highest_identity_key_id: u32,
+    queried_wallet_key_index: u32,
+) -> u32 {
+    recovery_scan_bound(highest_identity_key_id.max(queried_wallet_key_index))
 }

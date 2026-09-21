@@ -97,6 +97,43 @@ impl AppContext {
             .await
     }
 
+    /// Derive one identity-auth ECDSA public key straight from the seed,
+    /// never from the cache.
+    ///
+    /// The cache is an unauthenticated sidecar; this is the authoritative
+    /// value a cached key is checked against before it is registered on-chain.
+    /// One `with_secret` scope; the seed never leaves it.
+    pub(super) async fn derive_identity_auth_pubkey_from_seed(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+        identity_index: u32,
+        key_index: u32,
+    ) -> Result<PublicKey, TaskError> {
+        let network = self.network;
+        let seed_hash = wallet.read()?.seed_hash();
+        let wallet = Arc::clone(wallet);
+        self.wallet_backend()?
+            .secret_access()
+            .with_secret(&SecretScope::HdSeed { seed_hash }, |plaintext| {
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                wallet
+                    .read()?
+                    .identity_authentication_ecdsa_public_key_from_seed(
+                        seed,
+                        network,
+                        identity_index,
+                        key_index,
+                    )
+                    .map_err(|detail| {
+                        tracing::warn!(error = %detail, "identity-auth key derivation failed");
+                        TaskError::WalletAddressDerivationFailed
+                    })
+            })
+            .await
+    }
+
     /// Resolve the two identity-auth lookup maps for `key_index_range`,
     /// cache-first, partitioning all cache misses into a single
     /// `with_secret` scope (one prompt for the whole request, not one per

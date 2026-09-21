@@ -347,6 +347,14 @@ pub enum BackendTaskContext {
     LegacyRecoveryCheck(Identifier),
     /// The restore of one identity's approved legacy-recovery items.
     LegacyRecoveryRestore(Identifier),
+    /// Warming the identity-auth public-key cache for one wallet identity
+    /// index, so a screen can tell its own failed warm from other errors.
+    IdentityAuthPubkeyWarm {
+        seed_hash: WalletSeedHash,
+        identity_index: u32,
+    },
+    /// A network refresh of one identity.
+    IdentityRefresh(Identifier),
     /// A known backend task that needs no finer UI correlation.
     Other,
     /// An error emitted without an originating backend task.
@@ -462,6 +470,27 @@ impl BackendTaskContext {
             _ => None,
         }
     }
+
+    /// The `(wallet, identity index)` whose auth public keys this operation
+    /// warms, or `None` for anything else.
+    pub(crate) fn identity_auth_pubkey_warm(&self) -> Option<(WalletSeedHash, u32)> {
+        match self.operation() {
+            Self::IdentityAuthPubkeyWarm {
+                seed_hash,
+                identity_index,
+            } => Some((*seed_hash, *identity_index)),
+            _ => None,
+        }
+    }
+
+    /// The identity this operation refreshes from the network, or `None` for
+    /// anything else.
+    pub(crate) fn refreshed_identity(&self) -> Option<Identifier> {
+        match self.operation() {
+            Self::IdentityRefresh(identity_id) => Some(*identity_id),
+            _ => None,
+        }
+    }
 }
 
 impl From<&BackendTask> for BackendTaskContext {
@@ -504,6 +533,17 @@ impl From<&BackendTask> for BackendTaskContext {
                 identity_id,
                 ..
             }) => Self::LegacyRecoveryRestore(*identity_id),
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity)) => {
+                Self::IdentityRefresh(identity.identity.id())
+            }
+            BackendTask::WalletTask(WalletTask::WarmIdentityAuthPubkeys {
+                seed_hash,
+                identity_index,
+                ..
+            }) => Self::IdentityAuthPubkeyWarm {
+                seed_hash: *seed_hash,
+                identity_index: *identity_index,
+            },
             BackendTask::SystemTask(SystemTask::ClearNetworkDatabase) => Self::ClearNetworkDatabase,
             BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }) => {
                 Self::GenerateReceiveAddress {

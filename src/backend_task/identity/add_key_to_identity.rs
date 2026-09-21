@@ -3,7 +3,7 @@ use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::derived_identity_key::{
-    derivation_index_limit, derivation_wallet, occupied_indices,
+    derivation_index_limit, derivation_wallet, is_derivable_key_type, occupied_indices,
 };
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -28,7 +28,7 @@ use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateT
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use dash_sdk::platform::{Fetch, Identity};
+use dash_sdk::platform::{Fetch, Identifier, Identity};
 
 impl AppContext {
     pub(super) async fn add_key_to_identity(
@@ -47,21 +47,42 @@ impl AppContext {
         .await
     }
 
+    /// Add a key derived from the identity's wallet at derivation `index`.
+    ///
+    /// The UI snapshot in `identity` is used only for its id: the identity is
+    /// reloaded from local storage and every guard (type, wallet, recovery
+    /// window, occupancy) is re-evaluated here, the authoritative layer. The
+    /// public key is derived from the seed through the secret chokepoint and
+    /// must match the cached key the chooser worked from; a mismatch repairs
+    /// the cache entry and fails with [`TaskError::DerivedKeySeedMismatch`]
+    /// before anything is broadcast.
     pub(super) async fn add_derived_key_to_identity(
         &self,
         sdk: &Sdk,
         identity: QualifiedIdentity,
-        mut key: QualifiedIdentityPublicKey,
+        key: QualifiedIdentityPublicKey,
         index: u32,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        if !matches!(
-            key.identity_public_key.key_type(),
-            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
-        ) {
+        let (identity, key) = self
+            .prepare_derived_identity_key(&identity.identity.id(), key, index)
+            .await?;
+        self.add_identity_key(sdk, identity, key, None).await
+    }
+
+    /// Everything [`Self::add_derived_key_to_identity`] checks before it
+    /// touches the network: returns the reloaded identity and the key with its
+    /// seed-verified public data and wallet path filled in.
+    async fn prepare_derived_identity_key(
+        &self,
+        identity_id: &Identifier,
+        mut key: QualifiedIdentityPublicKey,
+        index: u32,
+    ) -> Result<(QualifiedIdentity, QualifiedIdentityPublicKey), TaskError> {
+        if !is_derivable_key_type(key.identity_public_key.key_type()) {
             return Err(TaskError::DerivedKeyTypeUnsupported);
         }
         let identity = self
-            .get_local_qualified_identity(&identity.identity.id())?
+            .get_local_qualified_identity(identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         let (seed_hash, identity_index) = derivation_wallet(&identity, self.network)
             .ok_or(TaskError::DerivedKeyWalletRequired)?;
@@ -69,26 +90,44 @@ impl AppContext {
             return Err(TaskError::DerivedKeyIndexUnavailable);
         }
         let wallet = self.wallet_arc(&seed_hash)?;
+        let public_key = self
+            .derive_identity_auth_pubkey_from_seed(&wallet, identity_index, index)
+            .await?;
+
+        // The chooser computed occupancy from the cache; authenticate the entry
+        // for this index against the seed before trusting it (SEC-001).
+        let backend = self.wallet_backend()?;
+        let cache_view = backend.auth_pubkey_cache();
+        let mut cache = cache_view.get(self.network, &seed_hash);
+        let cached = cache.get(self.network, identity_index, index);
+        if cached != Some(public_key) {
+            cache.insert(self.network, identity_index, index, &public_key);
+            cache_view.put(self.network, &seed_hash, &cache)?;
+            if cached.is_some() {
+                tracing::warn!(
+                    target = "backend_task::identity",
+                    identity_index,
+                    key_index = index,
+                    "Cached identity-auth public key disagrees with the seed; repaired the entry and refused the add",
+                );
+                return Err(TaskError::DerivedKeySeedMismatch);
+            }
+        }
+        // Register the key's address on the wallet, as the load flows do. The
+        // entry was verified above, so this is a cache hit with no seed access.
         self.resolve_identity_auth_pubkeys_data_map(
             &wallet,
-            true,
-            true,
+            true, // register_addresses
+            true, // allow_prompt
             identity_index,
             index..index + 1,
         )
         .await?;
-        let cache = self
-            .wallet_backend()?
-            .auth_pubkey_cache()
-            .get(self.network, &seed_hash);
         if occupied_indices(&identity, self.network, seed_hash, identity_index, &cache)
             .contains(&index)
         {
             return Err(TaskError::DerivedKeyIndexUnavailable);
         }
-        let public_key = cache
-            .get(self.network, identity_index, index)
-            .ok_or(TaskError::WalletKeyLookupFailed)?;
         let data = match key.identity_public_key.key_type() {
             KeyType::ECDSA_SECP256K1 => public_key.to_bytes(),
             KeyType::ECDSA_HASH160 => {
@@ -107,7 +146,7 @@ impl AppContext {
                 index,
             ),
         });
-        self.add_identity_key(sdk, identity, key, None).await
+        Ok((identity, key))
     }
 
     async fn add_identity_key(
@@ -278,8 +317,14 @@ impl AppContext {
     ///
     /// So the roster is rechecked under the guard first, and a delisted
     /// identity ends the task before anything is sealed. Nothing is lost that
-    /// the user does not already have: the private key came from the add-key
-    /// screen, typed in by them.
+    /// the user does not already have: a `Some(private_key)` came from the
+    /// add-key screen, typed in by them.
+    ///
+    /// `private_key` is `None` for a wallet-derived key, stored as
+    /// `AtWalletDerivationPath`: there is no private material to seal, even
+    /// for a password-protected identity, so the seal is skipped. That key
+    /// stays protected by its wallet and recoverable from the wallet's
+    /// recovery phrase.
     fn persist_added_identity_key(
         &self,
         qualified_identity: &mut QualifiedIdentity,
@@ -536,6 +581,327 @@ mod tests {
             insert_derived_key(&mut identity, &key),
             Err(TaskError::IdentityKeySlotOccupied)
         ));
+    }
+
+    /// A staged context holding the derivation fixture's identity (derived key
+    /// at index 0, wallet identity index 0), its wallet, the wallet's raw HD
+    /// seed in the vault and a warm public-key cache for indices 0..8.
+    struct DerivedStage {
+        staged: crate::context::test_staging::StagedIdentity,
+        identity: QualifiedIdentity,
+        cache: crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache,
+        seed_hash: crate::model::wallet::WalletSeedHash,
+    }
+
+    async fn stage_derivation(register_wallet: bool) -> DerivedStage {
+        use crate::context::test_staging::stage_identity_with_vaulted_keys;
+        use crate::model::derived_identity_key::test_support::fixture;
+
+        let staged = stage_identity_with_vaulted_keys([0xAA; 32], [0xBB; 32]).await;
+        let (mut identity, cache, seed_hash, seed) = fixture();
+        identity.identity.set_id(staged.id);
+        if register_wallet {
+            staged
+                .ctx
+                .wallets
+                .write()
+                .unwrap()
+                .extend(identity.associated_wallets.clone());
+        }
+        let backend = staged.ctx.wallet_backend().unwrap();
+        backend.wallet_seeds().set_raw(&seed_hash, &seed).unwrap();
+        backend
+            .auth_pubkey_cache()
+            .put(Network::Testnet, &seed_hash, &cache)
+            .unwrap();
+        staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .unwrap();
+        DerivedStage {
+            staged,
+            identity,
+            cache,
+            seed_hash,
+        }
+    }
+
+    fn derived_request(key_type: KeyType) -> QualifiedIdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        QualifiedIdentityPublicKey::from(dash_sdk::platform::IdentityPublicKey::from(
+            IdentityPublicKeyV0 {
+                id: 0,
+                key_type,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                read_only: false,
+                disabled_at: None,
+                data: Vec::new().into(),
+            },
+        ))
+    }
+
+    /// Run the real entry point against an offline mock SDK. Every guard under
+    /// test fires before the first network call, so reaching the SDK at all
+    /// would surface as a different (network) error.
+    async fn add_derived(
+        stage: &DerivedStage,
+        identity: QualifiedIdentity,
+        key_type: KeyType,
+        index: u32,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let sdk = Sdk::new_mock();
+        stage
+            .staged
+            .ctx
+            .add_derived_key_to_identity(&sdk, identity, derived_request(key_type), index)
+            .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_rejects_a_key_type_the_wallet_cannot_derive() {
+        let stage = stage_derivation(true).await;
+        for key_type in [KeyType::BLS12_381, KeyType::EDDSA_25519_HASH160] {
+            let result = add_derived(&stage, stage.identity.clone(), key_type, 1).await;
+            assert!(
+                matches!(result, Err(TaskError::DerivedKeyTypeUnsupported)),
+                "{key_type:?}: expected DerivedKeyTypeUnsupported, got {result:?}",
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_rejects_an_identity_not_saved_on_this_device() {
+        let stage = stage_derivation(true).await;
+        let mut stranger = stage.identity.clone();
+        stranger.identity.set_id(Identifier::from([0x5E; 32]));
+        let result = add_derived(&stage, stranger, KeyType::ECDSA_SECP256K1, 1).await;
+        assert!(
+            matches!(result, Err(TaskError::IdentityNotFoundLocally)),
+            "expected IdentityNotFoundLocally, got {result:?}",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_rejects_an_index_at_or_over_the_recovery_limit() {
+        let stage = stage_derivation(true).await;
+        // Highest key id 0 → indices 0..6 are selectable.
+        for index in [6, 7, 4096, u32::MAX - 1, u32::MAX] {
+            let result = add_derived(
+                &stage,
+                stage.identity.clone(),
+                KeyType::ECDSA_SECP256K1,
+                index,
+            )
+            .await;
+            assert!(
+                matches!(result, Err(TaskError::DerivedKeyIndexUnavailable)),
+                "index {index}: expected DerivedKeyIndexUnavailable, got {result:?}",
+            );
+        }
+        let (_, key) = stage
+            .staged
+            .ctx
+            .prepare_derived_identity_key(
+                &stage.staged.id,
+                derived_request(KeyType::ECDSA_SECP256K1),
+                5,
+            )
+            .await
+            .expect("the highest selectable index passes every guard");
+        assert_eq!(
+            key.identity_public_key.data().as_slice(),
+            stage.cache.get(Network::Testnet, 0, 5).unwrap().to_bytes()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_rejects_occupied_indices_including_a_disabled_hash160_alias() {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+
+        let stage = stage_derivation(true).await;
+        // Index 0 holds the fixture's derived master key (stored wallet path).
+        let result = add_derived(&stage, stage.identity.clone(), KeyType::ECDSA_HASH160, 0).await;
+        assert!(
+            matches!(result, Err(TaskError::DerivedKeyIndexUnavailable)),
+            "expected DerivedKeyIndexUnavailable for the path-occupied index, got {result:?}",
+        );
+
+        // A disabled HASH160 key with no wallet metadata, equal to index 2.
+        let mut identity = stage.identity.clone();
+        let hash: [u8; 20] = stage
+            .cache
+            .get(Network::Testnet, 0, 2)
+            .unwrap()
+            .pubkey_hash()
+            .into();
+        identity.identity.add_public_key(
+            IdentityPublicKeyV0 {
+                id: 4,
+                key_type: KeyType::ECDSA_HASH160,
+                purpose: Purpose::AUTHENTICATION,
+                security_level: SecurityLevel::HIGH,
+                contract_bounds: None,
+                read_only: false,
+                disabled_at: Some(1),
+                data: hash.to_vec().into(),
+            }
+            .into(),
+        );
+        stage
+            .staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .unwrap();
+        for key_type in [KeyType::ECDSA_SECP256K1, KeyType::ECDSA_HASH160] {
+            let result = add_derived(&stage, identity.clone(), key_type, 2).await;
+            assert!(
+                matches!(result, Err(TaskError::DerivedKeyIndexUnavailable)),
+                "{key_type:?}: expected DerivedKeyIndexUnavailable for the alias, got {result:?}",
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_requires_the_identitys_own_wallet() {
+        // Stored paths disagree on the wallet identity index: ambiguous, so no
+        // wallet is trusted for derivation.
+        let stage = stage_derivation(true).await;
+        let mut identity = stage.identity.clone();
+        let mut stray = identity.private_keys.identity_public_keys()[0].1.clone();
+        stray.identity_public_key.set_id(1);
+        let stray_path = WalletDerivationPath {
+            wallet_seed_hash: stage.seed_hash,
+            derivation_path: DerivationPath::identity_authentication_path(
+                Network::Testnet,
+                KeyDerivationType::ECDSA,
+                1,
+                1,
+            ),
+        };
+        stray.in_wallet_at_derivation_path = Some(stray_path.clone());
+        identity
+            .identity
+            .add_public_key(stray.identity_public_key.clone());
+        identity.private_keys.insert_if_absent(
+            (PrivateKeyOnMainIdentity, 1),
+            (stray, PrivateKeyData::AtWalletDerivationPath(stray_path)),
+        );
+        stage
+            .staged
+            .ctx
+            .update_local_qualified_identity(&identity)
+            .unwrap();
+        let result = add_derived(&stage, identity, KeyType::ECDSA_SECP256K1, 2).await;
+        assert!(
+            matches!(result, Err(TaskError::DerivedKeyWalletRequired)),
+            "expected DerivedKeyWalletRequired for an ambiguous wallet index, got {result:?}",
+        );
+
+        // The path names a wallet that is not associated with the identity here.
+        let stage = stage_derivation(false).await;
+        let result = add_derived(&stage, stage.identity.clone(), KeyType::ECDSA_SECP256K1, 1).await;
+        assert!(
+            matches!(result, Err(TaskError::DerivedKeyWalletRequired)),
+            "expected DerivedKeyWalletRequired without the associated wallet, got {result:?}",
+        );
+    }
+
+    /// SEC-001: a poisoned cache entry must never reach the chain. HASH160 has
+    /// no proof of possession, so the backend re-derives from the seed and
+    /// refuses the add on any disagreement — then repairs the entry so the next
+    /// attempt uses the verified key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_refuses_a_cached_key_the_seed_does_not_derive() {
+        let stage = stage_derivation(true).await;
+        let genuine = stage.cache.get(Network::Testnet, 0, 1).unwrap();
+        let planted = stage.cache.get(Network::Testnet, 0, 7).unwrap();
+        let mut poisoned = stage.cache.clone();
+        poisoned.insert(Network::Testnet, 0, 1, &planted);
+        let backend = stage.staged.ctx.wallet_backend().unwrap();
+        let view = backend.auth_pubkey_cache();
+        view.put(Network::Testnet, &stage.seed_hash, &poisoned)
+            .unwrap();
+
+        let result = add_derived(&stage, stage.identity.clone(), KeyType::ECDSA_HASH160, 1).await;
+        assert!(
+            matches!(result, Err(TaskError::DerivedKeySeedMismatch)),
+            "expected DerivedKeySeedMismatch, got {result:?}",
+        );
+        assert_eq!(
+            view.get(Network::Testnet, &stage.seed_hash)
+                .get(Network::Testnet, 0, 1),
+            Some(genuine),
+            "the cache entry is repaired to the seed-derived key",
+        );
+
+        let (_, key) = stage
+            .staged
+            .ctx
+            .prepare_derived_identity_key(
+                &stage.staged.id,
+                derived_request(KeyType::ECDSA_HASH160),
+                1,
+            )
+            .await
+            .expect("the repaired entry passes");
+        let expected: [u8; 20] = genuine.pubkey_hash().into();
+        assert_eq!(key.identity_public_key.data().as_slice(), expected);
+    }
+
+    /// A cold cache entry is filled from the seed rather than rejected, and the
+    /// key carries the canonical wallet path for later signing and recovery.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn derived_add_fills_a_cold_cache_entry_from_the_seed() {
+        use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
+
+        let stage = stage_derivation(true).await;
+        let backend = stage.staged.ctx.wallet_backend().unwrap();
+        let view = backend.auth_pubkey_cache();
+        let mut cold = AuthPubkeyCache::default();
+        cold.insert(
+            Network::Testnet,
+            0,
+            0,
+            &stage.cache.get(Network::Testnet, 0, 0).unwrap(),
+        );
+        view.put(Network::Testnet, &stage.seed_hash, &cold).unwrap();
+
+        let (_, key) = stage
+            .staged
+            .ctx
+            .prepare_derived_identity_key(
+                &stage.staged.id,
+                derived_request(KeyType::ECDSA_SECP256K1),
+                3,
+            )
+            .await
+            .expect("a cold entry is derived from the seed");
+        let genuine = stage.cache.get(Network::Testnet, 0, 3).unwrap();
+        assert_eq!(
+            key.identity_public_key.data().as_slice(),
+            genuine.to_bytes()
+        );
+        assert_eq!(
+            view.get(Network::Testnet, &stage.seed_hash)
+                .get(Network::Testnet, 0, 3),
+            Some(genuine)
+        );
+        assert_eq!(
+            key.in_wallet_at_derivation_path,
+            Some(WalletDerivationPath {
+                wallet_seed_hash: stage.seed_hash,
+                derivation_path: DerivationPath::identity_authentication_path(
+                    Network::Testnet,
+                    KeyDerivationType::ECDSA,
+                    0,
+                    3,
+                ),
+            })
+        );
     }
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {

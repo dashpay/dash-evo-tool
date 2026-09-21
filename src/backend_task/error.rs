@@ -614,14 +614,46 @@ pub enum TaskError {
     )]
     IdentityKeySlotOccupied,
 
-    #[error("The wallet for this identity could not be determined. Load the identity from its wallet or enter a private key.")]
+    /// A wallet-derived key was requested for an identity with no single,
+    /// unambiguous wallet path on this device (loaded by id, masternode or
+    /// evonode identity, or keys spanning several wallets). Fieldless: no
+    /// upstream error.
+    #[error(
+        "This identity has no wallet on this device to create the key from. Turn off Create from wallet and enter a private key instead."
+    )]
     DerivedKeyWalletRequired,
 
-    #[error("This key type cannot be derived here. Choose secp256k1 or HASH160, or enter a private key.")]
+    /// A wallet-derived key was requested for a key type the canonical ECDSA
+    /// identity-authentication path cannot produce (see
+    /// [`is_derivable_key_type`](crate::model::derived_identity_key::is_derivable_key_type)).
+    /// Fieldless: no upstream error.
+    #[error(
+        "This key type cannot be created from a wallet. Choose ECDSA_SECP256K1 or ECDSA_HASH160 as the key type, or enter a private key instead."
+    )]
     DerivedKeyTypeUnsupported,
 
-    #[error("This key index is unavailable. Refresh the identity and choose an unused index.")]
+    /// The selected wallet key slot cannot take a new key: it is outside the
+    /// seed-recovery window, already used by a key saved for this identity
+    /// (including disabled keys and secp256k1/HASH160 equivalents), or its key
+    /// is already on the identity's freshly fetched network record — for
+    /// example added on another device. Nothing was broadcast. Fieldless: no
+    /// upstream error.
+    #[error(
+        "This wallet key slot is already used by a key on this identity, possibly one added on another device. Choose a different slot and add the key again."
+    )]
     DerivedKeyIndexUnavailable,
+
+    /// The public key cached for the selected wallet key slot does not match
+    /// the key the wallet's recovery phrase derives there (a stale, corrupt or
+    /// tampered cache entry). Checked before broadcast because a HASH160 key
+    /// carries no proof of possession: registering the cached value could put
+    /// a key on-chain that the wallet cannot sign for. The cache entry is
+    /// repaired before this is returned, so adding again uses the verified
+    /// key. Nothing was broadcast. Fieldless: no upstream error.
+    #[error(
+        "The key from your wallet could not be confirmed, so nothing was added to your identity. Add the key again."
+    )]
+    DerivedKeySeedMismatch,
 
     /// An identity private key was found in the vault but its bytes are not a
     /// usable signing key (vault corruption or a truncated write). Distinct

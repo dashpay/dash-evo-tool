@@ -25,10 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Add wallet-derived identity keys**: the Add Key screen defaults to deriving
-  secp256k1 or HASH160 keys from the identity's wallet, selects the first free
-  index, and disables used indices. Uncheck derivation to enter a private key.
-  Derived keys retain their wallet path for signing and seed recovery.
+- **Add wallet-created identity keys**: for identities loaded from a wallet on
+  this device, the Add Key screen defaults to "Create from wallet", which
+  creates an ECDSA_SECP256K1 or ECDSA_HASH160 key from that wallet so it can be
+  restored with the wallet's recovery phrase. The slot matching the new key's
+  number is selected by default, so other wallet apps can restore the key too;
+  used slots cannot be chosen. Other identities open on manual private-key
+  entry, with an explanation. The wallet's key is verified before it is added.
 
 - **Keys saved on this device but not on the identity's key lists are now
   listed**: a key can be saved here while appearing on none of the identity's

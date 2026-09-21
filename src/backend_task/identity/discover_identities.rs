@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::derived_identity_key::recovery_scan_bound;
 use crate::model::identity_discovery::{
     DiscoveryIntent, DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP,
     should_continue_scan,
@@ -330,7 +331,7 @@ impl AppContext {
 
         // Get the highest key ID in the identity to know how many keys to derive
         let highest_key_id = identity.public_keys().keys().max().copied().unwrap_or(0);
-        let derive_up_to = highest_key_id.saturating_add(6); // Add buffer for future keys
+        let key_scan_bound = discovered_key_scan_bound(highest_key_id);
 
         // Derive authentication keys from wallet and build lookup maps,
         // cache-first (one JIT scope on a cold cache).
@@ -340,7 +341,7 @@ impl AppContext {
                 false,
                 allow_prompt,
                 identity_index,
-                0..derive_up_to.saturating_add(1),
+                0..key_scan_bound,
             )
             .await?;
 
@@ -489,6 +490,12 @@ fn adopt_discovered_identity(
             .identities
             .insert(identity_index, identity.clone());
     }
+}
+
+/// Exclusive key-index bound of the discovery scan: the shared seed-recovery
+/// window plus one index of extra margin (the historical discovery bound).
+pub(super) fn discovered_key_scan_bound(highest_key_id: u32) -> u32 {
+    recovery_scan_bound(highest_key_id).saturating_add(1)
 }
 
 #[cfg(test)]

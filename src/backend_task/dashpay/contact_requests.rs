@@ -649,6 +649,7 @@ async fn resolve_username_to_identity(
 
     // Use the cached DPNS contract from AppContext instead of fetching from network
     let domain_query = DocumentQuery {
+        sub_queries: Vec::new(),
         select: SelectProjection::documents(),
         data_contract: app_context.dpns_contract.clone(),
         document_type_name: "domain".to_string(),

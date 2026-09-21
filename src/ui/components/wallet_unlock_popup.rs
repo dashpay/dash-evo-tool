@@ -477,9 +477,10 @@ mod tests {
             remember_label: None,
             cancellable: false,
         };
-        let _ = ctx.run_ui(Default::default(), |ui| {
+        ctx.run_ui(Default::default(), |ui| {
             let _ = passphrase_modal(ui.ctx(), &config, |_| {});
-        });
+        })
+        .drop_without_applying_deltas();
         assert!(passphrase_modal_state_exists(&ctx, wallet_a));
 
         let mut popup = WalletUnlockPopup::new();

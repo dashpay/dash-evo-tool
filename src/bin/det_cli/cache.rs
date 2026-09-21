@@ -33,7 +33,11 @@ pub(super) fn save_cache(client: &McpClient, tools: &[Tool]) {
     let version = client
         .peer()
         .peer_info()
-        .map(|info| info.server_info.version.clone())
+        .and_then(|info| {
+            info.server_info
+                .as_ref()
+                .map(|server| server.version.clone())
+        })
         .unwrap_or_else(|| PKG_VERSION.to_string());
 
     let cache = ToolCache {

@@ -7,7 +7,7 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
+use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted;
 use dash_sdk::platform::DataContract;
 use eframe::egui::{Color32, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
@@ -88,7 +88,9 @@ impl ContractVisualizerScreen {
             }
         };
 
-        match DataContract::versioned_deserialize(
+        // Pasted bytes are untrusted input: decode without pre-allocating
+        // from length prefixes.
+        match DataContract::versioned_deserialize_untrusted(
             &bytes,
             false,
             self.app_context.platform_version(),

@@ -49,6 +49,7 @@ mod loader;
 mod payments;
 #[cfg(test)]
 pub(crate) mod persist_fault_test_support;
+pub mod platform_compatibility;
 pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
@@ -417,7 +418,7 @@ struct Inner {
     #[cfg(test)]
     swallow_next_unowned_write: std::sync::atomic::AtomicBool,
     /// Drops the next unowned-scope removal, reproducing upstream's swallowed
-    /// tombstone persist — it logs and returns the removed identity anyway —
+    /// deletion persist — it logs and returns the removed identity anyway —
     /// which leaves the withdrawn row on disk.
     #[cfg(test)]
     swallow_next_unowned_removal: std::sync::atomic::AtomicBool,
@@ -429,6 +430,8 @@ struct Inner {
     /// DashPay screens have separate UI state, so backend serialization is the
     /// final guard against two callers paying for the same request concurrently.
     dashpay_request_action_locks: dashpay::ContactRequestActionLocks,
+    /// Failed profile timestamp writes, retried locally without another broadcast.
+    profile_timestamps: dashpay::ProfileTimestamps,
     /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
     /// registration. Lets sync code reach an upstream wallet handle without an
     /// async hop (e.g. DashPay address-pool scanning).
@@ -558,10 +561,7 @@ impl WalletBackend {
         let wallet_database_path = wallet_database_path(ctx.data_dir(), network);
 
         let persister_config = SqlitePersisterConfig::new(wallet_database_path.clone());
-        let persister = Arc::new(
-            SqlitePersister::open(persister_config)
-                .map_err(TaskError::from_wallet_storage_open_error)?,
-        );
+        let persister = Arc::new(platform_compatibility::open(persister_config)?);
         // Reuse the vault handle `AppContext` already opened at boot. The file
         // backend holds an exclusive advisory lock for the handle's lifetime,
         // so opening a second handle here would fail with `AlreadyLocked` — and
@@ -647,6 +647,7 @@ impl WalletBackend {
                 swallow_next_unowned_removal: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
+                profile_timestamps: dashpay::ProfileTimestamps::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -1690,6 +1691,7 @@ impl WalletBackend {
     /// off-thread — plus every delete failure. Resilient to partial failure:
     /// every wallet is attempted even after one fails.
     pub(crate) fn forget_all_wallets_local(&self) -> ClearAllOutcome {
+        self.inner.profile_timestamps.clear();
         let network = self.inner.network;
 
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
@@ -2585,7 +2587,10 @@ impl WalletBackend {
                     }
                 };
                 recorded.map_err(|e| TaskError::WalletBackend {
-                    source: Arc::new(e.into()),
+                    source: Arc::new(platform_wallet::PlatformWalletError::from_store_failure(
+                        self.inner.wallet_persister.as_ref(),
+                        e,
+                    )),
                 })?;
             }
             None => match direction {
@@ -3135,9 +3140,40 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             }
         }
 
+        // Upstream refused to start a new identity-funded shield while an
+        // earlier one is unresolved. Nothing was built or broadcast, so the
+        // user must wait for the earlier payment rather than retry now.
+        other @ P::ShieldedIdentityDebitPending { identity_id } => {
+            TaskError::ShieldedIdentityDebitPending {
+                identity_id: dash_sdk::platform::Identifier::from(identity_id),
+                source: Box::new(other),
+            }
+        }
+
+        // Durable recovery data is damaged or needs keys that are not loaded.
+        // Retrying cannot help; the user must restore data or keys first.
+        other @ P::ShieldedRecoveryCorrupted { account_index, .. } => {
+            TaskError::ShieldedRecoveryCorrupted {
+                account_index,
+                source: Box::new(other),
+            }
+        }
+        other @ P::ShieldedRecoveryKeysRequired { account_index, .. } => {
+            TaskError::ShieldedRecoveryKeysRequired {
+                account_index,
+                source: Box::new(other),
+            }
+        }
+
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
-        | P::PlatformNodePool(_)
+        | P::StaleReservation
+        | P::InputMidBroadcast { .. }
+        | P::AssetLockInputConflict { .. }
+        | P::AssetLockInputContested { .. }
+        | P::MasternodeListUnavailable
+        | P::SeedBindingUnanswered { .. }
+        | P::ContactSyncUnreachable { .. }
         | P::PersisterLoad(_)
         | P::AddressNonceMismatch { .. }
         | P::WalletNotFound(_)
@@ -3437,7 +3473,13 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 
         // Everything else — preconditions, wallet state, builder errors.
         P::WalletCreation(_)
-        | P::PlatformNodePool(_)
+        | P::StaleReservation
+        | P::InputMidBroadcast { .. }
+        | P::AssetLockInputConflict { .. }
+        | P::AssetLockInputContested { .. }
+        | P::MasternodeListUnavailable
+        | P::SeedBindingUnanswered { .. }
+        | P::ContactSyncUnreachable { .. }
         | P::WalletNotFound(_)
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
@@ -3495,6 +3537,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // shielded op. `map_shielded_op_error` routes it where it can occur.
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. }
+        // Shielded debit / recovery outcomes are likewise unreachable from
+        // identity register, top-up or address funding.
+        | P::ShieldedIdentityDebitPending { .. }
+        | P::ShieldedRecoveryCorrupted { .. }
+        | P::ShieldedRecoveryKeysRequired { .. }
         // Funding and credit shortfalls, like their `CoreInsufficientFunds`
         // sibling above: the submission never reached Platform.
         | P::CorePooledInsufficientFunds { .. }
@@ -4415,6 +4462,75 @@ mod tests {
             map_shielded_op_error(P::ShieldedNotBound),
             TaskError::ShieldedNotBound
         ));
+    }
+
+    /// Debit-pending and the two recovery outcomes carry guidance the generic
+    /// `WalletBackend` envelope ("please retry") would contradict, so each
+    /// routes to its own typed variant with its identifying field intact.
+    #[test]
+    fn map_shielded_op_error_routes_recovery_and_debit_pending() {
+        use platform_wallet::error::PlatformWalletError as P;
+
+        let identity_bytes = [0x5D; 32];
+        match map_shielded_op_error(P::ShieldedIdentityDebitPending {
+            identity_id: identity_bytes,
+        }) {
+            TaskError::ShieldedIdentityDebitPending { identity_id, .. } => {
+                assert_eq!(
+                    identity_id,
+                    dash_sdk::platform::Identifier::from(identity_bytes)
+                );
+            }
+            other => panic!("Expected ShieldedIdentityDebitPending, got: {other:?}"),
+        }
+
+        for expected in [Some(3), None] {
+            match map_shielded_op_error(P::ShieldedRecoveryCorrupted {
+                account_index: expected,
+                reason: "row 7 is damaged".to_string(),
+            }) {
+                TaskError::ShieldedRecoveryCorrupted { account_index, .. } => {
+                    assert_eq!(account_index, expected);
+                }
+                other => panic!("Expected ShieldedRecoveryCorrupted, got: {other:?}"),
+            }
+        }
+
+        match map_shielded_op_error(P::ShieldedRecoveryKeysRequired {
+            account_index: 2,
+            reason: "viewing keys missing".to_string(),
+        }) {
+            TaskError::ShieldedRecoveryKeysRequired { account_index, .. } => {
+                assert_eq!(account_index, 2);
+            }
+            other => panic!("Expected ShieldedRecoveryKeysRequired, got: {other:?}"),
+        }
+    }
+
+    /// No identity register / top-up / address-funding flow runs a shielded
+    /// op, so these outcomes land in the generic `Other` bucket there.
+    #[test]
+    fn identity_op_error_kind_buckets_new_shielded_recovery_variants_as_other() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let errors = [
+            P::ShieldedIdentityDebitPending {
+                identity_id: [0x5D; 32],
+            },
+            P::ShieldedRecoveryCorrupted {
+                account_index: None,
+                reason: "damaged".to_string(),
+            },
+            P::ShieldedRecoveryKeysRequired {
+                account_index: 0,
+                reason: "keys missing".to_string(),
+            },
+        ];
+        for error in &errors {
+            assert!(
+                matches!(identity_op_error_kind(error), IdentityOpErrorKind::Other),
+                "Expected IdentityOpErrorKind::Other for {error:?}"
+            );
+        }
     }
 
     fn broadcast_unconfirmed() -> platform_wallet::error::PlatformWalletError {

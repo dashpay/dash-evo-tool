@@ -52,7 +52,7 @@ pub enum PlatformInfoTaskRequestType {
     /// CLI). Unlike the text variants above, this returns one
     /// [`WithdrawalRecord`] per document plus a continuation cursor.
     Withdrawals {
-        /// Query completed/expired withdrawals when `true`, the in-queue set
+        /// Query completed/expired/failed withdrawals when `true`, the in-queue set
         /// when `false`.
         completed: bool,
         /// Maximum documents to return. `None` uses the platform default.
@@ -78,7 +78,7 @@ pub struct WithdrawalRecord {
     /// Amount in credits (atomic units).
     pub amount_credits: u64,
     /// Withdrawal status: `"queued"`, `"pooled"`, `"broadcasted"`,
-    /// `"complete"`, or `"expired"`.
+    /// `"complete"`, `"expired"`, or `"failed"`.
     pub status: String,
     /// Destination Dash address decoded from the output script, or `None` when
     /// the script does not map to a standard address on this network.
@@ -440,7 +440,7 @@ fn format_withdrawal_line(
     ))
 }
 
-/// Format one completed/expired withdrawal document as a single line keyed by
+/// Format one completed/expired/failed withdrawal document as a single line keyed by
 /// on-chain transaction index and last-update time:
 /// `"TX #<index>: <amount> Dash for <owner> to <address> (<status>) at <time>"`.
 fn format_completed_withdrawal_line(
@@ -498,6 +498,7 @@ fn withdrawal_status_str(status: WithdrawalStatus) -> &'static str {
         WithdrawalStatus::BROADCASTED => "broadcasted",
         WithdrawalStatus::COMPLETE => "complete",
         WithdrawalStatus::EXPIRED => "expired",
+        WithdrawalStatus::FAILED => "failed",
     }
 }
 
@@ -722,6 +723,7 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let queued_document_query = DocumentQuery {
+                    sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
@@ -772,6 +774,7 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let completed_document_query = DocumentQuery {
+                    sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
@@ -781,6 +784,7 @@ impl AppContext {
                         value: Value::Array(vec![
                             Value::U8(WithdrawalStatus::COMPLETE as u8),
                             Value::U8(WithdrawalStatus::EXPIRED as u8),
+                            Value::U8(WithdrawalStatus::FAILED as u8),
                         ]),
                     }],
                     time_range_clauses: Vec::new(),
@@ -819,7 +823,7 @@ impl AppContext {
                 if withdrawal_docs.is_empty() {
                     Ok(BackendTaskSuccessResult::PlatformInfo(
                         PlatformInfoTaskResult::TextResult(
-                            "No recently completed withdrawals found.".to_string(),
+                            "No recent withdrawal history found.".to_string(),
                         ),
                     ))
                 } else {
@@ -841,7 +845,7 @@ impl AppContext {
                         .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
                     let formatted = format!(
-                        "Recently Completed Withdrawals:\n\n\
+                        "Recent Withdrawal History:\n\n\
                          Total Amount: {:.8} Dash\n\
                          Count: {} withdrawals\n\n\
                          Recent Transactions:\n    {}",
@@ -875,6 +879,7 @@ impl AppContext {
                     vec![
                         Value::U8(WithdrawalStatus::COMPLETE as u8),
                         Value::U8(WithdrawalStatus::EXPIRED as u8),
+                        Value::U8(WithdrawalStatus::FAILED as u8),
                     ]
                 } else {
                     vec![
@@ -900,6 +905,7 @@ impl AppContext {
                 ];
 
                 let query = DocumentQuery {
+                    sub_queries: Vec::new(),
                     select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),

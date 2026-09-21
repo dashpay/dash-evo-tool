@@ -657,13 +657,30 @@ impl KeyStorage {
     ///   half (`Clear`, `AlwaysClear`, `Encrypted`, `InVault`) is therefore
     ///   never replaced by a derivation path: no protection downgrade, and the
     ///   vault secret stays referenced.
+    ///
+    /// A held stored entry whose public key differs from the rebuild's
+    /// (on-chain) key at the same id — a stale local entry such as a
+    /// `max_id + 1` saved but never broadcast, while a different key took
+    /// that id elsewhere — is still kept, with a warning. It may be unable to
+    /// sign for the on-chain key, but its private half can be the only copy
+    /// there is: stranded but present beats silently deleted.
     pub(crate) fn retain_local_keys_from(&mut self, stored: KeyStorage) {
         for (placement, entry) in stored.private_keys {
-            let rebuild_refreshes_it = self.private_keys.contains_key(&placement)
-                && matches!(entry.1, PrivateKeyData::AtWalletDerivationPath(_));
-            if !rebuild_refreshes_it {
-                self.private_keys.insert(placement, entry);
+            let rebuilt = self.private_keys.get(&placement);
+            if rebuilt.is_some() && matches!(entry.1, PrivateKeyData::AtWalletDerivationPath(_)) {
+                // Only a derivation path: the rebuild's fresher one wins.
+                continue;
             }
+            if let Some((on_chain, _)) = rebuilt
+                && !same_key(&entry.0.identity_public_key, &on_chain.identity_public_key)
+            {
+                tracing::warn!(
+                    target = "model::qualified_identity",
+                    key_id = placement.1,
+                    "Kept a saved private key whose public key differs from the identity's key with the same id; it may not be usable for signing",
+                );
+            }
+            self.private_keys.insert(placement, entry);
         }
     }
 
@@ -1389,6 +1406,36 @@ mod tests {
                     if path.wallet_seed_hash == [0x02; 32]
             ),
             "a stored derivation path is refreshed by the rebuild"
+        );
+    }
+
+    /// A held stored secret whose public key no longer matches the on-chain
+    /// key at that id (a stale local entry) is kept, never silently dropped.
+    #[test]
+    fn a_stale_stored_secret_is_kept_when_the_on_chain_key_differs() {
+        let pv = PlatformVersion::latest();
+        let stale = IdentityPublicKey::random_key(7, Some(71), pv);
+        let on_chain = IdentityPublicKey::random_key(7, Some(72), pv);
+        assert!(!same_key(&stale, &on_chain), "fixture: two different keys");
+        let stored = filed_under(&stale, &[(MAIN, PrivateKeyData::Clear([0x77; 32]))]);
+        let mut rebuilt = filed_under(
+            &on_chain,
+            &[(
+                MAIN,
+                PrivateKeyData::AtWalletDerivationPath(derivation_path(0x02)),
+            )],
+        );
+
+        rebuilt.retain_local_keys_from(stored);
+
+        assert!(
+            matches!(
+                rebuilt.entry_at(&(MAIN, 7)),
+                Some((public_key, PrivateKeyData::Clear(bytes)))
+                    if *bytes == [0x77; 32]
+                        && same_key(&public_key.identity_public_key, &stale)
+            ),
+            "the stored secret and its own public key must survive the rebuild"
         );
     }
 

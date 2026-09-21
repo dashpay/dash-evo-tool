@@ -117,7 +117,7 @@ impl AppContext {
             .with_secret(&SecretScope::HdSeed { seed_hash }, |plaintext| {
                 let seed = plaintext
                     .expose_hd_seed()
-                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                    .ok_or(TaskError::WalletLocked)?;
                 wallet
                     .read()?
                     .identity_authentication_ecdsa_public_key_from_seed(

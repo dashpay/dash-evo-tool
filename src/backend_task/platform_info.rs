@@ -335,6 +335,27 @@ fn local_daily_withdrawal_limit(
 }
 
 /// The Withdrawals system contract at [`DET_PLATFORM_VERSION`].
+/// The `status` values a finished withdrawal can carry, as the
+/// `RecentlyCompletedWithdrawals` filter sends them.
+///
+/// `FAILED` (5) exists only in the v2 withdrawals schema (protocol 14); the v1
+/// schema this build loads stops at `EXPIRED` (4). Sending it at protocol 13 is
+/// still correct and deliberate: a JSON-schema `enum` constrains documents being
+/// created, not query values. Nothing in the query path checks membership — the
+/// `status` property is typed as a plain integer, and
+/// `DocumentPropertyType::encode_value_for_tree_keys` encodes any value that
+/// converts to it. So the out-of-enum member encodes, matches nothing on a
+/// protocol-13 network (which cannot produce a failed withdrawal), and leaves
+/// `COMPLETE` and `EXPIRED` matching as usual — while keeping the query complete
+/// once the network, and DET's version pin, reach protocol 14.
+fn completed_withdrawal_statuses() -> Vec<Value> {
+    vec![
+        Value::U8(WithdrawalStatus::COMPLETE as u8),
+        Value::U8(WithdrawalStatus::EXPIRED as u8),
+        Value::U8(WithdrawalStatus::FAILED as u8),
+    ]
+}
+
 fn withdrawals_contract() -> Result<DataContract, TaskError> {
     load_system_data_contract(SystemDataContract::Withdrawals, DET_PLATFORM_VERSION)
         .map_err(|e| TaskError::from(SdkError::Protocol(e)))
@@ -778,11 +799,7 @@ impl AppContext {
                     where_clauses: vec![WhereClause {
                         field: "status".to_string(),
                         operator: WhereOperator::In,
-                        value: Value::Array(vec![
-                            Value::U8(WithdrawalStatus::COMPLETE as u8),
-                            Value::U8(WithdrawalStatus::EXPIRED as u8),
-                            Value::U8(WithdrawalStatus::FAILED as u8),
-                        ]),
+                        value: Value::Array(completed_withdrawal_statuses()),
                     }],
                     time_range_clauses: Vec::new(),
                     group_by: Vec::new(),
@@ -869,11 +886,7 @@ impl AppContext {
                 let start = start_after.map(|id| Start::StartAfter(id.to_buffer().to_vec()));
 
                 let statuses = if completed {
-                    vec![
-                        Value::U8(WithdrawalStatus::COMPLETE as u8),
-                        Value::U8(WithdrawalStatus::EXPIRED as u8),
-                        Value::U8(WithdrawalStatus::FAILED as u8),
-                    ]
+                    completed_withdrawal_statuses()
                 } else {
                     vec![
                         Value::U8(WithdrawalStatus::QUEUED as u8),
@@ -1013,6 +1026,54 @@ mod tests {
                 .expect("contract");
         assert_eq!(withdrawals_contract().expect("contract"), expected);
         assert_eq!(DET_PLATFORM_VERSION.protocol_version, 13);
+    }
+
+    /// The completed-withdrawal filter keeps `FAILED` even though the schema
+    /// this build loads stops at `EXPIRED`: a schema `enum` constrains
+    /// documents, not query values, and every status encodes into the `status`
+    /// property's key representation at both schema versions.
+    #[test]
+    fn completed_withdrawal_filter_encodes_at_both_schema_versions() {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
+
+        assert_eq!(
+            completed_withdrawal_statuses(),
+            vec![Value::U8(3), Value::U8(4), Value::U8(5)],
+            "COMPLETE, EXPIRED and FAILED, in that order"
+        );
+
+        let status_property = |version| {
+            let contract = load_system_data_contract(SystemDataContract::Withdrawals, version)
+                .expect("withdrawals contract");
+            contract
+                .document_type_cloned_for_name("withdrawal")
+                .expect("withdrawal document type")
+                .properties()
+                .get("status")
+                .expect("status property")
+                .clone()
+        };
+
+        // v1 (protocol 13, what DET loads) and v2 (protocol 14) differ only in
+        // the enum's last member, so the property type is identical.
+        let det = status_property(DET_PLATFORM_VERSION);
+        let latest = status_property(PlatformVersion::latest());
+        assert_eq!(
+            det.property_type, latest.property_type,
+            "the status property type must not differ across schema versions"
+        );
+
+        // FAILED is outside the v1 enum, yet encodes for the query exactly like
+        // the statuses that are inside it.
+        for status in completed_withdrawal_statuses() {
+            assert!(
+                det.property_type
+                    .encode_value_for_tree_keys(&status)
+                    .is_ok(),
+                "status {status:?} must encode against the protocol-13 schema"
+            );
+        }
     }
 
     #[test]

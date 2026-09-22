@@ -245,6 +245,7 @@ list; keep this table in sync when adding or removing a module.
 | `identity_create` | Identity registration funded from a wallet |
 | `identity_masternode_withdraw` | Headless masternode/evonode load + credit withdrawal |
 | `identity_withdraw` | Identity credit withdrawal to a Core address |
+| `platform_info` | Read-only `PlatformInfo` queries: live current-epoch fetch, completed/queued withdrawal queries |
 | `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification |
 | `send_funds` | Core payment between two wallets (send and return) |
 | `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |

@@ -484,6 +484,23 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// The wallet database refused to open because a folder on its path can be
+    /// modified by another account on this computer (group/other-writable
+    /// without the sticky bit, or owned by another user). Distinct from
+    /// [`Self::WalletStorage`] because disk space and restarting are irrelevant:
+    /// only tightening the folder's permissions or ownership fixes it.
+    ///
+    /// The offending folder and the exact reason travel in `source` (the
+    /// upstream message names the folder and the command to run) for the
+    /// details panel and logs; the user-facing copy stays jargon-free.
+    #[error(
+        "Your wallet data folder, or a folder that contains it, can be changed by other accounts on this computer, so the app will not open your wallet data. Make these folders writable only by your own account, then restart the application."
+    )]
+    WalletDataFolderInsecure {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// A vault passphrase or a Tier-2 object password was longer than the
     /// vault's upstream ceiling.
     ///
@@ -2833,7 +2850,7 @@ impl TaskError {
 
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
-    /// Three storage failures get honest, distinct copy; everything else keeps
+    /// Four storage failures get honest, distinct copy; everything else keeps
     /// the generic disk/IO message:
     ///
     /// - A forward-version database (written by a newer build, schema beyond
@@ -2845,12 +2862,16 @@ impl TaskError {
     ///   cannot reconcile) is surfaced as [`Self::WalletDataIncompatible`] so
     ///   the banner tells the user to remove the local wallet data — freeing
     ///   disk space or restarting never resolves a structural mismatch.
+    /// - A folder on the database path that other accounts can modify is
+    ///   surfaced as [`Self::WalletDataFolderInsecure`] so the banner tells the
+    ///   user to tighten folder permissions.
     /// - Every other storage failure keeps the generic disk/IO copy via
     ///   [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
     /// (`WalletStorageError::SchemaVersionUnsupported` /
-    /// `WalletStorageError::Migration`), never on its `Display` text.
+    /// `WalletStorageError::Migration` / `WalletStorageError::InsecureParentDir`),
+    /// never on its `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -2864,6 +2885,9 @@ impl TaskError {
             },
             other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
                 Self::WalletDataIncompatible { source: other }
+            }
+            other @ platform_wallet_storage::WalletStorageError::InsecureParentDir { .. } => {
+                Self::WalletDataFolderInsecure { source: other }
             }
             other => Self::WalletStorage { source: other },
         }
@@ -5785,6 +5809,58 @@ mod tests {
             std::error::Error::source(&err).is_some(),
             "Expected source chain to be preserved"
         );
+    }
+
+    /// A group-writable (or foreign-owned) ancestor of the wallet database maps
+    /// to `WalletDataFolderInsecure`, whose copy names the folder-permission
+    /// problem instead of the misleading disk-space advice. The path and mode
+    /// stay in the source chain, out of the user-facing message.
+    #[test]
+    fn insecure_parent_dir_maps_to_wallet_data_folder_insecure() {
+        let ancestor = std::path::PathBuf::from("/data/tmp/shared-scratch");
+        for reason in [
+            platform_wallet_storage::InsecureAncestor::WritableWithoutSticky { mode: 0o775 },
+            platform_wallet_storage::InsecureAncestor::UntrustedOwner {
+                uid: 4242,
+                current_uid: 1000,
+            },
+        ] {
+            let upstream = platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                ancestor: ancestor.clone(),
+                reason,
+            };
+            let err = TaskError::from_wallet_storage_open_error(upstream);
+            assert!(
+                matches!(
+                    &err,
+                    TaskError::WalletDataFolderInsecure {
+                        source: platform_wallet_storage::WalletStorageError::InsecureParentDir {
+                            ancestor: a,
+                            ..
+                        },
+                    } if *a == ancestor
+                ),
+                "Expected WalletDataFolderInsecure carrying the ancestor, got: {err:?}"
+            );
+
+            let msg = err.to_string();
+            assert!(
+                msg.contains("folder") && msg.contains("other accounts"),
+                "Expected folder-permission guidance, got: {msg}"
+            );
+            assert!(
+                !msg.contains("disk space"),
+                "Folder-permission message must not mention disk space, got: {msg}"
+            );
+            assert!(
+                !msg.contains("shared-scratch") && !msg.contains("775") && !msg.contains("chmod"),
+                "Path, mode and commands must stay out of the user message, got: {msg}"
+            );
+            assert!(
+                std::error::Error::source(&err).is_some(),
+                "Expected source chain to be preserved"
+            );
+        }
     }
 
     /// Builds a genuine divergent-version [`refinery::Error`] by applying a

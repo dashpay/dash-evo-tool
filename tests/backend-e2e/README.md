@@ -11,12 +11,19 @@ application at runtime.
 All tests are marked `#[ignore]` to prevent them from running during normal
 `cargo test`. They require network access and a funded wallet.
 
+The harness routes all SDK-deep work — backend tasks (`run_task`) and direct
+`dash_sdk::platform::Fetch` calls in test bodies (`run_on_large_stack`) alike —
+through a dedicated runtime with a 32 MB thread stack
+(`framework/task_runner.rs`), so deep SDK proof verification no longer requires
+`RUST_MIN_STACK` to be set by the caller. Exporting it anyway is harmless
+belt-and-suspenders for any code path outside that runtime.
+
 ```bash
 # Run all backend E2E tests
-cargo test --test backend-e2e --all-features -- --ignored --nocapture
+cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
 
 # Run a single test
-cargo test --test backend-e2e --all-features -- --ignored --nocapture test_create_identity
+cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1 test_create_identity
 ```
 
 **Required flags:**
@@ -27,6 +34,7 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture test_creat
 | `--all-features` | Enables feature-gated dependencies |
 | `--ignored` | Tests are `#[ignore]` by default |
 | `--nocapture` | Shows progress output (SPV sync, balance polling) |
+| `--test-threads=1` | Required: all tests share one singleton `BackendTestContext`/SQLite DB; running on parallel OS threads races on DB access (e.g. `AlreadyOpen` errors) |
 
 ### Environment variables
 
@@ -84,13 +92,15 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
   testnet with SPV running
 - **`framework_wallet_hash`** -- the `WalletSeedHash` of the "bank" wallet used
   to fund per-test wallets
-- **`_workdir`** -- path to a persistent temp directory keyed by git revision
-  (e.g., `/tmp/dash-evo-e2e-testnet-abc1234`)
+- **`_workdir`** -- path to a persistent temp directory (e.g.,
+  `/tmp/dash-evo-e2e-testnet`, or a numbered fallback slot; see "Persistent
+  workdir" below -- not git-rev-keyed)
 
 ### Initialization sequence
 
 1. Initialize tracing subscriber for structured log output.
-2. Create a persistent workdir under `/tmp/` keyed by `git rev-parse --short HEAD`.
+2. Create a persistent workdir under `/tmp/` (deterministic path, with numbered
+   fallback slots guarded by a `.lock` file -- see "Persistent workdir" below).
 3. Copy `.env.example` into the workdir via `ensure_env_file()`.
 4. Create a SQLite database and `AppContext` for `Network::Testnet`, passing the workdir as `data_dir`.
 5. Start SPV in light-client mode and wait for peer connections (60s timeout).
@@ -102,10 +112,14 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 
 ### Persistent workdir
 
-The workdir survives across test runs for the same git revision. This means:
+The workdir is deterministic, not git-rev-keyed: it's always
+`<tmp>/dash-evo-e2e-testnet` (slot 0), with numbered fallback slots
+(`dash-evo-e2e-testnet-1`, `-2`, ...) that `pick_available_workdir` cycles
+through via a per-slot `.lock` file when an earlier slot is still locked by
+another process (see `framework/harness.rs`). This means:
 
-- The SQLite database is reused, so wallets registered in prior runs are already
-  present.
+- The SQLite database is reused across runs, so wallets registered previously
+  are already present, regardless of which commit produced them.
 - The framework wallet registration handles the "already imported" case
   gracefully.
 - SPV sync is faster on repeat runs because prior state may be cached.
@@ -113,7 +127,7 @@ The workdir survives across test runs for the same git revision. This means:
 Clean the workdir manually if you need a fresh start:
 
 ```bash
-rm -rf /tmp/dash-evo-e2e-testnet-*
+rm -rf /tmp/dash-evo-e2e-testnet*
 ```
 
 ## Wallet architecture
@@ -174,14 +188,32 @@ Located in `tests/backend-e2e/framework/`:
 
 ## Test modules
 
+Registered in `tests/backend-e2e/main.rs` -- that file is the authoritative
+list; keep this table in sync when adding or removing a module.
+
 | Module | What it tests |
 |---|---|
-| `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |
-| `send_funds` | Core payment between two wallets (send and return) |
+| `cleanup_only` | Standalone cleanup -- sweeps orphaned test wallets on init |
 | `fetch_contract` | Platform contract queries (DashPay, non-existent ID, with descriptions) |
 | `identity_create` | Identity registration funded from a wallet |
-| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification |
+| `identity_masternode_withdraw` | Headless masternode/evonode load + credit withdrawal |
 | `identity_withdraw` | Identity credit withdrawal to a Core address |
+| `register_dpns` | Full flow: identity creation, DPNS name registration, name search verification |
+| `send_funds` | Core payment between two wallets (send and return) |
+| `spv_wallet` | SPV sync, wallet creation and registration, DB persistence |
+| `tx_is_ours` | `is_ours` flag correctness for SPV transactions |
+| `identity_cold_boot` | Identity funding on a cold-booted watch-only wallet (scenarios C/D) |
+| `spv_reconnect` | SPV reconnect regression (`stop_spv` + `ensure_wallet_backend_and_start_spv`) |
+| `core_tasks` | `CoreTask` variants (TC-001 to TC-012) |
+| `cross_wallet_topup` | Cross-wallet identity top-up, including spent-lock reuse rejection (#954/#956) |
+| `event_bridge_live` | Live `EventBridge` wiring: SPV sync -> `ConnectionStatus` -> frame-loop repaint |
+| `identity_in_vault_sign` | TS-SIGN-E2E-01 -- state transition signed by a migrated `InVault` identity key |
+| `identity_tasks` | `IdentityTask` variants (TC-020 to TC-030) |
+| `shielded_tasks` | `ShieldedTask` variants (TC-074 to TC-083); skippable via `E2E_SKIP_SHIELDED` |
+| `token_tasks` | Full token lifecycle: registration, query, mint, burn (TC-045 to TC-065) |
+| `wallet_reregistration` | Wallets re-register with upstream SPV so received funds stay visible |
+| `wallet_tasks` | `WalletTask` variants (TC-012 to TC-019) |
+| `z_broadcast_st_tasks` | `BroadcastStateTransition` (TC-066, TC-067) |
 
 ## Writing new tests
 
@@ -253,19 +285,20 @@ Add `mod my_new_test;` to `main.rs`. The test binary is defined by the
 ### SPV UTXO spendability timing
 
 After broadcasting a transaction, the change output is not immediately spendable.
-The SPV WalletManager reports **total balance** (including unconfirmed) but only
-includes confirmed/InstantSend-locked UTXOs in its spendable set. This means:
+The upstream `platform-wallet` engine drives chain sync and pushes wallet state
+through the `EventBridge` into a per-wallet display snapshot. The snapshot's
+`total` includes unconfirmed funds, while `confirmed` reflects the
+confirmed/InstantSend-locked set actually usable for spending. This means:
 
-- `total_balance_duffs()` may show funds, but `build_unsigned_payment_tx()` fails
-  with "Insufficient funds" because `account.utxos` is empty.
-- `confirmed_balance_duffs()` reflects actually spendable funds.
+- `snapshot_balance().total` may show funds, but a send fails with
+  "Insufficient funds" while the change output is still unconfirmed.
+- `snapshot_balance().confirmed` reflects actually spendable funds.
 
 The framework mitigates this with:
 
-- **`wait_for_spendable_balance()`** -- polls `Wallet::spv_confirmed_balance()`
-  (which returns `None` until SPV has synced balance data, avoiding false
-  positives from the `max_balance()` fallback) and triggers
-  `reconcile_spv_wallets()` on each iteration.
+- **`wait_for_spendable_balance()`** -- polls
+  `AppContext::snapshot_balance().confirmed` (the EventBridge-pushed snapshot),
+  waiting until confirmed funds reach the target.
 - **Post-send wait** -- after funding a test wallet, `create_funded_test_wallet()`
   waits for the full funded amount to become spendable, then waits for the
   framework wallet's change output to settle before returning.

@@ -24,7 +24,7 @@ Jordan is the user who genuinely benefits from seeing raw protocol details: cred
 1. **Rapid identity creation and funding** -- Create test identities quickly, fund them with specific credit amounts, and top them up as needed during development.
 2. **Platform address operations** -- Fund Platform addresses from asset locks or wallet UTXOs; transfer credits between addresses; withdraw back to Core.
 3. **Network flexibility** -- Switch between Testnet and Devnet easily; possibly run against a local regtest network.
-4. **Contract and state transition inspection** -- Use the Tools screens (transition visualizer, proof log, document query) alongside the wallet to verify dApp behavior.
+4. **Contract and state transition inspection** -- Use the Tools screens (transition visualizer, document query) alongside the wallet to verify dApp behavior.
 5. **Disposable wallet workflows** -- Create temporary wallets, use them for a testing session, and remove them without ceremony.
 
 ## Secondary Goals
@@ -72,7 +72,7 @@ Jordan is the user who genuinely benefits from seeing raw protocol details: cred
 - Minimal-friction wallet creation for throwaway wallets.
 - Bulk operations (create N identities, fund N addresses).
 - State transition error details with protocol-level context.
-- Quick access to Tools screens (transition visualizer, proof log) from wallet context.
+- Quick access to Tools screens (transition visualizer) from wallet context.
 
 ## Quotes (Illustrative)
 

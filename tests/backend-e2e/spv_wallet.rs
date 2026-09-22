@@ -3,8 +3,6 @@
 use crate::framework::harness::ctx;
 use bip39::{Language, Mnemonic};
 use dash_sdk::dpp::dashcore::Network;
-use std::time::Duration;
-use tokio::time::timeout;
 
 /// Verify SPV is running and can register a new wallet.
 ///
@@ -35,7 +33,11 @@ async fn test_spv_sync_and_create_wallet() {
 
     // Register the wallet
     let (seed_hash, _wallet_arc) = app_context
-        .register_wallet(wallet)
+        .register_wallet(
+            wallet,
+            &seed,
+            dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+        )
         .expect("register_wallet should succeed");
 
     // Verify in-memory
@@ -47,31 +49,34 @@ async fn test_spv_sync_and_create_wallet() {
         );
     }
 
-    // Verify in DB
+    // Verify persistence in the system of record (the wallet-meta sidecar).
+    // DET no longer writes the legacy `data.db.wallet` row — the upstream
+    // persistor plus the wallet-meta/seed-envelope sidecars own wallet state.
     {
-        let db_wallets = app_context
-            .db()
-            .get_wallets(&Network::Testnet)
-            .expect("DB query should succeed");
+        let meta = dash_evo_tool::wallet_backend::WalletMetaView::new(&app_context.app_kv())
+            .get(Network::Testnet, &seed_hash);
         assert!(
-            db_wallets.iter().any(|w| w.seed_hash() == seed_hash),
-            "Wallet should be persisted in DB"
+            meta.is_some(),
+            "Wallet should be persisted in the wallet-meta sidecar"
         );
     }
 
-    // Verify in SPV (10s timeout)
-    let wallet_in_spv = timeout(Duration::from_secs(10), async {
-        loop {
-            let snapshot = app_context.spv_manager().det_wallets_snapshot();
-            if snapshot.contains_key(&seed_hash) {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await;
+    // The wallet must register with the upstream manager so the SpvRuntime
+    // watches its addresses (chain sync is upstream-owned; registration is
+    // driven via the wallet backend, observed through the EventBridge).
+    crate::framework::wait::wait_for_wallet_in_spv(
+        app_context,
+        seed_hash,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("New wallet should register with the wallet backend");
+
+    let backend = app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired");
     assert!(
-        wallet_in_spv.is_ok_and(|b| b),
-        "Wallet should appear in SPV within 10s"
+        backend.is_wallet_registered(&seed_hash),
+        "New wallet should be registered with the upstream manager"
     );
 }

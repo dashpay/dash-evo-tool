@@ -1,0 +1,1256 @@
+//! Masternode/evonode detail view (FR-5).
+//!
+//! Section order (header, actions, keys, DPNS voting, remove) is fixed by
+//! design; each action pushes an existing screen — no parallel MN-specific
+//! reimplementation (NFR-1). See `docs/ai-design/2026-07-09-masternode-page-design/`.
+
+use std::sync::Arc;
+
+use chrono::{LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
+use dash_sdk::dpp::identity::TimestampMillis;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+#[cfg(test)]
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
+use eframe::egui::{self, Color32, RichText, Ui};
+
+use std::collections::BTreeMap;
+
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+
+use crate::app::AppAction;
+use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
+use crate::context::AppContext;
+use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
+use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::legacy_recovery::RecoveryItem;
+use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
+use crate::model::secret::Secret;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::legacy_recovery_section::host_offer;
+use crate::ui::components::password_input::PasswordInput;
+use crate::ui::identity::identity_picker_card::draw_type_badge;
+use crate::ui::identity::identity_pill::shorten_id;
+use crate::ui::identity::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::masternodes::card::{
+    PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
+};
+use crate::ui::masternodes::{KeyVocabulary, identity_keys, key_status_tokens, manage_keys_labels};
+use crate::ui::state::legacy_recovery::LegacyRecoveryState;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
+use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
+use crate::ui::{MessageType, Screen, ScreenType};
+use crate::wallet_backend::IdentityKeyView;
+use crate::wallet_backend::secret_seam::SecretScheme;
+
+/// §7 copy: shown when the node has no voting key loaded. Entering the key is
+/// the only remedy on offer — a voting key held on a separate voter identity
+/// that the node's own record does not link to cannot be restored from the
+/// previous version's saved data (see issue #942).
+const MISSING_VOTER_MESSAGE: &str =
+    "This node has no voting key loaded. Add its voting private key to cast votes.";
+
+const REMOVE_MASTERNODE_CONFIRMATION: &str = "This removes the node and its voting identity, including their private keys, from this device. To load the node again, you need its ProTxHash and a backup of its private keys.";
+
+fn remove_node_action(identity_id: Identifier) -> AppAction {
+    AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+        identity_id,
+    }))
+}
+/// §7 copy: shown when the node has a voter identity but no open contests.
+const NO_OPEN_CONTESTS_MESSAGE: &str =
+    "There are no open name contests for this node to vote on right now.";
+
+/// The collapsible DPNS section header, with the open-contest count (TC-DPNS-02).
+fn dpns_section_header(open_contest_count: usize) -> String {
+    format!("DPNS name contests to vote on ({open_contest_count})")
+}
+
+/// Framing shown once above the per-contest vote controls, so a masternode
+/// owner unfamiliar with DPNS contested voting understands what is being
+/// decided.
+const CONTEST_INTRO_MESSAGE: &str = "Several identities want the same name. Cast this node's vote to help decide who receives it, or to lock the name so no one gets it.";
+/// Nudge shown under a contest that still has no vote picked, so the user knows
+/// why the Cast votes button stays disabled.
+const NO_SELECTION_HINT: &str =
+    "No vote picked yet. Choose Abstain, Lock, or a candidate above to set this node's vote.";
+/// Tooltip on an enabled Cast votes button.
+const CAST_ENABLED_HINT: &str = "Submit this node's vote for every name you picked.";
+/// Tooltip on a disabled Cast votes button, explaining what unlocks it.
+const CAST_DISABLED_HINT: &str =
+    "Pick Abstain, Lock, or a candidate for at least one name to enable this.";
+
+/// The full DPNS domain a contest is fighting over: DPNS names register under
+/// `.dash`, so append it to the normalized label (shown bare elsewhere) to make
+/// clear this is a real domain registration.
+fn contest_display_name(normalized_name: &str) -> String {
+    format!("{normalized_name}.dash")
+}
+
+/// A candidate choice label carrying the candidate's current vote tally, so the
+/// voter sees the standing before picking. Phrased to avoid singular/plural
+/// verb agreement for later translation.
+fn candidate_choice_label(candidate_name: &str, votes: u32) -> String {
+    format!("Vote for {candidate_name} (votes so far: {votes})")
+}
+
+/// Render data for one open contest, snapshotted before the choice-writing
+/// loop so it does not borrow `open_contests` while `vote_selections` mutates.
+struct ContestVoteRow {
+    name: String,
+    end_time: Option<TimestampMillis>,
+    /// `(candidate id, candidate name, votes so far)` for each contestant.
+    candidates: Vec<(dash_sdk::platform::Identifier, String, u32)>,
+}
+
+/// A one-line status for a contest: how many identities are competing and when
+/// voting closes. Keeps the deadline absolute (ISO) plus a relative hint, and
+/// degrades cleanly when the end time has not loaded yet.
+fn contest_status_line(candidate_count: usize, end_time: Option<TimestampMillis>) -> String {
+    let count = format!("Identities competing for this name: {candidate_count}.");
+    match end_time {
+        Some(end_time) => match Utc.timestamp_millis_opt(end_time as i64) {
+            LocalResult::Single(dt) => {
+                let iso = dt.format("%Y-%m-%d %H:%M:%S");
+                let relative = HumanTime::from(dt);
+                format!("{count} Voting ends {iso} UTC ({relative}).")
+            }
+            _ => format!("{count} The voting deadline is unavailable."),
+        },
+        None => format!("{count} The voting deadline is still loading."),
+    }
+}
+
+/// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
+pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
+
+/// At-rest protection posture of a node's vault keys, reduced to what the detail
+/// view needs: the tier label and whether an `Add password protection…` action
+/// applies (only when there are unprotected vault keys to seal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtectionTier {
+    /// No vault-stored keys (read-only node or resident-plaintext only).
+    NoVaultKeys,
+    /// At least one unprotected (Tier-1) vault key, none protected.
+    Unprotected,
+    /// Every vault key is password-protected (Tier-2), or a mix.
+    Protected,
+}
+
+impl ProtectionTier {
+    fn label(self) -> &'static str {
+        match self {
+            ProtectionTier::Protected => "Keys: password-protected",
+            // A read-only node has nothing sealed either — "unprotected" is the
+            // accurate, non-alarming description of its at-rest posture.
+            _ => "Keys: unprotected",
+        }
+    }
+
+    /// `Add password protection…` is offered only when there are Tier-1 keys to
+    /// seal (§FR-8 / NFR-4).
+    fn offers_add_protection(self) -> bool {
+        matches!(self, ProtectionTier::Unprotected)
+    }
+}
+
+/// Outcome of rendering the detail view for one frame.
+pub enum DetailOutcome {
+    /// No terminal interaction this frame.
+    None,
+    /// Return to the card list (`‹ All masternodes`).
+    Back,
+    /// Push a reused screen / navigate. Boxed because `AppAction` is large.
+    Forward(Box<AppAction>),
+}
+
+enum KeyInfoOpenMode {
+    Normal,
+    WithProtectionPrompt,
+}
+
+/// Masternode/evonode detail view state.
+pub struct MasternodeDetailView {
+    app_context: Arc<AppContext>,
+    identity: QualifiedIdentity,
+    node_id_hex_full: String,
+    node_id_short: String,
+    key_presence: MasternodeKeyPresence,
+    contest_summary: MasternodeContestSummary,
+    /// Open contests this node can still vote on (loaded at construction /
+    /// refresh). Active/open only — scheduled/past history lives on the DPNS
+    /// Scheduled Votes screen (§10.7).
+    open_contests: Vec<ContestedName>,
+    /// Per-contest pending vote choice, keyed by normalized contested name.
+    vote_selections: BTreeMap<String, ResourceVoteChoice>,
+    /// The scoped, in-place "Add voting key" prompt (US-3 / §10.8) — distinct
+    /// from FR-4's load form. `Some` while the prompt is open.
+    voter_key_prompt: Option<PasswordInput>,
+    remove_dialog: Option<ConfirmationDialog>,
+    /// The offer to restore keys this node left behind in the previous
+    /// version's saved data (issue #889).
+    recovery: LegacyRecoveryState,
+}
+
+#[cfg(test)]
+impl MasternodeDetailView {
+    /// Open the `Add voting key` prompt on a key, as typing into it would.
+    pub(crate) fn set_voter_key_prompt_for_test(&mut self, value: &str) {
+        let mut prompt = PasswordInput::new();
+        prompt.set_text(value);
+        self.voter_key_prompt = Some(prompt);
+    }
+
+    /// Whether the `Add voting key` prompt is open — and thus holding a key.
+    pub(crate) fn has_voter_key_prompt_for_test(&self) -> bool {
+        self.voter_key_prompt.is_some()
+    }
+
+    /// Whether a recovery offer is currently on screen for this node.
+    pub(crate) fn has_recovery_offer_for_test(&self) -> bool {
+        self.recovery.has_offer()
+    }
+
+    /// Put a detected plan on offer, as the check's own result does — without
+    /// the egui context [`Self::absorb_recovery_result`] needs to report one.
+    pub(crate) fn set_recovery_plan(
+        &mut self,
+        identity_id: dash_sdk::platform::Identifier,
+        plan: crate::model::legacy_recovery::RecoveryPlan,
+    ) {
+        self.recovery.offered(identity_id, plan);
+    }
+
+    /// The key roles this view believes the node holds.
+    pub(crate) fn key_presence_for_test(&self) -> MasternodeKeyPresence {
+        self.key_presence
+    }
+
+    /// Dispatch this node's restore, as pressing Restore does, and report
+    /// whether it went out.
+    pub(crate) fn start_recovery_restore_for_test(&mut self) -> bool {
+        self.recovery.restore(vec![]).is_some()
+    }
+
+    /// Whether a restore is still in flight, so the Restore button stays
+    /// disabled.
+    pub(crate) fn is_restoring_for_test(&self) -> bool {
+        self.recovery.is_restoring()
+    }
+}
+
+impl MasternodeDetailView {
+    pub fn new(app_context: &Arc<AppContext>, identity: QualifiedIdentity) -> Self {
+        let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
+        let node_id_short = shorten_id(&node_id_hex_full);
+        let key_presence = identity.masternode_key_presence();
+        let voter_id = identity
+            .associated_voter_identity
+            .as_ref()
+            .map(|(voter, _)| voter.id());
+        let contest_summary = app_context
+            .masternode_contest_summary(voter_id)
+            .unwrap_or_default();
+        let open_contests = Self::load_open_contests(app_context, voter_id);
+        let recovery = LegacyRecoveryState::new(app_context, identity.identity.id());
+        Self {
+            app_context: app_context.clone(),
+            identity,
+            node_id_hex_full,
+            node_id_short,
+            key_presence,
+            contest_summary,
+            open_contests,
+            vote_selections: BTreeMap::new(),
+            voter_key_prompt: None,
+            remove_dialog: None,
+            recovery,
+        }
+    }
+
+    /// Route a finished backend task into this node's recovery offer, reporting
+    /// whether this node's own restore finished.
+    pub(crate) fn absorb_recovery_result(
+        &mut self,
+        ctx: &egui::Context,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
+        self.recovery.absorb_result(ctx, result)
+    }
+
+    /// Re-read this node from the store and re-arm its recovery check.
+    ///
+    /// The view holds the identity it was opened with, and its key-presence
+    /// line and recovery offer are both derived from it. A restore run from a
+    /// pushed Key Info screen never reaches this view — that screen is on top,
+    /// so it receives the result — which leaves the node page still offering
+    /// keys that are already back, and still warning about a voting key it now
+    /// holds. Called on arrival, so returning from a pushed screen recomputes
+    /// both. Vote selections and any open prompt survive: they belong to the
+    /// user's session, not to the record.
+    pub(crate) fn refresh_from_store(&mut self) {
+        let node_id = self.identity.identity.id();
+        if let Ok(identities) = self.app_context.load_local_masternode_identities()
+            && let Some(identity) = identities
+                .into_iter()
+                .find(|qi| qi.identity.id() == node_id)
+        {
+            self.key_presence = identity.masternode_key_presence();
+            self.identity = identity;
+        }
+        self.recovery.completed();
+    }
+
+    /// End this view's recovery operation when the failure that arrived is that
+    /// operation's own — every error reaches whichever screen is visible.
+    pub(crate) fn absorb_recovery_error(&mut self, context: &BackendTaskContext) {
+        self.recovery.absorb_error(context);
+    }
+
+    /// Load the contests this node can still vote on. Empty when the node has no
+    /// voting key (no voter id) or the read fails.
+    fn load_open_contests(
+        app_context: &Arc<AppContext>,
+        voter_id: Option<dash_sdk::platform::Identifier>,
+    ) -> Vec<ContestedName> {
+        let Some(voter_id) = voter_id else {
+            return Vec::new();
+        };
+        app_context
+            .ongoing_contested_names()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|contest| contest.is_open_for_voter(&voter_id))
+            .collect()
+    }
+
+    /// Refresh the DPNS contest summary + open-contest list from the store.
+    fn refresh_contests(&mut self) {
+        let voter_id = self
+            .identity
+            .associated_voter_identity
+            .as_ref()
+            .map(|(voter, _)| voter.id());
+        self.contest_summary = self
+            .app_context
+            .masternode_contest_summary(voter_id)
+            .unwrap_or_default();
+        self.open_contests = Self::load_open_contests(&self.app_context, voter_id);
+    }
+
+    /// Build the network re-fetch dispatched by the detail Refresh button:
+    /// refresh this node's identity, plus a DPNS contests re-query
+    /// when the node has a voter identity that can vote.
+    fn refresh_from_network(&self) -> AppAction {
+        let mut tasks = vec![BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
+            self.identity.clone(),
+        ))];
+        if self.identity.associated_voter_identity.is_some() {
+            tasks.push(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContests,
+            ));
+        }
+        AppAction::BackendTasks(tasks, crate::app::BackendTasksExecutionMode::Concurrent)
+    }
+
+    /// The node's identity id — used by the list screen to match the open node.
+    pub fn node_id(&self) -> dash_sdk::platform::Identifier {
+        self.identity.identity.id()
+    }
+
+    fn is_evonode(&self) -> bool {
+        self.identity.identity_type == IdentityType::Evonode
+    }
+
+    /// Build an `AddScreen` action for a reused screen type, scoped to this node.
+    fn push(&self, screen_type: ScreenType) -> AppAction {
+        AppAction::AddScreen(screen_type.create_screen(&self.app_context))
+    }
+
+    fn badge_label(&self) -> &'static str {
+        if self.is_evonode() {
+            "Evonode"
+        } else {
+            "Masternode"
+        }
+    }
+
+    /// Probe the at-rest protection posture of this node's vault keys.
+    fn protection_tier(&self) -> ProtectionTier {
+        let Ok(backend) = self.app_context.wallet_backend() else {
+            return ProtectionTier::NoVaultKeys;
+        };
+        let view = IdentityKeyView::new(
+            backend.secret_store(),
+            self.identity.identity.id().to_buffer(),
+        );
+        let (mut protected, mut unprotected) = (0usize, 0usize);
+        for (target, key_id) in self.identity.private_keys.keys_set() {
+            match view.scheme(&target, key_id) {
+                Ok(SecretScheme::Protected) => protected += 1,
+                Ok(SecretScheme::Unprotected) => unprotected += 1,
+                _ => {}
+            }
+        }
+        // TODO: a mixed state (some Tier-1, some Tier-2) currently maps to
+        // Protected, so the aggregate "Add password protection…" CTA is hidden
+        // even though unprotected keys remain. This is mitigated by the per-key
+        // Manage-keys list (each unprotected key can still be sealed from its
+        // KeyInfoScreen); a dedicated "partially protected" tier could re-offer
+        // the aggregate CTA.
+        match (protected, unprotected) {
+            (0, 0) => ProtectionTier::NoVaultKeys,
+            (0, _) => ProtectionTier::Unprotected,
+            _ => ProtectionTier::Protected,
+        }
+    }
+
+    pub fn show(&mut self, ui: &mut Ui, network_accent: Color32) -> DetailOutcome {
+        let dark_mode = ui.style().visuals.dark_mode;
+        let mut outcome = DetailOutcome::None;
+
+        // Back row + Refresh (content-panel, not the global header). FR-7.
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(false, RichText::new("‹ All masternodes"))
+                .clicked()
+            {
+                outcome = DetailOutcome::Back;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
+                    // Re-read the local contest cache immediately (optimistic)
+                    // AND dispatch a network re-fetch of this node plus the DPNS
+                    // contests — Refresh must reach the network.
+                    self.refresh_contests();
+                    outcome = DetailOutcome::Forward(Box::new(self.refresh_from_network()));
+                }
+            });
+        });
+        ui.separator();
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            self.render_header(ui, dark_mode);
+            ui.add_space(12.0);
+            if let Some(action) = self.render_actions_row(ui, dark_mode) {
+                outcome = DetailOutcome::Forward(Box::new(action));
+            }
+            ui.add_space(12.0);
+            if let Some(action) = self.render_keys_section(ui, dark_mode) {
+                outcome = DetailOutcome::Forward(Box::new(action));
+            }
+            ui.add_space(12.0);
+            if let Some(action) = self.render_dpns_section(ui, dark_mode) {
+                outcome = DetailOutcome::Forward(Box::new(action));
+            }
+            ui.add_space(12.0);
+            if let Some(action) = self.render_remove_section(ui, dark_mode) {
+                outcome = DetailOutcome::Forward(Box::new(action));
+            }
+        });
+
+        // Passive detection, dispatched once per opened view. It never competes
+        // with a click made this frame: the click already owns the outcome, and
+        // the check simply goes out on the next frame instead.
+        if matches!(outcome, DetailOutcome::None)
+            && let Some(task) = self.recovery.ensure_checked()
+        {
+            outcome = DetailOutcome::Forward(Box::new(AppAction::BackendTask(task)));
+        }
+
+        outcome
+    }
+
+    fn render_header(&self, ui: &mut Ui, dark_mode: bool) {
+        // Conditional alias line — omitted entirely when unset (TC-FR5-02).
+        if let Some(alias) = self
+            .identity
+            .alias
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
+            ui.label(
+                RichText::new(alias)
+                    .size(20.0)
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+        }
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(&self.node_id_short)
+                    .monospace()
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+            // Copy the FULL ProTxHash, not the shortened display string (TC-FR5-03).
+            // `small_button` is text-height, so it stays vertically centered with
+            // the monospace hash and the badge; a full-size button towers over them.
+            if ui
+                .small_button("Copy")
+                .on_hover_text("Copy ProTxHash")
+                .clicked()
+            {
+                ui.ctx().copy_text(self.node_id_hex_full.clone());
+            }
+            draw_type_badge(ui, self.badge_label(), dark_mode);
+        });
+        let balance = format_credits_as_dash(self.identity.identity.balance());
+        ui.label(
+            RichText::new(format!("Balance: {balance}"))
+                .monospace()
+                .strong()
+                .size(14.0)
+                .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.horizontal(|ui| {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(rect.center(), 4.0, Color32::from(self.identity.status));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(platform_identity_status_label(self.identity.status))
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+        })
+        .response
+        .on_hover_text(PLATFORM_IDENTITY_STATUS_TOOLTIP);
+    }
+
+    fn render_actions_row(&self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        let mut action = None;
+        ui.label(
+            RichText::new("Actions")
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.horizontal_wrapped(|ui| {
+            // The withdrawal screen is reused, scoped to THIS node (FR-9).
+            if ui.button("Withdraw").clicked() {
+                action = Some(self.push(ScreenType::WithdrawalScreen(self.identity.clone())));
+            }
+            // Evonode-only token-rewards cross-link (FR-11); absent for a plain
+            // masternode (TC-FR11-02).
+            if self.is_evonode()
+                && ui
+                    .button("Claim token rewards ›")
+                    .on_hover_text("Claim this evonode's token rewards.")
+                    .clicked()
+            {
+                action = Some(self.claim_token_rewards_action(ui.ctx()));
+            }
+        });
+        action
+    }
+
+    /// Route the evonode "Claim token rewards" CTA (FR-11). When this
+    /// evonode holds exactly one token in the local registry, push a
+    /// `ClaimTokensScreen` scoped to it (the real claim flow). With zero or
+    /// several tokens the correct target is ambiguous, so fall back to the My
+    /// Tokens area where the user picks the token to claim.
+    fn claim_token_rewards_action(&self, ctx: &egui::Context) -> AppAction {
+        let fallback =
+            AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenMyTokenBalances);
+        let node_id = self.identity.identity.id();
+        let mut mine: Vec<_> = self
+            .app_context
+            .identity_token_balances()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(key, _)| key.identity_id == node_id)
+            .map(|(_, balance)| balance)
+            .collect();
+        if mine.len() != 1 {
+            return fallback;
+        }
+        let itb = mine.remove(0);
+        match self.app_context.get_contract_by_token_id(&itb.token_id) {
+            Ok(Some(contract)) => {
+                let basic = IdentityTokenBasicInfo {
+                    token_id: itb.token_id,
+                    token_alias: itb.token_alias.clone(),
+                    identity_id: itb.identity_id,
+                    contract_id: itb.data_contract_id,
+                    token_position: itb.token_position,
+                };
+                AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                    basic,
+                    contract,
+                    itb.token_config,
+                    &self.app_context,
+                )))
+            }
+            _ => {
+                MessageBanner::set_global(
+                    ctx,
+                    "This token's details aren't available yet. Open My Tokens to claim.",
+                    MessageType::Info,
+                );
+                fallback
+            }
+        }
+    }
+
+    fn render_keys_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        let mut action = None;
+        ui.label(
+            RichText::new("Keys")
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
+
+        // Compact V/O/P presence (glyph, not colour-only — NFR-6).
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Roles:").color(DashColors::text_secondary(dark_mode)))
+                .info_tooltip(
+                    "Shows which of this node's keys are loaded: V is the voting key, O is the \
+                     owner key, and P is the payout address key.",
+                );
+            // Each letter explains its own role on hover, so a user who hovers `V`
+            // is told about the voting key rather than having to read the whole
+            // legend on the `Roles:` label.
+            for token in key_status_tokens(self.key_presence) {
+                let text = if token.present {
+                    RichText::new(token.letter)
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode))
+                } else {
+                    RichText::new("·").color(DashColors::text_secondary(dark_mode))
+                };
+                ui.label(text).info_tooltip(token.tooltip);
+            }
+        });
+
+        // Copyable voter-identity id, when a voter identity is loaded.
+        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
+            let voter_full = voter.id().to_string(Encoding::Base58);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Voter identity: {voter}",
+                        voter = shorten_id(&voter_full)
+                    ))
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                // `small_button` keeps the copy affordance text-height and
+                // vertically centered with the voter-identity label.
+                if ui
+                    .small_button("Copy")
+                    .on_hover_text("Copy voter identity ID")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(voter_full.clone());
+                }
+            });
+        }
+
+        // Protection tier + conditional Add-protection (FR-8 / NFR-4).
+        let tier = self.protection_tier();
+        ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
+
+        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`,
+        // the interactive per-key screen with view/sign/seal actions. This
+        // mirrors `identities_screen.rs` and the identity keys list: one button
+        // per key, each pushing `Screen::KeyInfoScreen` with the target the row
+        // found the material at.
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Manage keys")
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
+        let keys = identity_keys(&self.identity);
+        // This page only ever shows masternode and evonode identities.
+        let labels = manage_keys_labels(KeyVocabulary::from(self.identity.identity_type), &keys);
+        for ((_, key), (label, tip)) in keys.into_iter().zip(labels) {
+            let button = ui.button(format!("{label} ›"));
+            let button = match tip {
+                Some(tip) => button.clickable_tooltip(tip),
+                None => button,
+            };
+            if button.clicked() {
+                action = Some(self.open_key_info(&key));
+            }
+        }
+
+        // Add-protection CTA (FR-8): the seal form (password entry →
+        // `IdentityTask::ProtectIdentityKeys`, which seals the whole identity)
+        // lives inside `KeyInfoScreen`. Open the first held key so the user
+        // lands directly on the interactive seal flow.
+        if tier.offers_add_protection()
+            && let Some(key) = self.first_protectable_key()
+            && ui.button("Add password protection…").clicked()
+        {
+            action = Some(self.open_key_info_with_protection_prompt(&key));
+        }
+
+        if let Some(approved) = self.render_recovery_section(ui)
+            && let Some(task) = self.recovery.restore(approved)
+        {
+            action = Some(AppAction::BackendTask(task));
+        }
+        action
+    }
+
+    /// Render the offer at the foot of the keys section, returning the items the
+    /// user approved this frame.
+    fn render_recovery_section(&self, ui: &mut Ui) -> Option<Vec<RecoveryItem>> {
+        if !self.recovery.has_offer() {
+            return None;
+        }
+        ui.add_space(8.0);
+        // This page only ever shows masternode and evonode identities.
+        host_offer(
+            &self.recovery,
+            KeyVocabulary::from(self.identity.identity_type),
+            ui,
+        )
+    }
+
+    /// The first key whose private material this node actually holds — the only
+    /// keys that can be sealed. Used to route the Add-protection CTA straight
+    /// into an interactive `KeyInfoScreen` seal flow.
+    ///
+    /// Resolves "held" through `candidates()`, the same rule every other
+    /// resolution site on this identity uses — a structural `(target, key_id)`
+    /// probe would miss material filed under a target other than the one
+    /// `identity_keys` structurally pairs the key with (e.g. a main-identity
+    /// voting key filed under the voter placement by an older build), and could
+    /// match a different key that merely shares the id. `candidates()` only
+    /// checks presence, so no raw key bytes are cloned out of the vault here —
+    /// unlike `open_key_info_with_mode`, which needs the actual secret and thus
+    /// pays for the clone.
+    fn first_protectable_key(&self) -> Option<dash_sdk::platform::IdentityPublicKey> {
+        identity_keys(&self.identity)
+            .into_iter()
+            // Presence only: this gates a button, it never acts on the
+            // placement, so which of several placements is the liveliest one
+            // makes no difference to the answer.
+            .find(|(_, key)| self.identity.private_keys.candidates(key).next().is_some())
+            .map(|(_, key)| key)
+    }
+
+    /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,
+    /// carrying its held private-key data if any. Mirrors the
+    /// per-key push in `identities_screen.rs`.
+    fn open_key_info(&self, key: &dash_sdk::platform::IdentityPublicKey) -> AppAction {
+        self.open_key_info_with_mode(key, KeyInfoOpenMode::Normal)
+    }
+
+    /// Open `KeyInfoScreen` directly in the add-protection confirmation flow.
+    fn open_key_info_with_protection_prompt(
+        &self,
+        key: &dash_sdk::platform::IdentityPublicKey,
+    ) -> AppAction {
+        self.open_key_info_with_mode(key, KeyInfoOpenMode::WithProtectionPrompt)
+    }
+
+    fn open_key_info_with_mode(
+        &self,
+        key: &dash_sdk::platform::IdentityPublicKey,
+        mode: KeyInfoOpenMode,
+    ) -> AppAction {
+        // Where this key's private half actually is, by the one rule every
+        // surface uses. A structural target alone would miss material filed under
+        // the retired purpose-derived convention — a main-identity voting key
+        // entered by hand — and report a key as unheld here while the identity
+        // keys list shows it as saved on this device.
+        let holding = self.identity.private_keys.held_private_key_data(key);
+        let identity = self.identity.clone();
+        let key = key.clone();
+        let screen = match mode {
+            KeyInfoOpenMode::Normal => {
+                KeyInfoScreen::new(identity, key, holding, &self.app_context)
+            }
+            KeyInfoOpenMode::WithProtectionPrompt => {
+                KeyInfoScreen::new_with_protection_prompt(identity, key, holding, &self.app_context)
+            }
+        };
+        // No target is handed over: the screen resolves the placement itself, so
+        // there is nothing for this caller to get wrong or for the `ScreenType`
+        // round trip to drop.
+        AppAction::AddScreen(Screen::KeyInfoScreen(screen))
+    }
+
+    /// Render the collapsible DPNS voting section (collapsed by default,
+    /// open-contest count in the header). Inline voting reuses the existing
+    /// `vote_on_dpns_name` backend (locked decision #1 — not a deep-link).
+    fn render_dpns_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        // When the node has no voter key, the "Add voting key" CTA is
+        // the primary next step — render it above, outside the collapsed-by-
+        // default DPNS section, so it is visible without expanding anything.
+        // The empty DPNS section (no contests possible without a voter) is
+        // omitted in that state.
+        if self.identity.associated_voter_identity.is_none() {
+            return self.render_missing_voter(ui, dark_mode);
+        }
+
+        let mut action = None;
+        let header = dpns_section_header(self.contest_summary.open_contest_count);
+        egui::CollapsingHeader::new(header)
+            .default_open(false)
+            .show(ui, |ui| {
+                if self.open_contests.is_empty() {
+                    ui.label(
+                        RichText::new(NO_OPEN_CONTESTS_MESSAGE)
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                } else {
+                    action = self.render_vote_table(ui, dark_mode);
+                }
+            });
+        action
+    }
+
+    /// Missing-voter-identity state (US-3 / §10.9): an actionable message plus a
+    /// scoped in-place `Add voting key` prompt — never the raw error, never
+    /// FR-4's load form.
+    fn render_missing_voter(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        let mut action = None;
+        ui.label(RichText::new(MISSING_VOTER_MESSAGE).color(DashColors::warning_color(dark_mode)));
+
+        match self.voter_key_prompt.as_mut() {
+            None => {
+                if ui.button("Add voting key").clicked() {
+                    // Node context is already bound (`self.identity`) — the
+                    // prompt only asks for the voting key, no ProTxHash re-entry.
+                    self.voter_key_prompt = Some(
+                        PasswordInput::new()
+                            .with_hint_text("Voting private key (WIF or hex)")
+                            .with_monospace(),
+                    );
+                }
+            }
+            Some(prompt) => {
+                prompt.show(ui);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.voter_key_prompt = None;
+                    }
+                    let has_key = !self
+                        .voter_key_prompt
+                        .as_ref()
+                        .map(PasswordInput::is_empty)
+                        .unwrap_or(true);
+                    if ui.add_enabled(has_key, egui::Button::new("Save")).clicked() {
+                        action = self.submit_voter_key();
+                    }
+                });
+            }
+        }
+        action
+    }
+
+    /// Close the `Add voting key` prompt, zeroizing the key typed into it. Called
+    /// when the Masternodes tab is left: the tab is a root screen that outlives
+    /// navigation, and an unsubmitted key must not.
+    pub fn clear_secrets(&mut self) {
+        self.voter_key_prompt = None;
+    }
+
+    /// Build the scoped voter-key update: re-load THIS node (context pre-bound)
+    /// with just the entered voting key, updating its voter identity in place.
+    /// Distinct from FR-4's load form and exempt from duplicate-ProTxHash
+    /// rejection (§10.8).
+    fn submit_voter_key(&mut self) -> Option<AppAction> {
+        let voting_key = self.voter_key_prompt.as_mut()?.take_secret();
+        self.voter_key_prompt = None;
+        let input = IdentityInputToLoad {
+            identity_id_input: self.node_id_hex_full.clone(),
+            identity_type: self.identity.identity_type,
+            alias_input: self.identity.alias.clone().unwrap_or_default(),
+            voting_private_key_input: voting_key,
+            owner_private_key_input: Secret::default(),
+            payout_address_private_key_input: Secret::default(),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            // In-place update: merge the new voting key into the already-loaded
+            // node, preserving its Owner/Payout keys (§10.8). Never overwrite.
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+            // This view gates on nothing: the load opens a record of its own rather
+            // than adopting one another caller is waiting on.
+            load_token: None,
+        };
+        Some(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::LoadIdentity(input),
+        )))
+    }
+
+    /// Per-contest voting choices + Cast votes, dispatching the existing
+    /// `VoteOnDPNSNames` backend for the selected choices.
+    fn render_vote_table(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        let mut action = None;
+        // Collect the render data up front so the choice-writing loop does not
+        // borrow `self.open_contests` while mutating `self.vote_selections`.
+        let contests: Vec<ContestVoteRow> = self
+            .open_contests
+            .iter()
+            .map(|contest| {
+                let candidates = contest
+                    .contestants
+                    .as_ref()
+                    .map(|list| {
+                        list.iter()
+                            .map(|c| (c.id, c.name.clone(), c.votes))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ContestVoteRow {
+                    name: contest.normalized_contested_name.clone(),
+                    end_time: contest.end_time,
+                    candidates,
+                }
+            })
+            .collect();
+
+        ui.label(RichText::new(CONTEST_INTRO_MESSAGE).color(DashColors::text_secondary(dark_mode)));
+
+        for contest in &contests {
+            ui.separator();
+            ui.label(
+                RichText::new(contest_display_name(&contest.name))
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+            ui.label(
+                RichText::new(contest_status_line(
+                    contest.candidates.len(),
+                    contest.end_time,
+                ))
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            let selected = self.vote_selections.get(&contest.name).copied();
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
+                    .clicked()
+                {
+                    self.vote_selections
+                        .insert(contest.name.clone(), ResourceVoteChoice::Abstain);
+                }
+                if ui
+                    .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock")
+                    .clicked()
+                {
+                    self.vote_selections
+                        .insert(contest.name.clone(), ResourceVoteChoice::Lock);
+                }
+                // Candidate choices are scoped to THIS contest's contestants.
+                for (candidate_id, candidate_name, votes) in &contest.candidates {
+                    let choice = ResourceVoteChoice::TowardsIdentity(*candidate_id);
+                    if ui
+                        .selectable_label(
+                            selected == Some(choice),
+                            candidate_choice_label(candidate_name, *votes),
+                        )
+                        .clicked()
+                    {
+                        self.vote_selections.insert(contest.name.clone(), choice);
+                    }
+                }
+            });
+            if selected.is_none() {
+                ui.label(
+                    RichText::new(NO_SELECTION_HINT).color(DashColors::text_secondary(dark_mode)),
+                );
+            }
+        }
+
+        ui.separator();
+        let votes: Vec<(String, ResourceVoteChoice)> = self
+            .vote_selections
+            .iter()
+            .filter(|(name, _)| contests.iter().any(|c| &c.name == *name))
+            .map(|(name, choice)| (name.clone(), *choice))
+            .collect();
+        let has_votes = !votes.is_empty();
+        if ui
+            .add_enabled(has_votes, egui::Button::new("Cast votes"))
+            .on_hover_text(CAST_ENABLED_HINT)
+            .on_disabled_hover_text(CAST_DISABLED_HINT)
+            .clicked()
+        {
+            action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::VoteOnDPNSNames(votes, vec![self.identity.clone()]),
+            )));
+        }
+        action
+    }
+
+    fn render_remove_section(&mut self, ui: &mut Ui, _dark_mode: bool) -> Option<AppAction> {
+        let migration_in_progress = self.app_context.migration_status().state().is_in_progress();
+        if ui
+            .add_enabled(
+                !migration_in_progress,
+                egui::Button::new("Remove masternode"),
+            )
+            .on_disabled_hover_text(
+                "Wait for the storage update to finish before removing this masternode.",
+            )
+            .clicked()
+        {
+            self.remove_dialog = Some(
+                ConfirmationDialog::new("Remove masternode", REMOVE_MASTERNODE_CONFIRMATION)
+                    .danger_mode(true)
+                    // §7 confirm verb (TC-US4-02).
+                    .confirm_text(Some("Remove masternode")),
+            );
+        }
+
+        let mut action = None;
+        if let Some(dialog) = self.remove_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(status) = response.inner.dialog_response {
+                self.remove_dialog = None;
+                if status == ConfirmationStatus::Confirmed {
+                    action = Some(remove_node_action(self.identity.identity.id()));
+                }
+            }
+        }
+        action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masternode_removal_dispatches_the_identity_backend_task() {
+        let identity_id = Identifier::from([0x42; 32]);
+
+        let AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RemoveIdentity {
+            identity_id: dispatched_id,
+        })) = remove_node_action(identity_id)
+        else {
+            panic!("masternode removal must run through the identity backend task");
+        };
+
+        assert_eq!(dispatched_id, identity_id);
+    }
+
+    #[test]
+    fn masternode_removal_confirmation_requires_a_key_backup() {
+        assert!(REMOVE_MASTERNODE_CONFIRMATION.contains("private keys"));
+        assert!(REMOVE_MASTERNODE_CONFIRMATION.contains("backup"));
+        assert!(
+            !REMOVE_MASTERNODE_CONFIRMATION.contains("again later with its ProTxHash"),
+            "the confirmation must not imply that the public ProTxHash restores deleted keys"
+        );
+    }
+
+    #[test]
+    fn tc_fr5_01_actions_render_before_keys() {
+        let actions = SECTION_ORDER.iter().position(|s| *s == "Actions").unwrap();
+        let keys = SECTION_ORDER.iter().position(|s| *s == "Keys").unwrap();
+        assert!(
+            actions < keys,
+            "Actions must render before Keys (TC-FR5-01)"
+        );
+    }
+
+    #[test]
+    fn section_order_is_header_actions_keys_dpns_remove() {
+        assert_eq!(
+            SECTION_ORDER,
+            ["Header", "Actions", "Keys", "DPNS", "Remove"]
+        );
+    }
+
+    #[test]
+    fn tc_dpns_02_header_shows_open_contest_count() {
+        assert_eq!(dpns_section_header(3), "DPNS name contests to vote on (3)");
+        assert_eq!(dpns_section_header(0), "DPNS name contests to vote on (0)");
+    }
+
+    #[test]
+    fn contest_name_gets_dash_suffix() {
+        // The normalized label is shown bare elsewhere; the vote section spells
+        // out the full `.dash` domain so the user knows it is a registration.
+        assert_eq!(contest_display_name("det"), "det.dash");
+    }
+
+    #[test]
+    fn candidate_label_carries_current_tally() {
+        let label = candidate_choice_label("alice", 5);
+        assert!(
+            label.contains("Vote for alice"),
+            "names the candidate: {label}"
+        );
+        assert!(label.contains('5'), "shows the running tally: {label}");
+    }
+
+    #[test]
+    fn status_line_reports_candidate_count() {
+        let line = contest_status_line(2, None);
+        assert!(
+            line.contains("Identities competing for this name: 2."),
+            "counts contestants: {line}"
+        );
+        assert!(
+            line.contains("still loading"),
+            "degrades when the deadline is absent: {line}"
+        );
+    }
+
+    #[test]
+    fn status_line_renders_absolute_deadline() {
+        // 2021-01-01T00:00:00Z in milliseconds.
+        let line = contest_status_line(3, Some(1_609_459_200_000));
+        assert!(
+            line.contains("Identities competing for this name: 3."),
+            "counts contestants: {line}"
+        );
+        assert!(
+            line.contains("2021-01-01 00:00:00 UTC"),
+            "shows the absolute ISO deadline: {line}"
+        );
+    }
+
+    #[test]
+    fn protection_tier_label_and_add_gate() {
+        assert_eq!(ProtectionTier::Unprotected.label(), "Keys: unprotected");
+        assert_eq!(
+            ProtectionTier::Protected.label(),
+            "Keys: password-protected"
+        );
+        assert_eq!(ProtectionTier::NoVaultKeys.label(), "Keys: unprotected");
+        assert!(ProtectionTier::Unprotected.offers_add_protection());
+        assert!(!ProtectionTier::Protected.offers_add_protection());
+        assert!(!ProtectionTier::NoVaultKeys.offers_add_protection());
+    }
+
+    /// TC-FR8-07 — a load-time / after-load Tier-2 seal is reflected by
+    /// `protection_tier()`: an unsealed keyed node reports `Unprotected`, and
+    /// once its keys are sealed under a password it reports `Protected` (so the
+    /// detail view shows "Keys: password-protected" and stops offering
+    /// Add-protection). Drives the real `IdentityKeyView` scheme path on an
+    /// offline wired `AppContext` — no network I/O.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tc_fr8_07_protection_tier_reflects_tier2_seal() {
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::model::qualified_identity::IdentityStatus;
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::{Identifier, IdentityPublicKey};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        // A masternode-shaped identity carrying one owner key on the main
+        // identity — enough for `protection_tier` to have a key to inspect.
+        let pv = PlatformVersion::latest();
+        let owner = IdentityPublicKey::random_key(1, Some(1), pv);
+        let mut ks = KeyStorage::default();
+        ks.insert_at(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.id()),
+            (
+                QualifiedIdentityPublicKey::from(owner),
+                PrivateKeyData::Clear([0xA0; 32]),
+            ),
+        );
+        let identity =
+            Identity::create_basic_identity(Identifier::random(), pv).expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        let identity_id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert masternode identity");
+
+        // Before sealing: the key is keyless (Tier-1) → Unprotected.
+        let view = MasternodeDetailView::new(&ctx, qi.clone());
+        assert_eq!(
+            view.protection_tier(),
+            ProtectionTier::Unprotected,
+            "an unsealed keyed node must report Unprotected",
+        );
+        assert!(
+            view.protection_tier().offers_add_protection(),
+            "an unsealed node must offer Add-protection",
+        );
+
+        // Seal the node's keys Tier-2 via the real backend task (the same task
+        // the FR-8 seal flow dispatches).
+        ctx.run_backend_task(
+            BackendTask::IdentityTask(IdentityTask::ProtectIdentityKeys {
+                identity_id,
+                password: Secret::new("one-identity-password"),
+                hint: None,
+            }),
+            SenderAsync::new(
+                tokio::sync::mpsc::channel::<TaskResult>(4).0,
+                ctx.egui_ctx().clone(),
+            ),
+        )
+        .await
+        .expect("seal task must succeed");
+
+        // After sealing: the detail view reports Protected and stops offering
+        // Add-protection. Rebuild the view to re-read the vault scheme.
+        let view = MasternodeDetailView::new(&ctx, qi);
+        assert_eq!(
+            view.protection_tier(),
+            ProtectionTier::Protected,
+            "a Tier-2 sealed node must report Protected",
+        );
+        assert!(
+            !view.protection_tier().offers_add_protection(),
+            "a sealed node must not re-offer Add-protection",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+}

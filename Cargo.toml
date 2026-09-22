@@ -4,21 +4,27 @@ version = "1.0.0-dev"
 license = "MIT"
 edition = "2024"
 default-run = "dash-evo-tool"
-rust-version = "1.92"
+rust-version = "1.98"
 
 [dependencies]
 tokio-util = { version = "0.7.15" }
-bip39 = { version = "2.2.0", features = ["all-languages", "rand"] }
+bip39 = { version = "2.2.0", features = ["all-languages", "rand", "zeroize"] }
 derive_more = "2.1.1"
-egui = "0.33.3"
-egui_extras = "0.33.3"
-egui_commonmark = "0.22.0"
+egui = "0.36.2"
+egui_extras = "0.36.2"
+egui_commonmark = "0.25.0"
 rfd = "0.17.2"
 qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
-eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
-base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "2cc4cdcf85ce62b437031671336bf622b3aafaa5", features = [
+eframe = { version = "0.36.2", features = ["persistence", "wgpu"] }
+base64 = "0.23.1"
+# TODO: GHSA-7gcf-g7xr-8hxj (serde_with <3.21.0) is unfixable from here — the 2.x pin lives in
+# dashcore-rpc-json (dashpay/rust-dashcore, rpc-json/Cargo.toml: serde_with = "2.1.0"). Re-check
+# when these pins move. Verified 2026-09-16: rpc-json/src/lib.rs only uses serde_with's `Bytes`
+# and `DisplayFromStr` adapters — the vulnerable `KeyValueMap` serializer is never invoked in the
+# dependency chain, so the advisory is not exploitable here (Dependabot alert #41; dismissal as
+# `not_used` was attempted but requires manual GitHub action — see coordinator note).
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "dc946fa8af68584c927b4062b1e8909486413ed0", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -28,7 +34,18 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "2cc4cdcf85ce62b
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "2cc4cdcf85ce62b437031671336bf622b3aafaa5" }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "dc946fa8af68584c927b4062b1e8909486413ed0" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "dc946fa8af68584c927b4062b1e8909486413ed0", features = [
+    "serde",
+    "shielded",
+] }
+# `serde` backs `model::secret::Secret`'s `Deserialize`: the upstream
+# visitor copies a borrowed `&str` straight into guarded memory instead of
+# routing through a transient `String`. Secret schemas are included by `secrets`.
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "dc946fa8af68584c927b4062b1e8909486413ed0", features = [
+    "shielded",
+    "serde",
+] }
 zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
@@ -37,40 +54,59 @@ serde = "1.0.219"
 serde_json = "1.0.140"
 serde_yaml_ng = { version = "0.10.0" }
 tokio = { version = "1.46.1", features = ["full"] }
-bincode = { version = "=2.0.1", features = ["serde"] }
+# INTENTIONAL(bincode-unmaintained-pin): the exact pin is deliberate; do not "fix" the audit
+# warning by bumping. bincode is flagged unmaintained (RUSTSEC-2025-0141, INFO-level — no
+# known vulnerability). The advisory covers *all* versions, so no bump can clear it: 2.0.1
+# is the last functional release and 3.0.0 is a tombstone whose lib.rs is a bare
+# `compile_error!`.
+# The dependency is aliased to `grovedb-bincode`, the bincode 2.0.1 fork that dpp,
+# platform-value and rust-dashcore implement `Encode`/`Decode` against; the trait
+# identities must match or DET's codecs over those types stop compiling. On the ordinary
+# (non-`*_untrusted`) paths DET uses — native, `bincode::serde` and the derive macros —
+# its wire format is identical to bincode 2.0.1, per source-level analysis of hash-identical
+# function bodies and derive-codegen substitution (docs/ai-design/2026-09-14-platform-4.2-dev-bump/);
+# Historical-profile migration tests verify the old encodings remain readable.
+# Any encoder change that breaks that compatibility needs a read-old/write-new migration:
+# this crate encodes the on-disk wallet-secret envelopes and QualifiedIdentity blobs.
+bincode = { package = "grovedb-bincode", version = "=2.1.0", features = ["serde"] }
 hex = { version = "0.4.3" }
-itertools = "0.14.0"
+async-trait = "0.1.89"
+itertools = "0.15.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
 tracing = "0.1.41"
-rand = "0.9"
+rand = "0.10"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 dotenvy = "0.15.7"
 envy = "0.4.2"
 chrono = "0.4.41"
 chrono-humanize = "0.2.3"
-sha2 = "0.10.9"
-ed25519-dalek = "2.1"
+sha2 = "0.11.0"
+ed25519-dalek = "3.0.0"
 arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
 directories = "6.0.0"
-rusqlite = { version = "0.38.0", features = ["bundled", "functions", "fallible_uint"] }
-dark-light = "2.0.0"
+rusqlite = { version = "0.38.0", features = [
+    "bundled",
+    "functions",
+    "fallible_uint",
+    "backup",
+] }
+dark-light = "3.0.0"
 image = { version = "0.25.6", default-features = false, features = [
     "png",
     "jpeg",
 ] }
-resvg = "0.46"
+resvg = "0.48"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 bitflags = "2.10"
 rust-embed = "8.7.2"
 zeroize = "1.8.1"
 zxcvbn = "3.1.0"
-argon2 = "0.5.3" # For Argon2 key derivation
-aes-gcm = "0.10.3" # For AES-256-GCM encryption
-cbc = "0.1.2" # For CBC mode encryption
-crossbeam-channel = "0.5.15"
+argon2 = { version = "0.6.0", features = ["zeroize"] } # For Argon2 key derivation; zeroize wipes intermediate hash state (SEC-001)
+aes-gcm = "0.11.1" # For AES-256-GCM encryption
+cbc = "0.2.1" # For CBC mode encryption
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "8.0.0" }
@@ -78,18 +114,13 @@ tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
-region = "3.0.2"
-rmcp = { version = "1.2", optional = true, default-features = false }
+rmcp = { version = "3.3", optional = true, default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
-subtle = { version = "2.6", optional = true }
+# Constant-time equality for `model::secret::Secret` (unconditional) and the
+# MCP API-key check. Not optional: `PartialEq for Secret` is always compiled.
+subtle = "2.6"
 clap = { version = "4", features = ["derive"], optional = true }
 clap_complete = { version = "4", optional = true }
-
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-zmq = "0.10.0"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-zeromq = "0.4.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -99,19 +130,47 @@ native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
 
 [features]
+default = []
 testing = []
-mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
+bench = []
+mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum"]
 cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
-egui_kittest = { version = "0.33.3", features = ["eframe"] }
+egui_kittest = { version = "0.36.2", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
+criterion = "0.8.2"
+# Used only by error-mapping unit tests to construct a genuine divergent-version
+# `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
+# version already in the graph via `platform-wallet-storage`; the `rusqlite`
+# feature is already enabled transitively, so this adds no new build.
+refinery = { version = "0.9.1", default-features = false, features = ["rusqlite"] }
 
 [[bin]]
 name = "det-cli"
 path = "src/bin/det_cli/main.rs"
 required-features = ["cli"]
+
+[[test]]
+name = "backend-e2e"
+path = "tests/backend-e2e/main.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "migration-matrix"
+path = "tests/migration-matrix/main.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "mcp_http_auth"
+path = "tests/mcp_http_auth.rs"
+required-features = ["mcp"]
+
+[[bench]]
+name = "wallet_hydration"
+harness = false
+required-features = ["bench"]
 
 [build-dependencies]
 winres = "0.1"
@@ -122,11 +181,24 @@ winres = "0.1"
 [profile.dev.package."*"]
 debug = "line-tables-only"
 
+# Argon2id is deliberately memory-hard; unoptimized (opt-level=0) each 64 MiB
+# derivation runs for seconds AND holds its memory that whole time, so the
+# wallet_backend secret-storage tests both ran slowly (5-23s each) and, under
+# whole-suite parallelism, overlapped enough to push the host into swap.
+# opt-level=3 shrinks each derivation to tens of ms, which also collapses the
+# memory-hold window and the swap pressure. This mirrors platform's own root
+# argon2 stanza, which does NOT propagate downstream: Cargo honors [profile.*]
+# tables only from the workspace root, so DET must declare its own.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.test.package.argon2]
+opt-level = 3
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\", \"headless\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\"))"]
 
 
 [lints.clippy]
 uninlined_format_args = "allow"
-

@@ -1,136 +1,50 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::feature_gate::FeatureGate;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
+use crate::ui::components::icons::{load_icon, load_svg_icon};
 use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, Image, RichText, SidePanel, TextureHandle};
+use egui::{Frame, Image, Panel, RichText, TextureHandle, Ui};
 use egui_extras::{Size, StripBuilder};
-use rust_embed::RustEmbed;
 use std::sync::Arc;
-use tracing::error;
 
-#[derive(RustEmbed)]
-#[folder = "icons/"] // Folder containing embedded assets
-struct Assets;
-
-// Function to load an icon as a texture using embedded assets
-fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    // Use ctx.data_mut to check if texture is already cached
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(path)))
-        .or_else(|| {
-            // Only do expensive operations if texture is not cached
-            if let Some(content) = Assets::get(path) {
-                // Load the image from the embedded bytes
-                if let Ok(image) = image::load_from_memory(&content.data) {
-                    let size = [image.width() as usize, image.height() as usize];
-                    let rgba_image = image.into_rgba8();
-                    let pixels = rgba_image.into_raw();
-
-                    let texture = ctx.load_texture(
-                        path,
-                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
-                        egui::TextureOptions::LINEAR, // Use linear filtering for smoother scaling
-                    );
-
-                    // Cache the texture
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
-
-                    Some(texture)
-                } else {
-                    error!("Failed to load image from embedded data at path: {}", path);
-                    None
-                }
-            } else {
-                error!("Image not found in embedded assets at path: {}", path);
-                None
-            }
-        })
-}
-
-// Function to load an SVG as a texture with specified dimensions
-pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Option<TextureHandle> {
-    let cache_key = format!("{}_{}_{}", path, width, height);
-    // Use ctx.data_mut to check if texture is already cached
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(&cache_key)))
-        .or_else(|| {
-            // Only do expensive operations if texture is not cached
-            if let Some(content) = Assets::get(path) {
-                // Parse SVG
-                let options = resvg::usvg::Options::default();
-                let tree = match resvg::usvg::Tree::from_data(&content.data, &options) {
-                    Ok(tree) => tree,
-                    Err(e) => {
-                        error!("Failed to parse SVG at {}: {}", path, e);
-                        return None;
-                    }
-                };
-
-                // Create a pixmap to render into
-                let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
-
-                // Calculate scale to fit the SVG into the desired dimensions
-                let svg_size = tree.size();
-                let scale_x = width as f32 / svg_size.width();
-                let scale_y = height as f32 / svg_size.height();
-                let scale = scale_x.min(scale_y);
-
-                // Center the SVG
-                let offset_x = (width as f32 - svg_size.width() * scale) / 2.0;
-                let offset_y = (height as f32 - svg_size.height() * scale) / 2.0;
-
-                let transform = resvg::tiny_skia::Transform::from_scale(scale, scale)
-                    .post_translate(offset_x, offset_y);
-
-                // Render the SVG
-                resvg::render(&tree, transform, &mut pixmap.as_mut());
-
-                // Convert to egui texture
-                let pixels = pixmap.data().to_vec();
-                let texture = ctx.load_texture(
-                    &cache_key,
-                    egui::ColorImage::from_rgba_unmultiplied(
-                        [width as usize, height as usize],
-                        &pixels,
-                    ),
-                    egui::TextureOptions::LINEAR,
-                );
-
-                // Cache the texture
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new(&cache_key), texture.clone()));
-
-                Some(texture)
-            } else {
-                error!("SVG not found in embedded assets at path: {}", path);
-                None
-            }
-        })
-}
-
-pub fn add_left_panel(
-    ctx: &Context,
-    app_context: &Arc<AppContext>,
-    selected_screen: RootScreenType,
-) -> AppAction {
-    let mut action = AppAction::None;
-
-    // Define the button details directly in this function.
-    // The optional FeatureGate controls visibility — entries where the gate
-    // evaluates to false are filtered out before rendering.
-    let buttons: &[(&str, RootScreenType, &str, Option<FeatureGate>)] = &[
-        (
-            "Dashpay",
-            RootScreenType::RootScreenDashPayProfile,
-            "dashpay.png",
-            Some(FeatureGate::DashPay),
-        ),
+/// The nav sidebar entries in display order: `(label, target screen, icon,
+/// optional feature gate)`. Entries whose feature gate evaluates to false are
+/// filtered out at render time.
+///
+/// `Dashpay` ([`RootScreenType::RootScreenDashPayProfile`]) is intentionally
+/// absent: its screens and backend paths stay wired, reached from the Identity
+/// Hub rather than from the nav. The hub
+/// ([`RootScreenType::RootScreenIdentityHub`]) is the single user-facing
+/// `Identities` entry.
+fn nav_button_specs() -> &'static [(
+    &'static str,
+    RootScreenType,
+    &'static str,
+    Option<FeatureGate>,
+)] {
+    &[
         (
             "Identities",
-            RootScreenType::RootScreenIdentities,
+            RootScreenType::RootScreenIdentityHub,
             "identity.png",
             None,
+        ),
+        // Masternodes sits directly below the identity cluster (locked decision
+        // #3), gated at the Power role — masternode operation is a Power User
+        // activity. The nav item and route are both absent below Power (the gate
+        // skip at render time drops the entry).
+        // TODO: swap `voting.png` for a dedicated node/server glyph when one is
+        // added to `icons/` (distinct from `identity.png`).
+        (
+            "Masternodes",
+            RootScreenType::RootScreenMasternodes,
+            "voting.png",
+            Some(FeatureGate::Masternodes),
         ),
         (
             "Contracts",
@@ -162,20 +76,53 @@ pub fn add_left_panel(
             "config.png",
             None,
         ),
-    ];
+    ]
+}
 
-    let dark_mode = ctx.style().visuals.dark_mode;
+/// One-line hover tooltip for a nav destination, stating where the item leads so
+/// its purpose — and that it is clickable — is discoverable. Each string is a
+/// single i18n translation unit. Every entry in [`nav_button_specs`] must map to
+/// a non-empty tooltip (guarded by a test).
+fn nav_tooltip(screen: RootScreenType) -> &'static str {
+    match screen {
+        RootScreenType::RootScreenIdentityHub => {
+            "Open the Identities hub to view and manage your identities."
+        }
+        RootScreenType::RootScreenMasternodes => "View and manage your masternodes and evonodes.",
+        RootScreenType::RootScreenDocumentQuery => "Browse data contracts and their documents.",
+        RootScreenType::RootScreenMyTokenBalances => "View your token balances and manage tokens.",
+        RootScreenType::RootScreenWalletsBalances => "Manage your wallets and their balances.",
+        RootScreenType::RootScreenToolsPlatformInfoScreen => {
+            "Open the developer and diagnostic tools."
+        }
+        RootScreenType::RootScreenNetworkChooser => "Change the network and application settings.",
+        _ => "",
+    }
+}
 
-    SidePanel::left("left_panel")
-        .min_width(140.0)
-        .max_width(140.0)
+pub fn add_left_panel(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    selected_screen: RootScreenType,
+) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
+    let mut action = AppAction::None;
+
+    let buttons = nav_button_specs();
+
+    let dark_mode = ctx.global_style().visuals.dark_mode;
+
+    Panel::left("left_panel")
+        .min_size(140.0)
+        .max_size(140.0)
         .resizable(false)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
@@ -190,7 +137,7 @@ pub fn add_left_panel(
                     if app_context.network != Network::Mainnet {
                         bottom_reserved += 22.0; // network label + spacing
                     }
-                    if app_context.is_developer_mode() {
+                    if app_context.user_role().at_least(UserRole::Power) {
                         bottom_reserved += 2.0 + 16.0; // dev label area (spacing + label height)
                     }
 
@@ -235,11 +182,9 @@ pub fn add_left_panel(
                                                     RootScreenType::RootScreenToolsPlatformInfoScreen => matches!(
                                                         selected_screen,
                                                         RootScreenType::RootScreenToolsPlatformInfoScreen
-                                                            | RootScreenType::RootScreenToolsProofLogScreen
                                                             | RootScreenType::RootScreenToolsTransitionVisualizerScreen
                                                             | RootScreenType::RootScreenToolsDocumentVisualizerScreen
                                                             | RootScreenType::RootScreenToolsProofVisualizerScreen
-                                                            | RootScreenType::RootScreenToolsMasternodeListDiffScreen
                                                             | RootScreenType::RootScreenToolsContractVisualizerScreen
                                                             | RootScreenType::RootScreenToolsGroveSTARKScreen
                                                             | RootScreenType::RootScreenToolsAddressBalanceScreen
@@ -258,6 +203,7 @@ pub fn add_left_panel(
                                                 };
 
                                                 let button_color = DashColors::icon_tint(is_selected, dark_mode);
+                                                let tooltip = nav_tooltip(*screen_type);
 
                                                 if let Some(ref texture) = texture {
                                                     let button = egui::Button::image(
@@ -265,18 +211,14 @@ pub fn add_left_panel(
                                                     )
                                                     .frame(false);
 
-                                                    let added = ui.add(button);
+                                                    // The icon and its label are two widgets, so
+                                                    // the label is made clickable too — hovering or
+                                                    // clicking the text behaves like the icon, and
+                                                    // both show the pointer cursor + tooltip.
+                                                    let added = ui.add(button).clickable_tooltip(tooltip);
                                                     // Provide an accessible name for the image-only button
                                                     added.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
-                                                    if added.clicked() {
-                                                        action = AppAction::SetMainScreenThenGoToMainScreen(
-                                                            *screen_type,
-                                                        );
-                                                    } else if added.hovered() {
-                                                        ui.ctx().set_cursor_icon(
-                                                            egui::CursorIcon::PointingHand,
-                                                        );
-                                                    }
+
                                                     // Put the label beneath the icon
                                                     let color = if is_selected {
                                                         DashColors::DASH_BLUE
@@ -285,14 +227,25 @@ pub fn add_left_panel(
                                                     };
                                                     let label_text =
                                                         RichText::new(*label).color(color).size(13.0);
-                                                    ui.label(label_text);
+                                                    let label_response = ui
+                                                        .add(
+                                                            egui::Label::new(label_text)
+                                                                .sense(egui::Sense::click()),
+                                                        )
+                                                        .clickable_tooltip(tooltip);
+
+                                                    if added.clicked() || label_response.clicked() {
+                                                        action = AppAction::SetMainScreenThenGoToMainScreen(
+                                                            *screen_type,
+                                                        );
+                                                    }
                                                 } else {
                                                     // Fallback button if texture not available
                                                     if is_selected {
                                                         let response = GradientButton::new(*label, app_context)
                                                             .min_width(60.0)
-                                                            .glow()
-                                                            .show(ui);
+                                                            .show(ui)
+                                                            .clickable_tooltip(tooltip);
                                                         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
@@ -309,7 +262,7 @@ pub fn add_left_panel(
                                                             ))
                                                             .min_size(egui::vec2(60.0, 60.0));
 
-                                                        let response = ui.add(button);
+                                                        let response = ui.add(button).clickable_tooltip(tooltip);
                                                         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
@@ -380,13 +333,22 @@ pub fn add_left_panel(
                                             );
                                         }
 
-                                        // Dev mode label (below network label if present)
-                                        if app_context.is_developer_mode() {
+                                        // Interface-mode indicator (below network label if
+                                        // present). Hidden for the default role; each raised
+                                        // role shows its own compact label so switching between
+                                        // them is visible here.
+                                        let role = app_context.user_role();
+                                        if let Some(indicator) = role.indicator_label() {
                                             ui.add_space(5.0);
-                                            let dev_label = egui::RichText::new("🔧 Expert")
-                                                .color(DashColors::GRADIENT_PURPLE)
-                                                .size(12.0);
-                                            if ui.label(dev_label).clickable_tooltip("Expert mode is enabled — shows advanced options").clicked() {
+                                            let mode_label =
+                                                egui::RichText::new(format!("🔧 {indicator}"))
+                                                    .color(DashColors::GRADIENT_PURPLE)
+                                                    .size(12.0);
+                                            let tooltip = format!(
+                                                "{mode} is on. Click to change your interface mode.",
+                                                mode = role.label()
+                                            );
+                                            if ui.label(mode_label).clickable_tooltip(tooltip).clicked() {
                                                 action = AppAction::SetMainScreenThenGoToMainScreen(
                                                     RootScreenType::RootScreenNetworkChooser,
                                                 );
@@ -400,4 +362,78 @@ pub fn add_left_panel(
         });
 
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The nav sidebar hides the `Dashpay` entry and surfaces the Identity Hub
+    /// as the single `Identities` entry.
+    #[test]
+    fn nav_hides_dashpay_and_labels_hub_as_identities() {
+        let specs = nav_button_specs();
+
+        assert!(
+            !specs
+                .iter()
+                .any(|(_, screen, _, _)| *screen == RootScreenType::RootScreenDashPayProfile),
+            "the Dashpay entry must be hidden from the nav"
+        );
+
+        let hub = specs
+            .iter()
+            .find(|(_, screen, _, _)| *screen == RootScreenType::RootScreenIdentityHub);
+        assert_eq!(
+            hub.map(|(label, ..)| *label),
+            Some("Identities"),
+            "the Identity Hub row must be labeled Identities"
+        );
+
+        assert_eq!(
+            specs
+                .iter()
+                .filter(|(label, ..)| *label == "Identities")
+                .count(),
+            1,
+            "exactly one nav entry is labeled Identities"
+        );
+    }
+
+    /// Every nav entry maps to a non-empty hover tooltip, so no nav item can
+    /// ship without one (the pointer cursor is applied via the same
+    /// `clickable_tooltip` call, so a present tooltip guards both).
+    #[test]
+    fn every_nav_entry_has_a_tooltip() {
+        for (label, screen, ..) in nav_button_specs() {
+            assert!(
+                !nav_tooltip(*screen).is_empty(),
+                "nav entry '{label}' ({screen:?}) must have a hover tooltip"
+            );
+        }
+    }
+
+    /// Every fallback route (unregistered persisted screen, live de-gating of a
+    /// role-gated tab) lands on `app::FALLBACK_ROOT_SCREEN`. A fallback is only
+    /// an escape if the user can navigate onward from it, so that screen must
+    /// have a nav entry — and an ungated one, or the fallback could itself be
+    /// filtered out of the rail at the very role that triggered the fallback.
+    #[test]
+    fn fallback_root_screen_has_an_ungated_nav_entry() {
+        let entry = nav_button_specs()
+            .iter()
+            .find(|(_, screen, _, _)| *screen == crate::app::FALLBACK_ROOT_SCREEN);
+
+        let (_, _, _, gate) = entry.unwrap_or_else(|| {
+            panic!(
+                "the fallback root screen ({:?}) must have a nav entry — falling back to a \
+                 screen the nav does not carry strands the user with no way back",
+                crate::app::FALLBACK_ROOT_SCREEN
+            )
+        });
+        assert!(
+            gate.is_none(),
+            "the fallback root screen's nav entry must be ungated so it is reachable at every role"
+        );
+    }
 }

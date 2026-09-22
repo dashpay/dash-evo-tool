@@ -1,17 +1,25 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use dash_evo_tool::context::SDK_THREAD_STACK_SIZE;
 use dash_evo_tool::*;
 
-use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
+use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
-use crate::logging::initialize_logger;
+use crate::logging::{
+    capture_stderr_to_file, install_alt_signal_stack, install_fatal_signal_handler,
+    report_startup_failure_to_terminal,
+};
 
 fn main() -> eframe::Result<()> {
-    create_app_user_data_directory_if_not_exists()
-        .expect("Failed to create app user_data directory");
-    let app_data_dir =
-        app_user_data_dir_path().expect("Failed to get app user_data directory path");
-    initialize_logger();
+    // Single owner of dir/env/logger setup; runs again inside `BootApp` boot,
+    // where the logger's `Once` guard makes the repeat a no-op.
+    let app_data_dir = prepare_environment().expect("Failed to prepare app environment");
+    // Redirect stderr to a sidecar file so native crashes (SIGSEGV, abort, OOM)
+    // that bypass the tracing panic hook still leave evidence on disk, then
+    // mark which fatal signal fired. Both must run before the eframe/tokio
+    // runtime starts.
+    capture_stderr_to_file();
+    install_fatal_signal_handler();
     tracing::info!(
         version = VERSION,
         data_dir = %app_data_dir.display(),
@@ -21,12 +29,24 @@ fn main() -> eframe::Result<()> {
     // Initialize the Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(12)
+        .thread_stack_size(SDK_THREAD_STACK_SIZE) // 4 MiB stack size for each worker thread
+        // Each worker/blocking thread needs its own alternate signal stack.
+        .on_thread_start(install_alt_signal_stack)
         .enable_all()
         .build()
         .expect("multi-threading runtime cannot be initialized");
 
     // Run the native application
-    runtime.block_on(start(&app_data_dir))
+    let result = runtime.block_on(start(&app_data_dir));
+    if let Err(e) = &result {
+        // Full technical detail to det.log; the returned Err's Debug repr still
+        // reaches the redirected det-stderr.log via default termination.
+        tracing::error!(error = ?e, "Dash Evo Tool failed to start");
+        // Generic, actionable notice to the real terminal (fd 2 is redirected
+        // to the sidecar log, so this writes to the preserved original stderr).
+        report_startup_failure_to_terminal();
+    }
+    result
 }
 
 fn load_icon() -> egui::IconData {
@@ -54,7 +74,13 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
         persistence_path: Some(app_data_dir.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
-            .with_app_id("org.dash.DashEvoTool"),
+            .with_app_id("org.dash.DashEvoTool")
+            // Only takes effect on a genuine first launch: once `persist_window`
+            // has written window geometry to `app.ron`, the persisted state
+            // (size/maximized/fullscreen) unconditionally overrides this on
+            // every later run. Without it, winit falls back to its own small
+            // platform-default size, which doesn't fit the onboarding page.
+            .with_maximized(true),
         // Use wgpu instead of glow (OpenGL) to avoid platform-specific rendering
         // issues, e.g. NSOpenGLContext idle/sleep crashes on macOS (#629)
         renderer: eframe::Renderer::Wgpu,
@@ -64,6 +90,6 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
     eframe::run_native(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
-        Box::new(|cc| Ok(Box::new(crate::app::AppState::new(cc.egui_ctx.clone())?))),
+        Box::new(|cc| Ok(Box::new(crate::boot::BootApp::new(cc.egui_ctx.clone())?))),
     )
 }

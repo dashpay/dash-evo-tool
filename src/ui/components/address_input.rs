@@ -3,14 +3,15 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::ui::components::{Component, ComponentResponse};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, Shape};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::{InnerResponse, Response, Ui, WidgetText};
+use egui::{Color32, InnerResponse, Response, Ui, WidgetText};
 use std::ops::Bound;
 use std::sync::{Arc, RwLock};
 
@@ -38,25 +39,189 @@ impl DetectedType {
 
 /// A single autocomplete entry rendered in the dropdown.
 ///
-/// Pre-computed from wallet/identity data at builder/setter time.
+/// Pre-computed from wallet/identity data at builder/setter time. Each field is
+/// structured data driving one part of the row: `wallet_name` → wallet pill,
+/// `address_string` → address text, `name_label` → `(name)` annotation,
+/// `address_kind` → type pill.
 #[derive(Debug, Clone)]
 struct AddressEntry {
-    /// The full address string (populates the text field on selection).
+    /// The full address string (populates the text field on selection and is
+    /// shown, truncated unless `full_addresses`, as the row's address text).
     address_string: String,
-    /// Classification of this entry.
+    /// Classification of this entry (drives the type pill).
     address_kind: AddressKind,
-    /// Human-readable label (DPNS name, alias, or truncated address).
-    display_label: String,
+    /// Human name distinct from the address, shown as `(name)`: DPNS name or
+    /// alias for identities, `"change"` for change addresses. `None` when the
+    /// address has no name of its own.
+    name_label: Option<String>,
+    /// Owning wallet's display name, shown as a pill. `Some` for Core/Platform
+    /// entries; `None` for wallet-agnostic kinds (Identity, Shielded).
+    wallet_name: Option<String>,
     /// Balance in native units (duffs for Core, credits for Platform/Shielded/Identity).
     balance: u64,
     /// Pre-built ValidatedAddress for immediate use on selection.
     validated: ValidatedAddress,
-    /// Whether this is a change address (BIP44 m/44'/5'/0'/1/x).
-    /// Only meaningful for Core addresses; always false for other types.
-    /// Stored for potential future use in display styling; the "(change)"
-    /// suffix is already baked into `display_label` at construction time.
-    #[allow(dead_code)]
-    is_change: bool,
+}
+
+impl AddressEntry {
+    /// Alphabetical sort key: the entry's name if it has one, else the address.
+    fn sort_key(&self) -> &str {
+        self.name_label
+            .as_deref()
+            .unwrap_or(self.address_string.as_str())
+    }
+
+    /// Whether `needle` (already lowercased) substring-matches any searchable
+    /// field: the address, the name, the wallet, or the kind's labels.
+    fn matches_free_text(&self, needle: &str) -> bool {
+        self.address_string.to_lowercase().contains(needle)
+            || self
+                .name_label
+                .as_deref()
+                .is_some_and(|s| s.to_lowercase().contains(needle))
+            || self
+                .wallet_name
+                .as_deref()
+                .is_some_and(|s| s.to_lowercase().contains(needle))
+            || self
+                .address_kind
+                .short_label()
+                .to_lowercase()
+                .contains(needle)
+            || self
+                .address_kind
+                .display_name()
+                .to_lowercase()
+                .contains(needle)
+    }
+}
+
+/// A recognized search-tag key. Adding a new tag is a single match arm here plus
+/// one in [`ParsedQuery::parse`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TagKey {
+    Type,
+    Wallet,
+}
+
+/// Split a whitespace-free token into a recognized `key:value` filter tag.
+///
+/// Returns `None` for free-text tokens: any token without a colon, with a
+/// non-alphabetic key, or with an unrecognized key (e.g. `foo:bar`) — those are
+/// searched literally. A recognized key with an empty value (e.g. bare `type:`)
+/// still returns `Some` with an empty value; the caller treats it as no
+/// constraint.
+fn parse_tag(token: &str) -> Option<(TagKey, &str)> {
+    let (key, value) = token.split_once(':')?;
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let tag = match key.to_ascii_lowercase().as_str() {
+        "type" => TagKey::Type,
+        "wallet" => TagKey::Wallet,
+        _ => return None,
+    };
+    Some((tag, value))
+}
+
+fn is_search_tag_query(query: &str) -> bool {
+    query
+        .split_whitespace()
+        .any(|token| parse_tag(token).is_some())
+}
+
+/// A parsed GitHub-style search query: recognized filter tags plus leftover
+/// free-text tokens.
+///
+/// - `type:` values prefix-match `AddressKind::short_label()` (restricted to the
+///   instance's enabled kinds); multiple `type:` tokens OR together.
+/// - `wallet:` values substring-match the entry's wallet name; multiple tokens
+///   OR together.
+/// - Free-text tokens AND together, each substring-matching any searchable field.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ParsedQuery {
+    /// Kinds selected by `type:` tokens (union).
+    type_kinds: Vec<AddressKind>,
+    /// Whether at least one non-empty `type:` token was present. Distinguishes
+    /// "no type constraint" from "type constraint that matched no kind".
+    has_type_constraint: bool,
+    /// Lowercased values from `wallet:` tokens (union).
+    wallet_values: Vec<String>,
+    /// Lowercased free-text tokens (intersection).
+    free_text: Vec<String>,
+}
+
+impl ParsedQuery {
+    /// Parse `query` into filter tags and free text. `enabled_kinds` bounds which
+    /// kinds a `type:` value can select.
+    fn parse(query: &str, enabled_kinds: &[AddressKind]) -> Self {
+        let mut parsed = Self::default();
+        for token in query.split_whitespace() {
+            match parse_tag(token) {
+                Some((TagKey::Type, value)) => {
+                    if value.is_empty() {
+                        continue;
+                    }
+                    parsed.has_type_constraint = true;
+                    let value = value.to_ascii_lowercase();
+                    for &kind in enabled_kinds {
+                        if kind.short_label().to_ascii_lowercase().starts_with(&value)
+                            && !parsed.type_kinds.contains(&kind)
+                        {
+                            parsed.type_kinds.push(kind);
+                        }
+                    }
+                }
+                Some((TagKey::Wallet, value)) => {
+                    if !value.is_empty() {
+                        parsed.wallet_values.push(value.to_ascii_lowercase());
+                    }
+                }
+                None => parsed.free_text.push(token.to_ascii_lowercase()),
+            }
+        }
+        parsed
+    }
+
+    /// The needle used to float prefix-matching addresses to the top: the joined
+    /// free text, or `None` when the query is pure tags (no free text).
+    fn prefix_needle(&self) -> Option<String> {
+        if self.free_text.is_empty() {
+            None
+        } else {
+            Some(self.free_text.join(" "))
+        }
+    }
+
+    /// Whether `entry` satisfies every tag and free-text constraint.
+    fn matches(&self, entry: &AddressEntry) -> bool {
+        if self.has_type_constraint && !self.type_kinds.contains(&entry.address_kind) {
+            return false;
+        }
+        if !self.wallet_values.is_empty() {
+            match entry.wallet_name.as_deref() {
+                Some(name) => {
+                    let name = name.to_lowercase();
+                    if !self.wallet_values.iter().any(|v| name.contains(v)) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        self.free_text.iter().all(|t| entry.matches_free_text(t))
+    }
+}
+
+/// One autocomplete row's render descriptor, exposed for UI tests. Each field
+/// maps one-to-one to a render decision: `wallet_pill.is_some()` → wallet pill
+/// shown, `name.is_some()` → `(name)` shown, `kind` → type pill (always shown).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedRow {
+    pub address_string: String,
+    pub wallet_pill: Option<String>,
+    pub name: Option<String>,
+    pub kind: AddressKind,
 }
 
 /// Concrete balance range bounds.
@@ -125,6 +290,21 @@ impl ComponentResponse for AddressInputResponse {
     }
 }
 
+/// A wallet paired with its display-only `WalletBackend`-snapshot views:
+/// per-address balances (`AppContext::snapshot_address_balances`) and the
+/// authoritative per-address derivation paths
+/// (`AppContext::snapshot_address_paths`).
+///
+/// The component takes both explicitly so it never reaches into wallet state
+/// for funds (A04 — snapshot is display-only). The paths are what the wallet
+/// actually owns and SPV watches, so they, not the wallet's own bookkeeping,
+/// decide which addresses autocomplete may offer.
+pub type WalletWithSnapshot = (
+    Arc<RwLock<Wallet>>,
+    std::collections::BTreeMap<Address, u64>,
+    std::collections::BTreeMap<Address, DerivationPath>,
+);
+
 /// Unified address input with autocomplete, type detection, and validation.
 ///
 /// Follows the Component design pattern: lazy-initialize as `Option<AddressInput>`
@@ -136,7 +316,11 @@ impl ComponentResponse for AddressInputResponse {
 /// ```rust,ignore
 /// let addr_input = self.address_input.get_or_insert_with(|| {
 ///     AddressInput::new(network)
-///         .with_wallets(&wallets)
+///         .with_wallets(&[(
+///             wallet,
+///             app_context.snapshot_address_balances(&seed_hash),
+///             app_context.snapshot_address_paths(&seed_hash),
+///         )])
 ///         .with_label("Destination address")
 ///         .with_hint_text("Enter address or username")
 /// });
@@ -150,7 +334,6 @@ pub struct AddressInput {
     enabled_kinds: Vec<AddressKind>,
     show_type_filter: bool,
     dpns_resolution: bool,
-    developer_mode: bool,
     selection_only: bool,
     full_addresses: bool,
     label: Option<WidgetText>,
@@ -184,7 +367,6 @@ impl AddressInput {
             enabled_kinds: AddressKind::ALL.to_vec(),
             show_type_filter: false,
             dpns_resolution: true,
-            developer_mode: false,
             selection_only: false,
             full_addresses: false,
             label: None,
@@ -213,23 +395,22 @@ impl AddressInput {
 
     /// Provide wallet data for **Core and Platform** autocomplete only.
     ///
-    /// This extracts BIP44 (Core) addresses from `known_addresses` and
-    /// PlatformPayment addresses from `watched_addresses`. It does NOT
-    /// extract identities or shielded addresses — those live outside the
-    /// `Wallet` struct and must be added separately:
+    /// This extracts BIP-44 (Core) and DIP-17 (Platform) addresses from each
+    /// wallet's snapshot `address_paths`. It does NOT extract identities or
+    /// shielded addresses — those live outside the `Wallet` struct and must be
+    /// added separately:
     ///
     /// - **Identities**: call [`with_identities()`] with `QualifiedIdentity`
     ///   data from `AppContext::load_local_qualified_identities()`.
     /// - **Shielded**: call [`with_shielded_balance()`] with the address
-    ///   string from `AppContext::shielded_states`.
+    ///   string from the upstream shielded coordinator's default address.
     ///
     /// Entries are extracted immediately (read lock acquired once per wallet).
-    /// Skips gracefully if a wallet lock is poisoned.
-    /// When more than one wallet is provided, entries are prefixed with the wallet alias.
-    pub fn with_wallets(mut self, wallets: &[Arc<RwLock<Wallet>>]) -> Self {
-        let multi = wallets.len() > 1;
-        for wallet in wallets {
-            self.extract_wallet_entries(wallet, multi);
+    /// Skips gracefully if a wallet lock is poisoned. Each Core/Platform entry
+    /// carries its wallet's name for the wallet pill and `wallet:` search tag.
+    pub fn with_wallets(mut self, wallets: &[WalletWithSnapshot]) -> Self {
+        for (wallet, balances, paths) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths);
         }
         self
     }
@@ -303,12 +484,6 @@ impl AddressInput {
         self
     }
 
-    /// Enable developer mode display (exact credits alongside DASH). Default: false.
-    pub fn with_developer_mode(mut self, enabled: bool) -> Self {
-        self.developer_mode = enabled;
-        self
-    }
-
     /// Pre-populate the input field with an address string.
     pub fn with_initial_value(mut self, address: impl Into<String>) -> Self {
         self.input_text = address.into();
@@ -331,15 +506,12 @@ impl AddressInput {
     // --- Mutable setters for runtime reconfiguration ---
 
     /// Update wallet data after initialization (e.g., balance refresh).
-    ///
-    /// When more than one wallet is provided, entries are prefixed with the wallet alias.
-    pub fn set_wallets(&mut self, wallets: &[Arc<RwLock<Wallet>>]) {
+    pub fn set_wallets(&mut self, wallets: &[WalletWithSnapshot]) {
         self.all_entries.retain(|e| {
             e.address_kind != AddressKind::Core && e.address_kind != AddressKind::Platform
         });
-        let multi = wallets.len() > 1;
-        for wallet in wallets {
-            self.extract_wallet_entries(wallet, multi);
+        for (wallet, balances, paths) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths);
         }
     }
 
@@ -357,94 +529,69 @@ impl AddressInput {
         self.add_shielded_entry(address, balance);
     }
 
-    /// Update developer mode flag.
-    pub fn set_developer_mode(&mut self, enabled: bool) {
-        self.developer_mode = enabled;
-    }
-
     // --- Entry extraction ---
 
-    fn extract_wallet_entries(&mut self, wallet: &Arc<RwLock<Wallet>>, multi_wallet: bool) {
+    /// Extract this wallet's Core and Platform autocomplete entries from the
+    /// display snapshot's `address_paths` — the addresses the upstream wallet
+    /// actually generated and SPV watches.
+    ///
+    /// Whitelist approach: an address is offered only when its derivation path
+    /// matches a kind we recognise (BIP-44 for Core, DIP-17 for Platform).
+    /// Unknown or unrecognised paths are excluded — safer to hide an address
+    /// than to offer it under the wrong type.
+    fn extract_wallet_entries(
+        &mut self,
+        wallet: &Arc<RwLock<Wallet>>,
+        address_balances: &std::collections::BTreeMap<Address, u64>,
+        address_paths: &std::collections::BTreeMap<Address, DerivationPath>,
+    ) {
         let guard = match wallet.read().ok() {
             Some(g) => g,
             None => return,
         };
 
-        let prefix = if multi_wallet {
-            let name = guard.alias.as_deref().unwrap_or("Wallet");
-            format!("[{}] ", name)
-        } else {
-            String::new()
-        };
+        let wallet_name = Some(guard.alias.as_deref().unwrap_or("Wallet").to_string());
 
-        // Whitelist approach: only include addresses whose derivation path
-        // matches the expected type. Unknown or unrecognized paths are excluded
-        // — safer to hide an address than to show it with the wrong type.
-
-        // Core addresses: only BIP44 paths (m/44'/coin'/account'/change/index).
-        for (address, derivation_path) in &guard.known_addresses {
-            if !derivation_path.is_bip44(self.network) {
-                continue;
-            }
-            let is_change = derivation_path.is_bip44_change(self.network);
-            if self.exclude_change && is_change {
-                continue;
-            }
-            let balance = guard.address_balances.get(address).copied().unwrap_or(0);
-            let addr_str = address.to_string();
-            let change_suffix = if is_change { " (change)" } else { "" };
-            let display = if self.full_addresses {
-                format!("{}{}{}", prefix, addr_str, change_suffix)
-            } else {
-                format!("{}{}{}", prefix, truncate_address(&addr_str), change_suffix)
-            };
-            self.all_entries.push(AddressEntry {
-                address_string: addr_str,
-                address_kind: AddressKind::Core,
-                display_label: display,
-                balance,
-                validated: ValidatedAddress::Core(address.clone()),
-                is_change,
-            });
-        }
-
-        // Platform addresses: whitelist only PlatformPayment paths from
-        // watched_addresses, with balance from platform_address_info.
-        // This ensures fresh wallets with no on-chain activity still show
-        // their derived platform addresses.
-        use crate::model::wallet::DerivationPathReference;
-        let mut seen_platform = std::collections::HashSet::new();
-        for addr_info in guard.watched_addresses.values() {
-            if addr_info.path_reference != DerivationPathReference::PlatformPayment {
-                continue;
-            }
-            let core_addr = &addr_info.address;
-            if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
-                let addr_str = platform_addr.to_bech32m_string(self.network);
-                if !seen_platform.insert(addr_str.clone()) {
+        for (address, derivation_path) in address_paths {
+            if derivation_path.is_bip44(self.network) {
+                let is_change = derivation_path.is_bip44_change(self.network);
+                if self.exclude_change && is_change {
                     continue;
                 }
+                self.all_entries.push(AddressEntry {
+                    address_string: address.to_string(),
+                    address_kind: AddressKind::Core,
+                    name_label: is_change.then(|| "change".to_string()),
+                    wallet_name: wallet_name.clone(),
+                    balance: address_balances.get(address).copied().unwrap_or(0),
+                    validated: ValidatedAddress::Core(address.clone()),
+                });
+                continue;
+            }
+
+            // DIP-17 platform-payment addresses hold credits, not Core UTXOs, so
+            // their balance comes from the platform-address cache rather than
+            // the UTXO-derived `address_balances`.
+            if derivation_path.is_platform_payment(self.network)
+                && let Ok(platform_addr) = PlatformAddress::try_from(address.clone())
+            {
+                let addr_str = platform_addr.to_bech32m_string(self.network);
                 let balance = guard
                     .platform_address_info
-                    .get(core_addr)
+                    .get(address)
                     .map(|info| info.balance)
                     .unwrap_or(0);
-                let display = if self.full_addresses {
-                    format!("{}{}", prefix, addr_str)
-                } else {
-                    format!("{}{}", prefix, truncate_address(&addr_str))
-                };
                 let bech32m = addr_str.clone();
                 self.all_entries.push(AddressEntry {
                     address_string: addr_str,
                     address_kind: AddressKind::Platform,
-                    display_label: display,
+                    name_label: None,
+                    wallet_name: wallet_name.clone(),
                     balance,
                     validated: ValidatedAddress::Platform {
                         address: platform_addr,
                         bech32m,
                     },
-                    is_change: false,
                 });
             }
         }
@@ -455,42 +602,29 @@ impl AddressInput {
             let id = qi.identity.id();
             let id_str = id.to_string(Encoding::Base58);
             let dpns_name = qi.dpns_names.first().map(|n| n.name.clone());
-            let display = if let Some(ref name) = dpns_name {
-                name.clone()
-            } else if let Some(ref alias) = qi.alias {
-                alias.clone()
-            } else if self.full_addresses {
-                id_str.clone()
-            } else {
-                truncate_address(&id_str)
-            };
+            let name_label = dpns_name.clone().or_else(|| qi.alias.clone());
             self.all_entries.push(AddressEntry {
                 address_string: id_str,
                 address_kind: AddressKind::Identity,
-                display_label: display,
+                name_label,
+                wallet_name: None,
                 balance: qi.identity.balance(),
                 validated: ValidatedAddress::Identity {
                     id,
                     dpns_name: dpns_name.clone(),
                 },
-                is_change: false,
             });
         }
     }
 
     fn add_shielded_entry(&mut self, address: String, balance: u64) {
-        let display = if self.full_addresses {
-            address.clone()
-        } else {
-            truncate_address(&address)
-        };
         self.all_entries.push(AddressEntry {
             address_string: address.clone(),
             address_kind: AddressKind::Shielded,
-            display_label: display,
+            name_label: None,
+            wallet_name: None,
             balance,
             validated: ValidatedAddress::Shielded(address),
-            is_change: false,
         });
     }
 
@@ -511,6 +645,10 @@ impl AddressInput {
     fn validate_input(&self) -> (Option<String>, Option<ValidatedAddress>) {
         let trimmed = self.input_text.trim();
         if trimmed.is_empty() {
+            return (None, None);
+        }
+
+        if is_search_tag_query(trimmed) {
             return (None, None);
         }
 
@@ -535,7 +673,9 @@ impl AddressInput {
             );
         }
 
-        let detected_kind = detected.to_address_kind().unwrap();
+        let detected_kind = detected
+            .to_address_kind()
+            .expect("invariant: detected is a known type, Unknown handled above");
 
         // Check enabled kinds
         if !self.enabled_kinds.contains(&detected_kind) {
@@ -588,20 +728,15 @@ impl AddressInput {
             );
         }
         let canonical = trimmed.to_lowercase();
-        let expected_prefix = match self.network {
-            Network::Mainnet => "dash1",
-            _ => "tdash1",
-        };
-        if !canonical.starts_with(expected_prefix)
-            || canonical.starts_with(&format!("{}z", expected_prefix))
+        // Network prefix validation is centralized in `model/address.rs` so the
+        // GUI and the MCP tools share one source of truth.
+        if let Err(e) =
+            crate::model::address::validate_platform_address_for_network(&canonical, self.network)
         {
-            return (
-                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                None,
-            );
+            return (Some(e.to_string()), None);
         }
         match PlatformAddress::from_bech32m_string(&canonical) {
-            Ok((pa, _network)) => (
+            Ok(pa) => (
                 None,
                 Some(ValidatedAddress::Platform {
                     address: pa,
@@ -618,15 +753,30 @@ impl AddressInput {
     }
 
     fn validate_shielded(&self, trimmed: &str) -> (Option<String>, Option<ValidatedAddress>) {
-        let expected_prefix = match self.network {
-            Network::Mainnet => "dash1z",
-            _ => "tdash1z",
-        };
-        if !trimmed.starts_with(expected_prefix) {
-            return (
-                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                None,
-            );
+        // Raw hex form (43 bytes = 86 hex chars) is network-agnostic — accept it
+        // directly via the shared parser. This preserves the "…or hex" recipient
+        // entry the standalone private-send screen advertised.
+        if trimmed.len() == crate::model::address::SHIELDED_ADDRESS_RAW_LEN * 2
+            && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return match crate::model::address::parse_shielded_recipient(trimmed) {
+                Some(_) => (None, Some(ValidatedAddress::Shielded(trimmed.to_string()))),
+                None => (
+                    Some(
+                        "This private address is not valid. Please check it and try again."
+                            .to_string(),
+                    ),
+                    None,
+                ),
+            };
+        }
+
+        // Network prefix validation is centralized in `model/address.rs` so the
+        // GUI and the MCP tools share one source of truth.
+        if let Err(e) =
+            crate::model::address::validate_orchard_address_for_network(trimmed, self.network)
+        {
+            return (Some(e.to_string()), None);
         }
         // Orchard shielded addresses are ~70+ chars; reject anything too short.
         if trimmed.len() < 60 {
@@ -640,20 +790,12 @@ impl AddressInput {
         }
         use dash_sdk::dpp::address_funds::OrchardAddress;
         match OrchardAddress::from_bech32m_string(trimmed) {
-            Ok((_, network)) => {
-                // Shielded addresses only encode mainnet vs non-mainnet in the HRP.
-                // Testnet, Devnet, and Local all share "tdash1z" and cannot be
-                // distinguished at the address level. Enforce mainnet isolation only.
-                let same_mainnet_class =
-                    (self.network == Network::Mainnet) == (network == Network::Mainnet);
-                if !same_mainnet_class {
-                    (
-                        Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                        None,
-                    )
-                } else {
-                    (None, Some(ValidatedAddress::Shielded(trimmed.to_string())))
-                }
+            Ok(_) => {
+                // Network is already validated above via the expected_prefix check
+                // (dash1z for mainnet, tdash1z for non-mainnet). `from_bech32m_string`
+                // no longer returns the network — the prefix guard is the sole
+                // network discriminator for shielded addresses.
+                (None, Some(ValidatedAddress::Shielded(trimmed.to_string())))
             }
             Err(_) => (
                 Some(
@@ -699,8 +841,12 @@ impl AddressInput {
 
     /// Returns matching entries (truncated to 10) and the total match count
     /// before truncation.
+    ///
+    /// The query is parsed as a GitHub-style tag search ([`ParsedQuery`]): free
+    /// text still does a substring search across every field, while `type:` and
+    /// `wallet:` tags narrow by kind and owning wallet.
     fn filtered_entries(&self) -> (Vec<&AddressEntry>, usize) {
-        let query = self.input_text.trim().to_lowercase();
+        let parsed = ParsedQuery::parse(self.input_text.trim(), &self.enabled_kinds);
 
         let mut results: Vec<&AddressEntry> = self
             .all_entries
@@ -722,37 +868,89 @@ impl AddressInput {
                 {
                     return false;
                 }
-                // When query is empty, show all entries (no substring filter)
-                if query.is_empty() {
-                    return true;
-                }
-                // Substring match against address, label, and type name.
-                // Typing "platform" or "core" filters to that address type.
-                e.address_string.to_lowercase().contains(&query)
-                    || e.display_label.to_lowercase().contains(&query)
-                    || e.address_kind.short_label().to_lowercase().contains(&query)
-                    || e.address_kind
-                        .display_name()
-                        .to_lowercase()
-                        .contains(&query)
+                parsed.matches(e)
             })
             .collect();
 
-        // Sort: exact prefix matches first, then by label
-        results.sort_by(|a, b| {
-            if query.is_empty() {
-                return a.display_label.cmp(&b.display_label);
+        // Sort: free-text prefix matches on the address float to the top, then
+        // alphabetical by name (falling back to the address).
+        let needle = parsed.prefix_needle();
+        results.sort_by(|a, b| match &needle {
+            None => a.sort_key().cmp(b.sort_key()),
+            Some(needle) => {
+                let a_prefix = a.address_string.to_lowercase().starts_with(needle);
+                let b_prefix = b.address_string.to_lowercase().starts_with(needle);
+                b_prefix
+                    .cmp(&a_prefix)
+                    .then_with(|| a.sort_key().cmp(b.sort_key()))
             }
-            let a_prefix = a.address_string.to_lowercase().starts_with(&query);
-            let b_prefix = b.address_string.to_lowercase().starts_with(&query);
-            b_prefix
-                .cmp(&a_prefix)
-                .then(a.display_label.cmp(&b.display_label))
         });
 
         let total = results.len();
         results.truncate(10);
         (results, total)
+    }
+
+    /// The placeholder legend shown when no caller supplied an explicit hint:
+    /// `type:core|platform|... wallet:abc|def|...`, built from live data.
+    ///
+    /// The types segment lists the enabled kinds (in [`AddressKind::ALL`] order);
+    /// the wallets segment lists up to five distinct wallet names, alphabetically,
+    /// with a `(+N more)` indicator when more exist. The wallets segment is
+    /// omitted entirely when no wallets are loaded.
+    fn dynamic_hint(&self) -> String {
+        let mut segments = Vec::new();
+
+        let types: Vec<String> = AddressKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| self.enabled_kinds.contains(k))
+            .map(|k| k.short_label().to_lowercase())
+            .collect();
+        if !types.is_empty() {
+            segments.push(format!("type:{}", types.join("|")));
+        }
+
+        let mut names: Vec<&str> = self
+            .all_entries
+            .iter()
+            .filter_map(|e| e.wallet_name.as_deref())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        if !names.is_empty() {
+            let shown = names.iter().take(5).copied().collect::<Vec<_>>().join("|");
+            let mut segment = format!("wallet:{shown}");
+            if names.len() > 5 {
+                segment.push_str(&format!(" (+{} more)", names.len() - 5));
+            }
+            segments.push(segment);
+        }
+
+        segments.join(" ")
+    }
+
+    /// The hint text actually shown in the field: the caller's explicit hint if
+    /// set, otherwise the [`dynamic_hint`](Self::dynamic_hint) legend.
+    pub fn effective_hint_text(&self) -> String {
+        self.hint_text
+            .clone()
+            .unwrap_or_else(|| self.dynamic_hint())
+    }
+
+    /// The render descriptors for the currently filtered rows. Exposed for UI
+    /// tests to assert which pills and name annotations appear per row.
+    pub fn rendered_rows(&self) -> Vec<RenderedRow> {
+        self.filtered_entries()
+            .0
+            .into_iter()
+            .map(|e| RenderedRow {
+                address_string: e.address_string.clone(),
+                wallet_pill: e.wallet_name.clone(),
+                name: e.name_label.clone(),
+                kind: e.address_kind,
+            })
+            .collect()
     }
 
     // --- Balance formatting ---
@@ -762,15 +960,7 @@ impl AddressInput {
             AddressKind::Core => Self::format_dash_4dp(Amount::dash_from_duffs(entry.balance)),
             AddressKind::Platform | AddressKind::Shielded | AddressKind::Identity => {
                 let dash = Amount::new(entry.balance, DASH_DECIMAL_PLACES).with_unit_name("DASH");
-                if self.developer_mode {
-                    format!(
-                        "{} ({} credits)",
-                        Self::format_dash_4dp(dash),
-                        entry.balance
-                    )
-                } else {
-                    Self::format_dash_4dp(dash)
-                }
+                Self::format_dash_4dp(dash)
             }
         }
     }
@@ -796,6 +986,9 @@ impl AddressInput {
     // --- show() implementation ---
 
     fn show_internal(&mut self, ui: &mut Ui) -> InnerResponse<AddressInputResponse> {
+        // Computed before the `&mut self.input_text` borrow below; falls back to
+        // the dynamic tag-search legend when no explicit hint was supplied.
+        let hint_text = self.effective_hint_text();
         let resp = ui.vertical(|ui| {
             // Label
             if let Some(label) = &self.label {
@@ -833,9 +1026,9 @@ impl AddressInput {
 
                     // Text input
                     let mut text_edit = egui::TextEdit::singleline(&mut self.input_text);
-                    if let Some(hint) = &self.hint_text {
+                    if !hint_text.is_empty() {
                         text_edit = text_edit
-                            .hint_text(egui::RichText::new(hint).color(egui::Color32::GRAY));
+                            .hint_text(egui::RichText::new(&hint_text).color(egui::Color32::GRAY));
                     }
                     if let Some(width) = self.desired_width {
                         text_edit = text_edit.desired_width(width);
@@ -871,15 +1064,19 @@ impl AddressInput {
             // Autocomplete popup
             let mut selected_entry: Option<AddressEntry> = None;
             if has_focus || self.autocomplete_open {
-                // Collect filtered entries into an owned snapshot to release the borrow on self
+                // Collect filtered entries into an owned snapshot to release the
+                // borrow on self: (balance, address text, entry).
                 let (filtered, total_entries) = self.filtered_entries();
                 let filtered_len = filtered.len();
                 let entries_snapshot: Vec<(String, String, AddressEntry)> = filtered
                     .iter()
                     .map(|e| {
-                        let label =
-                            format!("{} ({})", e.display_label, e.address_kind.short_label());
-                        (label, self.format_balance(e), (*e).clone())
+                        let address_display = if self.full_addresses {
+                            e.address_string.clone()
+                        } else {
+                            truncate_address(&e.address_string)
+                        };
+                        (self.format_balance(e), address_display, (*e).clone())
                     })
                     .collect();
 
@@ -896,7 +1093,7 @@ impl AddressInput {
                                 egui::ScrollArea::vertical()
                                     .max_height(200.0)
                                     .show(ui, |ui| {
-                                        for (i, (label, balance_str, entry)) in
+                                        for (i, (balance_str, address_display, entry)) in
                                             entries_snapshot.iter().enumerate()
                                         {
                                             let highlighted =
@@ -913,44 +1110,28 @@ impl AddressInput {
                                             );
 
                                             if ui.is_rect_visible(rect) {
-                                                let hovered = response.hovered();
-                                                if highlighted || hovered {
-                                                    ui.painter().rect_filled(
-                                                        rect,
-                                                        egui::CornerRadius::from(2.0),
-                                                        ui.style().visuals.widgets.hovered.bg_fill,
-                                                    );
-                                                }
-
-                                                let text_color = if highlighted || hovered {
-                                                    ui.style().visuals.widgets.hovered.text_color()
-                                                } else {
-                                                    ui.style().visuals.widgets.inactive.text_color()
-                                                };
-
-                                                let padding = 4.0;
-                                                ui.painter().text(
-                                                    egui::pos2(
-                                                        rect.left() + padding,
-                                                        rect.center().y,
-                                                    ),
-                                                    egui::Align2::LEFT_CENTER,
-                                                    label.as_str(),
-                                                    egui::TextStyle::Body.resolve(ui.style()),
-                                                    text_color,
-                                                );
-
-                                                ui.painter().text(
-                                                    egui::pos2(
-                                                        rect.right() - padding,
-                                                        rect.center().y,
-                                                    ),
-                                                    egui::Align2::RIGHT_CENTER,
-                                                    balance_str.as_str(),
-                                                    egui::TextStyle::Small.resolve(ui.style()),
-                                                    DashColors::GRAY,
+                                                paint_autocomplete_row(
+                                                    ui,
+                                                    rect,
+                                                    highlighted || response.hovered(),
+                                                    entry,
+                                                    address_display,
+                                                    balance_str,
                                                 );
                                             }
+
+                                            let label = row_accessible_label(
+                                                entry,
+                                                address_display,
+                                                balance_str,
+                                            );
+                                            response.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::WidgetType::Button,
+                                                    true,
+                                                    label.clone(),
+                                                )
+                                            });
 
                                             if response.clicked() {
                                                 selected_entry = Some(entry.clone());
@@ -1004,7 +1185,7 @@ impl AddressInput {
                 self.autocomplete_open = false;
             }
 
-            // Handle autocomplete selection (FIX 7: clear cached_detection)
+            // Handle autocomplete selection (clear cached_detection).
             let selected_this_frame = selected_entry.is_some();
             if let Some(entry) = selected_entry {
                 self.input_text = entry.address_string.clone();
@@ -1042,10 +1223,10 @@ impl AddressInput {
                 }
             }
 
-            // Build response
-            // FIX 1: blur validation produces a result => signal changed
+            // Build response.
+            // Blur validation producing a result signals changed.
             let blur_validated = lost_focus && validated_address.is_some();
-            // FIX 2: use one-frame local flag for autocomplete selection
+            // One-frame local flag for autocomplete selection.
             let changed = text_changed || selected_this_frame || self.changed || blur_validated;
             if self.changed {
                 self.changed = false;
@@ -1111,6 +1292,179 @@ fn truncate_address(addr: &str) -> String {
     crate::model::address::truncate_address(addr, 8, 6)
 }
 
+// --- Autocomplete row rendering ---
+
+/// Horizontal padding inside a pill and the gap after a pill or the address text.
+const PILL_PAD_X: f32 = 6.0;
+const PILL_GAP: f32 = 6.0;
+
+/// Paint one autocomplete row: an optional hover highlight, then, left to right,
+/// `[wallet pill] address (name)`, with the type pill and balance right-aligned.
+fn paint_autocomplete_row(
+    ui: &Ui,
+    rect: egui::Rect,
+    active: bool,
+    entry: &AddressEntry,
+    address_display: &str,
+    balance_str: &str,
+) {
+    let dark_mode = ui.visuals().dark_mode;
+
+    if active {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::from(2.0),
+            ui.style().visuals.widgets.hovered.bg_fill,
+        );
+    }
+
+    let text_color = if active {
+        ui.style().visuals.widgets.hovered.text_color()
+    } else {
+        ui.style().visuals.widgets.inactive.text_color()
+    };
+    let secondary = DashColors::text_secondary(dark_mode);
+    let center_y = rect.center().y;
+    let mut x = rect.left() + PILL_GAP;
+
+    // Wallet pill (Core/Platform only).
+    if let Some(wallet) = &entry.wallet_name {
+        x += paint_pill(
+            ui,
+            x,
+            center_y,
+            wallet,
+            DashColors::text_primary(dark_mode),
+            wallet_pill_bg(),
+        ) + PILL_GAP;
+    }
+
+    // Address text.
+    let body_font = egui::TextStyle::Body.resolve(ui.style());
+    let addr_galley =
+        ui.painter()
+            .layout_no_wrap(address_display.to_string(), body_font.clone(), text_color);
+    let addr_width = addr_galley.size().x;
+    ui.painter().galley(
+        egui::pos2(x, center_y - addr_galley.size().y / 2.0),
+        addr_galley,
+        text_color,
+    );
+    x += addr_width + PILL_GAP;
+
+    // Name annotation, e.g. "(alice.dash)" or "(change)".
+    if let Some(name) = &entry.name_label {
+        let name_galley = ui
+            .painter()
+            .layout_no_wrap(format!("({name})"), body_font, secondary);
+        ui.painter().galley(
+            egui::pos2(x, center_y - name_galley.size().y / 2.0),
+            name_galley,
+            secondary,
+        );
+    }
+
+    // Right cluster: balance rightmost, type pill immediately to its left.
+    let small_font = egui::TextStyle::Small.resolve(ui.style());
+    let bal_galley =
+        ui.painter()
+            .layout_no_wrap(balance_str.to_string(), small_font, DashColors::GRAY);
+    let bal_width = bal_galley.size().x;
+    let bal_x = rect.right() - PILL_GAP - bal_width;
+    ui.painter().galley(
+        egui::pos2(bal_x, center_y - bal_galley.size().y / 2.0),
+        bal_galley,
+        DashColors::GRAY,
+    );
+
+    let type_text = entry.address_kind.short_label();
+    let type_width = measure_pill(ui, type_text);
+    let type_left = bal_x - PILL_GAP - type_width;
+    paint_pill(
+        ui,
+        type_left,
+        center_y,
+        type_text,
+        secondary,
+        type_pill_bg(),
+    );
+}
+
+/// Font used for pill text.
+fn pill_font(ui: &Ui) -> egui::FontId {
+    egui::TextStyle::Small.resolve(ui.style())
+}
+
+/// The width a pill would occupy for `text`, without painting it.
+fn measure_pill(ui: &Ui, text: &str) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), pill_font(ui), Color32::PLACEHOLDER);
+    galley.size().x + PILL_PAD_X * 2.0
+}
+
+/// Paint a compact rounded pill with its left edge at `left`, vertically centered
+/// on `center_y`. Returns the pill's width.
+fn paint_pill(
+    ui: &Ui,
+    left: f32,
+    center_y: f32,
+    text: &str,
+    text_color: Color32,
+    bg: Color32,
+) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), pill_font(ui), text_color);
+    let text_size = galley.size();
+    let width = text_size.x + PILL_PAD_X * 2.0;
+    let height = text_size.y + 2.0;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(left, center_y - height / 2.0),
+        egui::vec2(width, height),
+    );
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(Shape::RADIUS_FULL), bg);
+    ui.painter().galley(
+        egui::pos2(left + PILL_PAD_X, center_y - text_size.y / 2.0),
+        galley,
+        text_color,
+    );
+    width
+}
+
+/// Translucent accent tint for the wallet pill.
+fn wallet_pill_bg() -> Color32 {
+    let c = DashColors::DASH_BLUE;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 48)
+}
+
+/// Translucent neutral tint for the type pill, distinct from the wallet pill.
+fn type_pill_bg() -> Color32 {
+    let c = DashColors::GRAY;
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 48)
+}
+
+/// One-line accessible label mirroring a row's painted content, for screen
+/// readers and UI tests (the row is otherwise painted directly and exposes no text).
+fn row_accessible_label(entry: &AddressEntry, address_display: &str, balance_str: &str) -> String {
+    let mut label = String::new();
+    if let Some(wallet) = &entry.wallet_name {
+        label.push_str(wallet);
+        label.push(' ');
+    }
+    label.push_str(address_display);
+    if let Some(name) = &entry.name_label {
+        label.push_str(&format!(" ({name})"));
+    }
+    label.push_str(&format!(
+        " {} {}",
+        entry.address_kind.short_label(),
+        balance_str
+    ));
+    label
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1125,6 +1479,21 @@ mod tests {
         let pubkey = PublicKey::from_private_key(&secp, &privkey);
         let addr = Address::p2pkh(&pubkey, Network::Testnet);
         (addr.to_string(), addr)
+    }
+
+    /// A testnet BIP-44 external (receive) path `m/44'/1'/0'/0/index`.
+    fn bip44_receive_path(index: u32) -> DerivationPath {
+        use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+        DerivationPath::from(
+            [
+                ChildNumber::Hardened { index: 44 },
+                ChildNumber::Hardened { index: 1 },
+                ChildNumber::Hardened { index: 0 },
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index },
+            ]
+            .as_slice(),
+        )
     }
 
     /// Generate a valid mainnet P2PKH address for testing.
@@ -1149,6 +1518,17 @@ mod tests {
     fn detect_shielded_testnet() {
         let result = detect_address_type("tdash1z_some_shielded_addr", true);
         assert_eq!(result, DetectedType::Shielded);
+    }
+
+    #[test]
+    fn detect_shielded_raw_hex() {
+        // 43-byte raw hex form (network-agnostic) routes to shielded validation
+        // so the "…or hex" recipient entry keeps working.
+        let hex_str = hex::encode(vec![
+            0xABu8;
+            crate::model::address::SHIELDED_ADDRESS_RAW_LEN
+        ]);
+        assert_eq!(detect_address_type(&hex_str, true), DetectedType::Shielded);
     }
 
     #[test]
@@ -1520,7 +1900,7 @@ mod tests {
         assert_eq!(va.to_address_string(), "dash1z_test");
     }
 
-    // --- FIX 1: Blur validation propagation ---
+    // --- Blur validation propagation ---
 
     #[test]
     fn blur_triggers_validation_for_valid_core_address() {
@@ -1551,7 +1931,7 @@ mod tests {
         assert_eq!(val.unwrap().kind(), AddressKind::Core);
     }
 
-    // --- FIX 4: Mixed-case bech32m rejection ---
+    // --- Mixed-case bech32m rejection ---
 
     #[test]
     fn platform_mixed_case_rejected() {
@@ -1591,6 +1971,572 @@ mod tests {
                 "Platform addresses must not mix upper and lower case characters. Please use all lowercase."
             ),
             "all-uppercase should pass the case check"
+        );
+    }
+
+    // --- Search-tag query parser ---
+
+    fn test_entry(
+        kind: AddressKind,
+        addr: &str,
+        name: Option<&str>,
+        wallet: Option<&str>,
+    ) -> AddressEntry {
+        AddressEntry {
+            address_string: addr.to_string(),
+            address_kind: kind,
+            name_label: name.map(String::from),
+            wallet_name: wallet.map(String::from),
+            balance: 0,
+            validated: ValidatedAddress::Shielded(addr.to_string()),
+        }
+    }
+
+    #[test]
+    fn parse_type_tag_selects_kind() {
+        let q = ParsedQuery::parse("type:core", &AddressKind::ALL);
+        assert!(q.has_type_constraint);
+        assert_eq!(q.type_kinds, vec![AddressKind::Core]);
+        assert!(q.wallet_values.is_empty());
+        assert!(q.free_text.is_empty());
+    }
+
+    #[test]
+    fn recognized_search_tags_are_not_validated_as_addresses() {
+        for query in [
+            "type:",
+            "type:core",
+            "wallet:",
+            "wallet:abc",
+            "TYPE:Core WALLET:abc",
+        ] {
+            let input = AddressInput::new(Network::Testnet).with_initial_value(query.to_string());
+            let (error, validated) = input.validate_input();
+            assert!(
+                error.is_none(),
+                "recognized search query should not be address-validated: {query}"
+            );
+            assert!(validated.is_none());
+        }
+    }
+
+    #[test]
+    fn unknown_search_tag_is_still_validated_as_free_text() {
+        let input = AddressInput::new(Network::Testnet).with_initial_value("foo:bar");
+        let (error, validated) = input.validate_input();
+        assert_eq!(
+            error.as_deref(),
+            Some("This does not look like a valid address. Please check for typos.")
+        );
+        assert!(validated.is_none());
+    }
+
+    #[test]
+    fn search_tag_query_survives_wallet_snapshot_refresh() {
+        let mut input = core_wallet_input(Some("Wallet")).with_initial_value("type:core");
+        assert!(
+            input
+                .all_entries
+                .iter()
+                .any(|entry| entry.address_kind == AddressKind::Core)
+        );
+
+        input.set_wallets(&[]);
+
+        assert_eq!(input.input_text, "type:core");
+        assert!(
+            input
+                .all_entries
+                .iter()
+                .all(|entry| entry.address_kind != AddressKind::Core)
+        );
+    }
+
+    #[test]
+    fn parse_type_prefix_matches() {
+        assert_eq!(
+            ParsedQuery::parse("type:cor", &AddressKind::ALL).type_kinds,
+            vec![AddressKind::Core]
+        );
+        assert_eq!(
+            ParsedQuery::parse("type:plat", &AddressKind::ALL).type_kinds,
+            vec![AddressKind::Platform]
+        );
+    }
+
+    #[test]
+    fn parse_type_is_case_insensitive() {
+        assert_eq!(
+            ParsedQuery::parse("TYPE:Core", &AddressKind::ALL).type_kinds,
+            vec![AddressKind::Core]
+        );
+    }
+
+    #[test]
+    fn parse_type_tokens_union() {
+        let q = ParsedQuery::parse("type:core type:platform", &AddressKind::ALL);
+        assert_eq!(q.type_kinds, vec![AddressKind::Core, AddressKind::Platform]);
+        assert!(q.matches(&test_entry(AddressKind::Core, "x", None, None)));
+        assert!(q.matches(&test_entry(AddressKind::Platform, "x", None, None)));
+        assert!(!q.matches(&test_entry(AddressKind::Shielded, "x", None, None)));
+    }
+
+    #[test]
+    fn parse_wallet_tag_substring_matches() {
+        let q = ParsedQuery::parse("wallet:abc", &AddressKind::ALL);
+        assert_eq!(q.wallet_values, vec!["abc".to_string()]);
+        assert!(q.matches(&test_entry(AddressKind::Core, "x", None, Some("abcdef"))));
+        assert!(!q.matches(&test_entry(AddressKind::Core, "x", None, Some("xyz"))));
+        assert!(!q.matches(&test_entry(AddressKind::Core, "x", None, None)));
+    }
+
+    #[test]
+    fn parse_wallet_is_case_insensitive() {
+        let q = ParsedQuery::parse("wallet:ABC", &AddressKind::ALL);
+        assert!(q.matches(&test_entry(
+            AddressKind::Core,
+            "x",
+            None,
+            Some("MyAbcWallet")
+        )));
+    }
+
+    #[test]
+    fn parse_tags_and_together() {
+        let q = ParsedQuery::parse("type:core wallet:abc", &AddressKind::ALL);
+        assert!(q.matches(&test_entry(
+            AddressKind::Core,
+            "x",
+            None,
+            Some("abc wallet")
+        )));
+        // Right wallet, wrong type.
+        assert!(!q.matches(&test_entry(
+            AddressKind::Platform,
+            "x",
+            None,
+            Some("abc wallet")
+        )));
+        // Right type, wrong wallet.
+        assert!(!q.matches(&test_entry(AddressKind::Core, "x", None, Some("zzz"))));
+    }
+
+    #[test]
+    fn free_text_tokens_and_together() {
+        let q = ParsedQuery::parse("foo bar", &AddressKind::ALL);
+        assert_eq!(q.free_text, vec!["foo".to_string(), "bar".to_string()]);
+        assert!(q.matches(&test_entry(AddressKind::Core, "foobar", None, None)));
+        assert!(!q.matches(&test_entry(AddressKind::Core, "foo", None, None)));
+    }
+
+    #[test]
+    fn unknown_key_is_treated_as_free_text() {
+        let q = ParsedQuery::parse("foo:bar", &AddressKind::ALL);
+        assert!(!q.has_type_constraint);
+        assert!(q.type_kinds.is_empty());
+        assert!(q.wallet_values.is_empty());
+        assert_eq!(q.free_text, vec!["foo:bar".to_string()]);
+    }
+
+    #[test]
+    fn empty_tag_value_is_ignored() {
+        let type_only = ParsedQuery::parse("type:", &AddressKind::ALL);
+        assert!(!type_only.has_type_constraint);
+        assert!(type_only.free_text.is_empty());
+        assert!(type_only.matches(&test_entry(AddressKind::Shielded, "x", None, None)));
+
+        let wallet_only = ParsedQuery::parse("wallet:", &AddressKind::ALL);
+        assert!(wallet_only.wallet_values.is_empty());
+        assert!(wallet_only.matches(&test_entry(AddressKind::Core, "x", None, None)));
+    }
+
+    #[test]
+    fn type_restricted_to_enabled_kinds() {
+        let q = ParsedQuery::parse("type:core", &[AddressKind::Platform]);
+        assert!(q.has_type_constraint);
+        assert!(q.type_kinds.is_empty());
+        // A kind not enabled for this instance can never match.
+        assert!(!q.matches(&test_entry(AddressKind::Core, "x", None, None)));
+    }
+
+    #[test]
+    fn type_matching_no_kind_excludes_all() {
+        let q = ParsedQuery::parse("type:zzz", &AddressKind::ALL);
+        assert!(q.has_type_constraint);
+        assert!(q.type_kinds.is_empty());
+        assert!(!q.matches(&test_entry(AddressKind::Core, "x", None, None)));
+    }
+
+    #[test]
+    fn free_text_matches_kind_label() {
+        // Preserves the pre-tag behavior: typing "core" filters to Core entries.
+        let q = ParsedQuery::parse("core", &AddressKind::ALL);
+        assert!(q.matches(&test_entry(AddressKind::Core, "x", None, None)));
+        assert!(!q.matches(&test_entry(AddressKind::Shielded, "x", None, None)));
+    }
+
+    #[test]
+    fn empty_query_matches_everything() {
+        let q = ParsedQuery::parse("", &AddressKind::ALL);
+        assert!(q.matches(&test_entry(AddressKind::Identity, "x", None, None)));
+        assert!(q.prefix_needle().is_none());
+    }
+
+    #[test]
+    fn prefix_needle_is_joined_free_text() {
+        let q = ParsedQuery::parse("type:core abc", &AddressKind::ALL);
+        assert_eq!(q.prefix_needle().as_deref(), Some("abc"));
+    }
+
+    // --- Entry population ---
+
+    /// An input fed one snapshot-sourced BIP-44 receive address.
+    fn core_wallet_input(alias: Option<&str>) -> AddressInput {
+        use std::collections::BTreeMap;
+        let wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, alias.map(String::from), None)
+                .expect("wallet from seed");
+        let (_, address) = testnet_core_address();
+        let paths = BTreeMap::from([(address, bip44_receive_path(0))]);
+        AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )])
+    }
+
+    fn identity_input(alias: Option<&str>, dpns: Option<&str>) -> AddressInput {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{
+            DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+        };
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use std::collections::BTreeMap;
+
+        let identity =
+            Identity::create_basic_identity(Identifier::from([9u8; 32]), PlatformVersion::latest())
+                .expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: alias.map(String::from),
+            private_keys: KeyStorage::default(),
+            dpns_names: dpns
+                .map(|n| {
+                    vec![DPNSNameInfo {
+                        name: n.to_string(),
+                        acquired_at: 0,
+                    }]
+                })
+                .unwrap_or_default(),
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        };
+        AddressInput::new(Network::Testnet).with_identities(&[qi])
+    }
+
+    #[test]
+    fn core_entry_gets_wallet_name_and_no_name_label() {
+        let input = core_wallet_input(Some("MyWallet"));
+        let core = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Core)
+            .expect("core entry present");
+        assert_eq!(core.wallet_name.as_deref(), Some("MyWallet"));
+        assert_eq!(core.name_label, None, "receive address has no name label");
+    }
+
+    #[test]
+    fn core_entry_defaults_wallet_name_when_no_alias() {
+        let input = core_wallet_input(None);
+        let core = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Core)
+            .expect("core entry present");
+        assert_eq!(core.wallet_name.as_deref(), Some("Wallet"));
+    }
+
+    /// A testnet BIP-44 change path `m/44'/1'/0'/1/0` (components[3] == Normal(1)).
+    fn bip44_change_path() -> DerivationPath {
+        use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+        DerivationPath::from(
+            [
+                ChildNumber::Hardened { index: 44 },
+                ChildNumber::Hardened { index: 1 },
+                ChildNumber::Hardened { index: 0 },
+                ChildNumber::Normal { index: 1 },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .as_slice(),
+        )
+    }
+
+    #[test]
+    fn core_change_entry_gets_change_name_label() {
+        use std::collections::BTreeMap;
+
+        let wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        let (_, change_addr) = testnet_core_address();
+        let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )]);
+        let change = input
+            .all_entries
+            .iter()
+            .find(|e| e.name_label.as_deref() == Some("change"))
+            .expect("change entry present");
+        assert_eq!(change.address_kind, AddressKind::Core);
+        assert_eq!(change.wallet_name.as_deref(), Some("W"));
+    }
+
+    #[test]
+    fn core_change_entry_excluded_when_requested() {
+        use std::collections::BTreeMap;
+
+        let wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        let (_, change_addr) = testnet_core_address();
+        let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
+
+        let input = AddressInput::new(Network::Testnet)
+            .with_exclude_change(true)
+            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)]);
+        assert!(
+            input
+                .all_entries
+                .iter()
+                .all(|e| e.name_label.as_deref() != Some("change")),
+            "change address must be excluded when with_exclude_change(true)"
+        );
+    }
+
+    /// A BIP-44 path present only in the snapshot — the wallet's legacy
+    /// `known_addresses` never saw it — must still surface a Core entry. The
+    /// snapshot is the source of truth for what the autocomplete may offer.
+    #[test]
+    fn core_entries_are_sourced_from_the_snapshot_paths() {
+        use std::collections::BTreeMap;
+
+        let mut wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        wallet.known_addresses.clear();
+        wallet.watched_addresses.clear();
+
+        let (addr_str, address) = testnet_core_address();
+        let paths = BTreeMap::from([(address, bip44_receive_path(0))]);
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )]);
+
+        let core = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Core)
+            .expect("snapshot-sourced core entry present");
+        assert_eq!(core.address_string, addr_str);
+        assert_eq!(core.wallet_name.as_deref(), Some("W"));
+    }
+
+    /// A DIP-17 platform-payment path present only in the snapshot — the
+    /// wallet's legacy `watched_addresses` never saw it — must still surface a
+    /// Platform entry, rendered in DIP-18 bech32m.
+    #[test]
+    fn platform_entries_are_sourced_from_the_snapshot_paths() {
+        use std::collections::BTreeMap;
+
+        let mut wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        wallet.known_addresses.clear();
+        wallet.watched_addresses.clear();
+
+        let (_, address) = testnet_core_address();
+        let expected = PlatformAddress::try_from(address.clone())
+            .expect("core address converts to a platform address")
+            .to_bech32m_string(Network::Testnet);
+        let paths = BTreeMap::from([(
+            address,
+            DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 0),
+        )]);
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )]);
+
+        let platform = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Platform)
+            .expect("snapshot-sourced platform entry present");
+        assert_eq!(platform.address_string, expected);
+        assert_eq!(platform.wallet_name.as_deref(), Some("W"));
+    }
+
+    /// FUNDS-SAFETY: the legacy `known_addresses`/`watched_addresses` maps are
+    /// no longer an autocomplete source. DET's own bootstrap can derive
+    /// addresses upstream does not watch (past the gap limit, or a stale
+    /// rehydrate); offering one would invite funds to an address SPV never sees.
+    /// With an empty snapshot, a fully-populated legacy map must yield nothing.
+    #[test]
+    fn legacy_maps_never_source_autocomplete_entries() {
+        use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType};
+        use std::collections::BTreeMap;
+
+        // `new_from_seed` seeds `known_addresses` with the first BIP-44 receive
+        // address; add a platform-payment entry so both legacy branches are live.
+        let mut wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        assert!(
+            !wallet.known_addresses.is_empty(),
+            "precondition: the legacy map is populated, so this test can prove it is ignored"
+        );
+        let (_, address) = testnet_core_address();
+        let platform_path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 0);
+        wallet.watched_addresses.insert(
+            platform_path.clone(),
+            AddressInfo {
+                address,
+                path_reference: DerivationPathReference::PlatformPayment,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+            },
+        );
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )]);
+
+        assert!(
+            !input
+                .all_entries
+                .iter()
+                .any(|e| matches!(e.address_kind, AddressKind::Core | AddressKind::Platform)),
+            "an empty snapshot must yield no wallet entries, whatever the legacy maps hold"
+        );
+    }
+
+    #[test]
+    fn shielded_entry_has_no_name_or_wallet() {
+        let input = AddressInput::new(Network::Testnet)
+            .with_shielded_balance("tdash1zexampleaddress".to_string(), 100);
+        let entry = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Shielded)
+            .expect("shielded entry present");
+        assert_eq!(entry.name_label, None);
+        assert_eq!(entry.wallet_name, None);
+    }
+
+    #[test]
+    fn identity_entry_uses_alias_when_no_dpns() {
+        let input = identity_input(Some("bob-alias"), None);
+        let entry = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Identity)
+            .expect("identity entry present");
+        assert_eq!(entry.name_label.as_deref(), Some("bob-alias"));
+        assert_eq!(entry.wallet_name, None);
+    }
+
+    #[test]
+    fn identity_entry_prefers_dpns_over_alias() {
+        let input = identity_input(Some("bob-alias"), Some("bob.dash"));
+        let entry = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Identity)
+            .expect("identity entry present");
+        assert_eq!(entry.name_label.as_deref(), Some("bob.dash"));
+    }
+
+    #[test]
+    fn identity_entry_has_no_name_when_neither() {
+        let input = identity_input(None, None);
+        let entry = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Identity)
+            .expect("identity entry present");
+        assert_eq!(entry.name_label, None);
+    }
+
+    // --- Dynamic hint legend ---
+
+    #[test]
+    fn dynamic_hint_lists_enabled_kinds() {
+        let input = AddressInput::new(Network::Testnet);
+        assert_eq!(
+            input.effective_hint_text(),
+            "type:core|platform|shielded|identity"
+        );
+    }
+
+    #[test]
+    fn dynamic_hint_reflects_restricted_kinds() {
+        let input = AddressInput::new(Network::Testnet)
+            .with_address_kinds(&[AddressKind::Core, AddressKind::Platform]);
+        assert_eq!(input.effective_hint_text(), "type:core|platform");
+    }
+
+    #[test]
+    fn explicit_hint_overrides_dynamic_legend() {
+        let input = AddressInput::new(Network::Testnet).with_hint_text("Paste an address");
+        assert_eq!(input.effective_hint_text(), "Paste an address");
+    }
+
+    #[test]
+    fn dynamic_hint_includes_and_trims_wallets() {
+        use std::collections::BTreeMap;
+        let (_, address) = testnet_core_address();
+        let wallets: Vec<WalletWithSnapshot> = (0u8..6)
+            .map(|i| {
+                let wallet = Wallet::new_from_seed(
+                    [i + 1; 64],
+                    Network::Testnet,
+                    Some(format!("w{i}")),
+                    None,
+                )
+                .expect("wallet from seed");
+                let paths = BTreeMap::from([(address.clone(), bip44_receive_path(0))]);
+                (Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)
+            })
+            .collect();
+        let input = AddressInput::new(Network::Testnet).with_wallets(&wallets);
+        let hint = input.effective_hint_text();
+        assert!(
+            hint.contains("wallet:w0|w1|w2|w3|w4"),
+            "hint should list the first five wallets: {hint}"
+        );
+        assert!(
+            hint.contains("(+1 more)"),
+            "hint should indicate one trimmed wallet: {hint}"
         );
     }
 }

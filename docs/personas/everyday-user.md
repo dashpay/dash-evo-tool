@@ -63,7 +63,6 @@ Alex installed Dash Evo Tool because it was recommended for managing DPNS names 
 
 - Derivation paths or BIP standards.
 - Individual address lists with UTXO counts.
-- Refresh mode selectors (Core Only, Platform Full, etc.).
 - Asset lock creation or management (should be abstracted if needed at all).
 - "View Key" buttons for every address.
 - Platform credits expressed in raw credit values.

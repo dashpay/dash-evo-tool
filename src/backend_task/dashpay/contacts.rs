@@ -1,20 +1,21 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::contact_request_query;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::contact_request_recipient;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::DataContract;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 // DashPay contract ID from the platform repo
 pub const DASHPAY_CONTRACT_ID: [u8; 32] = [
@@ -31,94 +32,43 @@ pub async fn get_dashpay_contract(sdk: &Sdk) -> Result<Arc<DataContract>, String
         .map(Arc::new)
 }
 
-/// Derive encryption keys for contactInfo using BIP32 CKDpriv as specified in DIP-0015.
+/// Derive the DIP-0015 contactInfo encryption keys for `identity`, fetching
+/// the wallet's HD seed just-in-time through the [`SecretAccess`] chokepoint.
 ///
-/// DIP-0015 specifies:
-/// - Key1 (for encToUserId): rootEncryptionKey/(2^16)'/index'
-/// - Key2 (for privateData): rootEncryptionKey/(2^16 + 1)'/index'
-///
-/// We use the wallet's master seed to derive a root encryption key,
-/// then apply BIP32 hardened derivation for the two encryption keys.
-fn derive_contact_info_keys(
+/// The seed is obtained per-operation via
+/// [`SecretAccess::with_secret`](crate::wallet_backend::SecretAccess::with_secret)
+/// keyed by the identity's DashPay wallet seed hash, and the BIP-32
+/// derivation runs inside the closure through the shared
+/// [`derive_contact_info_encryption_keys`](crate::wallet_backend::derive_contact_info_encryption_keys)
+/// helper — the raw seed never enters this layer.
+#[allow(clippy::type_complexity)]
+async fn derive_contact_info_keys(
+    app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     derivation_index: u32,
-) -> Result<([u8; 32], [u8; 32]), String> {
-    // Get the wallet seed from the identity's associated wallet
-    let wallet = identity
-        .associated_wallets
-        .values()
-        .next()
-        .ok_or("No wallet associated with identity for key derivation")?;
+) -> Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError> {
+    let seed_hash = identity
+        .dashpay_wallet_seed_hash()
+        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+    let network = identity.network;
 
-    let (seed, network) = {
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-        if !wallet_guard.is_open() {
-            return Err("Wallet must be unlocked to derive encryption keys".to_string());
-        }
-        let seed = wallet_guard
-            .seed_bytes()
-            .map_err(|e| format!("Wallet seed not available: {}", e))?
-            .to_vec();
-        (seed, identity.network)
-    };
-
-    // Create master extended private key from seed
-    let master_xprv = ExtendedPrivKey::new_master(network, &seed)
-        .map_err(|e| format!("Failed to create master key: {}", e))?;
-
-    // Derive to the root encryption key path: m/9'/5'/15'/0'
-    // This follows the DashPay derivation structure
-    let root_path = DerivationPath::from_str("m/9'/5'/15'/0'")
-        .map_err(|e| format!("Invalid derivation path: {}", e))?;
-
-    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-    let root_encryption_key = master_xprv
-        .derive_priv(&secp, &root_path)
-        .map_err(|e| format!("Failed to derive root encryption key: {}", e))?;
-
-    // Derive Key1 for encToUserId: rootEncryptionKey/(2^16)'/index'
-    // First derive at hardened index 2^16 (65536)
-    let key1_level1 = root_encryption_key
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65536)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
+    app_context
+        .wallet_backend()?
+        .secret_access()
+        .with_secret(
+            &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+            |plaintext| {
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                crate::wallet_backend::derive_contact_info_encryption_keys(
+                    seed,
+                    network,
+                    derivation_index,
+                )
+            },
         )
-        .map_err(|e| format!("Failed to derive key1 level1: {}", e))?;
-
-    // Then derive at hardened derivation_index
-    let key1_final = key1_level1
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
-        )
-        .map_err(|e| format!("Failed to derive key1 final: {}", e))?;
-
-    // Derive Key2 for privateData: rootEncryptionKey/(2^16 + 1)'/index'
-    // First derive at hardened index 2^16 + 1 (65537)
-    let key2_level1 = root_encryption_key
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65537)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
-        )
-        .map_err(|e| format!("Failed to derive key2 level1: {}", e))?;
-
-    // Then derive at hardened derivation_index
-    let key2_final = key2_level1
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
-        )
-        .map_err(|e| format!("Failed to derive key2 final: {}", e))?;
-
-    // Extract the private key bytes (32 bytes) for encryption
-    let key1_bytes: [u8; 32] = key1_final.private_key.secret_bytes();
-    let key2_bytes: [u8; 32] = key2_final.private_key.secret_bytes();
-
-    Ok((key1_bytes, key2_bytes))
+        .await
 }
 
 /// Decrypt toUserId using AES-256-ECB as specified by DIP-0015.
@@ -130,54 +80,46 @@ fn derive_contact_info_keys(
 ///
 /// These properties eliminate typical ECB vulnerabilities (pattern leakage).
 /// See: https://github.com/dashpay/dips/blob/master/dip-0015.md
-#[allow(deprecated)]
 fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], String> {
-    use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::aes::Aes256;
-    use aes_gcm::aes::cipher::{BlockDecrypt, KeyInit};
+    use aes_gcm::aes::cipher::{BlockCipherDecrypt, KeyInit};
 
-    if encrypted.len() != 32 {
-        return Err("Invalid encrypted user ID length".to_string());
+    let mut decrypted: [u8; 32] = encrypted
+        .try_into()
+        .map_err(|_| "Invalid encrypted user ID length".to_string())?;
+
+    let cipher = Aes256::new(key.into());
+
+    // The 32-byte ciphertext is exactly two 16-byte AES blocks; decrypt each in place (ECB).
+    let (blocks, _) = decrypted.as_chunks_mut::<16>();
+    for block in blocks {
+        cipher.decrypt_block(block.into());
     }
-
-    let cipher = Aes256::new(GenericArray::from_slice(key));
-
-    // Split the 32-byte encrypted data into two 16-byte blocks for ECB mode
-    let mut decrypted = [0u8; 32];
-
-    let mut block1 = GenericArray::clone_from_slice(&encrypted[0..16]);
-    let mut block2 = GenericArray::clone_from_slice(&encrypted[16..32]);
-
-    cipher.decrypt_block(&mut block1);
-    cipher.decrypt_block(&mut block2);
-
-    decrypted[0..16].copy_from_slice(&block1);
-    decrypted[16..32].copy_from_slice(&block2);
 
     Ok(decrypted)
 }
 
 // Helper function to decrypt private data using AES-256-CBC
-fn decrypt_private_data(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use cbc::cipher::BlockDecryptMut;
+pub(super) fn decrypt_private_data(
+    encrypted_data: &[u8],
+    key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use cbc::cipher::BlockModeDecrypt;
     use cbc::cipher::KeyIvInit;
     use cbc::cipher::block_padding::Pkcs7;
     type Aes256CbcDec = cbc::Decryptor<aes_gcm::aes::Aes256>;
 
-    if encrypted_data.len() < 16 {
-        return Err("Encrypted data too short (no IV)".to_string());
-    }
-
     // Extract IV and ciphertext
-    let iv = &encrypted_data[0..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt
     let cipher = Aes256CbcDec::new(key.into(), iv.into());
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     Ok(decrypted.to_vec())
@@ -206,11 +148,7 @@ pub async fn load_contacts(
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for contact requests where we are the sender (ownerId)
-    let mut outgoing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
+    let mut outgoing_query = contact_request_query(app_context)?;
 
     outgoing_query = outgoing_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -220,11 +158,7 @@ pub async fn load_contacts(
     outgoing_query.limit = 100;
 
     // Query for contact requests where we are the recipient (toUserId)
-    let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
+    let mut incoming_query = contact_request_query(app_context)?;
 
     incoming_query = incoming_query.with_where(WhereClause {
         field: "toUserId".to_string(),
@@ -256,35 +190,21 @@ pub async fn load_contacts(
         .collect();
 
     // Find mutual contacts (where both parties have sent requests to each other)
-    let mut contacts = HashSet::new();
-
-    for (_, incoming_doc) in incoming.iter() {
-        let from_id = incoming_doc.owner_id();
-
-        // Check if we also sent a request to this person
-        for (_, outgoing_doc) in outgoing.iter() {
-            if let Some(Value::Identifier(to_id_bytes)) = outgoing_doc.properties().get("toUserId")
-            {
-                let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
-                    tracing::warn!(
-                        "Failed to parse contact request toUserId ({} bytes), skipping",
-                        to_id_bytes.len()
-                    );
-                    continue;
-                };
-                if to_id == from_id {
-                    // Mutual contact found
-                    contacts.insert(from_id);
-                }
-            }
-        }
-    }
+    let contacts: HashSet<Identifier> = incoming
+        .iter()
+        .map(|(_, doc)| doc.owner_id())
+        .filter(|from_id| {
+            outgoing
+                .iter()
+                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
+        })
+        .collect();
 
     // Now query for contact info documents
     let mut contact_info_query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
         .map_err(|e| DashPayError::QueryCreation {
             query_target: "DashPay contactInfo",
-            source: Box::new(e),
+            source: Box::new(e.into()),
         })?;
 
     contact_info_query = contact_info_query.with_where(WhereClause {
@@ -304,10 +224,13 @@ pub async fn load_contacts(
             let props = doc.properties();
 
             // Get the derivation index used for this document
-            if let Some(Value::U32(deriv_idx)) = props.get("derivationEncryptionKeyIndex") {
+            if let Some(deriv_idx) = props
+                .get("derivationEncryptionKeyIndex")
+                .and_then(|value| value.to_integer::<u32>().ok())
+            {
                 // Derive keys for this document
                 let (enc_user_id_key, private_data_key) =
-                    match derive_contact_info_keys(&identity, *deriv_idx) {
+                    match derive_contact_info_keys(app_context, &identity, deriv_idx).await {
                         Ok(keys) => keys,
                         Err(_) => continue,
                     };
@@ -511,39 +434,155 @@ pub async fn load_contacts(
         }
     }
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
-    ))
+    // Mirror the freshly-fetched contact profiles into the DET-side cache so
+    // the next view can paint names and avatars offline. Best-
+    // effort: a cache write miss only costs the offline optimisation.
+    cache_contact_profiles(app_context, &contact_list);
+
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: identity_id,
+        contacts: contact_list,
+    })
 }
 
-pub async fn add_contact(
-    _app_context: &Arc<AppContext>,
-    _sdk: &Sdk,
-    _identity: QualifiedIdentity,
-    _contact_username: String,
-    _account_label: Option<String>,
+/// Read the contact list for `identity` entirely from offline state: contact
+/// relationships and private memos come from the upstream-rehydrated
+/// `ManagedIdentity` (via [`crate::wallet_backend::DashpayView`]), and each
+/// contact's display profile is served from the DET contact-profile cache.
+///
+/// No network round-trip — a view rendered from this result does not require
+/// connectivity. Profiles a contact has not yet been fetched for are returned
+/// without display fields; an explicit refresh (network `load_contacts`) fills
+/// and re-caches them.
+pub async fn load_contacts_offline(
+    app_context: &Arc<AppContext>,
+    identity: QualifiedIdentity,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    // TODO: Steps to implement:
-    // 1. Resolve username to identity ID via DPNS
-    // 2. Generate encryption keys for this contact relationship
-    // 3. Create the contactRequest document with encrypted fields
-    // 4. Broadcast the state transition
-    Err(DashPayError::NotSupported {
-        operation: "add_contact_by_username".to_string(),
+    let owner_id = identity.identity.id();
+    let backend = app_context.wallet_backend()?;
+
+    let stored = backend.dashpay_view().contacts(&owner_id).await;
+
+    let mut contact_list = Vec::with_capacity(stored.len());
+    for sc in stored {
+        // Skip the owner's own row defensively (contacts() does not emit it,
+        // but the network path filters it, so mirror that here).
+        let Ok(contact_id) = Identifier::from_bytes(&sc.contact_identity_id) else {
+            continue;
+        };
+        if contact_id == owner_id {
+            continue;
+        }
+
+        let cached = backend.contact_profile_cache().get(&contact_id);
+        let memo = backend
+            .dashpay_get_private_info(&owner_id, &contact_id)
+            .unwrap_or(None);
+
+        contact_list.push(ContactData {
+            identity_id: contact_id,
+            nickname: memo
+                .as_ref()
+                .map(|m| m.nickname.clone())
+                .filter(|s| !s.is_empty()),
+            note: memo
+                .as_ref()
+                .map(|m| m.notes.clone())
+                .filter(|s| !s.is_empty()),
+            is_hidden: memo.as_ref().map(|m| m.is_hidden).unwrap_or(false),
+            // Carry the cached account reference so the "Account #N" badge shows
+            // and offline ordering matches the post-refresh view. Falls back to
+            // 0 ("default account") when no network read has cached one yet.
+            account_reference: cached
+                .as_ref()
+                .and_then(|c| c.account_reference)
+                .unwrap_or(0),
+            username: cached.as_ref().and_then(|c| c.username.clone()),
+            display_name: cached
+                .as_ref()
+                .and_then(|c| c.display_name.clone())
+                .or_else(|| sc.display_name.clone()),
+            avatar_url: cached.as_ref().and_then(|c| c.avatar_url.clone()),
+            bio: cached.as_ref().and_then(|c| c.bio.clone()),
+        });
     }
-    .into())
+
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: owner_id,
+        contacts: contact_list,
+    })
 }
 
-pub async fn remove_contact(
-    _app_context: &Arc<AppContext>,
-    _sdk: &Sdk,
-    _identity: QualifiedIdentity,
-    _contact_id: Identifier,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    // TODO: Implement contact removal
-    // This would involve deleting the contactInfo document if it exists
-    Err(DashPayError::NotSupported {
-        operation: "remove_contact".to_string(),
+/// Write each contact's fetched display profile into the DET contact-profile
+/// cache so later offline reads can serve it. Skips contacts with no
+/// displayable field. Best-effort: write misses are logged and ignored.
+fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData]) {
+    use crate::wallet_backend::CachedContactProfile;
+
+    let Ok(backend) = app_context.wallet_backend() else {
+        return;
+    };
+    let cache = backend.contact_profile_cache();
+    for contact in contacts {
+        let profile = CachedContactProfile {
+            username: contact.username.clone(),
+            display_name: contact.display_name.clone(),
+            avatar_url: contact.avatar_url.clone(),
+            bio: contact.bio.clone(),
+            // Carry the account reference so the offline read can show the
+            // "Account #N" badge and sort consistently. 0 means "default
+            // account / not set", so it is not worth caching on its own.
+            account_reference: (contact.account_reference != 0)
+                .then_some(contact.account_reference),
+        };
+        if profile.is_empty() {
+            continue;
+        }
+        if let Err(e) = cache.put(&contact.identity_id, &profile) {
+            tracing::debug!(
+                contact = %contact.identity_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                error = ?e,
+                "Failed to cache contact profile for offline use"
+            );
+        }
     }
-    .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Known-answer vectors generated independently with Python
+    /// `cryptography` 46 (OpenSSL). They pin DIP-15 interoperability with other
+    /// DashPay clients across `cbc` / `aes` / `aes-gcm` bumps.
+    const GOLDEN_KEY: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+
+    #[test]
+    fn decrypt_private_data_opens_golden_blob() {
+        // IV (10..1f) ‖ AES-256-CBC-PKCS7(GOLDEN_KEY, IV, "DashPay private data!").
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             faea994a146288d4cdeb1833de096de0dbc32bac4771e7d99338f76072f8700f",
+        )
+        .expect("blob hex");
+        let plaintext = decrypt_private_data(&blob, &GOLDEN_KEY).expect("golden blob must decrypt");
+        assert_eq!(plaintext, b"DashPay private data!");
+    }
+
+    #[test]
+    fn decrypt_to_user_id_opens_golden_ecb_vector() {
+        // AES-256-ECB(GOLDEN_KEY, 40..5f).
+        let encrypted =
+            hex::decode("a37edf3f975abaef937b62c78d5bb157974b412738e50f45c7f9db25413f274b")
+                .expect("ciphertext hex");
+        let expected: [u8; 32] = std::array::from_fn(|i| 0x40 + i as u8);
+        assert_eq!(
+            decrypt_to_user_id(&encrypted, &GOLDEN_KEY).expect("decrypt"),
+            expected
+        );
+    }
 }

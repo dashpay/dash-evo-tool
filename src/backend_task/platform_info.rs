@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -10,6 +11,7 @@ use dash_sdk::dpp::block::extended_epoch_info::{
 use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network, ScriptBuf};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contracts::SystemDataContract;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::WithdrawalStatus;
 use dash_sdk::dpp::data_contracts::withdrawals_contract::v1::document_types::withdrawal::properties::{
@@ -24,10 +26,13 @@ use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::daily_withdrawal_limit::daily_withdrawal_limit;
 use dash_sdk::dpp::{dash_to_credits, version::ProtocolVersionVoteCount};
-use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, OrderClause, WhereClause, WhereOperator};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
-use dash_sdk::platform::{DocumentQuery, FetchMany, FetchUnproved};
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+use dash_sdk::platform::{
+    DataContract, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier,
+};
 use dash_sdk::query_types::{
     AddressInfo, CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
@@ -43,9 +48,47 @@ pub enum PlatformInfoTaskRequestType {
     CurrentValidatorSetInfo,
     CurrentWithdrawalsInQueue,
     RecentlyCompletedWithdrawals,
+    /// Structured, paginated withdrawal query for programmatic clients (MCP /
+    /// CLI). Unlike the text variants above, this returns one
+    /// [`WithdrawalRecord`] per document plus a continuation cursor.
+    Withdrawals {
+        /// Query completed/expired/failed withdrawals when `true`, the in-queue set
+        /// when `false`.
+        completed: bool,
+        /// Maximum documents to return. `None` uses the platform default.
+        limit: Option<u32>,
+        /// Continuation cursor: the document id to start after, as returned in
+        /// a prior response's `next_cursor`.
+        start_after: Option<Identifier>,
+    },
     BasicPlatformInfo,
     ShieldedPoolState,
     FetchAddressBalance(String),
+}
+
+/// One withdrawal document flattened into the fields programmatic clients need.
+/// Credits are atomic units (1 Dash = `dash_to_credits!(1)` credits); timestamps
+/// are Unix milliseconds straight from the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithdrawalRecord {
+    /// Withdrawal document id (base58-encodable handle, also the page cursor).
+    pub document_id: Identifier,
+    /// Identity that requested the withdrawal.
+    pub owner_id: Identifier,
+    /// Amount in credits (atomic units).
+    pub amount_credits: u64,
+    /// Withdrawal status: `"queued"`, `"pooled"`, `"broadcasted"`,
+    /// `"complete"`, `"expired"`, or `"failed"`.
+    pub status: String,
+    /// Destination Dash address decoded from the output script, or `None` when
+    /// the script does not map to a standard address on this network.
+    pub address: Option<String>,
+    /// Sequential on-chain transaction index, when present on the document.
+    pub transaction_index: Option<u64>,
+    /// Document creation time (Unix ms), when present.
+    pub created_at_ms: Option<u64>,
+    /// Document last-update time (Unix ms), when present.
+    pub updated_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +103,14 @@ pub enum PlatformInfoTaskResult {
         address: String,
         balance: u64,
         nonce: u32,
+    },
+    Withdrawals {
+        records: Vec<WithdrawalRecord>,
+        /// Sum of all returned records' `amount_credits`.
+        total_amount_credits: u64,
+        /// Pass as the next request's `start_after` to fetch the following
+        /// page. `None` when this page was not full (no more results).
+        next_cursor: Option<Identifier>,
     },
 }
 
@@ -94,12 +145,52 @@ impl PartialEq for PlatformInfoTaskResult {
                     nonce: n2,
                 },
             ) => addr1 == addr2 && bal1 == bal2 && n1 == n2,
+            (
+                PlatformInfoTaskResult::Withdrawals {
+                    records: r1,
+                    total_amount_credits: t1,
+                    next_cursor: c1,
+                },
+                PlatformInfoTaskResult::Withdrawals {
+                    records: r2,
+                    total_amount_credits: t2,
+                    next_cursor: c2,
+                },
+            ) => r1 == r2 && t1 == t2 && c1 == c2,
             _ => false,
         }
     }
 }
 
+/// Why a withdrawal document could not be parsed for display or into a
+/// [`WithdrawalRecord`].
+///
+/// Carried as the `#[source]` of [`TaskError::WithdrawalDocumentParsingError`]:
+/// the user sees that variant's message while this enum preserves the technical
+/// cause for logs and the collapsible details panel.
+#[derive(Debug, thiserror::Error)]
+pub enum WithdrawalParseError {
+    /// A document field was missing or had an unexpected type.
+    #[error("A withdrawal document field could not be read")]
+    Field(#[from] dash_sdk::dpp::platform_value::Error),
+    /// The document lacked a required created/updated timestamp.
+    #[error("A withdrawal document is missing a required timestamp")]
+    MissingTimestamp,
+    /// A timestamp value fell outside the representable range.
+    #[error("A withdrawal document has an out-of-range timestamp")]
+    InvalidTimestamp,
+    /// The status field held a value outside the known withdrawal states.
+    #[error("A withdrawal document has an unrecognized status value {value}")]
+    InvalidStatus { value: u8 },
+    /// The daily withdrawal limit could not be computed for this platform version.
+    #[error("The daily withdrawal limit could not be computed")]
+    DailyLimit(#[source] Box<dash_sdk::dpp::ProtocolError>),
+}
+
 // Helper functions for formatting platform data
+/// Kept for the restore path of the disabled live epoch fetch; see the
+/// `TODO(platform#4231)` in the `CurrentEpochInfo` arm.
+#[allow(dead_code)]
 fn format_extended_epoch_info(
     epoch_info: ExtendedEpochInfo,
     network: Network,
@@ -121,7 +212,6 @@ fn format_extended_epoch_info(
         Network::Testnet => 3_600_000,
         Network::Devnet => 3_600_000,
         Network::Regtest => 1_200_000,
-        _ => 3_600_000,
     };
 
     let readable_epoch_end_time = match Utc
@@ -162,6 +252,34 @@ fn format_extended_epoch_info(
         readable_epoch_end_time,
         epoch_info.fee_multiplier_permille(),
     )
+}
+
+/// `protocol_version` is `None` while the connected network has not confirmed one.
+/// The fee multiplier is a fixed value, not a network reading — see the
+/// `TODO(platform#4231)` in the `CurrentEpochInfo` arm.
+fn format_hardcoded_current_epoch_info(
+    protocol_version: Option<u32>,
+    fee_multiplier_permille: u64,
+) -> String {
+    let fee_multiplier = fee_multiplier_permille as f64 / 1000.0;
+    match protocol_version {
+        Some(protocol_version) => format!(
+            "Current Epoch Information:\n\
+             • Protocol Version: {protocol_version}\n\
+             • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
+             Epoch details cannot be read while dashpay/platform#4231 is unresolved. The fee \
+             multiplier shown is the one every network charges today, and it will be read live \
+             again once that fix is released."
+        ),
+        None => format!(
+            "Current Epoch Information:\n\
+             • Protocol Version: the connected network has not confirmed one yet.\n\
+             • Fee Multiplier: {fee_multiplier}x (a fixed value, not read from the network)\n\n\
+             Epoch details cannot be read while dashpay/platform#4231 is unresolved. The fee \
+             multiplier shown is the one every network charges today, and it will be read live \
+             again once that fix is released."
+        ),
+    }
 }
 
 fn format_current_quorums_info(current_quorums_info: &CurrentQuorumsInfo) -> String {
@@ -206,83 +324,36 @@ fn format_withdrawal_documents_with_daily_limit(
     withdrawal_documents: &[Document],
     total_credits_on_platform: Credits,
     network: Network,
-) -> Result<String, TaskError> {
+) -> Result<String, WithdrawalParseError> {
     let total_amount: Credits = withdrawal_documents
         .iter()
         .map(|document| {
             document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                    detail: format!("Failed to get withdrawal amount: {}", e),
-                })
+                .map_err(WithdrawalParseError::Field)
         })
-        .collect::<Result<Vec<Credits>, TaskError>>()?
+        .collect::<Result<Vec<Credits>, WithdrawalParseError>>()?
         .into_iter()
         .sum();
 
-    let amounts: Vec<String> =
-        withdrawal_documents
-            .iter()
-            .map(|document| {
-                let index = document.created_at().ok_or_else(|| {
-                    TaskError::WithdrawalDocumentParsingError {
-                        detail: "Withdrawal document missing created_at timestamp".to_string(),
-                    }
-                })?;
-                let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-                    .ok_or_else(|| TaskError::WithdrawalDocumentParsingError {
-                        detail: "Invalid withdrawal created_at timestamp".to_string(),
-                    })?;
-                let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+    let amounts: Vec<String> = withdrawal_documents
+        .iter()
+        .map(|document| format_withdrawal_line(document, network))
+        .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
-                let amount = document
-                    .properties()
-                    .get_integer::<Credits>(AMOUNT)
-                    .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                        detail: format!("Failed to get withdrawal amount: {}", e),
-                    })?;
-                let status_u8: u8 =
-                    document
-                        .properties()
-                        .get_integer::<u8>(STATUS)
-                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                            detail: format!("Failed to get withdrawal status: {}", e),
-                        })?;
-                let status: WithdrawalStatus = status_u8.try_into().map_err(|_| {
-                    TaskError::WithdrawalDocumentParsingError {
-                        detail: format!("Invalid withdrawal status value: {}", status_u8),
-                    }
-                })?;
-                let owner_id = document.owner_id();
-                let address_bytes =
-                    document
-                        .properties()
-                        .get_bytes(OUTPUT_SCRIPT)
-                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                            detail: format!("Failed to get withdrawal output script: {}", e),
-                        })?;
-                let output_script = ScriptBuf::from_bytes(address_bytes);
-                let address = Address::from_script(&output_script, network)
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_else(|e| format!("Invalid Address: {}", e));
-                Ok(format!(
-                    "{}: {:.8} Dash for {} towards {} ({})",
-                    local_datetime.format("%Y-%m-%d %H:%M:%S"),
-                    amount as f64 / (dash_to_credits!(1) as f64),
-                    owner_id,
-                    address,
-                    status,
-                ))
-            })
-            .collect::<Result<Vec<String>, TaskError>>()?;
-
+    // INTENTIONAL: `daily_withdrawal_limit`'s v2 algorithm wants the total
+    // credits Platform held a day ago, and the network's actual active
+    // protocol version — we pass today's current total and `latest()`
+    // instead. Accepted gap, not a bug to fix here: this value is
+    // display-only (an informational text panel, nothing reads it back to
+    // gate or execute a withdrawal), the mismatch only bites during the
+    // narrow window around a protocol version upgrade, and the pinned SDK
+    // exposes no query for the day-old historical total (it's
+    // Drive-internal) to compute the exact figure anyway.
     let daily_withdrawal_limit =
-        daily_withdrawal_limit(total_credits_on_platform, PlatformVersion::latest()).map_err(
-            |e| TaskError::WithdrawalDocumentParsingError {
-                detail: format!("Failed to calculate daily withdrawal limit: {}", e),
-            },
-        )?;
+        daily_withdrawal_limit(Some(total_credits_on_platform), PlatformVersion::latest())
+            .map_err(|e| WithdrawalParseError::DailyLimit(Box::new(e)))?;
 
     Ok(format!(
         "Withdrawal Information:\n\n\
@@ -299,76 +370,23 @@ fn format_withdrawal_documents_with_daily_limit(
 fn format_withdrawal_documents_to_bare_info(
     withdrawal_documents: &[Document],
     network: Network,
-) -> Result<String, TaskError> {
+) -> Result<String, WithdrawalParseError> {
     let total_amount: Credits = withdrawal_documents
         .iter()
         .map(|document| {
             document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                    detail: format!("Failed to get withdrawal amount: {}", e),
-                })
+                .map_err(WithdrawalParseError::Field)
         })
-        .collect::<Result<Vec<Credits>, TaskError>>()?
+        .collect::<Result<Vec<Credits>, WithdrawalParseError>>()?
         .into_iter()
         .sum();
 
-    let amounts: Vec<String> =
-        withdrawal_documents
-            .iter()
-            .map(|document| {
-                let index = document.created_at().ok_or_else(|| {
-                    TaskError::WithdrawalDocumentParsingError {
-                        detail: "Withdrawal document missing created_at timestamp".to_string(),
-                    }
-                })?;
-                let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-                    .ok_or_else(|| TaskError::WithdrawalDocumentParsingError {
-                        detail: "Invalid withdrawal created_at timestamp".to_string(),
-                    })?;
-                let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
-
-                let amount = document
-                    .properties()
-                    .get_integer::<Credits>(AMOUNT)
-                    .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                        detail: format!("Failed to get withdrawal amount: {}", e),
-                    })?;
-                let status_u8: u8 =
-                    document
-                        .properties()
-                        .get_integer::<u8>(STATUS)
-                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                            detail: format!("Failed to get withdrawal status: {}", e),
-                        })?;
-                let status: WithdrawalStatus = status_u8.try_into().map_err(|_| {
-                    TaskError::WithdrawalDocumentParsingError {
-                        detail: format!("Invalid withdrawal status value: {}", status_u8),
-                    }
-                })?;
-                let owner_id = document.owner_id();
-                let address_bytes =
-                    document
-                        .properties()
-                        .get_bytes(OUTPUT_SCRIPT)
-                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                            detail: format!("Failed to get withdrawal output script: {}", e),
-                        })?;
-                let output_script = ScriptBuf::from_bytes(address_bytes);
-                let address = Address::from_script(&output_script, network)
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_else(|e| format!("Invalid Address: {}", e));
-                Ok(format!(
-                    "{}: {:.8} Dash for {} towards {} ({})",
-                    local_datetime.format("%Y-%m-%d %H:%M:%S"),
-                    amount as f64 / (dash_to_credits!(1) as f64),
-                    owner_id,
-                    address,
-                    status,
-                ))
-            })
-            .collect::<Result<Vec<String>, TaskError>>()?;
+    let amounts: Vec<String> = withdrawal_documents
+        .iter()
+        .map(|document| format_withdrawal_line(document, network))
+        .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
     Ok(format!(
         "Withdrawal Information:\n\n\
@@ -377,6 +395,173 @@ fn format_withdrawal_documents_to_bare_info(
         total_amount as f64 / (dash_to_credits!(1) as f64),
         amounts.join("\n    ")
     ))
+}
+
+/// Format one queued/in-flight withdrawal document as a single human-readable
+/// line: `"<created-at>: <amount> Dash for <owner> towards <address> (<status>)"`.
+fn format_withdrawal_line(
+    document: &Document,
+    network: Network,
+) -> Result<String, WithdrawalParseError> {
+    let index = document
+        .created_at()
+        .ok_or(WithdrawalParseError::MissingTimestamp)?;
+    let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+        .ok_or(WithdrawalParseError::InvalidTimestamp)?;
+    let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+
+    let amount = document
+        .properties()
+        .get_integer::<Credits>(AMOUNT)
+        .map_err(WithdrawalParseError::Field)?;
+    let status_u8: u8 = document
+        .properties()
+        .get_integer::<u8>(STATUS)
+        .map_err(WithdrawalParseError::Field)?;
+    let status: WithdrawalStatus = status_u8
+        .try_into()
+        .map_err(|_| WithdrawalParseError::InvalidStatus { value: status_u8 })?;
+    let owner_id = document.owner_id();
+    let address_bytes = document
+        .properties()
+        .get_bytes(OUTPUT_SCRIPT)
+        .map_err(WithdrawalParseError::Field)?;
+    let output_script = ScriptBuf::from_bytes(address_bytes);
+    let address = Address::from_script(&output_script, network)
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|e| format!("Invalid Address: {}", e));
+    Ok(format!(
+        "{}: {:.8} Dash for {} towards {} ({})",
+        local_datetime.format("%Y-%m-%d %H:%M:%S"),
+        amount as f64 / (dash_to_credits!(1) as f64),
+        owner_id,
+        address,
+        status,
+    ))
+}
+
+/// Format one completed/expired/failed withdrawal document as a single line keyed by
+/// on-chain transaction index and last-update time:
+/// `"TX #<index>: <amount> Dash for <owner> to <address> (<status>) at <time>"`.
+fn format_completed_withdrawal_line(
+    document: &Document,
+    network: Network,
+) -> Result<String, WithdrawalParseError> {
+    let index = document
+        .updated_at()
+        .ok_or(WithdrawalParseError::MissingTimestamp)?;
+    let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+        .ok_or(WithdrawalParseError::InvalidTimestamp)?;
+    let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+
+    let amount = document
+        .properties()
+        .get_integer::<Credits>(AMOUNT)
+        .map_err(WithdrawalParseError::Field)?;
+    let status_u8: u8 = document
+        .properties()
+        .get_integer::<u8>(STATUS)
+        .map_err(WithdrawalParseError::Field)?;
+    let status: WithdrawalStatus = status_u8
+        .try_into()
+        .map_err(|_| WithdrawalParseError::InvalidStatus { value: status_u8 })?;
+    let owner_id = document.owner_id();
+    let address_bytes = document
+        .properties()
+        .get_bytes(OUTPUT_SCRIPT)
+        .map_err(WithdrawalParseError::Field)?;
+    let transaction_index = document
+        .properties()
+        .get_integer::<u64>(TRANSACTION_INDEX)
+        .map_err(WithdrawalParseError::Field)?;
+    let output_script = ScriptBuf::from_bytes(address_bytes);
+    let address = Address::from_script(&output_script, network)
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|e| format!("Invalid Address: {}", e));
+    Ok(format!(
+        "TX #{}: {:.8} Dash for {} to {} ({}) at {}",
+        transaction_index,
+        amount as f64 / (dash_to_credits!(1) as f64),
+        owner_id,
+        address,
+        status,
+        local_datetime.format("%Y-%m-%d %H:%M:%S"),
+    ))
+}
+
+/// Stable, lowercase status string for programmatic clients. Distinct from the
+/// human-facing `Display` ("Queued", …) so machine consumers can match on it.
+fn withdrawal_status_str(status: WithdrawalStatus) -> &'static str {
+    match status {
+        WithdrawalStatus::QUEUED => "queued",
+        WithdrawalStatus::POOLED => "pooled",
+        WithdrawalStatus::BROADCASTED => "broadcasted",
+        WithdrawalStatus::COMPLETE => "complete",
+        WithdrawalStatus::EXPIRED => "expired",
+        WithdrawalStatus::FAILED => "failed",
+    }
+}
+
+/// Flatten one withdrawal [`Document`] into a [`WithdrawalRecord`].
+fn extract_withdrawal_record(
+    document: &Document,
+    network: Network,
+) -> Result<WithdrawalRecord, WithdrawalParseError> {
+    let amount_credits = document
+        .properties()
+        .get_integer::<Credits>(AMOUNT)
+        .map_err(WithdrawalParseError::Field)?;
+    let status_u8 = document
+        .properties()
+        .get_integer::<u8>(STATUS)
+        .map_err(WithdrawalParseError::Field)?;
+    let status: WithdrawalStatus = status_u8
+        .try_into()
+        .map_err(|_| WithdrawalParseError::InvalidStatus { value: status_u8 })?;
+    let address = document
+        .properties()
+        .get_bytes(OUTPUT_SCRIPT)
+        .ok()
+        .and_then(|bytes| Address::from_script(&ScriptBuf::from_bytes(bytes), network).ok())
+        .map(|addr| addr.to_string());
+    let transaction_index = document
+        .properties()
+        .get_integer::<u64>(TRANSACTION_INDEX)
+        .ok();
+
+    Ok(WithdrawalRecord {
+        document_id: document.id(),
+        owner_id: document.owner_id(),
+        amount_credits,
+        status: withdrawal_status_str(status).to_string(),
+        address,
+        transaction_index,
+        created_at_ms: document.created_at(),
+        updated_at_ms: document.updated_at(),
+    })
+}
+
+/// Build the structured, paginated withdrawal result. `documents` are the page
+/// already fetched; `page_limit` is the limit that was requested so the cursor
+/// is only emitted when the page came back full (more results may exist).
+fn build_withdrawals_result(
+    documents: &[Document],
+    page_limit: usize,
+    network: Network,
+) -> Result<PlatformInfoTaskResult, TaskError> {
+    let records = documents
+        .iter()
+        .map(|doc| extract_withdrawal_record(doc, network))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_amount_credits = records.iter().map(|r| r.amount_credits).sum();
+    let next_cursor = (documents.len() == page_limit)
+        .then(|| records.last().map(|r| r.document_id))
+        .flatten();
+    Ok(PlatformInfoTaskResult::Withdrawals {
+        records,
+        total_amount_credits,
+        next_cursor,
+    })
 }
 
 impl AppContext {
@@ -410,21 +595,68 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
-                    .await
-                    .map_err(TaskError::from)?;
+                // dashpay/platform#4231 breaks `ExtendedEpochInfo::fetch_current`, so the
+                // network's version is learned from the ratchet a proved DPNS fetch drives.
+                // Only a successful fetch proves it came from the network, not the local seed.
+                match DataContract::fetch(sdk, self.dpns_contract.id()).await {
+                    Ok(_) => self.set_platform_protocol_version(sdk.protocol_version_number()),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "Protocol-version ratchet trigger (DPNS contract fetch) failed; \
+                         the network's protocol version stays unconfirmed"
+                    ),
+                }
 
-                let fee_multiplier = epoch_info.fee_multiplier_permille();
+                // TODO(platform#4231): restore the commented-out live fetch below and drop the
+                // hardcoded multiplier once https://github.com/dashpay/platform/pull/4231 merges
+                // and this repo's platform pin (Cargo.toml/Cargo.lock rev a18bd158…) advances past
+                // it. The proof verifier in that pin rejects the descending-epoch-without-start
+                // query shape `fetch_current` sends, so the call fails identically on every DAPI
+                // node: each attempt cycles the SDK's whole address pool and burns the shared
+                // per-client request budget, which surfaced as `DapiAllAddressesExhausted` in
+                // unrelated flows such as identity top-up. This task also runs automatically on
+                // every SPV Syncing→Synced transition, so the cost is not user-paced.
+                //
+                // 1000 permille (1.0x) is what the network actually stores, not a placeholder: an
+                // epoch's multiplier is written from
+                // `platform_version.fee_version.uses_version_fee_multiplier_permille`
+                // (rs-drive-abci/src/execution/platform_events/block_processing_end_events/
+                // add_process_epoch_change_operations/v0/mod.rs:107) and both fee schedules in the
+                // pinned crate declare `Some(1000)` — rs-platform-version/src/version/fee/v1.rs:13
+                // and v2.rs:14, checked 2026-07-31 at rev a18bd158.
+                //
+                // match ExtendedEpochInfo::fetch_current(sdk).await {
+                //     Ok(epoch_info) => {
+                //         let fee_multiplier = epoch_info.fee_multiplier_permille();
+                //         self.set_fee_multiplier_permille(fee_multiplier);
+                //         self.set_platform_protocol_version(epoch_info.protocol_version());
+                //
+                //         let mut formatted =
+                //             format_extended_epoch_info(epoch_info, self.network, true);
+                //         formatted.push_str(&format!(
+                //             "\n\n(Fee multiplier cache updated: {}x)",
+                //             fee_multiplier as f64 / 1000.0
+                //         ));
+                //         Ok(BackendTaskSuccessResult::PlatformInfo(
+                //             PlatformInfoTaskResult::TextResult(formatted),
+                //         ))
+                //     }
+                //     // Restoring keeps a degraded arm here: log, then fall back to
+                //     // `format_hardcoded_current_epoch_info` with the cached multiplier.
+                //     Err(error) => { ... }
+                // }
+                let fee_multiplier = PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE;
                 self.set_fee_multiplier_permille(fee_multiplier);
-                self.set_platform_protocol_version(epoch_info.protocol_version());
 
-                let mut formatted = format_extended_epoch_info(epoch_info, self.network, true);
-                formatted.push_str(&format!(
-                    "\n\n(Fee multiplier cache updated: {}x)",
-                    fee_multiplier as f64 / 1000.0
-                ));
+                let confirmed = match self.platform_protocol_version() {
+                    0 => None,
+                    version => Some(version),
+                };
                 Ok(BackendTaskSuccessResult::PlatformInfo(
-                    PlatformInfoTaskResult::TextResult(formatted),
+                    PlatformInfoTaskResult::TextResult(format_hardcoded_current_epoch_info(
+                        confirmed,
+                        fee_multiplier,
+                    )),
                 ))
             }
             PlatformInfoTaskRequestType::TotalCreditsOnPlatform => {
@@ -491,11 +723,17 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let queued_document_query = DocumentQuery {
+                    sub_queries: Vec::new(),
+                    select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![],
+                    time_range_clauses: Vec::new(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     order_by_clauses: vec![],
                     limit: 50,
+                    offset: None,
                     start: None,
                 };
 
@@ -536,6 +774,8 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let completed_document_query = DocumentQuery {
+                    sub_queries: Vec::new(),
+                    select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![WhereClause {
@@ -544,8 +784,12 @@ impl AppContext {
                         value: Value::Array(vec![
                             Value::U8(WithdrawalStatus::COMPLETE as u8),
                             Value::U8(WithdrawalStatus::EXPIRED as u8),
+                            Value::U8(WithdrawalStatus::FAILED as u8),
                         ]),
                     }],
+                    time_range_clauses: Vec::new(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     order_by_clauses: vec![
                         OrderClause {
                             field: "status".to_string(),
@@ -557,6 +801,7 @@ impl AppContext {
                         },
                     ],
                     limit: 100,
+                    offset: None,
                     start: None,
                 };
 
@@ -578,7 +823,7 @@ impl AppContext {
                 if withdrawal_docs.is_empty() {
                     Ok(BackendTaskSuccessResult::PlatformInfo(
                         PlatformInfoTaskResult::TextResult(
-                            "No recently completed withdrawals found.".to_string(),
+                            "No recent withdrawal history found.".to_string(),
                         ),
                     ))
                 } else {
@@ -588,84 +833,19 @@ impl AppContext {
                             document
                                 .properties()
                                 .get_integer::<Credits>(AMOUNT)
-                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                                    detail: format!("Failed to get withdrawal amount: {}", e),
-                                })
+                                .map_err(WithdrawalParseError::Field)
                         })
-                        .collect::<Result<Vec<Credits>, TaskError>>()?
+                        .collect::<Result<Vec<Credits>, WithdrawalParseError>>()?
                         .into_iter()
                         .sum();
 
                     let amounts: Vec<String> = withdrawal_docs
                         .iter()
-                        .map(|document| {
-                            let index = document.updated_at().ok_or_else(|| {
-                                TaskError::WithdrawalDocumentParsingError {
-                                    detail: "Withdrawal document missing updated_at timestamp"
-                                        .to_string(),
-                                }
-                            })?;
-                            let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-                                .ok_or_else(|| TaskError::WithdrawalDocumentParsingError {
-                                    detail: "Invalid withdrawal updated_at timestamp".to_string(),
-                                })?;
-                            let local_datetime: DateTime<Local> =
-                                utc_datetime.with_timezone(&Local);
-
-                            let amount = document
-                                .properties()
-                                .get_integer::<Credits>(AMOUNT)
-                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                                    detail: format!("Failed to get withdrawal amount: {}", e),
-                                })?;
-                            let status_u8: u8 = document
-                                .properties()
-                                .get_integer::<u8>(STATUS)
-                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                                    detail: format!("Failed to get withdrawal status: {}", e),
-                                })?;
-                            let status: WithdrawalStatus = status_u8.try_into().map_err(|_| {
-                                TaskError::WithdrawalDocumentParsingError {
-                                    detail: format!(
-                                        "Invalid withdrawal status value: {}",
-                                        status_u8
-                                    ),
-                                }
-                            })?;
-                            let owner_id = document.owner_id();
-                            let address_bytes = document
-                                .properties()
-                                .get_bytes(OUTPUT_SCRIPT)
-                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                                    detail: format!(
-                                        "Failed to get withdrawal output script: {}",
-                                        e
-                                    ),
-                                })?;
-                            let transaction_index = document
-                                .properties()
-                                .get_integer::<u64>(TRANSACTION_INDEX)
-                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
-                                    detail: format!("Failed to get transaction index: {}", e),
-                                })?;
-                            let output_script = ScriptBuf::from_bytes(address_bytes);
-                            let address = Address::from_script(&output_script, self.network)
-                                .map(|addr| addr.to_string())
-                                .unwrap_or_else(|e| format!("Invalid Address: {}", e));
-                            Ok(format!(
-                                "TX #{}: {:.8} Dash for {} to {} ({}) at {}",
-                                transaction_index,
-                                amount as f64 / (dash_to_credits!(1) as f64),
-                                owner_id,
-                                address,
-                                status,
-                                local_datetime.format("%Y-%m-%d %H:%M:%S"),
-                            ))
-                        })
-                        .collect::<Result<Vec<String>, TaskError>>()?;
+                        .map(|document| format_completed_withdrawal_line(document, self.network))
+                        .collect::<Result<Vec<String>, WithdrawalParseError>>()?;
 
                     let formatted = format!(
-                        "Recently Completed Withdrawals:\n\n\
+                        "Recent Withdrawal History:\n\n\
                          Total Amount: {:.8} Dash\n\
                          Count: {} withdrawals\n\n\
                          Recent Transactions:\n    {}",
@@ -678,6 +858,76 @@ impl AppContext {
                         PlatformInfoTaskResult::TextResult(formatted),
                     ))
                 }
+            }
+            PlatformInfoTaskRequestType::Withdrawals {
+                completed,
+                limit,
+                start_after,
+            } => {
+                let withdrawal_contract = load_system_data_contract(
+                    SystemDataContract::Withdrawals,
+                    PlatformVersion::latest(),
+                )
+                .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
+
+                // `0` is the upstream sentinel for "default limit"; clamp the
+                // requested page so the cursor heuristic has a known bound.
+                let page_limit = limit.unwrap_or(50).clamp(1, 100);
+                let start = start_after.map(|id| Start::StartAfter(id.to_buffer().to_vec()));
+
+                let statuses = if completed {
+                    vec![
+                        Value::U8(WithdrawalStatus::COMPLETE as u8),
+                        Value::U8(WithdrawalStatus::EXPIRED as u8),
+                        Value::U8(WithdrawalStatus::FAILED as u8),
+                    ]
+                } else {
+                    vec![
+                        Value::U8(WithdrawalStatus::QUEUED as u8),
+                        Value::U8(WithdrawalStatus::POOLED as u8),
+                        Value::U8(WithdrawalStatus::BROADCASTED as u8),
+                    ]
+                };
+                let where_clauses = vec![WhereClause {
+                    field: "status".to_string(),
+                    operator: WhereOperator::In,
+                    value: Value::Array(statuses),
+                }];
+                let order_by_clauses = vec![
+                    OrderClause {
+                        field: "status".to_string(),
+                        ascending: true,
+                    },
+                    OrderClause {
+                        field: "transactionIndex".to_string(),
+                        ascending: true,
+                    },
+                ];
+
+                let query = DocumentQuery {
+                    sub_queries: Vec::new(),
+                    select: SelectProjection::documents(),
+                    data_contract: Arc::new(withdrawal_contract),
+                    document_type_name: "withdrawal".to_string(),
+                    where_clauses,
+                    time_range_clauses: Vec::new(),
+                    group_by: Vec::new(),
+                    having: Vec::new(),
+                    order_by_clauses,
+                    limit: page_limit,
+                    offset: None,
+                    start,
+                };
+
+                let documents = Document::fetch_many(sdk, query)
+                    .await
+                    .map_err(TaskError::from)?;
+                let withdrawal_docs: Vec<Document> =
+                    documents.values().filter_map(|a| a.clone()).collect();
+
+                let result =
+                    build_withdrawals_result(&withdrawal_docs, page_limit as usize, self.network)?;
+                Ok(BackendTaskSuccessResult::PlatformInfo(result))
             }
             PlatformInfoTaskRequestType::ShieldedPoolState => {
                 use dash_sdk::query_types::ShieldedPoolState;
@@ -696,9 +946,7 @@ impl AppContext {
                             PlatformInfoTaskResult::TextResult(formatted),
                         ))
                     }
-                    Err(e) => Err(TaskError::ShieldedSyncFailed {
-                        detail: format!("Failed to fetch shielded pool state: {}", e),
-                    }),
+                    Err(e) => Err(TaskError::ShieldedSyncFailed(Box::new(e))),
                 }
             }
             PlatformInfoTaskRequestType::FetchAddressBalance(address_string) => {
@@ -735,5 +983,98 @@ impl AppContext {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoch_workaround_reports_protocol_version_and_the_hardcoded_fee_multiplier() {
+        assert_eq!(
+            format_hardcoded_current_epoch_info(Some(12), 1000),
+            "Current Epoch Information:\n\
+             • Protocol Version: 12\n\
+             • Fee Multiplier: 1x (a fixed value, not read from the network)\n\n\
+             Epoch details cannot be read while dashpay/platform#4231 is unresolved. The fee \
+             multiplier shown is the one every network charges today, and it will be read live \
+             again once that fix is released."
+        );
+    }
+
+    /// The multiplier is presented as fixed, never as a live reading: a user
+    /// comparing it against a network that raised its fees must be able to see
+    /// which of the two the app is charging by.
+    #[test]
+    fn epoch_workaround_never_presents_the_fee_multiplier_as_a_network_reading() {
+        for protocol_version in [None, Some(12)] {
+            let formatted = format_hardcoded_current_epoch_info(protocol_version, 1500);
+            assert!(
+                formatted
+                    .contains("• Fee Multiplier: 1.5x (a fixed value, not read from the network)"),
+                "the multiplier must be shown as fixed, got: {formatted}"
+            );
+        }
+    }
+
+    #[test]
+    fn epoch_workaround_never_reports_an_unconfirmed_protocol_version_as_a_number() {
+        let formatted = format_hardcoded_current_epoch_info(None, 1000);
+        assert!(
+            formatted
+                .contains("• Protocol Version: the connected network has not confirmed one yet."),
+            "an unconfirmed version must be named as such, got: {formatted}"
+        );
+    }
+
+    /// Fee estimates must not keep running on whatever multiplier a previous
+    /// refresh happened to leave behind: the task republishes the hardcoded one.
+    #[tokio::test]
+    async fn epoch_workaround_republishes_the_hardcoded_fee_multiplier() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = dash_sdk::Sdk::new_mock();
+        ctx.set_fee_multiplier_permille(7_777);
+
+        let result = ctx
+            .run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("the epoch workaround degrades to a text result");
+
+        assert_eq!(
+            ctx.fee_multiplier_permille(),
+            PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE
+        );
+        let BackendTaskSuccessResult::PlatformInfo(PlatformInfoTaskResult::TextResult(text)) =
+            result
+        else {
+            panic!("the epoch workaround returns a text result");
+        };
+        assert!(
+            text.contains("• Fee Multiplier: 1x"),
+            "the reported multiplier must match the cached one, got: {text}"
+        );
+    }
+
+    /// A failed ratchet trigger leaves the SDK reporting its local seed, which is
+    /// not a network observation: caching it would open the shielded capability
+    /// gate and defeat the `0` retry sentinel `mcp::resolve` polls.
+    #[tokio::test]
+    async fn a_failed_ratchet_trigger_leaves_the_protocol_version_unconfirmed() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::context::test_support::test_app_context(temp_dir.path());
+        let sdk = dash_sdk::Sdk::new_mock();
+        assert_ne!(
+            sdk.protocol_version_number(),
+            0,
+            "precondition: the mock SDK seeds a local version of its own"
+        );
+
+        ctx.run_platform_info_task(PlatformInfoTaskRequestType::CurrentEpochInfo, &sdk)
+            .await
+            .expect("the epoch workaround degrades to a text result");
+
+        assert_eq!(ctx.platform_protocol_version(), 0);
     }
 }

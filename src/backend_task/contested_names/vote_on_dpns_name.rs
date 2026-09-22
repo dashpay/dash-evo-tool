@@ -115,7 +115,7 @@ impl AppContext {
                     )
                     .await
                     .map(|_| ())
-                    .map_err(|e| TaskError::from(e).to_string());
+                    .map_err(|e| std::sync::Arc::new(TaskError::from(e)));
 
                 vote_results.push((name.to_owned(), vote_choice, result));
             } else {

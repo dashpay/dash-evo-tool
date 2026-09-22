@@ -6,17 +6,17 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::serialization::PlatformDeserializable;
+use dash_sdk::dpp::serialization::PlatformDeserializableUntrusted;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui, Window};
+use eframe::egui::{self, Color32, ScrollArea, TextEdit, Ui, Window};
 use egui::RichText;
 use serde_json::Value;
 use std::sync::Arc;
@@ -102,20 +102,29 @@ impl TransitionVisualizerScreen {
                 .filter(|s| !s.trim().is_empty()) // Skip empty segments
                 .map(|s| s.trim().parse::<u8>())
                 .collect::<Result<Vec<u8>, _>>()
-                .map_err(|e| format!("Failed to parse comma-separated integers: {}", e))
+                .map_err(|error| {
+                    tracing::debug!(?error, "Transition byte-list parsing failed");
+                    format!(
+                        "The comma-separated values are not valid bytes. Use numbers from 0 to 255. ({error})"
+                    )
+                })
         } else {
             // Try to decode the input as hex first
             hex::decode(self.input_data.trim()).or_else(|_| {
-                STANDARD
-                    .decode(self.input_data.trim())
-                    .map_err(|e| format!("Base64 decode error: {}", e))
+                STANDARD.decode(self.input_data.trim()).map_err(|error| {
+                    tracing::debug!(?error, "Transition base64 decoding failed");
+                    format!(
+                        "The input is not valid hexadecimal or base64 data. Check it and try again. ({error})"
+                    )
+                })
             })
         };
 
         match decoded_bytes {
             Ok(bytes) => {
-                // Try to deserialize into a StateTransition
-                match StateTransition::deserialize_from_bytes(&bytes) {
+                // Pasted bytes are untrusted input: decode without
+                // pre-allocating from length prefixes.
+                match StateTransition::deserialize_from_bytes_untrusted(&bytes) {
                     Ok(state_transition) => {
                         // Convert to JSON
                         match serde_json::to_string_pretty(&state_transition) {
@@ -130,17 +139,25 @@ impl TransitionVisualizerScreen {
                                     );
                                 }
                             }
-                            Err(e) => {
+                            Err(error) => {
+                                tracing::debug!(?error, "Transition JSON serialization failed");
                                 self.parse_error = Some((
-                                    format!("Failed to serialize to JSON: {}", e),
+                                    format!(
+                                        "The transition could not be displayed as JSON. Check the input and try again. ({error})"
+                                    ),
                                     Instant::now(),
                                 ));
                             }
                         }
                     }
-                    Err(e) => {
-                        self.parse_error =
-                            Some((format!("Failed to parse: {}", e), Instant::now()));
+                    Err(error) => {
+                        tracing::debug!(?error, "State-transition deserialization failed");
+                        self.parse_error = Some((
+                            format!(
+                                "The state transition could not be read. Check the input format and try again. ({error})"
+                            ),
+                            Instant::now(),
+                        ));
                     }
                 }
             }
@@ -153,7 +170,7 @@ impl TransitionVisualizerScreen {
     fn show_input_field(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for state transition:");
         ui.add_space(5.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
             TextEdit::multiline(&mut self.input_data)
                 .desired_rows(6)
@@ -207,7 +224,7 @@ impl TransitionVisualizerScreen {
         ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref json) = self.parsed_json {
                 ui.add_space(5.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
                     TextEdit::multiline(&mut json.clone())
                         .desired_rows(10)
@@ -270,7 +287,7 @@ impl TransitionVisualizerScreen {
                 };
                 ui.colored_label(
                     Color32::from_rgba_premultiplied(139, 0, 0, alpha), // Dark red
-                    format!("Error: {}", msg),
+                    msg,
                 );
                 ui.ctx().request_repaint_after(Duration::from_millis(100));
             } else {
@@ -401,14 +418,14 @@ impl ScreenLike for TransitionVisualizerScreen {
             crate::ui::BackendTaskSuccessResult::FetchedContract(contract) => {
                 let contract_id = contract.id().to_string(Encoding::Base58);
                 self.contract_fetch_message = Some((
-                    format!("✅ Contract {} fetched successfully", contract_id),
+                    format!("✅ Contract {contract_id} fetched successfully"),
                     Instant::now(),
                 ));
             }
             crate::ui::BackendTaskSuccessResult::FetchedContracts(contracts) => {
                 let count = contracts.iter().filter(|c| c.is_some()).count();
                 self.contract_fetch_message = Some((
-                    format!("✅ {} contract(s) fetched successfully", count),
+                    format!("✅ {count} contract(s) fetched successfully"),
                     Instant::now(),
                 ));
             }
@@ -418,23 +435,28 @@ impl ScreenLike for TransitionVisualizerScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
-            ctx,
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let mut action = add_top_panel_with_global_nav(
+            ui,
             &self.app_context,
-            vec![("Tools", AppAction::None)],
+            subdued_everyday_spec(
+                "Tools",
+                RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+            ),
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsTransitionVisualizerScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             self.show_input_field(ui);
             self.show_output(ui)
         });
@@ -453,13 +475,13 @@ impl ScreenLike for TransitionVisualizerScreen {
                         ui.add_space(10.0);
 
                         if let Some(ref contract_id) = self.selected_contract_id {
-                            ui.label(format!("Contract ID: {}", contract_id));
+                            ui.label(format!("Contract ID: {contract_id}"));
                             ui.add_space(10.0);
 
                             // Check if contract already exists
                             let contract_exists = self
                                 .app_context
-                                .get_contracts(None, None)
+                                .get_contracts()
                                 .unwrap_or_default()
                                 .iter()
                                 .any(|c| {

@@ -1,54 +1,13 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::BackendTask;
-use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
-use crate::spv::CoreBackendMode;
-use crate::ui::ScreenType;
+use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
+use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
+use crate::ui::state::hub_selection::HubSelection;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
-use egui::{Align2, Context, FontId, Frame, Margin, RichText, TextureHandle, TopBottomPanel, Ui};
-use rust_embed::RustEmbed;
+use crate::ui::{RootScreenType, ScreenType};
+use egui::{Align2, FontId, Frame, Margin, Panel, RichText, Ui};
 use std::sync::Arc;
-use tracing::error;
-
-#[derive(RustEmbed)]
-#[folder = "icons/"]
-struct Assets;
-
-// Function to load an icon as a texture using embedded assets
-#[allow(dead_code)]
-fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    // Use ctx.data_mut to check if texture is already cached
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(path)))
-        .or_else(|| {
-            // Only do expensive operations if texture is not cached
-            if let Some(content) = Assets::get(path) {
-                // Load the image from the embedded bytes
-                if let Ok(image) = image::load_from_memory(&content.data) {
-                    let size = [image.width() as usize, image.height() as usize];
-                    let rgba_image = image.into_rgba8();
-                    let pixels = rgba_image.into_raw();
-
-                    let texture = ctx.load_texture(
-                        path,
-                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
-                        Default::default(),
-                    );
-
-                    // Cache the texture
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
-
-                    Some(texture)
-                } else {
-                    error!("Failed to load image from embedded data at path: {}", path);
-                    None
-                }
-            } else {
-                error!("Image not found in embedded assets at path: {}", path);
-                None
-            }
-        })
-}
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: bool) -> AppAction {
     let mut action = AppAction::None;
@@ -95,13 +54,11 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
     action
 }
 
-fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
-    let mut action = AppAction::None;
+fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) {
     let status = app_context.connection_status();
-    let backend_mode = status.backend_mode();
     let overall = status.overall_state();
 
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
     let circle_size = 14.0;
 
     // Five-state color: green (synced), orange (syncing/connecting), magenta (error), red (disconnected)
@@ -134,9 +91,10 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
             )),
             |ui| {
                 ui.horizontal(|ui| {
+                    // Hover-only: the tooltip is the indicator's whole interaction.
                     let (rect, resp) = ui.allocate_exact_size(
                         egui::vec2(circle_size, circle_size),
-                        egui::Sense::click(),
+                        egui::Sense::hover(),
                     );
                     let center = rect.center();
 
@@ -167,56 +125,37 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     if overall != OverallConnectionState::Disconnected {
                         app_context.repaint_animation(ui.ctx());
                     }
-                    let tip = status.tooltip_text(app_context);
-                    let can_start_dash_qt = overall == OverallConnectionState::Disconnected
-                        && backend_mode == CoreBackendMode::Rpc
-                        && !status.rpc_online();
-                    let resp = if can_start_dash_qt {
-                        resp.clickable_tooltip(tip)
-                    } else {
-                        resp.info_tooltip(tip)
-                    };
-
-                    if resp.clicked() && can_start_dash_qt {
-                        let settings = app_context.get_settings().ok().flatten();
-
-                        let (custom_path, overwrite) = settings
-                            .map(|s| (s.dash_qt_path, s.overwrite_dash_conf))
-                            .unwrap_or((None, true));
-                        if let Some(dash_qt_path) = custom_path {
-                            action |= AppAction::BackendTask(BackendTask::CoreTask(
-                                CoreTask::StartDashQT(app_context.network, dash_qt_path, overwrite),
-                            ));
-                        } else {
-                            tracing::debug!(
-                                "Dash-Qt path not set in settings, not starting Dash-Qt from connection indicator."
-                            );
-                        }
-                    }
+                    let tip = status.tooltip_text();
+                    resp.info_tooltip(tip);
                 });
             },
         );
     });
-    action
 }
 
-pub fn add_top_panel(
-    ctx: &Context,
+/// Shared top-island scaffold: the `Panel::top`, surface Frame + radius +
+/// shadow + network accent, the 2-column layout, the connection indicator, and
+/// the right-button grouping. The `left` closure renders the left/breadcrumb
+/// region. Both public entry points delegate here so they render identically.
+fn render_top_island(
+    ui: &mut Ui,
     app_context: &Arc<AppContext>,
-    location: Vec<(&str, AppAction)>,
+    left: impl FnOnce(&mut Ui) -> AppAction,
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
     let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
     let network_accent = DashColors::network_accent(app_context.network, dark_mode);
 
-    TopBottomPanel::top("top_panel")
+    Panel::top("top_panel")
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::same(10)), // 10px margin on all sides
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
@@ -236,8 +175,8 @@ pub fn add_top_panel(
                         columns[0].with_layout(
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
-                                action |= add_connection_indicator(ui, app_context);
-                                action |= add_location_view(ui, location, dark_mode);
+                                add_connection_indicator(ui, app_context);
+                                action |= left(ui);
                             },
                         );
 
@@ -289,7 +228,7 @@ pub fn add_top_panel(
                                     );
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),
@@ -328,7 +267,7 @@ pub fn add_top_panel(
                                         network_accent,
                                     );
 
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),
@@ -372,4 +311,183 @@ pub fn add_top_panel(
         });
 
     action
+}
+
+/// Render the standard top panel with a plain-text breadcrumb location and the
+/// grouped right-side action buttons. Unchanged public API — delegates to the
+/// shared [`render_top_island`] scaffold.
+pub fn add_top_panel(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    location: Vec<(&str, AppAction)>,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> AppAction {
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
+    render_top_island(
+        ui,
+        app_context,
+        |ui| add_location_view(ui, location, dark_mode),
+        right_buttons,
+    )
+}
+
+/// Render the top panel with a custom left/breadcrumb region — the Identities
+/// hub switcher injects its three-segment breadcrumb here. Same island, accent,
+/// connection indicator, and right column as [`add_top_panel`].
+pub fn add_top_panel_with_breadcrumb(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    breadcrumb: impl FnOnce(&mut Ui) -> AppAction,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> AppAction {
+    render_top_island(ui, app_context, breadcrumb, right_buttons)
+}
+
+/// Standard how-to-change tooltip for an unwired wallet pill (FR-GLOBAL-NAV-2
+/// rule 3). A single translation unit; keep it a complete sentence.
+const TT_WALLET_UNWIRED: &str = "Change the active wallet from the Wallets tab.";
+/// Standard how-to-change tooltip for an unwired identity pill.
+const TT_IDENTITY_UNWIRED: &str = "Change the active identity from the Identity Hub.";
+
+/// An everyday-page global-nav spec with both pills subdued (unwired) — the
+/// Phase-A rollout default. Segment-1 links to the page's own root.
+pub fn subdued_everyday_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
+    PageNavSpec::unwired_everyday(label, target, TT_WALLET_UNWIRED, TT_IDENTITY_UNWIRED)
+}
+
+/// A wallet-only global-nav spec (no identity/object pill) with the wallet pill
+/// **interactive** (`Consumed`): picking a wallet from it drives the app-global
+/// selection via [`apply_global_nav_effect`]. For pages with no identity context
+/// that own the wallet-selection surface, e.g. Wallets — FR-GLOBAL-NAV-2 rules 2
+/// and 4.
+pub fn wallet_only_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
+    PageNavSpec::new(label, target).with_wallet_pill(PillConsumption::Consumed)
+}
+
+/// Apply a generalized global-nav effect: wallet/identity selection updates the
+/// **app-global** selection silently (no forced navigation — FR-GLOBAL-NAV-2
+/// rule 1); segment-1 navigation and add-flows route to the existing screens.
+///
+/// The shared successor to the hub's `apply_breadcrumb_effect`. The hub keeps
+/// its own richer applier (it also resets identity-scoped caches and opens the
+/// picker); every other root page uses this one.
+pub fn apply_global_nav_effect(
+    app_context: &Arc<AppContext>,
+    effect: GlobalNavEffect,
+) -> AppAction {
+    match effect {
+        GlobalNavEffect::None => AppAction::None,
+        GlobalNavEffect::NavigateToRoot(target) => AppAction::SetMainScreen(target),
+        // Silent app-scoped write, NO forced navigation (FR-GLOBAL-NAV-2 rule
+        // 1). `set_selected_hd_wallet` also reconciles the app-global *identity*
+        // to the new wallet's identities as a side effect (keep-if-owned →
+        // first → None). On a non-Hub page this cross-axis mutation is real and
+        // intentional; combined with the resolution-layer MN/Evonode filter it
+        // must never reconcile onto a masternode/evonode identity — the FR-6
+        // boundary is enforced there, not re-checked here.
+        GlobalNavEffect::SwitchWallet(hash) => {
+            app_context.set_selected_hd_wallet(Some(hash));
+            AppAction::None
+        }
+        GlobalNavEffect::SelectIdentity(id) => {
+            app_context.set_selected_identity(Some(id));
+            AppAction::None
+        }
+        // The page-scoped object selection is owned by its page (B7) and never
+        // writes `AppContext::selected_identity_id`. Unwired pages never emit it.
+        GlobalNavEffect::SelectPageObject(_) => AppAction::None,
+        GlobalNavEffect::AddWallet => {
+            AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
+        }
+        GlobalNavEffect::AddIdentityCreate | GlobalNavEffect::CreateTestIdentities => {
+            AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(app_context))
+        }
+        GlobalNavEffect::AddIdentityLoad => {
+            AppAction::AddScreen(ScreenType::AddExistingIdentity.create_screen(app_context))
+        }
+    }
+}
+
+/// Render the top panel with the global-nav switcher for `spec`, then apply its
+/// effect. The one-call entry point every non-Hub root screen uses in place of
+/// [`add_top_panel`]. Unwired specs compose no interactive dropdown, so a
+/// throwaway per-frame search buffer suffices; interactive pages (the Hub,
+/// later Masternodes) own a persistent [`HubSelection`] and wire the effect
+/// themselves.
+pub fn add_top_panel_with_global_nav(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    spec: PageNavSpec,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> AppAction {
+    let mut effect = GlobalNavEffect::None;
+    let mut selection = HubSelection::default();
+    let mut action = render_top_island(
+        ui,
+        app_context,
+        |ui| {
+            effect = global_nav_switcher::render(ui, app_context, &spec, &mut selection);
+            AppAction::None
+        },
+        right_buttons,
+    );
+    action |= apply_global_nav_effect(app_context, effect);
+    action
+}
+
+/// Like [`add_top_panel_with_global_nav`], but also returns the raw
+/// [`GlobalNavEffect`] so a page that **consumes** a selection can mirror it into
+/// its own view state — the page half of the two-way binding (FR-GLOBAL-NAV-2
+/// rule 2). The returned effect is **already applied**; a caller must only
+/// synchronize its own state from it, never re-apply it.
+///
+/// Two consumers today: the Wallets page mirrors
+/// [`GlobalNavEffect::SwitchWallet`] into its selected wallet, and the
+/// Masternodes page mirrors [`GlobalNavEffect::SelectPageObject`] by opening
+/// that node's detail view. `SelectPageObject` is *only* surfaced here — the
+/// applier never writes it to `AppContext::selected_identity_id` (the FR-6
+/// boundary).
+pub fn add_top_panel_with_global_nav_capturing(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    spec: PageNavSpec,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> (AppAction, GlobalNavEffect) {
+    let mut effect = GlobalNavEffect::None;
+    let mut selection = HubSelection::default();
+    let mut action = render_top_island(
+        ui,
+        app_context,
+        |ui| {
+            effect = global_nav_switcher::render(ui, app_context, &spec, &mut selection);
+            AppAction::None
+        },
+        right_buttons,
+    );
+    action |= apply_global_nav_effect(app_context, effect.clone());
+    (action, effect)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TC-WALLETLINK-02: the Wallets page's spec exposes an **interactive**
+    /// (`Consumed`) wallet pill with no how-to tooltip — the pill drives the
+    /// selection here rather than pointing elsewhere.
+    #[test]
+    fn wallet_only_spec_pill_is_consumed_without_tooltip() {
+        let spec = wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances);
+        let pill = spec.wallet_pill().expect("wallet pill present");
+        assert!(pill.is_consumed(), "the Wallets pill must be interactive");
+        assert_eq!(
+            pill.tooltip(),
+            None,
+            "an interactive pill shows no how-to tooltip"
+        );
+        assert!(
+            spec.identity_pill().is_none(),
+            "the Wallets page is wallet-only, with no identity pill"
+        );
+    }
 }

@@ -19,8 +19,7 @@ async fn test_withdraw_from_identity() {
     let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
     // Register identity on Platform
-    let (reg_info, _master_key_bytes) =
-        build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
+    let reg_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash).await;
     let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info));
     let result = run_task(&ctx.app_context, task)
         .await
@@ -35,7 +34,7 @@ async fn test_withdraw_from_identity() {
     tracing::info!("Identity balance before withdrawal: {}", initial_balance);
 
     // Get a Core address to withdraw to
-    let withdraw_address_str = get_receive_address(&ctx.app_context, &wallet_arc);
+    let withdraw_address_str = get_receive_address(&ctx.app_context, &wallet_arc).await;
     let withdraw_address = Address::from_str(&withdraw_address_str)
         .expect("Valid address")
         .assume_checked();

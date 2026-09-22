@@ -2,11 +2,16 @@ use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
-use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
+use crate::{
+    context::AppContext,
+    model::{
+        dpns::{DpnsNameValidationResult, classify_dpns_registration_outcome, validate_dpns_name},
+        qualified_identity::DPNSNameInfo,
+    },
+};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
-    Sdk,
+    Error as SdkError, Sdk,
     dpp::{
         data_contract::{
             accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
@@ -16,18 +21,33 @@ use dash_sdk::{
         platform_value::{Bytes32, Value},
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
-    drive::query::{WhereClause, WhereOperator},
+    drive::query::{SelectProjection, WhereClause, WhereOperator},
     platform::Fetch,
     platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
+
+fn rebrand_dpns_domain_conflict(error: TaskError) -> TaskError {
+    match error {
+        TaskError::PlatformEntryConflict { source_error } => {
+            TaskError::DpnsUsernameAlreadyTaken { source_error }
+        }
+        other => other,
+    }
+}
+
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let validation = validate_dpns_name(&input.name_input);
+        if validation != DpnsNameValidationResult::Valid {
+            return Err(TaskError::InvalidDpnsName { validation });
+        }
+
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
@@ -79,6 +99,7 @@ impl AppContext {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
         let domain_document = Document::V0(DocumentV0 {
             id: domain_id,
@@ -122,13 +143,20 @@ impl AppContext {
             created_at_core_block_height: None,
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
+            contract_version: None,
         });
+        let outcome = classify_dpns_registration_outcome(
+            &domain_document_type,
+            &domain_document,
+            sdk.version(),
+        )
+        .map_err(|error| SdkError::Protocol(*error))?;
 
         let public_key = qualified_identity
             .document_signing_key(&preorder_document_type)
             .ok_or(TaskError::NoDocumentSigningKey)?;
 
-        let fee_estimator = PlatformFeeEstimator::new();
+        let fee_estimator = self.fee_estimator();
         let estimated_fee = fee_estimator.estimate_document_batch(2);
 
         let balance_before = qualified_identity.identity.balance();
@@ -143,6 +171,8 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
+            // Not rebranded: preorder's only unique index, `saltedDomainHash`, is unrelated to
+            // usernames, so conflicts keep the generic `PlatformEntryConflict` message.
             .await?;
 
         let _ = domain_document
@@ -155,9 +185,12 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
-            .await?;
+            .await
+            .map_err(|error| rebrand_dpns_domain_conflict(TaskError::from(error)))?;
 
         let dpns_names_document_query = DocumentQuery {
+            sub_queries: Vec::new(),
+            select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
@@ -165,8 +198,12 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(qualified_identity.identity.id().into()),
             }],
+            time_range_clauses: Vec::new(),
+            group_by: Vec::new(),
+            having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
+            offset: None,
             start: None,
         };
 
@@ -204,7 +241,7 @@ impl AppContext {
         qualified_identity.dpns_names = owned_dpns_names;
 
         if qualified_identity.alias.is_none() {
-            qualified_identity.alias = Some(format!("{}.dash", input.name_input));
+            qualified_identity.alias = Some(format!("{name}.dash", name = input.name_input));
         }
 
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
@@ -233,10 +270,60 @@ impl AppContext {
 
         qualified_identity.identity = refreshed_identity;
 
-        self.update_local_qualified_identity(&qualified_identity)
-            .map_err(|e| TaskError::Database { source: e })?;
+        self.update_local_qualified_identity(&qualified_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
-        Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))
+        Ok(BackendTaskSuccessResult::RegisteredDpnsName {
+            outcome,
+            fee_result,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::consensus::ConsensusError::StateError as ConsensusStateError;
+    use dash_sdk::dpp::consensus::state::state_error::StateError;
+
+    fn duplicate_unique_index_conflict(properties: Vec<&str>) -> TaskError {
+        let source_error = Box::new(crate::test_support::duplicate_unique_index_broadcast_error(
+            properties,
+        ));
+
+        TaskError::PlatformEntryConflict { source_error }
+    }
+
+    #[test]
+    fn rebrand_dpns_domain_conflict_maps_platform_entry_conflict() {
+        let error =
+            duplicate_unique_index_conflict(vec!["normalizedParentDomainName", "normalizedLabel"]);
+
+        let rebranded = rebrand_dpns_domain_conflict(error);
+
+        assert_eq!(
+            rebranded.to_string(),
+            "This username is already taken. Please choose a different username and try again."
+        );
+        let TaskError::DpnsUsernameAlreadyTaken { source_error } = rebranded else {
+            panic!("expected DpnsUsernameAlreadyTaken");
+        };
+        let dash_sdk::Error::StateTransitionBroadcastError(broadcast_error) = source_error.as_ref()
+        else {
+            panic!("expected StateTransitionBroadcastError source");
+        };
+        let Some(ConsensusStateError(StateError::DuplicateUniqueIndexError(error))) =
+            broadcast_error.cause.as_ref()
+        else {
+            panic!("expected DuplicateUniqueIndexError cause");
+        };
+        assert_eq!(error.duplicating_properties().len(), 2);
+    }
+
+    #[test]
+    fn rebrand_dpns_domain_conflict_passes_through_other_errors() {
+        let error = rebrand_dpns_domain_conflict(TaskError::DataContractNotFound);
+
+        assert!(matches!(error, TaskError::DataContractNotFound));
     }
 }

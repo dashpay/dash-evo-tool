@@ -6,13 +6,18 @@ use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// Generate ECDH shared key according to DashPay DIP-15
 /// Uses libsecp256k1_ecdh method: SHA256((y[31]&0x1|0x2) || x)
+///
+/// The returned key is symmetric DashPay encryption material, so it is wrapped
+/// in [`Zeroizing`] and the 64-byte ECDH point it is derived from is wiped on
+/// drop. The byte value is unchanged from the DIP-15 derivation.
 pub fn generate_ecdh_shared_key(
     private_key: &[u8],
     public_key: &IdentityPublicKey,
-) -> Result<[u8; 32], String> {
+) -> Result<Zeroizing<[u8; 32]>, String> {
     let _secp = Secp256k1::new();
 
     // Parse the private key
@@ -26,8 +31,14 @@ pub fn generate_ecdh_shared_key(
             let public_key = PublicKey::from_slice(public_key_data.as_slice())
                 .map_err(|e| format!("Invalid public key: {}", e))?;
 
-            // Perform ECDH to get shared secret
-            let shared_secret = dash_sdk::dpp::dashcore::secp256k1::ecdh::shared_secret_point(&public_key, &secret_key);
+            // Perform ECDH to get shared secret. The 64-byte point is secret;
+            // hold it in `Zeroizing` so it is wiped once the key is hashed out.
+            let shared_secret = Zeroizing::new(
+                dash_sdk::dpp::dashcore::secp256k1::ecdh::shared_secret_point(
+                    &public_key,
+                    &secret_key,
+                ),
+            );
 
             // Extract x and y coordinates (64 bytes total: 32 + 32)
             let x = &shared_secret[..32];
@@ -41,9 +52,10 @@ pub fn generate_ecdh_shared_key(
             hasher.update([prefix]);
             hasher.update(x);
 
-            let result = hasher.finalize();
-            let mut shared_key = [0u8; 32];
-            shared_key.copy_from_slice(&result);
+            // The digest is the shared key material; finalize it straight
+            // into the zeroizing buffer so no un-wiped copy is left behind.
+            let mut shared_key = Zeroizing::new([0u8; 32]);
+            hasher.finalize_into((&mut *shared_key).into());
 
             Ok(shared_key)
         }
@@ -65,7 +77,7 @@ pub fn encrypt_extended_public_key(
     public_key: [u8; 33],
     shared_key: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Create the extended public key data (69 bytes)
     let mut xpub_data = Vec::with_capacity(69);
@@ -87,7 +99,7 @@ pub fn encrypt_extended_public_key(
     buffer[..xpub_data.len()].copy_from_slice(&xpub_data);
 
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, xpub_data.len())
+        .encrypt_padded::<Pkcs7>(&mut buffer, xpub_data.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
     // Verify the ciphertext is exactly 80 bytes
@@ -115,7 +127,7 @@ pub fn encrypt_extended_public_key(
 /// - For 63 bytes: 1 + 63 = 64, PKCS7 adds 16 = 80 byte ciphertext = 96 total (exceeds limit)
 /// - For 62 bytes: 1 + 62 = 63, PKCS7 adds 1 = 64 byte ciphertext = 80 total (at limit)
 pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use cbc::cipher::{BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
 
     let label_bytes = label.as_bytes();
 
@@ -165,7 +177,7 @@ pub fn encrypt_account_label(label: &str, shared_key: &[u8; 32]) -> Result<Vec<u
 
     // Encrypt with PKCS7 padding
     let ciphertext = cipher
-        .encrypt_padded_mut::<Pkcs7>(&mut buffer, padded_label.len())
+        .encrypt_padded::<Pkcs7>(&mut buffer, padded_label.len())
         .map_err(|e| format!("Encryption failed: {:?}", e))?;
 
     // Combine IV and ciphertext
@@ -191,7 +203,7 @@ pub fn decrypt_extended_public_key(
     encrypted_data: &[u8],
     shared_key: &[u8; 32],
 ) -> Result<(Vec<u8>, [u8; 32], [u8; 33]), String> {
-    use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Expected format: IV (16 bytes) + Encrypted Data (80 bytes) = 96 bytes
     if encrypted_data.len() != 96 {
@@ -202,8 +214,9 @@ pub fn decrypt_extended_public_key(
     }
 
     // Extract IV and ciphertext
-    let iv = &encrypted_data[..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt using CBC-AES-256 with PKCS7 padding
     type Aes256CbcDec = cbc::Decryptor<Aes256>;
@@ -211,7 +224,7 @@ pub fn decrypt_extended_public_key(
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     // Should decrypt to exactly 69 bytes after removing padding
@@ -236,7 +249,7 @@ pub fn decrypt_account_label(
     encrypted_data: &[u8],
     shared_key: &[u8; 32],
 ) -> Result<String, String> {
-    use cbc::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+    use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 
     // Expected format: IV (16 bytes) + Encrypted Data (32-64 bytes) = 48-80 bytes
     if encrypted_data.len() < 48 || encrypted_data.len() > 80 {
@@ -247,8 +260,9 @@ pub fn decrypt_account_label(
     }
 
     // Extract IV and ciphertext
-    let iv = &encrypted_data[..16];
-    let ciphertext = &encrypted_data[16..];
+    let (iv, ciphertext) = encrypted_data
+        .split_first_chunk::<16>()
+        .ok_or_else(|| "Encrypted data too short (no IV)".to_string())?;
 
     // Decrypt using CBC-AES-256 with PKCS7 padding
     type Aes256CbcDec = cbc::Decryptor<Aes256>;
@@ -256,7 +270,7 @@ pub fn decrypt_account_label(
 
     let mut buffer = ciphertext.to_vec();
     let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
+        .decrypt_padded::<Pkcs7>(&mut buffer)
         .map_err(|e| format!("Decryption failed: {:?}", e))?;
 
     // Extract the actual label from our custom format: [len][label][padding...]
@@ -299,6 +313,108 @@ mod tests {
         .unwrap();
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         (secret_key, public_key)
+    }
+
+    /// Build an `IdentityPublicKey` carrying a raw ECDSA_SECP256K1 public key
+    /// in its `data` field — the shape `generate_ecdh_shared_key` expects.
+    fn ecdsa_identity_public_key(public_key: &PublicKey) -> IdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0,
+            purpose: Purpose::ENCRYPTION,
+            security_level: SecurityLevel::MEDIUM,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: public_key.serialize().to_vec().into(),
+            disabled_at: None,
+        })
+    }
+
+    /// DIP-15 CBC known-answer key/IV. The blobs below were generated
+    /// independently with Python `cryptography` 46 (OpenSSL) as
+    /// `IV ‖ AES-256-CBC-PKCS7(key = 00..1f, iv = 10..1f, pt)`, so they pin
+    /// interoperability with other DashPay clients across `cbc` / `aes` bumps.
+    const GOLDEN_CBC_KEY: [u8; 32] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
+    ];
+
+    #[test]
+    fn decrypt_extended_public_key_opens_golden_blob() {
+        // Plaintext is 00..44 (69 bytes): fingerprint 00..03, chain code
+        // 04..23, public key 24..44.
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             9f3b7504926f8bd36e3118e903a4cd4a25c183f70fdb4812cc2453fa00b3d390\
+             fbd621f919e2d9a0cb10aa5647bee3a7038906cdf1b7b2f800aa3b55e1b639f8\
+             8f7e63058f429572f395a202317aa85d",
+        )
+        .expect("blob hex");
+        let (fingerprint, chain_code, public_key) =
+            decrypt_extended_public_key(&blob, &GOLDEN_CBC_KEY).expect("golden blob must decrypt");
+        let plaintext: Vec<u8> = (0u8..69).collect();
+        assert_eq!(fingerprint, plaintext[..4]);
+        assert_eq!(chain_code[..], plaintext[4..36]);
+        assert_eq!(public_key[..], plaintext[36..69]);
+    }
+
+    #[test]
+    fn decrypt_account_label_opens_golden_blob() {
+        let blob = hex::decode(
+            "101112131415161718191a1b1c1d1e1f\
+             1fc29550069dbbccc5ac76abcec951ea02fba84e7cea06406d5e66fa6fabe244",
+        )
+        .expect("blob hex");
+        let label =
+            decrypt_account_label(&blob, &GOLDEN_CBC_KEY).expect("golden blob must decrypt");
+        assert_eq!(label, "Savings");
+    }
+
+    /// Byte-identity guard for the DIP-15 ECDH derivation.
+    ///
+    /// Pins the shared key for a fixed private key + fixed counterpart public
+    /// key so the zeroize hardening (which wraps the result in `Zeroizing` and
+    /// wipes the sha2 digest) cannot silently alter the derived material.
+    #[test]
+    fn ecdh_shared_key_matches_pinned_vector() {
+        let secp = Secp256k1::new();
+
+        // Our private key: 0x01..=0x20 (same fixed vector the suite uses).
+        let private_key = [
+            0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,
+            0x1D, 0x1E, 0x1F, 0x20,
+        ];
+
+        // Counterpart key derived from a different fixed secret so the ECDH
+        // point is non-degenerate.
+        let counterpart_secret = SecretKey::from_slice(&[
+            0xA1u8, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
+            0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC,
+            0xBD, 0xBE, 0xBF, 0xC0,
+        ])
+        .unwrap();
+        let counterpart_pub = PublicKey::from_secret_key(&secp, &counterpart_secret);
+        let counterpart_ipk = ecdsa_identity_public_key(&counterpart_pub);
+
+        let shared_key = generate_ecdh_shared_key(&private_key, &counterpart_ipk)
+            .expect("ECDH derivation should succeed");
+
+        const EXPECTED: [u8; 32] = [
+            0xda, 0x28, 0x35, 0x1f, 0x2d, 0xbd, 0x54, 0xc7, 0x5c, 0x5d, 0xf3, 0x37, 0x9e, 0x33,
+            0xb2, 0x37, 0xac, 0x32, 0x3e, 0xb2, 0x63, 0x87, 0xf5, 0x8f, 0x98, 0x33, 0xec, 0x5a,
+            0x5a, 0x2a, 0x83, 0x85,
+        ];
+        assert_eq!(
+            *shared_key,
+            EXPECTED,
+            "DIP-15 ECDH shared key changed — crypto output is NOT byte-identical. \
+             Got: {}",
+            hex::encode(*shared_key)
+        );
     }
 
     #[test]
@@ -446,6 +562,29 @@ mod tests {
         // Try to decrypt with wrong key - should fail
         let result = decrypt_extended_public_key(&encrypted, &wrong_key);
         assert!(result.is_err(), "Decryption with wrong key should fail");
+    }
+
+    #[test]
+    fn zeroizing_shared_key_works_through_deref_coercion() {
+        // The DashPay callers hold the ECDH shared key as `Zeroizing<[u8; 32]>`
+        // and pass it by reference to the `encrypt_*` / `decrypt_*` helpers,
+        // which take `&[u8; 32]`. This pins the deref-coercion contract those
+        // callers rely on: a borrow of the zeroizing key keys the cipher
+        // identically to a borrow of a plain array.
+        let raw = generate_test_shared_key();
+        let zeroizing_key = zeroize::Zeroizing::new(raw);
+
+        let encrypted =
+            encrypt_account_label("Personal", &zeroizing_key).expect("encrypt with zeroizing key");
+        let decrypted =
+            decrypt_account_label(&encrypted, &zeroizing_key).expect("decrypt with zeroizing key");
+        assert_eq!(decrypted, "Personal");
+
+        // Same bytes via a plain array must decrypt the zeroizing-keyed
+        // ciphertext, proving the wrapper does not alter the key material.
+        let plain_decrypted =
+            decrypt_account_label(&encrypted, &raw).expect("decrypt with plain key");
+        assert_eq!(plain_decrypted, "Personal");
     }
 
     #[test]

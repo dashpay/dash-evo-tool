@@ -12,11 +12,14 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Identity Operations (IDN)](#identity-operations-idn)
 - [DPNS (DPN)](#dpns-dpn)
 - [DashPay (DPY)](#dashpay-dpy)
+- [Identities Hub (IDH)](#identities-hub-idh)
 - [Token Operations (TOK)](#token-operations-tok)
 - [Contracts and Documents (DOC)](#contracts-and-documents-doc)
 - [Developer and Power Tools (DEV)](#developer-and-power-tools-dev)
 - [Network and Settings (NET)](#network-and-settings-net)
 - [Programmatic Access (MCP)](#programmatic-access-mcp)
+- [User Experience (UX)](#user-experience-ux)
+- [Masternodes (MN)](#masternodes-mn)
 
 ---
 
@@ -30,6 +33,8 @@ As a user, I want to create a new wallet with a generated mnemonic so that I can
 - Mnemonic is generated using mouse entropy for randomness.
 - User can select mnemonic language and wallet name.
 - Optional password protection is offered.
+- An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
+- The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
 - Recovery phrase is displayed for backup.
 
 ### WAL-002: Import wallet via mnemonic [Implemented]
@@ -39,6 +44,8 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 
 - Accepts standard BIP39 mnemonic phrases.
 - User can assign a name and optional password.
+- An optional wallet password must be at least 8 UTF-8 bytes after trimming surrounding whitespace.
+- The app refuses a wallet password that is too long for secure storage before saving the wallet and asks the user to choose a shorter one.
 - Wallet syncs balances after import.
 
 ### WAL-003: Import single private key [Implemented]
@@ -47,6 +54,7 @@ As a user, I want to import an existing wallet by entering its seed phrase so th
 As a power user, I want to import a single private key so that I can manage funds from a standalone address.
 
 - Creates a single-key wallet from WIF-format key.
+- An optional per-key passphrase must be at least 8 characters. The app refuses one that is too long for secure storage before importing the key and asks the user to choose a shorter passphrase.
 - Wallet appears in the wallet selector.
 
 ### WAL-004: Switch between wallets [Implemented]
@@ -56,6 +64,7 @@ As a user managing multiple wallets, I want to switch between them quickly so th
 
 - Wallet selector dropdown shows all loaded wallets.
 - Switching is instant with no app restart.
+- The top-nav wallet pill is interactive on the Wallets tab and stays consistent with the in-tab picker.
 
 ### WAL-005: Rename a wallet [Implemented]
 **Persona:** Priya
@@ -67,10 +76,14 @@ As a power user, I want to rename wallets so that I can identify them by purpose
 ### WAL-006: Lock and unlock wallet [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to lock my wallet with a password so that others cannot access my funds if I leave the app open.
+As a user, I want my wallet protected by a passphrase so that others cannot access my funds if I leave the app open.
 
-- Locked wallet requires password to unlock.
-- Sensitive operations are blocked while locked.
+- The passphrase is requested just-in-time, when an operation actually needs the secret (sending funds, registering an identity, signing).
+- The prompt offers a "Keep this wallet unlocked until I close the app" option so a busy session is asked only once.
+- That option defaults to off: unless the user actively ticks it, every secret access re-prompts, and the seed is not cached.
+- The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes. An explicit unlock without the keep-unlocked option retains it only until that wallet is ready to use, then wipes it.
+- During a storage update, each previously password-protected wallet asks for its password so its secret can be re-sealed in the on-device vault under the same password. The user may skip a wallet they cannot unlock without blocking the rest of the app; the wallet stays locked and protected, and its update finishes the next time the user unlocks it. The prompt makes clear that skipping does not lose any coins.
+- If an optional storage update cannot re-seal a legacy seed because its existing password is too long for the new storage, the wallet still unlocks from its preserved legacy data and the update is retried later.
 
 ### WAL-007: Remove a wallet [Implemented]
 **Persona:** Priya, Jordan
@@ -78,7 +91,7 @@ As a user, I want to lock my wallet with a password so that others cannot access
 As a user, I want to remove a wallet I no longer need so that it does not clutter my wallet list.
 
 - Confirmation prompt before removal.
-- Wallet data is deleted from local storage.
+- Current wallet data is deleted from local storage. If an older recovery database exists, it remains untouched.
 
 ### WAL-008: View wallet balances [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -87,6 +100,7 @@ As a user, I want to see my wallet balance so that I know how much Dash I hold.
 
 - Displays Core balance and Platform balance.
 - Alex sees a simplified view; Priya sees per-account breakdown.
+- Received funds remain visible after restarting the app, including funds deposited before the wallet was last opened (the wallet re-registers with the network watcher on launch).
 
 ### WAL-009: View fiat equivalent of balances [Gap]
 **Persona:** Alex
@@ -104,6 +118,7 @@ As a user, I want to generate a new receive address so that I can share it with 
 
 - Address displayed with QR code.
 - Alex sees a single address by default.
+- A generated address is always within the SPV-watched pool, so deposits to it are seen.
 
 ### WAL-011: View address table [Implemented]
 **Persona:** Priya, Jordan
@@ -196,12 +211,12 @@ As a user, I want to see clear tabs for Dash Core, Platform, and Shielded so tha
 - Empty accounts display "(empty)" indicator.
 - Switching tabs is instant with no data reload.
 
-### WAL-022: View system accounts in developer mode [Implemented]
-**Persona:** Jordan
+### WAL-022: View system accounts in the Detailed view [Implemented]
+**Persona:** Priya, Jordan
 
-As a developer, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
+As a power user, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
 
-- System tab appears only when developer mode is enabled.
+- System tab appears only at the Power role (Detailed view) or above.
 - Each system account category is shown as a collapsible section.
 - Section headers display address count and balance.
 
@@ -223,6 +238,96 @@ As a power user, I want the balance breakdown and address table to be collapsibl
 - Asset locks section has a collapsible header.
 - Sections are expanded by default for quick access.
 
+### WAL-025: Restore a password-protected imported key after an update [Implemented]
+**Persona:** Priya, Jordan
+
+As a power user who imported a private key under an old per-key password, I want to restore that key after the storage update so that I do not lose access to the address.
+
+- A banner on the wallets screen counts the imported keys still waiting to be restored and offers to restore them.
+- A per-key dialog takes the old password, decrypts the preserved key, and re-saves it in the on-device secret vault (optionally under a new passphrase the user chooses).
+- A wrong password fails with a calm, generic message and leaves the key restorable — the old data is never corrupted.
+- After restore the key appears in the wallet list at the same address; a note explains that balance and sending for single-key wallets arrive in a future update.
+
+### WAL-026: Unlock a passphrase-protected vault at startup [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose saved keys were sealed with a passphrase by an earlier version, I want the app to ask me for that passphrase at startup so that it opens normally instead of failing to launch.
+
+- When the app cannot open its saved-keys vault because it was sealed with a passphrase, it shows a masked unlock prompt at startup instead of closing.
+- Entering the correct passphrase opens the existing vault in place and the app continues to its normal screen; nothing is deleted, recreated, or re-encrypted.
+- A wrong passphrase re-asks with a calm message and no hint; the vault is never altered, so a later correct passphrase still works.
+- Entering a passphrase that is too long for this version keeps the startup prompt open and explains that the user can retry with a shorter passphrase or reopen the previous version to change it.
+- Choosing to quit closes the app cleanly and leaves the vault untouched, so the user can try again next time.
+- The headless command-line and automation paths never show a dialog; they report a calm, actionable message instead.
+
+### WAL-027: Balance health check after syncing [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want the app to tell me when a wallet's totals don't add up after syncing so that I know about a display glitch and that my funds are still safe.
+
+- When a sync finishes, the app checks every loaded wallet's overall Core and Platform balance against the amounts its account tabs add up to.
+- If they disagree by more than a rounding amount, a single calm warning banner appears explaining that funds are safe, it's a known display issue, and a refresh or reopen usually resolves it.
+- The banner is not repeated on every later sync while the same difference persists, and it clears on its own once the totals agree again.
+- The check runs for all loaded wallets, not just the one currently on screen.
+
+### WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab [Implemented]
+**Persona:** Priya, Jordan
+
+As a multi-wallet user, I can switch the active wallet from the top-nav pill while on the Wallets tab, and arriving at the Wallets tab always shows the wallet I last selected on any surface, so the pill and the in-tab picker never disagree.
+
+- The top-nav wallet pill is interactive on the Wallets tab (not a dead, informational pill), and picking a wallet from it switches the active wallet in place with no forced navigation.
+- Arriving at the Wallets tab re-syncs to the wallet last chosen on any surface, replacing a stale cached selection, without clobbering a still-valid one.
+- A single-key selection made in the tab survives navigation; a later explicit HD pick from the pill supersedes it — the two selection surfaces never show different wallets.
+- With a single wallet the pill has nothing to switch to and stays effectively non-interactive.
+
+### WAL-029: View and copy my shielded receive address [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to view and copy my own shielded receive address so that I can give it to another party to receive a private transfer.
+
+- The Shielded tab shows the wallet's shielded address (Orchard account 0) once the wallet's shielded keys are bound at unlock; until then it says the address appears after unlock.
+- The address is copied to the clipboard by clicking either the address itself or the Copy button; the full address is copied even though the display is truncated.
+- The address is published to the UI through a frame-safe snapshot written on the backend side after `ensure_shielded_bound`, sourced from the upstream key slot the shielded coordinator scans with — never re-derived in DET.
+- Generating additional diversified addresses remains a gap: upstream `platform-wallet` exposes no per-diversifier-index accessor (only `shielded_default_address` / `shielded_default_addresses`), so a "+" control cannot be wired without either duplicating Orchard key derivation outside the coordinator seam or stranding funds in a ZIP-32 account the single-account spend path cannot spend from.
+
+### WAL-030: Inspect shielded note details [Gap]
+**Persona:** Jordan
+
+As a developer, I want to see the individual notes in my shielded pool — their value, block height, and spent/unspent status — so that I can verify and diagnose my shielded balance.
+
+- The Shielded tab lists each note with value, block height, and spent/unspent state, plus a synced-index and note-count summary.
+- Currently a gap: the Shielded Notes section renders only a placeholder ("Note history is managed by the upstream platform-wallet coordinator and will be surfaced here in a future update") — no per-note table, status, or count is shown.
+
+### WAL-031: Single-key wallet balance and UTXOs update automatically [Gap]
+**Persona:** Priya, Jordan
+
+As a user with an imported single-key wallet, I want its balance and UTXO list to update on their own as funds arrive and are spent, so that I can see my funds without hunting for a refresh control.
+
+- The imported address is monitored automatically, the same way recovery-phrase wallet addresses are. No manual refresh action is offered.
+- Currently blocked upstream: monitoring requires registering the imported address as a watch-only wallet, but `platform-wallet` exposes no seedless wallet-registration entry point (`register_wallet` is private; the public constructors all require a recovery-phrase seed). Unblocked by a public `register_watch_only_wallet`. Key data and receive still work.
+
+### WAL-032: Finish a storage update without risking old wallet data [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user opening an older wallet installation, I want the app to update its storage safely so that I can keep using every wallet without risking my recovery copy.
+
+- The desktop app asks for each password-protected wallet separately and never carries a typed password into another wallet's prompt.
+- The user can skip a wallet; skipped wallets stay locked, and the rest of the storage update can finish.
+- The previous database is read-only throughout the update, including unlock and skip paths.
+- Standalone command-line and MCP use never wait for a window that is not present. Without a password they ask the user to open the desktop app once, then try again.
+- An operator without the desktop app can supply the wallet password non-interactively (`app_storage_update`; det-cli `--password-stdin` or `--password-file`, never as a command-line argument or environment variable). The update then finishes for every wallet sharing that password, or fails at once without skipping any wallet.
+
+### WAL-033: Wallets, addresses and identities survive an app upgrade [Gap]
+**Persona:** Alex, Priya, Jordan
+
+As a user updating from any earlier version I still have installed, I want every wallet, address and identity to be exactly as I left it after the update, so that I never have to re-import a recovery phrase or reload an identity to get my funds back.
+
+- Updating from any released version keeps each wallet with its name, its derived addresses and its password protection: a wallet that needed a password still needs the same one, and a wallet that never had one never acquires one.
+- Identities loaded before the update are still present afterwards, keeping their alias, their keys, their wallet link and their registered DPNS name, without a manual reload or refresh.
+- The update completes on its own. A migration that cannot finish safely is a defect in the migration, not a situation the user is asked to repair by hand.
+- Starting the updated app a second time changes nothing further, and a user whose data was already current keeps an untouched database rather than a needlessly rewritten one.
+- Currently a gap: each migration mechanism is unit-tested on synthetic data, but no automated check upgrades a data directory a *released* build actually wrote and confirms the result. The design for closing it is `docs/ai-design/2026-09-10-migration-matrix/design.md`; related implemented behaviour is covered by WAL-032, IDN-016 and IDN-020.
+
 ---
 
 ## Send and Receive (SND)
@@ -235,12 +340,13 @@ As a user, I want to send Dash to a recipient address so that I can make payment
 - Enter destination address and amount.
 - Confirmation dialog before broadcast.
 
-### SND-002: Send Dash from single-key wallet [Implemented]
+### SND-002: Send Dash from single-key wallet [Gap]
 **Persona:** Priya, Jordan
 
 As a user with an imported private key, I want to send Dash from that single-key wallet so that I can move funds to another address.
 
-- Send flow works the same as for HD wallets.
+- Temporarily unavailable in this version: the Send control for a single-key wallet is disabled and the app states the limitation and the workaround in place ("You can still receive funds at this address. To send these funds, import them into a recovery-phrase wallet."). A send that reaches the backend is refused with a typed error carrying the same message.
+- Currently blocked upstream, on the same gap as WAL-031: signing and raw-transaction broadcast are both already available, but coin selection needs the imported address's UTXOs, which cannot be discovered until the address can be registered as a watch-only wallet. Single-key wallet data is retained on disk and loads correctly; only the spend action is gated.
 
 ### SND-003: Receive Dash with QR code [Implemented]
 **Persona:** Alex, Priya
@@ -264,7 +370,7 @@ As an everyday user, I want to send Dash to someone by entering their DPNS usern
 
 As a user, I want to see the estimated transaction fee and total amount to be deducted before confirming a send so that I know exactly what I am paying.
 
-- Fee estimate shown in confirmation dialog.
+- Fee estimate shown inline above the Send button on the Send Dash screen (simple and advanced modes), before the send is dispatched; single-key wallets also show it in the confirmation dialog.
 - Total deduction (amount + fee) displayed clearly.
 - Single-key wallets: `estimate_fee()` with transaction size details (inputs, bytes).
 - HD wallets: fee displayed before confirmation with Platform address handling.
@@ -286,7 +392,7 @@ As a developer, I want to shield DASH directly from my Core wallet so that I can
 - Select Core Wallet source and enter a shielded address as destination.
 - System creates an asset lock, waits for proof, and shields the credits.
 - Progress banner shows multi-step operation status.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-008: Top up identity from Send screen [Implemented]
 **Persona:** Priya, Jordan
@@ -304,7 +410,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 
 - Select Platform Addresses as source and enter a shielded address as destination.
 - System auto-selects the highest-balance Platform address.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-010: Withdraw from shielded pool to Core address [Implemented]
 **Persona:** Jordan
@@ -312,7 +418,7 @@ As a developer, I want to shield credits from a Platform address into the shield
 As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
 
 - Select Shielded Pool as source and enter a Core address as destination.
-- Developer mode required.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
 
 ### SND-011: Transfer identity credits to another identity [Implemented]
 **Persona:** Priya, Jordan
@@ -338,6 +444,58 @@ As a user, I want to transfer identity credits to a Platform address from the Se
 
 - Select Identity as source and enter a Platform address (bech32m) as destination.
 - Credits arrive at the Platform address.
+
+### SND-014: Send maximum from a Core wallet [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want a "Max" button on a Core-to-Core send that fills in the largest amount I can actually send so that I can empty a wallet in one go without the transaction failing on fees.
+
+- "Max" sets the amount to the wallet balance minus the estimated network fee, so the send leaves enough to pay the fee and succeeds.
+- The fee reserved is shown next to the amount.
+- When the balance is too low to cover the fee, "Max" produces no amount and a calm message explains why — never an error path.
+
+### SND-015: Unshield credits to a Platform address [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to move credits out of the shielded pool to one of my Platform addresses so that I can use them for ordinary Platform operations.
+
+- Select Shielded Pool as source and enter a Platform address as destination.
+- Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
+- The shielded balance decreases and the Platform address balance increases after the operation completes.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+
+### SND-016: Send privately within the shielded pool [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to transfer credits privately from my shielded pool to another shielded address so that the transfer amount and parties are not exposed on Platform.
+
+- Select Shielded Pool as source and enter a shielded address as destination.
+- Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
+- Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
+- Available only on Platform protocol v12 or later when Expert view or Developer view is selected.
+
+### SND-017: "Max" is verified against what the wallet can actually build [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want "Max" (and the amount check behind it) to reflect what my Core wallet can genuinely send when shielding DASH, funding a Platform address through the Simple builder-driven form, sending directly to an identity, or funding an identity from my wallet balance, so that the amount I'm offered — or type in myself — is not rejected for exceeding what the wallet can build.
+
+- "Max" and amount validation both ask the wallet directly for its actual sendable ceiling, reserving the relevant operation's fee, instead of estimating from the on-screen balance — both derive from the same builder quote, including for an amount typed in by hand rather than produced by the Max button. When the wallet's spendable inputs change after a quote, Max steps back to "Checking the available amount…" and validation waits for a fresh quote rather than accepting a stale ceiling.
+- While the check is running, the amount field shows "Checking the available amount…"; if it fails, "The available amount could not be checked." appears with a "Retry available amount check" button.
+- Funding from a received deposit is capped by what actually arrived at that specific deposit address, never by unrelated funds elsewhere in the wallet — see SND-014 (Core-to-Core Max), which uses a separate, simpler network-fee-only calculation not covered by this story.
+- The Advanced manual-input Platform-address flow validates against the Core inputs selected by the user and is not covered by this builder-ceiling story.
+
+### SND-018: A payment with an unverified outcome resolves itself [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want a payment whose confirmation could not be verified to tell me its real outcome on its own, so that I do not have to work out by hand whether my money moved.
+
+- Covers sending DASH from a Core wallet, including sending to a DashPay contact. Identity registration, identity top-up, Platform-address funding, and the shielded flows keep the plain wait-and-check message — the transaction that funds them is sent inside the wallet stack, which reports no identifier to watch.
+- Once the network takes the payment — an InstantSend lock, or a block containing it — the message is replaced with a confirmation naming that payment, so a user with several waiting can tell which one landed. The watch survives leaving the Send screen, and the confirmation stays on screen until dismissed rather than timing out, so a user who stepped away still finds the answer waiting.
+- After eleven minutes without a confirmation, the message changes once to point at the wallet's transaction history and to warn that sending again could pay the same person twice. The watch continues, so a later confirmation still replaces it.
+- Several payments can be waiting at once. One of them being answered — confirmed, or reaching the eleven-minute mark — leaves every other waiting payment's message exactly as it was, including the plain wait-and-check message shown for the flows that report no identifier to watch.
+- The app never reports such a payment as failed: the network has no rejection signal, so an invalid payment and a slow one look the same.
+- Watches do not survive restarting the app or switching networks — the transaction history shows the payment's real status directly in both cases. A payment sent before a network switch is not watched on the network switched to, even when its unverified outcome only arrives afterwards.
+- While a payment is still unaccounted for, its message outlives other notifications crowding it out: only five show at once, and one pushed off the screen to make room comes back on its own. A message the user closes stays closed — what was lost is restored, what was dismissed is not.
 
 ---
 
@@ -383,8 +541,8 @@ As a developer, I want a one-click "fund this identity with X credits" button so
 
 As a user, I want to register a new identity on Dash Platform so that I can use Platform features like DPNS and DashPay.
 
+- Fund-first wizard: choose a funding method — from your wallet (recommended, pre-selected by default when available), recover an unfinished funding, or use a Platform address — then optionally set a local alias before creating.
 - Multi-stage confirmation flow.
-- Identity funded from an asset lock.
 
 ### IDN-002: Load existing identity by ID [Implemented]
 **Persona:** Priya, Jordan
@@ -394,12 +552,12 @@ As a power user, I want to load an existing identity by its ID and owner private
 - Enter identity ID and private key.
 - Identity details are fetched and displayed.
 
-### IDN-003: Load evonode/masternode identity [Implemented]
+### IDN-003: Load evonode/masternode identity [Superseded by MN-001]
 **Persona:** Priya
 
 As a masternode operator, I want to load my evonode identity via protx hash so that I can manage it through the GUI.
 
-- Enter protx hash to load the associated identity.
+- Loading now happens on the dedicated [Masternodes tab](#masternodes-mn) (see MN-001); the generic "Load Existing Identity" screen's Identity Type selector offers User only, so this story's original path — loading a Masternode/Evonode from that generic screen — no longer exists.
 
 ### IDN-004: Top up identity credits [Implemented]
 **Persona:** Priya, Jordan
@@ -408,6 +566,8 @@ As a user, I want to add credits to my identity so that I can continue performin
 
 - Top up from wallet or Platform addresses.
 - Amount selection with credit cost display.
+- Any loaded wallet can pay, including for an identity another wallet owns; only the paying wallet's funds move and its own identity records are left untouched.
+- A saved funding transaction can only pay for an identity of the wallet it was created in; paying for another wallet's identity uses the wallet balance instead.
 
 ### IDN-005: Withdraw credits to Core address [Implemented]
 **Persona:** Priya, Jordan
@@ -425,6 +585,24 @@ As a user, I want to transfer credits from one identity to another so that I can
 - Select source and destination identities.
 - Enter transfer amount.
 
+### IDN-018: Start an identity payment without choosing a contact first [Gap]
+**Persona:** Alex
+
+As an everyday user, I want to start a payment from my identity before choosing a recipient so that I can send Dash without first opening a contact.
+
+- The Identity Home screen offers the recipient-less Send payment sheet specified in design-spec §B.2 and §B.7.
+- The payment sheet lets the user choose a contact, username, or supported address.
+- The existing transfer screen does not satisfy this story because it only moves funds to another identity or a Platform address.
+
+### IDN-019: Receive Dash directly into an identity [Gap]
+**Persona:** Alex
+
+As an everyday user, I want to open a Receive view for my identity so that another person can scan a QR code or use an address to pay me.
+
+- Design-spec §B.2 and tooltip catalog §D #72–76 specify an identity Receive view that shares a username and a one-time Dash address or QR code.
+- An identity cannot receive Dash directly and has no receiving address, so this flow is not buildable as specified.
+- Funding must start from a wallet: Dash arrives in the wallet first, then the user adds those funds to the identity.
+
 ### IDN-007: Add key to identity [Implemented]
 **Persona:** Priya, Jordan
 
@@ -434,12 +612,33 @@ As a power user, I want to add a new key to my identity so that I can authorize 
 - Key is added via state transition.
 
 ### IDN-008: View identity keys and details [Implemented]
-**Persona:** Priya, Jordan
+**Persona:** Alex, Priya, Jordan
 
 As a user, I want to view all keys associated with my identity so that I can audit access and verify key configuration.
 
-- Lists all keys with type, purpose, and status.
-- View individual key details.
+- The list is reachable from the identity's own Settings tab, under the Advanced section, without changing the interface mode and without starting a payment.
+- Every key on the identity gets a row, and every row opens that key's own page — whether or not this device holds the key's private half. A key the device is missing is exactly the one a user comes here about, so it is never hidden or unopenable.
+- Each row names the key by its role in words that suit the identity — a user identity's keys in plain language, a masternode's in its registration terms — and says whether the key is saved on this device, in words rather than by colour alone. A key the network has retired says so in its name.
+- The on-chain specifics — key id, Platform purpose, security level, key type, read-only — are Expert-view detail, on both the list and the key's own page. The Everyday view gets the role and the held state, which is what it can act on.
+- A key's own page shows its public key, hash and address, and offers to view the private half, sign a message with it, or add and remove it.
+- A key saved on this device that is on none of the identity's key lists — a saved key whose publication never happened — is listed in its own section below the published keys, so its saved private half can still be opened and removed. The section appears only when such a key exists.
+- The offer to restore keys an upgrade left behind also appears here; its criteria are IDN-020's.
+
+### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]
+**Persona:** Priya, Jordan
+
+As a power user, I want to add a password to an identity's signing keys so that they cannot be used to sign on this device without that password.
+
+- Applies only to identities with vault-stored keys (standalone-imported identities). HD-wallet-backed identity keys are derived on demand from that wallet's own seed and are already covered by the wallet's own password; the "Key Protection" section is hidden entirely for such identities since there is no separate vault key to protect.
+- Identity keys default to keyless: they sign automatically and headless/MCP signing keeps working — this is unchanged for any identity the user does not opt in.
+- From the Key Info screen, a collapsible "Key Protection" section (closed by default) shows whether this identity's keys are protected and offers "Add password protection…" or "Remove password protection…".
+- Opting in shows a danger warning (a forgotten password makes the keys unrecoverable for standalone-imported identities; automatic tools can no longer sign this identity), then asks for a new password, a confirmation, and an optional plain-text hint.
+- Once protected, every signing operation for that identity asks for the password just-in-time, with an optional "keep unlocked until I close the app". A wrong password re-asks with no oracle.
+- Headless / MCP signing of a protected identity fails with a calm, actionable message telling the user to unlock it in the app or remove the protection — no environment-variable or flag password fallback exists.
+- Opting out asks for the current password and reverts the keys to keyless; signing is prompt-free again, including headless.
+- The password must be at least 8 characters. The app refuses one that is too long for secure storage before sealing the keys and asks the user to choose a shorter identity password.
+- A password accepted by the current secure storage continues to open protected keys at the storage limit. If an older version sealed keys with a longer password, this version gives recovery guidance instead of presenting a generic storage failure.
+- One password protects all of the identity's keys; it is separate from any wallet password (per-secret isolation). The encryption reuses the shipped Tier-2 seam (Argon2id + XChaCha20-Poly1305) — no new crypto, no plaintext written to disk.
 
 ### IDN-009: Refresh identity state [Implemented]
 **Persona:** Priya, Jordan
@@ -473,13 +672,85 @@ As a user, I want to register a new identity using Platform address credits so t
 - Alternative funding method in identity registration wizard.
 - Uses existing Platform address balance.
 
-### IDN-013: Top up identity from Platform addresses [Implemented]
+### IDN-017: Top up identity from Platform addresses [Implemented]
 **Persona:** Priya, Jordan
 
 As a user, I want to top up identity credits from a Platform address so that I can fund identities from my Platform balance.
 
 - Available as funding method in top-up screen.
 - Uses Platform address credits directly.
+
+### IDN-014: Fund identity by receiving a deposit to a shown QR/address [Implemented]
+**Persona:** Priya, Jordan
+
+As an everyday user, I can fund a new identity or a top-up by receiving a Dash deposit to an address the tool shows me as a QR code, so I can pay from any wallet or exchange without first moving funds into this tool.
+
+- Choosing "Receive a new deposit" shows a scannable deposit address (QR + copyable text) and the minimum amount to send.
+- Once enough arrives the amount field pre-fills (capped at the received balance, fee reserved) and I confirm to create/top-up.
+- I can switch funding methods at any time from the waiting and received sub-steps — the flow is never a dead end.
+- A build/broadcast failure leaves my deposit safe in the wallet, reusable via the existing wallet-balance and recover-unfinished-funding methods.
+
+**Note:** The deposit lands in the wallet balance and then funds through the existing `FundWithWallet` → `AssetLockFunding::FromWalletBalance` path — no external funding-outpoint API is required. This restores the removed scan-to-fund capability using the address the tool derives from the SPV-watched receive pool.
+
+### IDN-015: Automatic identity discovery after sync [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want my wallet's identities to be found and loaded automatically once the app finishes connecting, so that I do not have to open the "Load Identity → By Wallet" screen and search manually.
+
+- After the network is ready, every unlocked wallet is searched automatically once per session.
+- The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
+- Already-loaded identities are refreshed (new keys, new DPNS names) while any alias the user assigned is preserved.
+- Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
+
+### IDN-016: Identities and their keys preserved across an app upgrade [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want the identities I loaded before an upgrade — and the keys they hold, such as a masternode's owner and voting keys — to still be there after updating, so that I can keep signing and voting without re-importing anything.
+
+- Identities stored before the upgrade are imported from the previous version's storage on the first launch afterward, keeping each identity's keys, alias, and wallet link. Progress is shown as its own step.
+- An identity that cannot be read is reported in a banner naming the recovery action (load it again), rather than dropped silently. The previous version's data is never deleted, so a later build can still import it.
+- A single unreadable identity costs only itself: the readable identities in the same batch still import, and neither the wallet migration that restores access to funds nor the scheduled-vote import is blocked by it.
+- The report of unreadable identities returns on every launch until it is explicitly acknowledged, so a user who stepped away cannot lose the only notice that some of their keys were not carried over.
+- When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
+- An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
+
+### IDN-020: Restore keys an upgrade left behind, without re-entering them [Implemented]
+**Persona:** Alex, Priya
+
+As a user whose identity was already in the app before the upgrade — a masternode loaded from its ProTxHash, or an identity holding only some of its keys — I want to bring across the keys that stayed behind in the previous version's data, so that I do not have to re-enter private keys I no longer have on hand.
+
+- The offer appears on the identity's own page — the node detail page, the identity's keys list, and the Key Info screen — only when the previous version's data actually holds keys this identity does not, and it disappears once there is nothing left to restore.
+- The keys list is reachable without changing the interface mode and without starting a payment: an identity's keys are listed under Settings, and every key opens its own page whether or not this device holds that key. Keys that are missing are exactly the ones a user comes here about, so a key the device does not hold is never hidden or unopenable.
+- The offer sits above the key list, so a user whose keys are missing finds it without opening a key first.
+- Each key is named by its role and says whether it is saved on this device, in words rather than by colour alone. The role words match the identity: a user identity's keys are named in plain language, not in masternode registration terms, and the restore offer above the list uses the same words as the list itself.
+- Leaving a key returns to the keys list with both the keys and the restore offer up to date, so a restore made from a key's page is never offered a second time.
+- The restore offer lists each key by its role, and that list is exactly what gets restored. Nothing is restored without pressing Restore, and nothing happens automatically at launch or during the upgrade.
+- Keys already saved for the identity are never replaced or removed — only missing ones are added. An identity the user deleted is never brought back.
+- On a password-protected identity the identity password is asked for first; cancelling, or getting it wrong, leaves everything exactly as it was.
+- An owner or payout key that is genuinely missing comes back this way. A voting key held on a separate voting identity does not, unless the identity's own record already links to that voting identity: otherwise nothing but the previous version's data says the node still uses that key, so it is listed as one that cannot be brought back and entering it by hand stays the remedy. Checking such a key against the chain, which would let it be restored safely, is tracked as issue #942.
+- A key saved in a format this version cannot read, or one that no longer matches a key the identity uses, is listed with its own explanation rather than dropped silently — and never restored, so a key that could not sign can never make the app report a role as held.
+- The previous version's data is never modified, so restoring can be repeated safely; repeating it reports that there was nothing left to restore and changes nothing.
+- Restoring keeps the app usable while it waits for the identity password: other identities can still be removed, and anything else saved for this identity while the password prompt is open survives the restore.
+
+### IDN-021: Unload an identity from this device [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to remove an identity from this device from the identity's own Settings tab, so that I can clear out an identity I no longer use without hunting for a separate screen.
+
+- The identity's Settings tab has an "Unload this identity from this device" action in its Danger zone, and it is usable rather than announced as a coming feature.
+- The confirmation names the identity it is about to unload and states plainly that this permanently deletes that identity's private keys stored on this device, and that using it here again needs the user's own backup — the identity record itself stays on Dash Platform, but "stays on Platform" is not "keys survive".
+- While the confirmation is open the controls behind it, including the identity switcher, cannot be used, so the answer is always given for the identity the confirmation names.
+- Confirming removes the identity, its saved keys, its top-up history, its scheduled DPNS votes, its DashPay contact overlays, and its token-list preferences from this device.
+- Interrupted removal retains a durable cleanup record until its keys and owner-scoped local data are cleared; startup retries do not require loading the identity again and never clear another identity's data.
+- The removal applies to the identity that was on screen when the action was chosen, even if the selected identity changes while the confirmation is open.
+- Choosing "Keep", or dismissing the confirmation, changes nothing.
+- While a storage update is running the removal is refused with an explanation and can be retried once it finishes.
+- Once the identity is gone, where the app lands depends on what is left: with no identities remaining it shows first-run onboarding, with exactly one it opens that identity, and with two or more it shows the identity picker so the user chooses which one to continue with rather than being dropped onto an arbitrary one.
+- The outcome is reported: a plain success, a success noting a voter identity tied to it stayed behind, or — when the identity is delisted but a later step of the removal did not finish — a success noting its private keys may still be on this device, that the app will keep trying to clear them automatically, and that until then the device should be treated as still holding them. The report claims no more than that: not that keys are definitely present (the unfinished step may have had no keys to clear), and not that any particular launch clears them (the automatic attempt can return without doing anything, or can fail again). It names no launch at all, because this message does not survive a restart and the launch it named might make no attempt. Keys that were deleted are reported as deleted, whatever internal bookkeeping failed afterwards.
+- A removal that cannot be completed at all leaves the identity's private keys intact, so a retry still has everything it needs; no identity is ever left listed without its keys, and no identity is ever reported as still removable once it is already gone from every list.
+- The unload sticks. The wallet that derives the identity stays loaded, and the app re-derives and looks up that wallet's identities on its own — at start-up, after a wallet is unlocked, and when a wallet is imported — but none of those automatic passes put back an identity the user unloaded, whether the pass starts before, during, or after the removal. The same holds for the developer-only devnet "clear all identities" sweep.
+- Adding a key to an identity that is unloaded while the key is being registered on the network does not leave that key's private half on this device. The key exists on Dash Platform and the app says so plainly, naming what to do — load the identity again, then add the key again — rather than reporting a save that did not happen.
+- Loading the identity again ends the exclusion, so later automatic passes keep its public record up to date. Loading does not restore private keys deleted by the unload: using the identity for signed actions again requires the user's own backup, either an unlocked wallet that can derive a matching key or a key the user imports.
 
 ---
 
@@ -492,6 +763,8 @@ As a user, I want to register a human-readable username on DPNS so that others c
 
 - Choose identity, enter desired name.
 - Cost estimate displayed before confirmation.
+- While registration runs, a full-window blocking overlay (UX-001) is shown so the same name cannot be submitted twice; it lowers automatically on success or error.
+- Completion feedback distinguishes a username registered for immediate use from a request submitted for community voting.
 
 ### DPN-002: View owned usernames [Implemented]
 **Persona:** Alex, Priya
@@ -538,6 +811,34 @@ As a masternode operator, I want to apply voting choices across multiple contest
 
 - "Set all" option for batch vote assignment.
 
+### DPN-008: Set an alias for an owned username [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to assign a friendly alias to an identity behind a username I own so that I can recognise it more easily in lists.
+
+- Alias set from the "My usernames" table.
+- Alias persists and is applied to the underlying identity.
+
+### DPN-009: Scheduled votes preserved across an app upgrade [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want my previously scheduled DPNS votes to survive an app upgrade so that I do not miss a contest's vote window after updating.
+
+- Scheduled votes stored before the upgrade remain visible and executable afterward.
+- The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner, with the recovery action, rather than dropped silently — and never blocks the wallet migration that restores access to funds.
+- A single unreadable vote row costs only itself: the readable votes in the same batch still import.
+- The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
+
+### DPN-010: See a pending username registration [Implemented]
+**Persona:** Alex
+
+As a user who has requested a username that is not yet awarded, I want to see that the request is pending so that I am not told to "pick a username" for a name I have already chosen.
+
+- A requested-but-unawarded name shows a "Pending" pill next to the identity — on both the Identity Home hero card and the Identity Settings tab.
+- The hero card shows the requested name with the pill instead of the "No username yet — Pick a username" prompt.
+- The onboarding checklist counts the submitted request as completing "Pick a username" while clearly stating that Dash masternodes are voting.
+- The pill's tooltip explains that Dash masternodes decide who receives the username and, when the decision time is known, gives an estimated decision time.
+
 ---
 
 ## DashPay (DPY)
@@ -548,6 +849,9 @@ As a masternode operator, I want to apply voting choices across multiple contest
 As a user, I want to create and edit my DashPay profile (name, bio, avatar) so that contacts can identify me.
 
 - Set display name, bio, and profile image.
+- Profile writes require a wallet-linked identity with an active HIGH or CRITICAL
+  ECDSA_SECP256K1 or ECDSA_HASH160 authentication key.
+  Clearing existing fields awaits upstream support.
 - Changes are published as a state transition.
 
 ### DPY-002: Search DashPay profiles [Implemented]
@@ -610,6 +914,10 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
 
 - Set custom nickname and personal notes per contact.
 - Toggle contact visibility (hidden/visible).
+- Hidden contacts stay listed in a collapsed "Show hidden contacts" section of the Identity Hub
+  Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
+  declining or cancelling a request. If another client saved details this app cannot read, the app
+  warns that continuing will replace those details and asks for confirmation before unhiding.
 - Changes persist locally.
 
 ### DPY-010: Remove a contact [Gap]
@@ -627,6 +935,34 @@ As a power user, I want to generate an auto-accept proof so that incoming contac
 
 - HD derivation and proof signing for automatic acceptance.
 - QR code generation for sharing auto-accept proof.
+
+### DPY-012: Detect payments received from contacts [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want payments sent to me by a DashPay contact to be detected and recorded automatically so that they appear in my payment history without any manual action.
+
+- Incoming on-chain transactions are matched against my contacts' receiving addresses.
+- Matched payments are recorded and surfaced in payment history.
+- Re-scanning the same transaction does not duplicate or double-count it.
+
+### DPY-013: View contacts and avatars offline [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want my contact list, their profiles, and their avatars to show instantly without a network round-trip so that I can view my contacts even when offline or on a slow connection.
+
+- Contacts and private notes are read from already-synced local state.
+- Contact profiles and avatar images are cached locally and served on subsequent views.
+- An explicit "Refresh" action re-fetches the latest profiles and avatars from the network.
+
+### DPY-014: Cancel a sent contact request [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to cancel a contact request I sent so that it stops sitting in my list when I no longer expect an answer.
+
+- A DashPay contact request is immutable on Platform and cannot be deleted, so cancelling cannot un-send it. The UI states this plainly rather than implying a withdrawal.
+- Cancelling re-checks the request against the network first: it must still exist, must have been sent by the acting identity, and must not have already been answered.
+- Cancelling publishes a hidden contact-info document and records the withdrawal locally, so the request leaves the sent list and stays gone across restarts.
+- A request the other person already accepted is reported as an established contact instead of being cancelled.
 
 ---
 
@@ -766,6 +1102,16 @@ As a developer, I want to pay for document operations (create, replace, delete, 
 - Optional `TokenPaymentInfo` parameter on all document actions.
 - Token-based payment as alternative to credit-based payment.
 
+### TOK-018: Stop tracking a token balance [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to stop tracking a token balance for one of my identities so that the "My Tokens" screen stays focused on the tokens I care about.
+
+- "Stop Tracking Balance" removes the chosen identity-token pair from the list.
+- The balance is un-watched so the background sync stops fetching it and the row does not reappear.
+- The dismissal is remembered: "Refresh My Tokens" leaves the row gone, and only that identity-token pair is affected — other identities keep tracking the same token.
+- The row comes back when the user asks for it again: re-importing the token restores it for every identity that dismissed it, and checking that one balance restores just that pair.
+
 ---
 
 ## Contracts and Documents (DOC)
@@ -853,12 +1199,12 @@ As a developer, I want to paste and decode raw state transitions so that I can d
 
 - Transition visualizer parses and displays state transition contents.
 
-### DEV-002: View proof request log [Implemented]
+### DEV-002: View proof request log [Gap]
 **Persona:** Jordan
 
 As a developer, I want to review the history of proof requests made by the app so that I can debug query behavior and performance.
 
-- Proof log lists all requests with timestamps and results.
+- Not available in this version: the proof log screen was removed. Proof requests are no longer recorded or listed in the app.
 
 ### DEV-003: Inspect ZK proofs [Implemented]
 **Persona:** Jordan
@@ -883,7 +1229,7 @@ As a user, I want to see Platform status (epoch info, total credits, validators,
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
 
-### DEV-006: View masternode list diff [Implemented]
+### DEV-006: View masternode list diff [Removed]
 **Persona:** Priya
 
 As a masternode operator, I want to view changes to the masternode list so that I can monitor network composition.
@@ -941,34 +1287,41 @@ As a user, I want to choose between light, dark, or auto theme so that the app m
 - Light, dark, and system-auto options.
 - Theme change applied immediately.
 
-### NET-005: Toggle developer mode [Implemented]
+### NET-005: Unlock advanced features by interface mode [Implemented]
 **Persona:** Priya, Jordan
 
-As a user, I want to enable developer mode so that I can access advanced features like address tables, refresh controls, and debug tools.
+As a user, I want a higher interface mode to reveal advanced features like address tables, refresh controls, and debug tools, so that complexity stays out of my way until I ask for it.
 
-- Toggles visibility of advanced UI elements.
+- Detailed view and Developer tools each add capabilities on top of the mode below them.
+- Feature availability is monotonic: anything a lower mode can do, a higher mode can too.
 
-### NET-006: Select user mode [Gap]
-**Persona:** Alex, Priya
+### NET-006: Select interface mode [Implemented]
+**Persona:** Alex, Priya, Jordan
 
-As a user, I want to choose between Beginner and Advanced mode so that the interface matches my experience level.
+As a user, I want to choose between Default view, Detailed view, and Developer tools so that the interface matches my experience level.
 
-- Beginner mode hides complexity; Advanced mode shows full detail.
-- `UserMode` enum and database persistence exist but no UI control is implemented.
+- Same three choices and descriptions on the Network Settings "Interface mode" card and the Welcome screen onboarding row.
+- Choice persists and applies immediately, and can be changed again at any time.
 
-### NET-007: Granular refresh controls [Implemented]
+### NET-007: Granular refresh controls [Removed]
 **Persona:** Priya
 
-As a power user, I want to choose whether to refresh Core Only, Platform Only, or both so that I can save time when I only need part of the data updated.
+Withdrawn after the platform-wallet migration. Core wallet state is kept current
+by the platform-wallet runtime and pushed through the EventBridge, so there was
+never a real "Core Only" mode. The selector only switched between "Core +
+Platform" and "Platform Only", and both ran the same Platform DAPI balance sync.
+It added no functional value and has been removed; refresh now runs Core +
+Platform unconditionally.
 
-- Refresh mode selector available in detailed/developer view.
-
-### NET-008: Select Core backend mode [Implemented]
+### NET-008: Select Core backend mode [Removed]
 **Persona:** Priya, Jordan
 
-As a user, I want to choose between SPV, RPC, or Auto mode for the Core backend so that I can control how the app connects to the Dash Core network.
-
-- SPV for light sync, RPC for full node, Auto for app-selected.
+Withdrawn in the platform-wallet migration. Chain sync is owned entirely by
+the upstream platform-wallet engine, which is SPV-only — there is no RPC or
+full-node wallet backend, so the SPV/RPC/Auto mode selector, the
+"Use local Dash Core node" toggle, and the related settings have been
+removed. Single-key wallet send is consequently degraded in this version
+(receive still works); see the one-time post-migration notice.
 
 ### NET-009: Toggle ZMQ [Implemented]
 **Persona:** Priya, Jordan
@@ -1024,7 +1377,61 @@ As an everyday user, I want to install and use Dash Evo Tool without having to r
 
 - Fresh install connects to the Dash network via the built-in SPV light client with zero configuration.
 - The user sees sync progress and status clearly; the default everyday-user UI avoids mentions of SPV, RPC, or nodes.
-- Technical/protocol terminology may appear in Expert mode or advanced settings, where Dash Core RPC remains available as an opt-in for users who do run a local node.
+- Technical/protocol terminology may appear in Detailed view, Developer tools, or advanced settings, where Dash Core RPC remains available as an opt-in for users who do run a local node.
+
+### NET-016: Refresh Platform (DAPI) node list [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to fetch a fresh list of Platform (DAPI) node addresses from Dash Core Group's directory so that I can recover connectivity when my configured nodes are stale or unreachable.
+
+- "Refresh DAPI endpoints" action available on Mainnet and Testnet.
+- Confirmation prompt before replacing an existing configured address set.
+- New addresses are persisted to config and the SDK reinitialized without an app restart.
+- A pre-1.0 migration triggers a silent, best-effort Mainnet or Testnet address
+  refresh; failures retry on later launches until addresses are saved, while
+  the manual action keeps its existing success message.
+
+### NET-017: View live connection status (indicator and Platform endpoints) [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want a clear connection indicator and status rows so that I know at a glance whether the app is connected, syncing, or errored.
+
+- Top-panel five-state indicator (synced, connecting, syncing, error, disconnected) with a hover tooltip.
+- Settings screen shows Platform (DAPI) availability with jargon-free labels; raw sync errors are offered only on hover. (SPV sync detail is covered by WAL-013.)
+
+### NET-018: Auto-start SPV sync on startup [Implemented]
+**Persona:** Priya, Jordan
+
+As an expert user, I want the app to automatically begin SPV sync when it opens so that my wallet is ready without pressing Connect each launch.
+
+- Expert-mode toggle "Auto-start SPV on startup", persisted across launches.
+- When enabled, sync begins automatically on app launch.
+
+### NET-019: Clear all local data for a network [Implemented]
+**Persona:** Jordan, Priya
+
+As a user, I want to delete the local data this version uses for the current network — wallets, tokens, contacts, and cached identity data — so that I can reset the app to a clean state.
+
+- Danger-mode confirmation dialog before deletion; the deleted data cannot be recovered from within the app.
+- If an older recovery database exists, it remains untouched and may still contain wallet recovery data. The confirmation dialog says so before the user confirms.
+- Available for the currently selected network, including Mainnet.
+- Distinct from NET-011 (Wipe Platform data), which clears only cached Platform state on Devnet/Testnet.
+
+### NET-020: Clear cached SPV data to force a resync [Implemented]
+**Persona:** Priya, Jordan
+
+As an expert user, I want to clear the cached SPV headers and filter data for a network so that the next connection performs a full resync when local chain state is corrupt or stale.
+
+- Expert-mode "Clear SPV Data" action with confirmation; disabled while SPV is active.
+- The next connection triggers a full resync.
+
+### NET-021: App settings preserved across an app upgrade [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want my saved settings — selected network, theme, onboarding state, and paths — to survive an app upgrade so that I do not silently relaunch into the wrong network or a reset configuration.
+
+- Settings stored before the upgrade remain applied afterward.
+- The first launch after the upgrade imports the saved network, start screen, theme, onboarding state, Dash-Qt path, and the remaining toggles before the network is selected, so a testnet user is never relaunched on Mainnet. Top-up history is imported alongside the scheduled votes of DPN-009.
 
 ---
 
@@ -1048,3 +1455,265 @@ As an AI agent, I want MCP server access so that I can assist users with wallet 
 - Bearer token authentication for HTTP mode.
 - Network verification guard prevents cross-network mistakes.
 - Tools expose wallet, identity, and platform operations.
+
+### MCP-003: Load a masternode/evonode identity via CLI [Implemented]
+**Persona:** Priya, Jordan
+
+As a masternode operator, I want to load my masternode or evonode identity headlessly via det-cli — by ProTxHash plus owner/voting/payout private keys — so that I can manage it in scripts and automation without opening the GUI.
+
+- Identity is fetched by ProTxHash over the network and persisted locally.
+- Private keys are accepted as WIF or hex, never echoed back, and redacted in logs.
+- Output reports which keys loaded, the available withdrawal modes, and the registered payout address.
+- The 'network' parameter is required and must match the active network.
+
+### MCP-004: Withdraw masternode/evonode credits via CLI [Implemented]
+**Persona:** Priya, Jordan
+
+As a masternode operator, I want to withdraw my node's Platform credits to Core headlessly via det-cli, in both key modes, so that I can automate payouts.
+
+- With the owner key, the destination is forced to the registered payout address; supplying a different address is rejected.
+- With the payout/transfer key, I can withdraw to any Core address.
+- The withdrawal is queued on Platform and settles after confirmation; the result reports the destination used and the estimated and actual fees.
+- The 'network' parameter is required and must match the active network.
+
+---
+
+## User Experience (UX)
+
+### UX-001: Blocking progress overlay for unsafe-to-interrupt operations [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, while a long operation that is unsafe to interrupt is running (broadcasting a state transition, signing, key import, a multi-step registration, a network migration), I want to see a clear please-wait block over the whole window so that I understand the app is busy and cannot accidentally fire a conflicting second action.
+
+- A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
+- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc, Enter, Space, or Tab.
+- The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action.
+- The prompt installs its own pointer sink in the block's place, so interaction beneath it stays blocked while the block is yielding. This holds for every passphrase prompt, dismissible or not: being able to cancel a prompt is not the same as being able to click past it.
+- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded, so it ships a Cancel affordance instead of relying on boundedness.)_
+
+### UX-002: Blocking SPV-sync overlay with a confirmed Cancel [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, while the app connects to and syncs the Dash chain on startup or after I press Connect, I want a clear please-wait block so I know it is working — and because that sync can wait indefinitely for peers, I want a way to stop it rather than wait forever, without a single careless keypress disconnecting my wallet.
+
+- While that startup/Connect sync is getting connected, a full-window block appears with a plain please-wait sentence ("Connecting to the Dash network." / "Syncing with the Dash network.") and a friendly progress indicator ("Step N of 5") — no blockchain jargon, raw heights, or percentages.
+- The block offers a secondary "Cancel" button. Clicking it does not stop sync immediately — it swaps the action row to a confirmation: "Stop syncing? You can start again from the Network screen." with "Stop syncing" and "Keep syncing".
+- The keyboard escape is bound to the non-destructive choice at each step — "Cancel" while syncing, "Keep syncing" (focused by default) while confirming — so the block stays keyboard-reachable without a single reflexive Enter or Space ever disconnecting the wallet.
+- Confirming "Stop syncing" actually stops chain sync and lowers the block; the episode is not re-armed until the user restarts sync from the Network screen, or a fresh startup/Connect blocks again.
+- The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user.
+- This is the overlay's first real adopter (PR #863). SPV sync is **unbounded**, so its C2 "never trap the user" guarantee rests on the two-step Cancel rather than on operation boundedness. The original single-tap "Continue in the background" button was replaced because it shared its keyboard binding with the block's universal dismiss key, making Enter a one-keypress wallet disconnect for a keyboard-only or assistive-technology user — see `docs/ai-design/2026-08-31-startup-linearization/`.
+
+### UX-003: Global wallet/identity switcher across all tabs [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As any user, I want the same wallet/identity switcher on every page, so that I can see and change who I'm acting as without leaving the current page.
+
+- Every root screen renders a page-aware three-segment switcher (e.g. `Masternodes › wallet › identity`) in the top panel; segment 1 reflects and links to the active tab.
+- Selecting a wallet or identity updates the app-global selection in place, with no forced navigation; pages that already consume that selection stay in sync both ways.
+- The third segment is page-scoped: the app-global User identity on everyday-user pages (Dashpay, Identities, Identity Hub), or the masternode/evonode in view on the Masternodes tab. Picking a masternode there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter).
+- On a page that does not yet consume a given pill, that pill renders dimmed with no caret; a hover tooltip explains how to change the selection elsewhere.
+- A page with no identity/object context (e.g. a Wallet page) shows only the wallet pill.
+- On the Masternodes tab the wallet segment is a read-only indicator, not an interactive pill: a masternode/evonode is loaded from raw keys and controlled by no wallet on this device, so it shows a muted "Not in a wallet" with an explanatory tooltip rather than naming an arbitrary loaded wallet.
+
+### UX-004: One-time post-migration disclosure notice [Gap]
+**Persona:** Alex, Priya, Jordan
+
+As an existing user upgrading into the platform-wallet version, I want a one-time in-app notice explaining what changed — notably that direct funding from a scanned external payment (QR) was removed — so that I understand why a workflow I relied on is gone.
+
+- A one-time notice appears on first launch after the migration, disclosing the removed QR-direct-fund path (referenced by NET-008 and IDN-014).
+- Note (DOC-003): not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
+
+### UX-005: Blocking storage-preparation gate on launch and network switch [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, while the app opens my saved data on startup or after switching networks, I want a clear please-wait block covering everything from opening storage to restoring my wallets, so that I never see a half-ready app — and if my saved data can't be opened, I want to know why and what I can do about it, in plain language.
+
+- A full-window block appears before any screen renders, on first launch and on switching to a network not yet prepared this session, and stays up through wiring, restoring wallets, and the previous version's data update as one sequence. It shows one plain-language sentence per step (e.g. "The app is opening your saved data.", "The app is restoring your identities and their keys.") — no "backend", "wiring", "SPV", or error codes.
+- Unlike UX-002, this block has no Cancel or background option: the app is not usable until preparation finishes, so the only choices are wait, or close the app.
+- A password-protected wallet carried over from an earlier version prompts for its password *above* the block — typeable, focused — with a "Skip this wallet" option that moves on to the next locked wallet without losing it; the prompt cycles until every locked wallet is unlocked or skipped.
+- If preparation runs unusually long (30 s), the message changes to reassure the user and offers "Close the app" — nothing is written on this path, so relaunching retries cleanly from the unchanged saved data.
+- If preparation fails, the block explains that saved data is unchanged and offers "Try again" or "Close the app".
+- If the saved data is from a much newer or much older version than this one can open directly, the block explains that plainly (naming the version to install or use first) and offers only "Close the app" — retrying cannot fix a version mismatch.
+- Once a network's storage is prepared, returning to it later in the same session does not re-show the block; chain sync starts automatically only after preparation finishes, never before or during it.
+- Not covered: the headless CLI/MCP path has no such block — it fast-fails with "The storage update is still running. Please wait a moment and try again." instead, since it has no window to hold up. See `docs/ai-design/2026-08-31-startup-linearization/`.
+
+## Identities Hub (IDH)
+
+### IDH-001: First-time identity setup [Implemented]
+**Persona:** Alex
+
+As Alex, I want to open the Identities section on a fresh device and be offered a single-step path to create my first identity, so I can start using Dash Platform without understanding what an identity is first.
+
+- Onboarding empty state shows an abstract avatar silhouette on a soft Dash-blue glow, a heading, a plain-language explanation, and two primary CTAs: `Create my first identity` and `I already have an identity — load it`.
+- Dev-mode footer adds `Create multiple test identities` / `Load identity by ID` tertiary links.
+
+### IDH-002: Identity home at a glance [Implemented]
+**Persona:** Alex
+
+As Alex, when I have one identity, opening Identities shows me my balance, username, quick actions, and recent activity without jargon.
+
+- Home tab renders the full layout: `IdentityHeroCard`, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), `OnboardingChecklist`, and a recent-activity preview.
+- "See all activity" link on Home hops directly to the Activity tab via `HomeOutcome::GoToActivity`.
+
+### IDH-003: Multi-identity switching [Implemented]
+**Persona:** Priya
+
+As Priya, with multiple wallets and identities, I can switch between them from the breadcrumb pill on any tab in under two clicks, and every screen I then open operates as the identity I picked.
+
+- Reusable `BreadcrumbPill` and `IdentityPill` components shipped, including the label priority rule (Local nickname → DPNS handle → shortened Identity ID).
+- Identity picker grid lands with `IdentityPickerCard` + `IdentityPickerAddCard`, so a multi-identity account sees a picker landing.
+- The three-segment breadcrumb switcher (Identities link › wallet pill › identity pill, each with a dropdown) composes the full top-of-hub switcher.
+- The selected identity is app-scoped and persisted per network: every operate-as screen (contracts, documents, DPNS registration, the token creator, and DashPay) defaults to it and writes a change back, so switching once changes who I operate as everywhere. Recipient and target pickers (sending, freezing, transferring to someone else) deliberately leave my active identity unchanged.
+
+### IDH-004: Opt in to DashPay social profile [Implemented]
+**Persona:** Alex
+
+As Alex, setting up a social profile to unlock DashPay contacts is clearly optional and I can keep using payments and usernames without doing it.
+
+- Contacts tab shows `SocialProfileGateCard` when the active identity has no DashPay profile; the primary CTA deep-links to Settings via `AppAction::SwitchIdentityHubTab(Settings)`.
+- Settings tab hosts the social-profile block where display name and avatar can be edited; identities without a profile continue to use payments and usernames untouched.
+- Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
+
+### IDH-005: Bulk identity creation [Gap]
+**Persona:** Priya, Jordan
+
+As a power user, I have a single entry point to create many test identities without leaving the Identities section.
+
+- Onboarding screen surfaces a footer, shown at the Power role or above, mentioning `Create multiple test identities` / `Load identity by ID` as plain text.
+- Planned (follow-up): wire those footer items to the existing `AddNewIdentityScreen` bulk path and the Power-role identity-picker dropdown entries.
+
+### IDH-006: Unified activity timeline [Gap]
+**Persona:** All
+
+As any persona, my payments, funding movements, and platform actions all live in one Activity tab with filters, not in separate screens.
+
+- Activity tab shell ships with filter chips; a reusable row component for rendering timeline entries will be added once the aggregator lands.
+- Full aggregation across DashPay payments, funding, and platform ops depends on a backend aggregator; gated behind the `identity-hub-activity-feed` Cargo feature until implemented.
+
+### IDH-007: Manage contacts from the Identities hub [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to handle my contacts entirely from the Identities hub — answer requests, find a contact, and pay them — without detouring through a separate DashPay screen.
+
+- Received requests offer Accept and Decline; both act on the request and the row leaves the list.
+- Sent requests offer Cancel, which withdraws the request (see DPY-014).
+- Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
+- Each contact row offers Pay, which opens the existing send-payment flow for that contact.
+- Contacts the user has hidden do not appear in the list.
+
+### IDH-008: Name an identity on this device [Implemented]
+**Persona:** Alex, Priya
+
+As a user with more than one identity, I want to give an identity a name only I see so that I can tell my identities apart without registering a username.
+
+- Settings tab hosts the name field; the copy states that the name stays on the device and is never published.
+- Saving is only offered when the name actually changed, and clearing the field removes the name.
+- The saved name is what the breadcrumb and identity pills show, in preference to the username or the raw identity ID.
+
+## Masternodes (MN)
+
+### MN-001: Load a masternode by keys [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to load my masternode by its ProTxHash and DIP3 keys on a dedicated Masternodes page, so that I don't have to dig through the generic identity-load advanced options.
+
+- Load form collects a ProTxHash (required, hex or Base58), a Masternode/Evonode toggle, an optional local-only alias, and optional Voting/Owner/Payout private keys.
+- The "Load masternode" button is disabled with an explanatory tooltip until a ProTxHash is entered; a malformed or already-loaded ProTxHash is rejected with a specific message.
+- A non-blocking note explains that entered keys are stored unencrypted at rest unless an encryption password is set (see MN-006).
+- On Testnet, when a local test-node fixture is present, a "Fill Random Masternode/Evonode" button autofills the form for developer testing.
+
+### MN-002: See my masternodes at a glance [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want a card list of my loaded masternodes showing type, voter readiness, key status, and voting status, so that I can assess each node in seconds.
+
+- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a DPNS-voting status line, and an identity status dot with a text label.
+- An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
+- The Masternodes tab and its nav entry are visible only at the Detailed view interface mode or above; dropping below Detailed view while the tab is active falls back to the Identities screen.
+
+### MN-003: Open a masternode and vote [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to open a node and vote on the DPNS contests it can vote on, so that I can fulfil my node's governance role.
+
+- Clicking a card opens a detail view with a keys summary, the voter identity, and a collapsible DPNS-voting section (collapsed by default, open-contest count shown in its header).
+- Votes (Abstain, Lock, or a candidate) are cast inline through the existing DPNS voting backend.
+- A node with no voter identity is told a voting key is required, with a way to add one, instead of a raw error.
+
+### MN-004: Remove a masternode [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to remove a masternode from DET, so that I can stop tracking a node I no longer operate.
+
+- The detail view's "Remove masternode" action shows a confirmation dialog before proceeding.
+- The confirmation explains that removal deletes local private keys and that loading the node again requires its ProTxHash and a private-key backup.
+- Confirming forgets the masternode and its associated voter identity, and the card disappears from the list.
+- Removal completes off the UI thread. Its outcome and any cleanup warnings remain visible after navigation, identify the affected network, and update the retained node view without affecting another network's nodes.
+
+### MN-005: Keep the everyday surface clean [Implemented]
+**Persona:** Alex, Priya
+
+As an everyday user, I want my Identity Hub to show only my personal identities, so that I'm never offered node-operator actions that don't apply to me.
+
+- Masternode/Evonode identities are filtered out of the Identity Hub picker; they still appear on the Masternodes tab.
+- The legacy "Load Existing Identity" screen's Identity Type selector now offers User only — Masternode/Evonode loading lives solely on the Masternodes tab (MN-001), removing the earlier duplicate entry point.
+
+### MN-006: Encrypt my node keys at load time [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to set an optional password when I load my node, so that its private keys are encrypted at rest immediately instead of only after a separate step.
+
+- Leaving the load form's "Encryption password" field blank loads the node's keys unprotected (Tier-1), same as before; a password can be added later from the Key Info screen or the node's detail view.
+- Entering a password seals the entered voting/owner/payout keys encrypted-at-rest (Tier-2) at load time.
+- The detail view's Keys section shows the current protection tier ("Unprotected" / "Password-protected") and offers "Add password protection…" only while unprotected.
+
+### MN-007: Withdraw a node's credits [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to withdraw a node's Platform credits from its detail view, so that I can move its balance to Core without leaving the Masternodes page.
+
+- The detail view's actions row opens the existing Withdraw screen scoped to the selected node (Masternode or Evonode).
+- Withdrawing with the owner key forces the destination to the node's registered Core payout address; withdrawing with the transfer/payout key allows any address.
+- The Top Up and Transfer actions were removed from this screen; those flows remain available for User identities on the Identities pages.
+
+### MN-008: Manage a node's keys [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to open the key screen for a node, so that I can view a private key/WIF, sign a message, or add/remove a key.
+
+- The detail view's "Manage keys ›" opens the existing Key Info screen scoped to the node.
+- The add-key purpose selector excludes OWNER and VOTING (Core-registered roles that cannot be added via Platform); TRANSFER/AUTHENTICATION/ENCRYPTION/DECRYPTION remain available.
+
+### MN-009: Claim an evonode's token rewards [Implemented]
+**Persona:** Priya
+
+As an evonode operator, I want to jump to token-reward claiming from the node's detail view, so that I can collect rewards my evonode earned.
+
+- An Evonode's detail view shows "Claim token rewards ›", routing to the existing Claim Tokens screen for that identity.
+- The action is hidden entirely on a plain Masternode's detail view.
+
+### MN-010: Keep the Masternodes tab consistent across a network switch [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want the Masternodes tab to reset to a clean state when I switch the active network, so that I never act on a node, form, or error that belonged to the network I just left.
+
+- Switching networks while the Masternodes tab is on the List view (including with a filled-but-unsubmitted Load form) returns to the empty List view for the newly active network — no leftover ProTxHash/alias/key input from the previous network's form.
+- Error and status banners raised on the previous network (e.g. a failed load, a disconnect notice) are cleared by the switch rather than lingering over the new network's view.
+- Verified by manual walkthrough switching Testnet → Mainnet → Testnet from a dirty Load form; each switch landed cleanly on the empty List with no stale data or banners.
+
+### MN-011: Refresh masternode and voting state [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want a Refresh control on the Masternodes tab, so that I can pull the latest identity and DPNS-contest state without leaving the page.
+
+- The card-list toolbar and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches a network re-fetch — one identity refresh per loaded node (or the single open node on the detail view) plus a DPNS-contest re-query so vote counts update too.
+- Refresh is a no-op when no node is loaded, and the detail-view re-query is skipped for a node that has no voter identity.
+
+### MN-012: Switch wallet/identity from the Masternodes header [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want the same page-scoped switcher on the Masternodes header as on other tabs, so that I can see and change the active wallet and the node in view without leaving the page.
+
+- The Masternodes header renders the page-aware breadcrumb with an interactive wallet pill (the funding source for Top Up), which two-way binds with the page's wallet context.
+- The third segment is a page-scoped node pill listing every loaded masternode/evonode, two-way bound with the page: opening a card names that node on the pill, and picking a node from the pill opens its detail view. It reads `(no masternode yet)` when none is loaded and `(choose a masternode)` while the grid is open.
+- Picking a node there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter) — the node selection is page-scoped, never the app-global identity.

@@ -5,9 +5,10 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::To
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
-use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
@@ -16,6 +17,7 @@ use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::model::token::validate_contract_keyword;
 use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::Component;
@@ -25,7 +27,10 @@ use crate::ui::MessageType;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use crate::ui::tokens::tokens_screen::{TokenBuildArgs, TokenCreatorStatus, TokenNameLanguage, TokensScreen, ChangeControlRulesUI};
+use crate::ui::tokens::tokens_screen::{
+    ChangeControlRulesUI, MintRecipientSection, TokenBuildArgs, TokenCreatorStatus,
+    TokenNameLanguage, TokensScreen,
+};
 
 impl TokensScreen {
     pub(super) fn render_token_creator(&mut self, context: &Context, ui: &mut Ui) -> AppAction {
@@ -69,15 +74,18 @@ impl TokensScreen {
                         // Identity and key selection
                         ui.add_space(10.0);
                         let all_identities = match self.app_context.load_local_user_identities() {
-                            Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
-                            Err(e) => {
-                                tracing::error!(err=?e, "Error loading identities from local DB.");
-                                ui.colored_label(Color32::DARK_RED,format!("Error loading identities from local DB: {}", e));
+                            Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.is_empty()).collect::<Vec<_>>(),
+                            Err(error) => {
+                                tracing::error!(?error, "Token-creator identity loading failed");
+                                ui.colored_label(
+                                    Color32::DARK_RED,
+                                    "Saved identities could not be loaded. Refresh the screen and try again.",
+                                );
                                 return;
                             }
                         };
                         if all_identities.is_empty() {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             Frame::group(ui.style())
                                 .fill(ui.visuals().extreme_bg_color)
                                 .corner_radius(5.0)
@@ -137,7 +145,7 @@ impl TokensScreen {
                             ui.heading("1. Select an identity:");
                             ui.add_space(5.0);
 
-                            // Use IdentitySelector for simple mode
+                            // Use IdentitySelector for simple mode — SYNC: write-back via syncing_global.
                             let response = ui.add(
                                 IdentitySelector::new(
                                     "simple_identity_selector",
@@ -148,7 +156,8 @@ impl TokensScreen {
                                 .expect("selected_identity should not fail")
                                 .other_option(false)
                                 .label("Identity:")
-                                .width(300.0),
+                                .width(300.0)
+                                .syncing_global(self.app_context.clone()),
                             );
 
                             // Auto-select the first eligible key when:
@@ -213,7 +222,12 @@ impl TokensScreen {
                             ui.heading("1. Select an identity and key to register the token contract with:");
                             ui.add_space(5.0);
 
-                            // Use the helper function for identity and key selection
+                            // Use the helper function for identity and key selection.
+                            // SYNC (W4): snapshot before, write-back after on change.
+                            let before_id = self
+                                .selected_identity
+                                .as_ref()
+                                .map(|qi| qi.identity.id());
                             add_identity_key_chooser(
                                 ui,
                                 &self.app_context,
@@ -222,6 +236,14 @@ impl TokensScreen {
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
                             );
+                            let after_id = self
+                                .selected_identity
+                                .as_ref()
+                                .map(|qi| qi.identity.id());
+                            if before_id != after_id {
+                                self.app_context
+                                    .set_selected_identity(after_id);
+                            }
 
                             ui.add_space(5.0);
 
@@ -377,7 +399,7 @@ impl TokensScreen {
                                                 if ui.selectable_value(
                                                     &mut self.selected_token_preset,
                                                     Some(variant),
-                                                    format!("{} - {}", text, description),
+                                                    format!("{text} - {description}"),
                                                 ).clicked() {
                                                     let preset = TokenConfigurationPreset {
                                                         features: variant,
@@ -408,7 +430,7 @@ impl TokensScreen {
                                     // Auto-set plural name if empty (singular + "s")
                                     let singular = self.token_names_input[0].0.trim().to_string();
                                     if self.token_names_input[0].1.trim().is_empty() {
-                                        self.token_names_input[0].1 = format!("{}s", singular);
+                                        self.token_names_input[0].1 = format!("{singular}s");
                                     }
 
                                     // Trigger the token creation confirmation
@@ -434,7 +456,7 @@ impl TokensScreen {
                                     "token preset"
                                 };
                                 ui.label(
-                                    RichText::new(format!("Please select a {}", missing))
+                                    RichText::new(format!("Please select a {missing}"))
                                         .color(egui::Color32::GRAY)
                                         .italics(),
                                 );
@@ -461,8 +483,8 @@ impl TokensScreen {
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
                                     ui.horizontal(|ui| {
                                         let allow_all_languages = i != 0;
-                                        ui.push_id(format!("combo_{}", i), |ui| {
-                                            let combo_id = format!("token_name_language_selector_{}", i);
+                                        ui.push_id(format!("combo_{i}"), |ui| {
+                                            let combo_id = format!("token_name_language_selector_{i}");
                                             Self::render_token_name_language_selector(
                                                 ui,
                                                 &mut self.token_names_input[i].2,
@@ -535,7 +557,7 @@ impl TokensScreen {
                                         seen_keywords.insert(name.0.clone());
                                         for keyword in contract_keywords.iter() {
                                             if seen_keywords.contains(*keyword) {
-                                                ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {}", keyword));
+                                                ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {keyword}"));
                                             }
                                             seen_keywords.insert(keyword.to_string());
                                         }
@@ -619,37 +641,13 @@ impl TokensScreen {
                                                 .unwrap_or("<Token Name>");
 
                                             let message = if self.decimals_input == "0" {
-                                                format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {})", token_name)
+                                                format!("Non Fractional Token (i.e. 0, 1, 2 or 10 {token_name})")
                                             } else {
-                                                format!("Fractional Token (i.e. 0.2 {})", token_name)
+                                                format!("Fractional Token (i.e. 0.2 {token_name})")
                                             };
 
                                             ui.label(RichText::new(message).color(Color32::GRAY));
                                             crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
-                                        });
-                                        ui.end_row();
-
-                                        // Marketplace Trade Mode
-                                        ui.horizontal(|ui| {
-                                            ui.label("Marketplace Trade Mode:");
-                                            ComboBox::from_id_salt("marketplace_trade_mode_selector")
-                                                .selected_text("Not Tradeable")
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(
-                                                        &mut self.marketplace_trade_mode,
-                                                        0,
-                                                        "Not Tradeable",
-                                                    );
-                                                    // Future trade modes can be added here when SDK supports them
-                                                });
-
-                                            crate::ui::helpers::info_icon_button(ui,
-                                                "Currently, all tokens are created as 'Not Tradeable'. \
-                                                Future updates will add more trade mode options.\n\n\
-                                                IMPORTANT: If you want to enable marketplace trading in the future, \
-                                                make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
-                                                section to something other than 'No One'. Otherwise, trading can never be enabled."
-                                            );
                                         });
                                         ui.end_row();
                                     });
@@ -737,16 +735,40 @@ impl TokensScreen {
                             ui.horizontal(|ui| {
                                 ui.add_space(20.0); // Indentation for action rules
                                 ui.vertical(|ui| {
-                                    self.manual_minting_rules.render_mint_control_change_rules_ui(ui, &self.groups_ui, &mut self.new_tokens_destination_identity_should_default_to_contract_owner, &mut self.new_tokens_destination_other_identity_enabled, &mut self.minting_allow_choosing_destination, &mut self.new_tokens_destination_identity_rules, &mut self.new_tokens_destination_other_identity, &mut self.minting_allow_choosing_destination_rules, &mut self.token_creator_manual_mint_expanded, &mut self.token_creator_new_tokens_destination_expanded, &mut self.token_creator_minting_allow_choosing_expanded);
-                                    self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None, &mut self.token_creator_manual_burn_expanded);
-                                    self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities), &mut self.token_creator_freeze_expanded);
-                                    self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None, &mut self.token_creator_unfreeze_expanded);
-                                    self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None, &mut self.token_creator_destroy_frozen_expanded);
-                                    self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None, &mut self.token_creator_emergency_action_expanded);
-                                    self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None, &mut self.token_creator_max_supply_change_expanded);
-                                    self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None, &mut self.token_creator_conventions_change_expanded);
-                                    self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None, &mut self.token_creator_marketplace_expanded);
-                                    self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None, &mut self.token_creator_direct_purchase_pricing_expanded);
+                                    self.manual_minting_rules.render_control_change_rules_ui(
+                                        ui,
+                                        &self.groups_ui,
+                                        "Manual Mint",
+                                        None,
+                                        &mut self.token_creator_manual_mint_expanded,
+                                        Some(MintRecipientSection {
+                                            should_default_to_contract_owner: &mut self
+                                                .new_tokens_destination_identity_should_default_to_contract_owner,
+                                            destination_identity_enabled: &mut self
+                                                .new_tokens_destination_other_identity_enabled,
+                                            allow_choosing_destination: &mut self
+                                                .minting_allow_choosing_destination,
+                                            destination_identity_rules: &mut self
+                                                .new_tokens_destination_identity_rules,
+                                            destination_identity: &mut self
+                                                .new_tokens_destination_other_identity,
+                                            allow_choosing_destination_rules: &mut self
+                                                .minting_allow_choosing_destination_rules,
+                                            destination_expanded: &mut self
+                                                .token_creator_new_tokens_destination_expanded,
+                                            allow_choosing_expanded: &mut self
+                                                .token_creator_minting_allow_choosing_expanded,
+                                        }),
+                                    );
+                                    self.manual_burning_rules.render_control_change_rules_ui(ui, &self.groups_ui,"Manual Burn", None, &mut self.token_creator_manual_burn_expanded, None);
+                                    self.freeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Freeze", Some(&mut self.allow_transfers_to_frozen_identities), &mut self.token_creator_freeze_expanded, None);
+                                    self.unfreeze_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Unfreeze", None, &mut self.token_creator_unfreeze_expanded, None);
+                                    self.destroy_frozen_funds_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Destroy Frozen Funds", None, &mut self.token_creator_destroy_frozen_expanded, None);
+                                    self.emergency_action_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Emergency Action", None, &mut self.token_creator_emergency_action_expanded, None);
+                                    self.max_supply_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Max Supply Change", None, &mut self.token_creator_max_supply_change_expanded, None);
+                                    self.conventions_change_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Conventions Change", None, &mut self.token_creator_conventions_change_expanded, None);
+                                    self.marketplace_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Marketplace Trade Mode Change", None, &mut self.token_creator_marketplace_expanded, None);
+                                    self.change_direct_purchase_pricing_rules.render_control_change_rules_ui(ui, &self.groups_ui, "Direct Purchase Pricing Change", None, &mut self.token_creator_direct_purchase_pricing_expanded, None);
                                 });
                             });
 
@@ -780,10 +802,9 @@ impl TokensScreen {
                                 ui.horizontal(|ui| {
                                     ui.label("Allow main control group change:");
                                     ComboBox::from_id_salt("main_control_group_change_selector")
-                                        .selected_text(format!(
-                                            "{}",
-                                            self.authorized_main_control_group_change
-                                        ))
+                                        .selected_text(
+                                            self.authorized_main_control_group_change.to_string(),
+                                        )
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(
                                                 &mut self.authorized_main_control_group_change,
@@ -865,44 +886,30 @@ impl TokensScreen {
                                         // We have the parsed token creation arguments
                                         // We can now call build_data_contract_v1_with_one_token using `args`
                                         self.cached_build_args = Some(args.clone());
+                                        let owner_id = args.identity_id;
                                         let data_contract = match self.app_context.build_data_contract_v1_with_one_token(
-                                            args.identity_id,
-                                            args.token_names,
-                                            args.contract_keywords,
-                                            args.token_description,
-                                            args.should_capitalize,
-                                            args.decimals,
-                                            args.base_supply,
-                                            args.max_supply,
-                                            args.start_paused,
-                                            args.allow_transfers_to_frozen_identities,
-                                            args.keeps_history,
-                                            args.main_control_group,
-                                            args.manual_minting_rules,
-                                            args.manual_burning_rules,
-                                            args.freeze_rules,
-                                            args.unfreeze_rules,
-                                            args.destroy_frozen_funds_rules,
-                                            args.emergency_action_rules,
-                                            args.max_supply_change_rules,
-                                            args.conventions_change_rules,
-                                            args.main_control_group_change_authorized,
-                                            args.distribution_rules,
-                                            args.groups,
-                                            args.document_schemas,
-                                            args.marketplace_trade_mode,
-                                            args.marketplace_rules,
+                                            owner_id,
+                                            args.into_contract_params(),
                                         ) {
                                             Ok(dc) => dc,
-                                            Err(e) => {
-                                                MessageBanner::set_global(context, format!("Error building contract V1: {e}"), MessageType::Error);
+                                            Err(error) => {
+                                                MessageBanner::set_global(
+                                                    context,
+                                                    "The token contract could not be prepared. Review its settings and try again.",
+                                                    MessageType::Error,
+                                                )
+                                                .with_details(error);
                                                 return;
                                             }
                                         };
 
-                                        let data_contract_json = data_contract.to_json(self.app_context.platform_version()).expect("Expected to map contract to json");
-                                        self.show_json_popup = true;
-                                        self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
+                                        let data_contract_fmt = DataContractInSerializationFormat::try_from_platform_versioned(
+                                            &data_contract,
+                                            self.app_context.platform_version(),
+                                        ).expect("Expected to map contract to serialization format");
+                                        let data_contract_json = serde_json::to_value(&data_contract_fmt).expect("Expected to map contract to json");
+                                        let json = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
+                                        self.open_data_contract_json_popup(json);
                                     },
                                     Err(err_msg) => {
                                         MessageBanner::set_global(context, &err_msg, MessageType::Error);
@@ -943,7 +950,7 @@ impl TokensScreen {
 
     fn update_selected_wallet(&mut self) {
         if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            let new_wallet = crate::ui::identities::get_selected_wallet(qid, None, Some(key))
+            let new_wallet = crate::ui::identity::get_selected_wallet(qid, None, Some(key))
                 .unwrap_or_else(|e| {
                     MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
                     None
@@ -967,8 +974,9 @@ impl TokensScreen {
             };
 
             if !self.wallet_open_attempted {
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                        .disable_auto_dismiss();
                 }
                 self.wallet_open_attempted = true;
             }
@@ -1006,7 +1014,7 @@ impl TokensScreen {
             .size = 12.0;
 
         ComboBox::from_id_salt(id_salt)
-            .selected_text(format!("{}", current_language))
+            .selected_text(current_language.to_string())
             .width(100.0)
             .show_ui(ui, |ui| {
                 ui.style_mut()
@@ -1161,7 +1169,6 @@ impl TokensScreen {
             distribution_rules: TokenDistributionRules::V0(distribution_rules),
             groups,
             document_schemas: self.parsed_document_schemas.clone(),
-            marketplace_trade_mode: self.marketplace_trade_mode,
             marketplace_rules,
             change_direct_purchase_pricing_rules,
         })
@@ -1176,10 +1183,12 @@ impl TokensScreen {
             .split(',')
             .map(|s| {
                 let trimmed = s.trim().to_string();
-                if trimmed.len() < 3 || trimmed.len() > 50 {
+                if let Err(error) = validate_contract_keyword(&trimmed) {
                     Err(format!(
-                        "Invalid contract keyword {}, keyword must be between 3 and 50 characters",
-                        trimmed
+                        "Contract keyword '{keyword}' must contain between {min} and {max} characters.",
+                        keyword = trimmed,
+                        min = error.min,
+                        max = error.max
                     ))
                 } else {
                     Ok(trimmed)
@@ -1200,8 +1209,8 @@ impl TokensScreen {
         for name_with_language in &self.token_names_input {
             if seen_languages.contains(&name_with_language.2) {
                 return Err(format!(
-                    "Duplicate token name language: {:?}",
-                    name_with_language.1
+                    "Duplicate token name language: {language:?}",
+                    language = name_with_language.2
                 ));
             }
             seen_languages.insert(name_with_language.2);
@@ -1211,15 +1220,15 @@ impl TokensScreen {
         for name_with_language in &self.token_names_input {
             if name_with_language.0.len() < 3 || name_with_language.0.len() > 50 {
                 return Err(format!(
-                    "The name in {:?} must be between 3 and 50 characters",
-                    name_with_language.2
+                    "The name in {language:?} must be between 3 and 50 characters",
+                    language = name_with_language.2
                 ));
             }
 
             if name_with_language.1.len() < 3 || name_with_language.1.len() > 50 {
                 return Err(format!(
-                    "The plural form in {:?} must be between 3 and 50 characters",
-                    name_with_language.2
+                    "The plural form in {language:?} must be between 3 and 50 characters",
+                    language = name_with_language.2
                 ));
             }
 
@@ -1368,10 +1377,6 @@ impl TokensScreen {
     fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Prepare the confirmation message
-        let mut confirmation_message =
-            "Are you sure you want to register a new token contract with these settings?\n\n"
-                .to_string();
         let base_supply_display = self
             .base_supply_amount
             .as_ref()
@@ -1384,42 +1389,41 @@ impl TokensScreen {
             .map(|amount| amount.to_string_opts(true, false))
             .unwrap_or_else(|| "None".to_string());
 
-        confirmation_message.push_str(&format!(
-            "Name: {}\nBase Supply: {}\nMax Supply: {}\n\n",
-            self.token_names_input[0].0, base_supply_display, max_supply_display,
-        ));
-
-        confirmation_message.push_str(&format!(
-            "Estimated cost to register this token is {} Dash",
-            self.estimate_registration_cost() as f64 / 100_000_000_000.0
-        ));
-
-        // Check if marketplace is locked to NotTradeable forever
-        let mut is_danger_mode = false;
-        if let Some(args) = &self.cached_build_args {
-            let is_not_tradeable = args.marketplace_trade_mode == 0;
-            let marketplace_rules_locked = matches!(
+        // Tokens are always created NotTradeable; warn if that can never change.
+        let is_danger_mode = self.cached_build_args.as_ref().is_some_and(|args| {
+            matches!(
                 args.marketplace_rules,
                 ChangeControlRules::V0(ChangeControlRulesV0 {
                     authorized_to_make_change: AuthorizedActionTakers::NoOne,
                     admin_action_takers: AuthorizedActionTakers::NoOne,
                     ..
                 })
-            );
+            )
+        });
+        let name = &self.token_names_input[0].0;
+        let cost = self.estimate_registration_cost() as f64 / 100_000_000_000.0;
+        let confirmation_message = if is_danger_mode {
+            format!(
+                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n\nEstimated cost to register this token is {cost} Dash\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!",
+                base_supply = base_supply_display,
+                max_supply = max_supply_display,
+            )
+        } else {
+            format!(
+                "Are you sure you want to register a new token contract with these settings?\n\nName: {name}\nBase Supply: {base_supply}\nMax Supply: {max_supply}\n\nEstimated cost to register this token is {cost} Dash",
+                base_supply = base_supply_display,
+                max_supply = max_supply_display,
+            )
+        };
 
-            if is_not_tradeable && marketplace_rules_locked {
-                confirmation_message.push_str("\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!");
-                is_danger_mode = true;
-            }
-        }
-
-        // Always create a fresh confirmation dialog to ensure current state is reflected
-        let confirmation_dialog = self.token_creator_confirmation_dialog.insert(
-            ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
-                .confirm_text(Some("Confirm"))
-                .cancel_text(Some("Cancel"))
-                .danger_mode(is_danger_mode),
-        );
+        let confirmation_dialog = self
+            .token_creator_confirmation_dialog
+            .get_or_insert_with(|| {
+                ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
+                    .confirm_text(Some("Confirm"))
+                    .cancel_text(Some("Cancel"))
+                    .danger_mode(is_danger_mode)
+            });
 
         // Show the dialog and handle the response
         let response = confirmation_dialog.show(ui).inner;
@@ -1462,35 +1466,7 @@ impl TokensScreen {
                         BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
                             identity,
                             signing_key: Box::new(signing_key),
-
-                            token_names: args.token_names,
-                            contract_keywords: args.contract_keywords,
-                            token_description: args.token_description,
-                            should_capitalize: args.should_capitalize,
-                            decimals: args.decimals,
-                            base_supply: args.base_supply,
-                            max_supply: args.max_supply,
-                            start_paused: args.start_paused,
-                            allow_transfers_to_frozen_identities: args
-                                .allow_transfers_to_frozen_identities,
-                            keeps_history: args.keeps_history,
-                            main_control_group: args.main_control_group,
-
-                            manual_minting_rules: args.manual_minting_rules,
-                            manual_burning_rules: args.manual_burning_rules,
-                            freeze_rules: args.freeze_rules,
-                            unfreeze_rules: Box::new(args.unfreeze_rules),
-                            destroy_frozen_funds_rules: Box::new(args.destroy_frozen_funds_rules),
-                            emergency_action_rules: Box::new(args.emergency_action_rules),
-                            max_supply_change_rules: Box::new(args.max_supply_change_rules),
-                            conventions_change_rules: Box::new(args.conventions_change_rules),
-                            main_control_group_change_authorized: args
-                                .main_control_group_change_authorized,
-                            distribution_rules: args.distribution_rules,
-                            groups: args.groups,
-                            document_schemas: args.document_schemas,
-                            marketplace_trade_mode: args.marketplace_trade_mode,
-                            marketplace_rules: args.marketplace_rules,
+                            params: Box::new(args.into_contract_params()),
                         })),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                     ];
@@ -1547,48 +1523,41 @@ impl TokensScreen {
             ui.add_space(3.0);
 
             ui.indent("document_schemas_section", |ui| {
-                // Add link to dashpay.io
-            ui.horizontal(|ui| {
-                    ui.label("Paste JSON document schemas to include in the contract. Easily create document schemas here:");
-                    ui.add(egui::Hyperlink::from_label_and_url(
-                        RichText::new("dashpay.io")
-                            .underline()
-                            .color(DashColors::ACTION_BUTTON_BLUE),
-                        "https://dashpay.io",
-                    ));
-                });
-
-            ui.add_space(5.0);
-
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-            let schemas_response = ui.add_sized(
-                [ui.available_width(), 120.0],
-                TextEdit::multiline(&mut self.document_schemas_input)
-                    .text_color(DashColors::text_primary(dark_mode))
-                    .background_color(DashColors::input_background(dark_mode)),
-            );
-
-            if schemas_response.changed() {
-                self.parse_document_schemas();
-            }
-
-            ui.add_space(5.0);
-
-            // Show validation result
-            if let Some(ref error) = self.document_schemas_error {
-                ui.colored_label(
-                    Color32::DARK_RED,
-                    format!("Schema validation error: {}", error),
+                ui.label(
+                    "Paste the document-schemas JSON object for this contract, with one schema entry per document type.",
                 );
-            } else if self.parsed_document_schemas.is_some() {
-                let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
-                if schema_count > 0 {
-                    ui.colored_label(
-                        Color32::DARK_GREEN,
-                        format!("✓ {} valid document schema(s) parsed", schema_count),
-                    );
+
+                ui.add_space(5.0);
+
+                let dark_mode = ui.style().visuals.dark_mode;
+                let schemas_response = ui.add_sized(
+                    [ui.available_width(), 120.0],
+                    TextEdit::multiline(&mut self.document_schemas_input)
+                        .text_color(DashColors::text_primary(dark_mode))
+                        .background_color(DashColors::input_background(dark_mode)),
+                );
+
+                if schemas_response.changed() {
+                    self.parse_document_schemas();
                 }
-            }
+
+                ui.add_space(5.0);
+
+                // Show validation result
+                if let Some(ref error) = self.document_schemas_error {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        format!("Schema validation error: {error}"),
+                    );
+                } else if let Some(parsed_document_schemas) = self.parsed_document_schemas.as_ref() {
+                    let schema_count = parsed_document_schemas.len();
+                    if schema_count > 0 {
+                        ui.colored_label(
+                            Color32::DARK_GREEN,
+                            format!("✓ {schema_count} valid document schema(s) parsed"),
+                        );
+                    }
+                }
             });
         }
     }
@@ -1615,14 +1584,13 @@ impl TokensScreen {
                                     schemas.insert(key.clone(), value.clone());
                                 } else {
                                     self.document_schemas_error = Some(format!(
-                                        "Document schema '{}' missing required 'type' field",
-                                        key
+                                        "Document schema '{key}' is missing the required 'type' field"
                                     ));
                                     return;
                                 }
                             } else {
                                 self.document_schemas_error =
-                                    Some(format!("Document schema '{}' must be an object", key));
+                                    Some(format!("Document schema '{key}' must be an object"));
                                 return;
                             }
                         }
@@ -1635,8 +1603,12 @@ impl TokensScreen {
                     }
                 }
             }
-            Err(e) => {
-                self.document_schemas_error = Some(format!("Invalid JSON: {}", e));
+            Err(error) => {
+                tracing::debug!(?error, "Token document-schema JSON parsing failed");
+                self.document_schemas_error = Some(
+                    "The document schema JSON is not valid. Check its syntax and try again."
+                        .to_string(),
+                );
             }
         }
     }

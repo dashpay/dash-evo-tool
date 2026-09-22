@@ -3,11 +3,211 @@
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 
+#[cfg(feature = "cli")]
+struct DataDirOverride {
+    prior: Option<std::ffi::OsString>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(feature = "cli")]
+impl DataDirOverride {
+    fn new(path: &std::path::Path) -> Self {
+        let lock = crate::test_support::DASH_EVO_DATA_DIR_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let prior = std::env::var_os("DASH_EVO_DATA_DIR");
+        // Safety: the data-directory mutex serializes this override.
+        unsafe { std::env::set_var("DASH_EVO_DATA_DIR", path) };
+        Self { prior, _lock: lock }
+    }
+}
+
+#[cfg(feature = "cli")]
+impl Drop for DataDirOverride {
+    fn drop(&mut self) {
+        // Safety: `_lock` is held until after the original value is restored.
+        unsafe {
+            match &self.prior {
+                Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
+                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "cli")]
+#[tokio::test]
+async fn standalone_storage_status_does_not_initialize_a_profile() {
+    use crate::mcp::server::DashMcpService;
+    use crate::mcp::tools::{NetworkParams, meta::AppStorageStatus};
+    use rmcp::handler::server::router::tool::AsyncTool;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let _override = DataDirOverride::new(dir.path());
+    let service = DashMcpService::new_lazy();
+    let output = AppStorageStatus::invoke(&service, NetworkParams::default())
+        .await
+        .expect("inspect an empty profile");
+    let json = serde_json::to_value(output).expect("serialize status");
+    assert!(json["data_db_version"].is_null());
+    assert!(json["wallet_storage_lineage"].is_null());
+    assert_eq!(
+        std::fs::read_dir(dir.path())
+            .expect("read directory")
+            .count(),
+        0
+    );
+}
+
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identity_list_reports_only_the_persisted_wallet_binding() {
+    use crate::mcp::server::DashMcpService;
+    use crate::mcp::tools::{NetworkParams, identity::ListIdentitiesTool};
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use dash_sdk::dpp::{dashcore::Network, identity::Identity, prelude::Identifier};
+    use rmcp::handler::server::router::tool::AsyncTool;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = legacy_wallet_context(dir.path());
+    let mut hashes = Vec::new();
+    for (seed, alias) in [([0x92; 64], "Owner"), ([0x93; 64], "Unrelated")] {
+        let hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let xpub = crate::database::test_helpers::legacy_master_epk_bytes(&seed, Network::Testnet);
+        crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row(
+            &ctx.db,
+            &hash,
+            &seed,
+            &xpub,
+            alias,
+            Network::Testnet,
+        )
+        .unwrap();
+        hashes.push(hash);
+    }
+    resolve::ensure_wallets_hydrated(&ctx).await.unwrap();
+    for (byte, link) in [(1, Some((hashes[0], 7))), (2, None)] {
+        let identity = QualifiedIdentity {
+            identity: Identity::create_basic_identity(
+                Identifier::new([byte; 32]),
+                dash_sdk::dpp::version::PlatformVersion::latest(),
+            )
+            .unwrap(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: Vec::new(),
+            associated_wallets: Default::default(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        ctx.insert_local_qualified_identity(&identity, &link)
+            .unwrap();
+    }
+    let loaded = ctx.load_local_qualified_identities().unwrap();
+    assert!(loaded.iter().all(|qi| qi.associated_wallets.len() == 2));
+    let service = DashMcpService::new_shared(Arc::new(arc_swap::ArcSwap::new(Arc::clone(&ctx))));
+    let output = ListIdentitiesTool::invoke(&service, NetworkParams::default())
+        .await
+        .unwrap();
+    let json = serde_json::to_value(output).unwrap();
+    ctx.wallet_backend().unwrap().shutdown().await;
+    assert_eq!(
+        json["identities"][0]["wallet_seed_hashes"],
+        serde_json::json!([hex::encode(hashes[0])])
+    );
+    assert_eq!(json["identities"][0]["wallet_index"], 7);
+    assert_eq!(
+        json["identities"][1]["wallet_seed_hashes"],
+        serde_json::json!([])
+    );
+    assert!(json["identities"][1]["wallet_index"].is_null());
+}
+
+pub(super) fn legacy_wallet_context(
+    data_dir: &std::path::Path,
+) -> std::sync::Arc<crate::context::AppContext> {
+    use crate::context::AppContext;
+    use dash_sdk::dpp::dashcore::Network;
+
+    crate::app_dir::ensure_env_file(data_dir);
+    let db = std::sync::Arc::new(
+        crate::database::test_helpers::create_database_at_path(&data_dir.join("data.db"))
+            .expect("create legacy database"),
+    );
+    let app_kv = AppContext::open_app_kv(data_dir).expect("open app k/v");
+    let secret_store = AppContext::open_secret_store(data_dir).expect("open secret store");
+    AppContext::new(
+        data_dir.to_path_buf(),
+        Network::Testnet,
+        db,
+        Default::default(),
+        Default::default(),
+        egui::Context::default(),
+        app_kv,
+        secret_store,
+        crate::model::user_role::UserRoleCell::default(),
+    )
+    .expect("create app context")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_wallets_hydrated_finishes_pending_legacy_migration() {
+    use crate::context::migration_status::MigrationState;
+    use dash_sdk::dpp::dashcore::Network;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+    let seed = [0x91u8; 64];
+    let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let xpub = crate::database::test_helpers::legacy_master_epk_bytes(&seed, Network::Testnet);
+    crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row(
+        &ctx.db,
+        &seed_hash,
+        &seed,
+        &xpub,
+        "Legacy savings",
+        Network::Testnet,
+    )
+    .expect("seed legacy wallet");
+
+    assert!(
+        ctx.wallets.read().expect("wallet map").is_empty(),
+        "precondition: the legacy wallet is not hydrated yet"
+    );
+
+    resolve::ensure_wallets_hydrated(&ctx)
+        .await
+        .expect("hydrate and migrate wallets");
+
+    let alias = ctx
+        .wallets
+        .read()
+        .expect("wallet map")
+        .get(&seed_hash)
+        .map(|wallet| wallet.read().expect("wallet").alias.clone());
+    let migration_state = ctx.migration_status().state();
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let spv_started = backend.is_started();
+    backend.shutdown().await;
+
+    assert_eq!(alias, Some(Some("Legacy savings".to_owned())));
+    assert_eq!(*migration_state, MigrationState::Success);
+    assert!(!spv_started, "wallet hydration must not start chain sync");
+}
+
 // ── Amount validation ──────────────────────────────────────────
 
 #[test]
 fn zero_amount_rejected() {
-    let result = resolve::validate_amount(0);
+    let result = resolve::validate_positive_amount(0, "duffs");
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -19,8 +219,8 @@ fn zero_amount_rejected() {
 
 #[test]
 fn positive_amount_accepted() {
-    assert!(resolve::validate_amount(1).is_ok());
-    assert!(resolve::validate_amount(100_000_000).is_ok());
+    assert!(resolve::validate_positive_amount(1, "duffs").is_ok());
+    assert!(resolve::validate_positive_amount(100_000_000, "duffs").is_ok());
 }
 
 // ── Address validation ─────────────────────────────────────────
@@ -120,7 +320,9 @@ fn error_codes_are_distinct() {
             actual: "b".into(),
         },
         McpToolError::SpvSyncFailed,
+        McpToolError::StorageNotReady,
         McpToolError::Internal("x".into()),
+        McpToolError::DesktopOwnsPasswordPrompt,
     ];
 
     let codes: Vec<i32> = variants
@@ -131,12 +333,170 @@ fn error_codes_are_distinct() {
         })
         .collect();
 
-    // WalletNotFound, NetworkMismatch, SpvSyncFailed should have unique custom codes
-    let custom_codes: Vec<i32> = vec![codes[0], codes[2], codes[3]];
+    // WalletNotFound, NetworkMismatch, SpvSyncFailed, StorageNotReady and
+    // DesktopOwnsPasswordPrompt should have unique custom codes
+    let custom_codes: Vec<i32> = vec![codes[0], codes[2], codes[3], codes[4], codes[6]];
     let unique: std::collections::HashSet<i32> = custom_codes.iter().copied().collect();
     assert_eq!(
         unique.len(),
         custom_codes.len(),
         "Custom error codes must be distinct: {custom_codes:?}"
+    );
+}
+
+/// A standalone det-cli boot must restore the network an upgrading v0.9.3 user
+/// saved in `data.db`, exactly as the GUI boot does. Falling back to mainnet
+/// points the legacy wallet drain at a network holding none of their wallets.
+#[cfg(feature = "cli")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn standalone_boot_restores_the_legacy_network() {
+    use dash_sdk::dpp::dashcore::Network;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("data.db")).expect("create data.db");
+        // The `settings` table exactly as v0.9.3 (schema version 11) left it.
+        conn.execute_batch(
+            "CREATE TABLE settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                password_check BLOB,
+                main_password_salt BLOB,
+                main_password_nonce BLOB,
+                network TEXT NOT NULL,
+                start_root_screen INTEGER NOT NULL,
+                custom_dash_qt_path TEXT,
+                overwrite_dash_conf INTEGER,
+                theme_preference TEXT DEFAULT 'System',
+                database_version INTEGER NOT NULL
+            );
+            INSERT INTO settings (id, network, start_root_screen, database_version)
+            VALUES (1, 'testnet', 5, 11);",
+        )
+        .expect("write the v0.9.3 settings row");
+    }
+    let _override = DataDirOverride::new(dir.path());
+
+    let ctx = crate::mcp::server::init_app_context()
+        .await
+        .expect("standalone boot over a v0.9.3 data dir");
+
+    assert_eq!(
+        ctx.network(),
+        Network::Testnet,
+        "an upgrading testnet user must not boot on mainnet"
+    );
+}
+
+#[test]
+fn storage_not_ready_display_is_actionable() {
+    let err = McpToolError::StorageNotReady;
+    let msg = err.to_string();
+    assert!(
+        msg.contains("starting up") || msg.contains("wait") || msg.contains("retry"),
+        "StorageNotReady message should direct the user to wait/retry; got: {msg}"
+    );
+}
+
+#[test]
+fn storage_not_ready_has_dedicated_error_code() {
+    use rmcp::ErrorData as McpError;
+
+    let spv: McpError = McpToolError::SpvSyncFailed.into();
+    let storage: McpError = McpToolError::StorageNotReady.into();
+    assert_ne!(
+        spv.code.0, storage.code.0,
+        "StorageNotReady must have a different code from SpvSyncFailed"
+    );
+    // Custom range: must not collide with standard JSON-RPC codes
+    assert!(
+        storage.code.0 < -32000 || storage.code.0 == -32005,
+        "StorageNotReady code should be in the custom range"
+    );
+}
+
+// ── app_storage_update ─────────────────────────────────────────
+
+/// Drives `app_storage_update` through its real `invoke` against `ctx`, over
+/// the shared (GUI-embedded) service shape.
+#[cfg(feature = "mcp")]
+async fn invoke_storage_update(
+    ctx: &std::sync::Arc<crate::context::AppContext>,
+    password: &str,
+) -> Result<crate::mcp::tools::meta::AppStorageUpdateOutput, McpToolError> {
+    use rmcp::handler::server::router::tool::AsyncTool;
+
+    let service = crate::mcp::server::DashMcpService::new_shared(std::sync::Arc::new(
+        arc_swap::ArcSwap::new(std::sync::Arc::clone(ctx)),
+    ));
+    let params: crate::mcp::tools::meta::AppStorageUpdateParams =
+        serde_json::from_value(serde_json::json!({ "password": password }))
+            .expect("parameters deserialize");
+    crate::mcp::tools::meta::AppStorageUpdate::invoke(&service, params).await
+}
+
+/// A desktop session asks for wallet passwords in its own window, so the tool
+/// refuses before touching storage rather than open a remote channel into it.
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_update_is_refused_while_the_desktop_owns_the_password_prompt() {
+    use crate::context::migration_status::MigrationState;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+    ctx.install_secret_prompt(std::sync::Arc::new(
+        crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+    ));
+
+    let result = invoke_storage_update(&ctx, "any-wallet-password").await;
+
+    assert!(
+        matches!(result, Err(McpToolError::DesktopOwnsPasswordPrompt)),
+        "a desktop session must refuse the tool"
+    );
+    assert_eq!(
+        *ctx.migration_status().state(),
+        MigrationState::Idle,
+        "a refused call must not start the storage update"
+    );
+}
+
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_update_refuses_an_empty_password() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+
+    let result = invoke_storage_update(&ctx, "").await;
+
+    assert!(
+        matches!(result, Err(McpToolError::InvalidParam { .. })),
+        "an empty password must be refused"
+    );
+}
+
+/// A headless call prepares storage end to end and reports the terminal state.
+/// With no protected wallet on disk the password is simply unused.
+#[cfg(feature = "mcp")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_update_runs_the_update_headless_and_reports_its_state() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+
+    let output = invoke_storage_update(&ctx, "unused-wallet-password")
+        .await
+        .expect("a headless storage update with nothing to unlock succeeds");
+    let json = serde_json::to_value(&output).expect("output serializes");
+    if let Ok(backend) = ctx.wallet_backend() {
+        backend.shutdown().await;
+    }
+
+    let state = json["migration"]["state"].as_str();
+    assert!(
+        matches!(state, Some("ready") | Some("success")),
+        "expected a terminal success state, got {json}"
+    );
+    assert!(
+        !json.to_string().contains("unused-wallet-password"),
+        "the output must never echo the password"
     );
 }

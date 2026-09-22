@@ -4,13 +4,92 @@
 //! pipeline so every DPNS lookup uses the same logic, and provides shared
 //! extraction utilities for DPNS domain documents.
 
+use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::data_contract::document_type::methods::DocumentTypeV0Methods;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
+use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::voting::vote_polls::VotePoll;
 use dash_sdk::platform::{Document, Identifier};
+
+/// The immediate result of submitting a DPNS registration document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsRegistrationOutcome {
+    /// The submitted username was registered without a community vote.
+    Registered,
+    /// The submitted username entered a community vote before it can be awarded.
+    PendingCommunityVote,
+}
+
+/// Classify a submitted DPNS document using its document type's contest rules.
+pub fn classify_dpns_registration_outcome(
+    document_type: &impl DocumentTypeV0Methods,
+    document: &Document,
+    platform_version: &PlatformVersion,
+) -> Result<DpnsRegistrationOutcome, Box<ProtocolError>> {
+    match document_type
+        .contested_vote_poll_for_document(document, platform_version)
+        .map_err(Box::new)?
+    {
+        Some(VotePoll::ContestedDocumentResourceVotePoll(_)) => {
+            Ok(DpnsRegistrationOutcome::PendingCommunityVote)
+        }
+        None => Ok(DpnsRegistrationOutcome::Registered),
+    }
+}
 
 /// The `.dash` parent domain suffix (case-insensitive match target).
 const DASH_SUFFIX: &str = ".dash";
+
+/// Result of validating a bare label for DPNS registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DpnsNameValidationResult {
+    Valid,
+    TooShort,
+    TooLong,
+    InvalidCharacter(char),
+    StartsWithHyphen,
+    EndsWithHyphen,
+}
+
+/// Validate the format of a bare DPNS label before registration.
+pub fn validate_dpns_name(name: &str) -> DpnsNameValidationResult {
+    if name.len() < 3 {
+        return DpnsNameValidationResult::TooShort;
+    }
+    if name.len() > 63 {
+        return DpnsNameValidationResult::TooLong;
+    }
+    if name.starts_with('-') {
+        return DpnsNameValidationResult::StartsWithHyphen;
+    }
+    if name.ends_with('-') {
+        return DpnsNameValidationResult::EndsWithHyphen;
+    }
+    for character in name.chars() {
+        if !character.is_ascii_alphanumeric() && character != '-' {
+            return DpnsNameValidationResult::InvalidCharacter(character);
+        }
+    }
+    DpnsNameValidationResult::Valid
+}
+
+impl DpnsNameValidationResult {
+    /// Return user guidance for an invalid label.
+    pub fn error_message(self) -> Option<String> {
+        match self {
+            Self::Valid => None,
+            Self::TooShort => Some("Name must be at least 3 characters long.".to_string()),
+            Self::TooLong => Some("Name must be no more than 63 characters long.".to_string()),
+            Self::InvalidCharacter(character) => Some(format!(
+                "The character '{character}' is not allowed. Use only letters, numbers, and hyphens."
+            )),
+            Self::StartsWithHyphen => Some("Name cannot start with a hyphen.".to_string()),
+            Self::EndsWithHyphen => Some("Name cannot end with a hyphen.".to_string()),
+        }
+    }
+}
 
 /// Extract the bare label from a DPNS input and apply homograph-safe normalization.
 ///
@@ -31,17 +110,19 @@ pub fn normalize_dpns_label(input: &str) -> String {
 /// Returns the bare label portion, or the full input if no suffix is present.
 pub fn strip_dash_suffix(input: &str) -> &str {
     let trimmed = input.trim();
-    let suffix_start = trimmed.len().saturating_sub(DASH_SUFFIX.len());
-    if trimmed.len() > DASH_SUFFIX.len()
-        && trimmed
-            .get(suffix_start..)
-            .is_some_and(|tail| tail.eq_ignore_ascii_case(DASH_SUFFIX))
-    {
-        &trimmed[..suffix_start]
+    if has_dash_suffix(trimmed) {
+        // `has_dash_suffix` guarantees a `.dash` tail longer than the suffix, so
+        // this ASCII-boundary slice is always valid.
+        &trimmed[..trimmed.len() - DASH_SUFFIX.len()]
     } else {
         trimmed
     }
 }
+
+/// The DPNS input carries a domain suffix other than `.dash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("A DPNS name must end in .dash or be a plain label.")]
+pub struct NonDashDomainError;
 
 /// Validate that a DPNS username-or-ID input has an acceptable format.
 ///
@@ -50,11 +131,12 @@ pub fn strip_dash_suffix(input: &str) -> &str {
 /// - `.dash` names (case-insensitive): `"alice.dash"`, `"Alice.DASH"`
 /// - Identity IDs (no dots): `"4EfA..."`
 ///
-/// Returns `Err(input)` for inputs with non-`.dash` domains: `"alice.foo"`, `"alice.com"`
-pub fn validate_dpns_input(input: &str) -> Result<(), String> {
+/// Returns [`NonDashDomainError`] for inputs with non-`.dash` domains:
+/// `"alice.foo"`, `"alice.com"`.
+pub fn validate_dpns_input(input: &str) -> Result<(), NonDashDomainError> {
     let trimmed = input.trim();
     if trimmed.contains('.') && !has_dash_suffix(trimmed) {
-        Err(trimmed.to_string())
+        Err(NonDashDomainError)
     } else {
         Ok(())
     }
@@ -101,6 +183,91 @@ pub fn extract_identity_id_from_dpns_document(document: &Document) -> Option<Ide
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contracts::SystemDataContract;
+    use dash_sdk::dpp::document::DocumentV0;
+    use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    fn domain_document(label: &str) -> Document {
+        let owner_id = Identifier::from([1; 32]);
+        Document::V0(DocumentV0 {
+            id: Identifier::from([2; 32]),
+            owner_id,
+            creator_id: None,
+            properties: BTreeMap::from([
+                ("parentDomainName".to_string(), "dash".into()),
+                ("normalizedParentDomainName".to_string(), "dash".into()),
+                ("label".to_string(), label.into()),
+                (
+                    "normalizedLabel".to_string(),
+                    convert_to_homograph_safe_chars(label).into(),
+                ),
+                ("preorderSalt".to_string(), [0_u8; 32].into()),
+                (
+                    "records".to_string(),
+                    BTreeMap::from([("identity".to_string(), Value::from(owner_id))]).into(),
+                ),
+                (
+                    "subdomainRules".to_string(),
+                    BTreeMap::from([("allowSubdomains".to_string(), Value::Bool(false))]).into(),
+                ),
+            ]),
+            revision: None,
+            created_at: None,
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+            contract_version: None,
+        })
+    }
+
+    #[test]
+    fn registration_outcome_is_pending_for_contested_dpns_document() {
+        let platform_version = PlatformVersion::latest();
+        let contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+            .expect("bundled DPNS contract");
+        let document_type = contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+
+        assert_eq!(
+            classify_dpns_registration_outcome(
+                &document_type,
+                &domain_document("alice"),
+                platform_version,
+            )
+            .expect("classification succeeds"),
+            DpnsRegistrationOutcome::PendingCommunityVote
+        );
+    }
+
+    #[test]
+    fn registration_outcome_is_registered_for_non_contested_dpns_document() {
+        let platform_version = PlatformVersion::latest();
+        let contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+            .expect("bundled DPNS contract");
+        let document_type = contract
+            .document_type_for_name("domain")
+            .expect("domain document type");
+
+        assert_eq!(
+            classify_dpns_registration_outcome(
+                &document_type,
+                &domain_document("alice2"),
+                platform_version,
+            )
+            .expect("classification succeeds"),
+            DpnsRegistrationOutcome::Registered
+        );
+    }
 
     #[test]
     fn normalize_bare_label() {
@@ -169,11 +336,41 @@ mod tests {
 
     #[test]
     fn validate_dpns_input_rejects_non_dash_domains() {
-        assert_eq!(validate_dpns_input("alice.foo"), Err("alice.foo".into()));
-        assert_eq!(validate_dpns_input("alice.com"), Err("alice.com".into()));
+        assert_eq!(validate_dpns_input("alice.foo"), Err(NonDashDomainError));
+        assert_eq!(validate_dpns_input("alice.com"), Err(NonDashDomainError));
         assert_eq!(
             validate_dpns_input("  alice.xyz  "),
-            Err("alice.xyz".into())
+            Err(NonDashDomainError)
+        );
+    }
+
+    #[test]
+    fn dpns_registration_name_accepts_boundary_lengths() {
+        assert_eq!(validate_dpns_name("abc"), DpnsNameValidationResult::Valid);
+        assert_eq!(
+            validate_dpns_name(&"a".repeat(63)),
+            DpnsNameValidationResult::Valid
+        );
+    }
+
+    #[test]
+    fn dpns_registration_name_rejects_invalid_formats() {
+        assert_eq!(validate_dpns_name("ab"), DpnsNameValidationResult::TooShort);
+        assert_eq!(
+            validate_dpns_name(&"a".repeat(64)),
+            DpnsNameValidationResult::TooLong
+        );
+        assert_eq!(
+            validate_dpns_name("-alice"),
+            DpnsNameValidationResult::StartsWithHyphen
+        );
+        assert_eq!(
+            validate_dpns_name("alice-"),
+            DpnsNameValidationResult::EndsWithHyphen
+        );
+        assert_eq!(
+            validate_dpns_name("ali_ce"),
+            DpnsNameValidationResult::InvalidCharacter('_')
         );
     }
 }

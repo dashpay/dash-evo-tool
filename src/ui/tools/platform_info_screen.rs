@@ -10,7 +10,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;
-use eframe::egui::{self, Context, ScrollArea, Ui};
+use eframe::egui::{self, ScrollArea, Ui};
 use std::sync::Arc;
 
 pub struct PlatformInfoScreen {
@@ -83,7 +83,7 @@ impl PlatformInfoScreen {
             ),
             (
                 "recent_withdrawals",
-                "Fetch Recently Completed Withdrawals",
+                "Fetch Recent Withdrawal History",
                 PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals,
             ),
             (
@@ -158,23 +158,23 @@ impl ScreenLike for PlatformInfoScreen {
         // Don't auto-refresh - let user trigger actions manually
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsPlatformInfoScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
-        let panel_action = island_central_panel(ctx, |ui| {
+        let panel_action = island_central_panel(ui, |ui| {
             ui.heading("Platform Information Tool");
             ui.separator();
 
@@ -279,7 +279,7 @@ impl ScreenLike for PlatformInfoScreen {
                         ("version_voting", "Protocol Version Voting State"),
                         ("validator_set", "Current Validator Set Information"),
                         ("withdrawals_queue", "Current Withdrawals in Queue"),
-                        ("recent_withdrawals", "Recently Completed Withdrawals"),
+                        ("recent_withdrawals", "Recent Withdrawal History"),
                         ("shielded_pool", "Shielded Pool State"),
                     ];
 
@@ -300,6 +300,10 @@ impl ScreenLike for PlatformInfoScreen {
                 }
                 PlatformInfoTaskResult::AddressBalance { .. } => {
                     // This result is handled by AddressBalanceScreen, not here
+                }
+                PlatformInfoTaskResult::Withdrawals { .. } => {
+                    // Structured withdrawals are a programmatic (MCP/CLI) result;
+                    // this screen uses the text variants instead.
                 }
             }
         }
